@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.4** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.5** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -127,9 +127,11 @@ Debug options (off by default, never used in acceptance runs): teleport-when-stu
 
 - **Grid:** the base sits on a coarse grid (e.g. 8×8-tile cells). Modules snap to cells, and the space
   between them is reserved for routing corridors.
-- **Sites:** resource patches get mining modules (drills → belt) sized to the needed rate. The smelting and
+- **Sites:** modules with `site` set are anchored by terrain (steam block at the shore, mines on a patch).
+  Resource patches get mining modules (drills → belt) sized to the needed rate. The smelting and
   production core sits near the patches and grows outward.
-- **Router:** A* on tiles with belts, undergrounds (respecting max length), turns and lane awareness.
+- **Router:** A* on tiles with belts, undergrounds (respecting max length), turns and lane awareness. It must
+  preserve belt **lane assignment** from port to port (`Port.lanes`), e.g. ore + coal or red + green sharing one belt.
   Rip-up-and-reroute when a route fails. Routes must not cross module footprints.
 - **Power:** steam power module(s) sized to the demand, plus a pole-network planner (MST over consumers,
   pole reach-aware).
@@ -153,6 +155,8 @@ interface ModuleDef {
   rates: { inputs: Rate[]; outputs: Rate[] }; // items/s at full speed
   requiresTech: string[];      // must be researched before use
   rotatable: boolean;
+  site?: "shore" | "resource-patch"; // terrain-anchored modules (steam block at the shore, mines on a patch)
+  params?: Record<string, number>;   // generator parameters (e.g. furnace count) for source = "generated"
 }
 interface Port { kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power";
   pos: {x:number;y:number}; dir: Direction; item?: string; lanes?: "both"|"left"|"right"; }
@@ -160,32 +164,37 @@ interface Port { kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power";
 
 Pipelines (`tools/modules/`, Python or TS, run offline):
 1. **Import** from three kinds of source. Every module records `provenance`.
-   - **Blueprint library:** `~/.factorio/blueprint-storage-2.dat` is an undocumented binary format. Preferred
-     route: a helper mod or scenario run in the real client exports the library as blueprint strings. If that
-     isn't scriptable, try a community parser of the `.dat` format. As a last resort, list the books the user
-     should export by hand (a single one-time ask, batched in a milestone report).
-   - **Built bases in saves:** not everything is in the library, so also **harvest from saves**. Load the save
-     with a dump mod, export entities, and cluster them into candidate modules (connected components of
-     machines + inserters + belts by recipe). Save inventory (from save headers, 2026-10-14):
+   - **Blueprint library:** `~/.factorio/blueprint-storage-2.dat` is an undocumented binary format. No 2.0
+     parser decodes blueprint bodies (a Go decoder reads the book structure and labels only). A mod can export
+     the library through `LuaPlayer.blueprints` / `LuaRecord.export_record()`, but **only in the graphical
+     client**: headless has no player library. The export mod exists on `proto/module-sourcing`
+     (`tools/modules/library-export-mod`). The library holds 195 blueprints (5 large late-game builds plus a
+     ~190-blueprint balancer book) and **no early-game modules**, so it is not a module source. The balancer
+     book may help the router later.
+   - **Built bases in saves:** load the save with a dump mod, export entities, and cluster them into candidate
+     modules (connected components of machines + inserters + belts by recipe). Proven on
+     `proto/module-sourcing` for furnace columns, assembler rows and direct-insertion chains.
+     **2.0.77 refuses saves older than 1.0** (its minimum map input version is 1.0.0). Pre-1.0 saves need
+     conversion through official 1.1 headless first (and maybe 0.18 before that, if 1.1's own minimum input
+     version is above 0.17). Old headless builds are downloadable from factorio.com; no Steam beta is needed.
+     Save inventory (versions verified by loading where marked ✓, 2026-10-14):
 
      | Save(s) | Version | Mods | Use? |
      |---|---|---|---|
-     | `My First Base*`, `My First Based1–13*`, `MyFirstBase14/15/15.2` | 0.16.51 | vanilla | yes (latest of the series first) |
-     | `Caden`, `Mazeorio` | 0.16.51 | vanilla | yes |
-     | `1.17 Base`, `Kevins Base`, `Multiplayer`, `Campain` | 0.17.x | vanilla | yes |
-     | `FactorySimulator2024` | 1.1.109 | QoL only (YARM, helmod, Bottleneck…) | yes |
-     | `minecraft` | 2.0.47 | aai-loaders + QoL | yes; drop builds that use loaders |
-     | `space-exploration` (actually Space Age) | 2.0.28 | Space Age | yes, Nauvis early-game builds only |
-     | `The modded planet` | 0.16.51 | alien-biomes (cosmetic) | yes |
+     | `My First Base*`, `My First Based1–13*`, `MyFirstBase14/15/15.2` | 0.16–0.17 (`MyFirstBase15.2` is **0.17.43** ✓) | vanilla | yes after 1.1 conversion (latest of the series first) |
+     | `Caden`, `Mazeorio` | 0.16–0.17 (unverified) | vanilla | yes after 1.1 conversion |
+     | `1.17 Base` (**0.17.34** ✓), `Kevins Base` (**0.17.68** ✓), `Multiplayer`, `Campain` | 0.17.x | vanilla | yes after 1.1 conversion |
+     | `FactorySimulator2024` | 1.1.109 ✓ | QoL only (YARM, helmod, Bottleneck…) | yes: loads directly, 131k entities (megabase-ish; machine tiers need downgrading) |
+     | `minecraft` | 2.0.47 ✓ | aai-loaders + QoL | **no**: it has no crafting machines |
+     | `space-exploration` (actually Space Age) | 2.0.28 ✓ | Space Age | yes, loads without `space-age`; Nauvis early-game builds only |
+     | `The modded planet` | 0.16–0.17 (unverified) | alien-biomes (cosmetic) | yes after 1.1 conversion |
      | `warptorio`, `warp drive` | 2.0.47 | warp gameplay mods | no |
      | `py`, `_autosave1–3` | 2.0.76 | Pyanodon | no (recipes changed) |
      | tutorial/campaign autosaves | 0.17 | campaign | no |
 
-     Factorio 2.0 may not load 0.16/0.17 saves directly. If it can't, load them in older game versions
-     (Steam beta branches) with a minimal dump mod written for that version's API, or step them through
-     intermediate versions. The dump format must be version-independent JSON. Old layouts need
-     **normalization to 2.0** (entity renames, recipe and ratio checks). Validation (step 4) is the final
-     judge.
+     The dump format is version-independent JSON. Old layouts need **normalization to 2.0** (entity renames,
+     which 2.0's own migration does on load, plus recipe and ratio checks) and to v1 tech (AM1, stone
+     furnaces), which changes rates. Validation (step 4) is the final judge.
    - **Online:** factorioprints, factoriobin and similar sites are fine for prototype modules. **Attribution is
      mandatory** (author, URL, licence if stated) in `provenance` and in `data/modules/ATTRIBUTION.md`.
 2. **Tag:** infer ports automatically: belts leaving the footprint and the item type from the recipe. A
@@ -194,8 +203,36 @@ Pipelines (`tools/modules/`, Python or TS, run offline):
 4. **Validate:** every module gets an in-game test. It is stamped into a lab, fed inputs, and must reach
    ≥ 90% of its declared output rate.
 
-Generated fallback: a parametric "N assemblers in a row, input belt / inserters / output belt" generator for
-any recipe, which goes through the same validation.
+**Sourcing recommendation for M4** (from `docs/reports/proto-module-sourcing.md` on `proto/module-sourcing`):
+curated modules come mostly from **curated early-game blueprints on factorioprints** (small, tileable,
+designed ports; attribution recorded, licence "none stated"), plus **smelting columns and intermediates
+harvested from saves**, plus the **parametric generators** below. Everything goes through the same
+tag → filter → in-game validation gate.
+
+**Module catalog** (estimate: `docs/analysis/module-catalog-estimate.md`):
+
+- A module is a **production unit**, and it may fuse several recipes: smelter column, steam block
+  (pump + boilers + engines), red science line (gear → red), green science line (the whole chain from plates),
+  circuit block (cable + circuit, 3:2), lab array, mall. Pole networks, pipes and belts between modules belong
+  to the planner, not to modules.
+- **Parametric generators are first-class**, not just a fallback: about 7–8 for v1 (mine outpost, smelter
+  column, steam block, red line, circuit block, lab array, crew depot, and the green line on a template). Only
+  about 2–3 layouts are curated: the green-science template, the mall and maybe the steam-block pipework.
+  A generic "N assemblers in a row, input belt / inserters / output belt" generator still covers any recipe
+  without a module. Generated modules go through the same validation.
+- **Scale by replication, not size variants:** each module defines one base unit (e.g. 12 furnaces, 5 red
+  assemblers, 6 green assemblers) and the planner places k copies. Parameter tiers exist only where
+  granularity matters (smelter 6/12/24, steam 1–4 boilers).
+- The **mall is one fused module** (about 10 AM1 with gears and circuits made inside, fed by iron and copper
+  belts) that outputs to **chests the crew empties**. No filter inserters are needed.
+- **Belt lanes matter:** smelter columns take ore on one lane and coal on the other; lab arrays take red and
+  green on one belt. `Port.lanes` is required, and the router must **preserve lane assignment**.
+- **Site-anchored modules:** `ModuleDef.site` says where terrain fixes the placement (§5.3 Sites), so the planner
+  places them by terrain rather than grid choice.
+- **Wood** for small electric poles is not a belt resource. The crew gathers it (gather job on trees).
+- **Growth after v1 is roughly linear:** about 18–25 distinct modules through blue science, and about 40–60
+  through the rocket.
+- Steel production is a proposal for v1 scope, open in §11.
 
 ### 5.5 Strategy
 
@@ -328,7 +365,17 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-None currently.
+1. **Skip steel production in v1?** (proposal from `docs/analysis/module-catalog-estimate.md`, 2026-10-14,
+   awaiting confirmation; §3 is unchanged until then.) No v1 module needs steel: steel unlocks only AM2,
+   steel furnaces, medium/big poles and other non-v1 buildings, and it would need a second smelting stage.
+   Research is unaffected: §3.2 still requires researching every red/green technology, steel-processing
+   included. Evidence from 2.0.77 `base/prototypes/technology.lua`: 61 technologies cost only red and/or green
+   packs. 41 of them depend (transitively) on `steel-processing`, which itself costs 50 red packs. Researching
+   them needs only science packs, never steel plates. The one exception is **`steel-axe`**, a
+   research-*trigger* technology (craft 50 steel plates, no science packs). It is not a "red/green science"
+   technology in the §3.2 sense, so skipping steel leaves it unresearched unless the crew smelts 50 steel by
+   hand (a handful of furnace loads). Proposed: skip steel *production modules* in v1, and treat `steel-axe`
+   as optional (or as a one-off crew job if the user wants it).
 
 Resolved 2026-10-14: blueprint sources → D19 and §5.4 (agents decide, attribution required). Online sources
 are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runner choice → agent decides
@@ -352,3 +399,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 - v0.2 (2026-10-14): stacked milestone PRs; prototypes on throwaway `proto/*` branches (§9, D16).
 - v0.3 (2026-10-14): D18 config-first + §5.7; D19 module sourcing + save inventory; Space Age recipe-category note; resolved open questions.
 - v0.4 (2026-10-14): project named **Rival Engineers** (`rival-engineers`).
+- v0.5 (2026-10-14): §5.4 save inventory corrected from the module-sourcing prototype (verified versions,
+  2.0.77 refuses pre-1.0 saves, `minecraft` save unusable, blueprint library is GUI-only and has no early-game
+  modules) and M4 sourcing recommendation; module catalog summary (fused production units, first-class
+  parametric generators, replication over size variants, lane-preserving router, `ModuleDef.site`, crew
+  gathers wood, one fused mall); §11 open question on skipping steel production in v1.
