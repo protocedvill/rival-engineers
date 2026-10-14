@@ -588,6 +588,20 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
+Proposed during M4b (agent proposals, **not decided**; evidence in `docs/reports/M4-report.md`):
+
+- **P4, LayoutPolicy fields (proposed):** extend the §5.3 interface with `topology`, `protectOre`, `minOreCoverage`,
+  `searchRadii`, `utilization` (D25), `overflow { order, maxParallel }` (D24), `headroom` (D27) and router/placement
+  weights, as implemented in `mod/src/planner/policy.ts`.
+- **P5, port clearance (proposed):** every belt port keeps two free tiles straight out (its outside tile and the next),
+  so 1-tile corridors never box a port in. Without it one of five seeds failed to route.
+- **P6, belts over ore (proposed):** module footprints never cover needed ore (mining modules excepted), but belts may
+  cross ore at a policy cost.
+- **P7, planner budget (proposed):** `planner-work-per-tick` default 100 (≈ 1 ms/tick while a plan is active).
+- **P8, `Port.lanes` (proposed):** optional port field (1 | 2, default 2) used by edge capacity.
+- **Question (M4b):** should the early policy pull smelting toward its ore patch (short ore belts) or keep it compact
+  around the base (current behaviour, ore belts of 60–90 tiles on the test seeds)?
+
 Resolved 2026-10-14 (user, via the manager): M4a proposals P1 (mall validation) and P3 (validation feed, changed)
 → D33; P2 (ModuleDef schema) → §5.4.
 

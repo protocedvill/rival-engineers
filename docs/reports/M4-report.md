@@ -1,11 +1,13 @@
 # M4: Modules and routing
 
 Branch `m4-modules-routing` → `m3-burner-bootstrap` (stacked). M4 is split in two halves on the same branch:
-**M4a, the module library** (this part, done) and **M4b, belt router, real-terrain placement and the physical graph
-layer** (TODO, see the end). The PR is opened when M4b is complete.
+**M4a, the module library**, and **M4b, the belt router, real-terrain placement and the physical graph layer**.
+Both are done.
 
 Status of the M4 acceptance (SPEC §8): module library pipeline, ≥ 10 modules, ≥ 1 curated module with `expand`, all
-passing validation: **met** (M4a). Router, LayoutPolicy on real terrain, physical layer and capacity math: **M4b, TODO**.
+passing validation: **met** (M4a, re-validated under D33). Router lab with 5 modules, early-compact LayoutPolicy on
+real generated terrain, physical layer, capacity math, T1 capacity/overflow tests and a T2 undersized-belt lab:
+**met** (M4b, below). Full T2 suite: 69/69 pass.
 
 ## M4a: module library
 
@@ -200,10 +202,247 @@ Everything below is in `mod/src/modules/` and is pure unless marked (runtime).
 8. **Ghosts.** `stampModule(surface, force, def, origin, { ghost: true })` creates the ghosts the Job Board builds
    (assembler recipes and underground types are set on the ghost).
 
-## M4b (TODO)
+## M4b: placement, routing and the physical graph layer
 
-- Belt router (A* with undergrounds, turns, rip-up and reroute; no crossings through footprints; respect
-  `Port.side`).
-- Real-terrain placement and the early-game compact `LayoutPolicy` (cliffs, water, trees, existing structures).
-- Factory Graph physical layer and capacity math (§5.8), T1 capacity/overflow tests, T2 lab with an undersized belt.
-- Report sections: router acceptance (5 modules in a lab), real-terrain runs, renders, CI.
+### Built
+
+All new code is in `mod/src/planner/`. Everything except `terrain.ts` and `runtime.ts` is pure and covered by T1.
+
+- **Terrain model** (`grid.ts`, `terrain.ts`): per-tile obstacle classes (free, tree, rock, own entity, foreign
+  entity, water, cliff, unknown) plus the resource under each tile, for one region per plan and per faction. The
+  terrain is scanned chunk by chunk under a per-tick budget (`terrain-chunks-per-tick`, default 2) and stored sparsely
+  in `storage`. Ungenerated chunks are requested and retried. Chunks are marked dirty on built, mined, died, revived
+  and destroyed events (players, robots and script) and rescanned under the same budget, so nothing scans the full
+  map per tick. Own ghosts count as own structures (planned intent). The placement and router layer their own
+  overlay on top (`layout.ts`): module footprints, tiles that module belts and inserters touch outside their
+  footprint, reserved port outside tiles, route tiles, corridors and underground spans per line.
+- **LayoutPolicy** (`policy.ts`): the SPEC §5.3 interface plus what the planner needs (topology, ore protection,
+  mining coverage, search radii, D25 utilization, D24 overflow order, D27 headroom, router and placement weights).
+  Policies are a registry of data plus registered packing scorers. `selectPolicy` takes the `layout-policy` setting
+  (`auto` = highest `applies`) and config overrides (`layout-corridor-min` / `-preferred`, `layout-topology`,
+  `belt-utilization`). The one policy, **`early-compact`**, uses corridors of min 1 and preferred 2, a
+  compact-cluster packing, expand-first, clears trees and rocks at a cost (cap 400 per module), point-to-point
+  topology and 99% utilization.
+- **Placement** (`placement.ts`): for each module instance, every allowed rotation × mirror and every origin within
+  a radius of the target (cluster centre, nearest shore tile, nearest ore of the resource). The radius grows
+  24 → 48 → 96. Summed-area tables over the search window make each candidate O(1).
+  - Hard constraints: terrain and the layout overlay, no ore under non-mining modules, `corridor.min` free tiles to
+    other modules, clearing cost under the cap, shore anchors on water, every drill's mining area ≥ 60% ore of the
+    resource.
+  - Port clearance: each belt port's outside tile and the tile beyond it are free of modules and obstacles.
+  - Score (compact-cluster): distance to the cluster centre, distance from each port to where its connection comes
+    from, ports facing away, clearing cost, a bonus per neighbouring module tile within the preferred corridor, and
+    ore coverage.
+  - Search is coarse-to-fine: a stride-2 pass, then ±1 around the 3 best per transform, with a full scan as
+    fallback. Resumable.
+  - Expansion (`tryExpand`, `expansionCandidate`): grows a placed module of the same generator, recipe and resource
+    by k units, using `expandMoves` to keep the end that moves fewer entities. New tiles get the same checks as a
+    placement. It reports the ports that moved, so their routes can be redone.
+- **Belt router** (`router.ts`): A* on (tile, heading) states.
+  - Moves: belts straight or turning (a turn costs extra), and undergrounds entered straight with the exit 2..max
+    tiles ahead. The max comes from the prototype: 5/7/9. Undergrounds pass under water, cliffs, trees and other
+    routes, but not under module footprints (policy option) or unknown land, and never interleave with another span
+    on the same line.
+  - Start: the producer's outside tile with the port's heading. Goal: the consumer's port tile with its direction.
+    `Port.side` arrivals come from that side over an unfed blocker belt behind the port tile, so they side-load
+    instead of curving.
+  - Costs: trees and rocks (clearing), ore tiles and corridor tiles (factor 0.9) are policy weights. The heuristic
+    is admissible.
+  - Rip-up mode lets a search pass through other routes' tiles at a cost and reports them as victims.
+  - **Splitter taps** (topology `splitter-tap`): a multi-source start from every straight belt of the producer's
+    existing routes that has a free side tile.
+  - Resumable: `stepSearch` runs N expansions per call.
+- **Plan job** (`plan.ts`): a resumable state machine that lives in `storage`.
+  - Places site modules first, then the module with the most links to modules already placed (expand-first when a
+    request carries `expandUnits`).
+  - Routes the connections shortest first. **Rip-up-and-reroute**: a connection that fails normally is retried in
+    rip-up mode. Its victims (and the taps hanging off them) are ripped and re-queued, at most `maxRipups` (3) times
+    each.
+  - If rip-up still fails, one of the connection's modules (consumer first; never site-anchored or existing ones;
+    at most twice) is taken out with all its routes and re-placed away from its old footprint.
+  - Connections without a producer become one-tile **external stubs** (fed by the crew or another plan).
+  - Work budget: one placement candidate or A* expansion = 1 unit, one summed-area table tile = ½.
+- **Physical graph layer** (`graph.ts`, `capacity.ts`).
+  - Nodes: module instances with world ports and port rates. Port rates are inserter-limited, from the rate engine.
+  - Edges: routes, with their path (belts, underground pairs, splitters, blocker), tier and lanes (2), plus length,
+    underground and splitter counts.
+  - Each edge has a **planned rate**: the consumer's demand, plus its taps for a trunk. Unless given, demand is
+    min(producer port, consumer port).
+  - Each edge gets a **capacity check** (`checkEdge`): nominal = lanes × lane capacity from prototypes
+    (15/30/45 per belt, 7.5/15/22.5 per lane), usable = nominal × 99% (D25), and which limit binds (belt, producer
+    or consumer).
+  - Each edge gets a **D24 overflow decision** (`decideOverflow`) in the policy's order:
+    1. Upgrade to the slowest researched tier that suffices.
+    2. n parallel routes if n ≤ `maxParallel` (2).
+    3. A new producer cluster.
+
+    Endpoint-limited edges go straight to a new producer cluster. The decision is only emitted; M5 acts on it.
+  - Logical flows map to their physical edges (a tapped flow → trunk + branch).
+- **Output to the Job Board** (`runtime.ts`, `build-list.ts`).
+  - `startPlan` adds a job that is stepped every tick (scan, then plan, under budget). `startBuild` turns a finished
+    plan into faction work in two phases.
+  - Phase 1: **clear jobs** for every tree and rock on the footprints and route tiles. It comes first because the
+    controller refuses to mine where a ghost is selected.
+  - Phase 2: **ghosts** on the faction's force with **place jobs** (and fuel jobs for burners), through the M2 path
+    (`addPlaceJob`, refactored out of `planGhosts`). A splitter tap replaces the tapped belt in the build list.
+  - `stampLayout` builds a plan with script (tests) or as ghosts.
+- **Graph export** (D29): `dump_graph(planId, file)` (remote), `exportGraph`. `tools/render/render.py --graph`
+  overlays module boxes with ids and ports (inputs cyan, outputs magenta). Edges are drawn along their paths,
+  coloured by planned utilization (green < 50%, yellow < 90%, orange to the cap, red over it), with undergrounds
+  dashed, splitters as squares, external stubs grey and a label on any edge whose decision is not "none". The
+  in-game overlay is M5's.
+- **Settings** (§5.7): `layout-policy` (auto), `layout-corridor-min` / `-preferred` (0 = policy), `layout-topology`
+  (policy), `belt-utilization` (0.99), `planner-work-per-tick` (100), `terrain-chunks-per-tick` (2).
+- **Remote:** `start_plan`, `plan_status`, `dump_graph`.
+
+### Acceptance (SPEC §8, M4 row)
+
+The set: iron **mining outpost** (electric, 2 rows × 2) → **smelter column** (iron, 4 furnaces) → **gear assembler
+row** (2) → **red tile** (curated `red-tile-ramqvist`, gear + copper) → **lab array** (2 labs, red only). Coal for
+the smelter and copper for the red tile are external stubs. The real-terrain runs add a **steam block** (1 boiler,
+`site = shore`, coal stub), so 6 modules.
+
+| Test | Result |
+|---|---|
+| **Routing lab** (T2, flat lab with an iron patch): 5 modules placed and routed; `checkLayout` finds no route in a footprint, on blocked terrain or sharing a tile, and every route arrives at its port tile with the port's direction; built with script, every route followed in game (`belt_neighbours`, underground `neighbours`) from producer to consumer; powered by test interfaces and fed coal and copper, it runs for 8 game-minutes | **pass**: 4 routes, 43 belt tiles (longest 29), 0 undergrounds; 4 red packs in the labs and research at 27.7% after 8 game-minutes |
+| **Real terrain** (T2, 5 fixed seeds, default Nauvis generation, biters off, cliffs on, the starting lake; 4 of the faction's own entities and 6 walls pre-placed near the centre, 3 chests of another force): the same checks plus the steam block's water anchors are water, each drill area ≥ 50% iron, and every route connects in game after a script build | **5/5 valid** (table below) |
+| **Crew-built** (T2, seed 123456 on its own surface): faction with 2 crew; stockpile = the plan's bill + 200 coal; 3 trees planted on the longest route; `startBuild`: clear jobs, then ghosts and place/fuel jobs | **pass**: 284 entities and 3 trees, built in 6627 ticks (1.8 game-min); no ghosts left; every route connects; it runs: 4 red packs in the labs, research 26% after 8 game-minutes |
+| **Undersized belt** (T2): a 20/s flow planned on a routed yellow belt around a pond | capacity check over (planned 20 > usable 14.85); decision `upgrade-tier → fast-transport-belt` (logistics-2 researched), `parallel-route × 2` without it; **yellow measured 15.00/s**; after acting on the decision (rebuilt fast), **25.00/s** (fed 25/s) |
+| **T1**: router primitives, placement, policies, capacity and overflow | 21 planner tests (below), all pass; 61 T1 tests in total |
+
+Real-terrain seeds (budget 100 units/tick; terrain scan 32 ticks at 2 chunks/tick for a 224 × 224 region):
+
+| Seed | Valid | Routes / belt tiles (longest) | Undergrounds | Trees/rocks cleared | Ticks to plan (scan + place/route) | AI time while planning | Placement (outpost, steam) |
+|---|---|---|---|---|---|---|---|
+| 123456 | yes | 4 / 88 (77) | 0 | 0 | 544 (32 + 512) | 459 ms (0.84 ms/tick) | outpost 85 W 52 S, steam on the lake NE |
+| 987654 | yes | 4 / 71 (60) | 1 | 0 | 531 (32 + 499) | 456 ms (0.86 ms/tick) | outpost 98 W, steam NE |
+| 555555 | yes | 4 / 106 (91) | 1 | 0 | 573 (32 + 541) | 555 ms (0.97 ms/tick) | outpost 95 N, steam W |
+| 31337 | yes | 4 / 91 (74) | 0 | 3 | 527 (32 + 495) | 482 ms (0.91 ms/tick) | outpost 110 W, steam NE |
+| 2718281 | yes | 4 / 44 (33) | 1 | 0 | 706 (32 + 674) | 647 ms (0.92 ms/tick) | outpost 57 E, steam W |
+
+No connection needed a rip-up or a re-placement on these maps. Rip-up and re-placement are exercised by T1 tests.
+
+### Router and planner cost (budgeted computation)
+
+- **Budget:** `planner-work-per-tick` = 100 units (default), `terrain-chunks-per-tick` = 2. The most work in one tick
+  was 135–150 units (one summed-area row can overshoot by its width / 2).
+- **In game** (AI profiler around on_tick, which runs only the planner in these tests): **0.84–1.03 ms/tick** while
+  a plan is active. Planning the whole set takes **411 ticks** (lab) and **527–706 ticks** (real terrain): 7–12 s
+  of game time, 0.42–0.65 s of CPU in total.
+- **Routing alone** is small: 110–5247 A* expansions per set (4 searches), i.e. 2–53 ticks at 100 expansions per
+  tick. **Placement dominates**: 42–71k units, mostly the summed-area tables (~8–14k tiles per module window) and
+  ~6k candidates per module after the coarse-to-fine scan. Before that, it was 100k+ units per set.
+- **T1 (plain Lua 5.4, synthetic 120 × 100 map):** 41k units in 91–145 ms, about 2.2–3.5 µs per unit; in game it is
+  ~10 µs per unit (terrain lookups through chunk tables).
+- At 150 units/tick the same plans took 1.3–1.7 ms/tick, too much of D13's 2 ms for all AI, so the default is 100.
+
+### Tests
+
+- **T1** (`mod/unit/planner.test.ts`, 21 tests):
+  - Router: a straight route; turns and arriving with the port's direction; undergrounds across a 3-wide river,
+    failing across 6 with yellow (max 4 tiles between) and working with fast (max 6); never inside a footprint
+    (around it; under it only when the policy allows); side constraint (left/right arrival heading, blocker tile);
+    trees cleared at a cost vs avoided by policy (then an underground); rip-up and reroute (a walled pocket only C
+    can use, A ripped and rerouted); splitter tap (and point-to-point refusing a second consumer on one port).
+  - Placement: compact next to its partner with corridor ≥ min; keeps off water, cliffs, structures and ore; corridor
+    overrides; the steam block on a shore; the outpost on its patch (coverage ≥ 0.9).
+  - Policy: expand-first grows an existing smelter (4 → 8 furnaces) instead of placing a copy; new-module-first
+    places a copy; a walled-in module can't grow so a copy is placed; selection by config and `applies()`; a newly
+    registered policy wins `auto` at its stage; overrides.
+  - Capacity: tiers from prototypes (15/30/45, 7.5/15/22.5 per lane, underground 5/7/9); 99% cap (14.85 fits,
+    15 overflows, one lane is half, endpoint limits).
+  - Overflow: upgrade if researched, smallest sufficient tier, parallel without research, new cluster when too much
+    or producer-limited, policy order respected.
+  - Plan: the 5-module set on a synthetic map with a lake, cliffs, trees, ore, own and foreign structures (valid,
+    graph with 6 edges within capacity, cost printed); a walled-in module re-placed and routed; build list (the
+    splitter replaces the tapped belt, underground pairs typed); tile keys.
+- **T2** (`mod/src/test/routing.test.ts`, 9 tests): routing lab, 5 seeds plus the ≥ 4/5 aggregate, crew-built,
+  undersized belt. Seed, crew and aggregate tests carry `[slow]`. They add about 75 s to the suite.
+- **Full suite locally: 69/69 pass in 6.5–9 min** (the D33 validation group is ~4–5 min of it). CI: see the PR.
+
+### Renders
+
+Lab (planned and running), a real-terrain seed with the graph overlay, and the crew-built plan
+(`docs/reports/m4/m4b-*.png`). Module boxes are white; routes are coloured by planned utilization (all green here,
+under 50% of a yellow belt); external input stubs are grey; undergrounds are dashed.
+
+| Real terrain, seed 555555 (graph overlay) | Real terrain, seed 31337 | Seed 31337, core (zoomed) |
+|---|---|---|
+| ![](m4/m4b-seed-555555.png) | ![](m4/m4b-seed-31337.png) | ![](m4/m4b-seed-31337-core.png) |
+
+| Routing lab (running, graph overlay) | Crew-built plan (running) |
+|---|---|
+| ![](m4/m4b-lab.png) | ![](m4/m4b-crew-built.png) |
+
+Seed 555555: the outpost sits on the iron patch at the top right (blue-grey), the steam block on the lake at the
+bottom left. The core (smelter → gears → red tile → labs) hugs the pre-placed furnaces and chests (orange outlines),
+and the long ore belt runs around the coal patch (black).
+
+### Findings
+
+- **Undergrounds in 2.0:** `create_entity{type = "input" | "output", direction = flow direction}` for both ends;
+  every built route was followed through `neighbours` to its consumer.
+- **The starting area has few trees.** Placement treats trees as a cost, so modules avoid them: only seed 31337
+  needed clearing (3–4 trees). The crew test plants three trees on a route to exercise the clear-then-build path.
+- **Smelters are placed near the base, not near the ore.** The outpost lands on the nearest iron with ≥ 60%
+  coverage per drill (57–110 tiles out), and its ore belt is the longest route (60–91 tiles). This is what "compact
+  around existing production" asks for. Whether the smelter should move to the patch instead is a planner (M5)
+  question; see Questions.
+- **Port clearance matters.** Without it, one seed (31337) put the red tile's three adjacent bottom-edge ports one
+  tile from the gear row, and the middle port could not be routed even with rip-up. Requiring the tile beyond each
+  port's outside tile to be free fixed all seeds. Module re-placement remains as a fallback.
+- **Run-to-run terrain differences.** Seed 31337's layout differed by a tile between a standalone run and a full-suite
+  run, starting at the first (outpost) placement, i.e. before any routing. The tests log a hash of the scanned
+  region per seed: it differs between the two kinds of run for 4 of the 5 seeds (123456 matches). So the generated
+  terrain differs (probably what earlier tests generate first), not the planner, which is pure given its terrain. All
+  seeds are valid in both kinds of run. A T4 determinism check should cover planning in a fixed run order.
+- **factorio-test CLI watchdog:** it kills Factorio after 15 s without stdout. Long in-game runs now print a heartbeat
+  and `factorio-test.json` sets `outputTimeout` to 180.
+
+### Deviations and assumptions
+
+- **Power between modules is not planned** (pole network = M5). The tests power each module from a test
+  electric-energy-interface next to its power pole and feed external stubs by script, like the validation lab.
+- **The real-terrain set has 6 modules:** the 5 of the lab plus the steam block, so "the steam block lands on a shore"
+  can be checked. Unconnected inputs (coal, copper) are one-tile external stubs.
+- **Belts may cross ore at a cost** (3 per tile); modules may not (except mining modules). The spec says "never build
+  over ore the faction will need": I applied that to footprints and treated belts as a soft cost. All ore currently
+  counts as needed.
+- **Edges assume 2 lanes.** No v1 port declares lanes. A producer that fills one lane would show in measurement
+  (M5).
+- **Parallel routes need port pairs.** With single-item ports, `parallel-route` means another producer/consumer pair
+  (a second module copy): the decision says how many, and M5 must build them.
+- **The real-terrain verification builds with script** (after clearing trees and rocks with script) for all 5 seeds,
+  and with the crew for one. The crew build uses a stockpile of the exact bill, not a gathered one.
+- **Modules re-placed after a routing failure** avoid their old footprint only. Fixed (existing) modules never move.
+- **Planning is per request.** The terrain is scanned before placing (the region must be generated). Changes during
+  planning are rescanned under budget but don't invalidate decisions already taken. v1 assumes a static world (D28).
+
+### Proposals (not decisions; also in SPEC §11)
+
+- **P4, LayoutPolicy fields (proposed):** add to SPEC §5.3's interface what the planner uses: `topology`, `protectOre`,
+  `minOreCoverage`, `searchRadii`, `utilization` (D25 per policy), `overflow { order, maxParallel }` (D24),
+  `headroom` (D27), `router` and `placement` weights.
+- **P5, port clearance (proposed):** a placement rule that every belt port has two free tiles straight out (its outside
+  tile and the next), so corridors of width 1 never box a port in. It is implemented and makes all seeds valid.
+- **P6, belts over ore (proposed):** belts (not modules) may cross ore at a policy cost, instead of never.
+- **P7, planner budget (proposed):** default 100 work units per tick, about 1 ms/tick while a plan is active (D13 is a
+  soft 2 ms total). Tune against the M5 soak.
+- **P8, `Port.lanes` (proposed):** an optional port field (1 or 2) for edge capacity, default 2.
+
+### Questions for the user
+
+- Should the early policy pull the smelting column **toward its ore patch** (short ore belt, long plate belt), or keep
+  it **compact around the base** as now (long ore belt)? Both are cheap to express as packing weights.
+- Is a **6-module real-terrain set** (adding the steam block) the right reading of "the same set ... the steam block
+  lands on a shore"?
+
+### Next steps (M5)
+
+- Pole network planner (MST over module power ports) on the same terrain model and layout overlay; the steam block
+  feeding it.
+- The recipe-graph planner producing `PlanRequest`s (modules, connections, rates) from goals, with the D27 headroom,
+  and acting on the overflow decisions (tier upgrades, parallel module pairs, new clusters) and on expansion moves.
+- Measurement and reconciler on the graph edges (`measuredRate`), the in-game overlay, and a T4 determinism check that
+  includes planning (same seed → same terrain hash → same layout).
+- Faster placement if needed (cache summed-area tables per window across modules; prune by score bound).
