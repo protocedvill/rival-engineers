@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.10** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.11** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -57,6 +57,8 @@ Two layers, by analogy:
 | D31 | Hand speed (2026-10-14) | Crew place entities at a **configurable human pace**: `place-delay-ticks` (default 8) per entity once in reach, `belt-place-delay-ticks` (default 3) for belts, which players drag (§5.1, §5.7). |
 | D32 | Faction starting areas (2026-10-14) | With `spawn-mode = auto-distance`, each faction's spawn is registered as a **map-gen starting point** (`MapGenSettings.starting_points`, as the vanilla PvP scenario does for teams) before its surroundings are generated, so it gets starting-area resources like a player. Setting `spawn-starting-area` (default on); off = search naturally generated land only. Proposed during M3 and confirmed by the user on 2026-10-14 (default on). Later milestones assume it. |
 | D33 | Module validation (2026-10-14, user decision on M4a proposals P1 and P3) | Modules are fed **exactly 1.0× their declared input rates** throughout (no over-feeding, no priming) and measured only once they reach a **steady state** (detected automatically, with a generous cap on the warm-up; the detection rule is an implementation parameter, §7). A module that never stabilises is reported as a finding, not papered over. Each output must then reach **≥ 90% of declared**. **Malls** (outputs into chests) are judged on the **plate value of all products together (≥ 90% of declared)** plus a **product-coverage run** (chests capped at one slot, every product appears). Decided by the user via the manager; P1 accepted as proposed, P3 changed from "1.1× after a 3× primed warm-up" to this rule. |
+| D34 | M4b proposals (2026-10-14, user decision via manager) | **Approved: P4** LayoutPolicy fields (`topology`, `protectOre`, `minOreCoverage`, `searchRadii`, `utilization`, `overflow { order, maxParallel }`, `headroom`, router/placement weights; `mod/src/planner/policy.ts`); **P5** every belt port keeps 2 free tiles straight out; **P6** module footprints never cover needed ore (mining modules excepted) but belts may cross ore at a policy cost; **P7** `planner-work-per-tick` default 100 (≈1 ms/tick while planning); **P8** optional `Port.lanes` (1 \| 2, default 2) for edge capacity. |
+| D35 | Smelter placement (2026-10-14, user decision via manager) | "Smelting near its ore patch" vs "compact core" is a **LayoutPolicy option**, not a fixed rule. Both are implemented, and **M6 soak runs A/B them** to pick the early-game default. The M4 real-terrain bar (lab 5 modules + steam block, 5/5 seeds) is accepted. |
 
 ## 3. v1 Definition of Done
 
@@ -588,19 +590,9 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-Proposed during M4b (agent proposals, **not decided**; evidence in `docs/reports/M4-report.md`):
+None open.
 
-- **P4, LayoutPolicy fields (proposed):** extend the §5.3 interface with `topology`, `protectOre`, `minOreCoverage`,
-  `searchRadii`, `utilization` (D25), `overflow { order, maxParallel }` (D24), `headroom` (D27) and router/placement
-  weights, as implemented in `mod/src/planner/policy.ts`.
-- **P5, port clearance (proposed):** every belt port keeps two free tiles straight out (its outside tile and the next),
-  so 1-tile corridors never box a port in. Without it one of five seeds failed to route.
-- **P6, belts over ore (proposed):** module footprints never cover needed ore (mining modules excepted), but belts may
-  cross ore at a policy cost.
-- **P7, planner budget (proposed):** `planner-work-per-tick` default 100 (≈ 1 ms/tick while a plan is active).
-- **P8, `Port.lanes` (proposed):** optional port field (1 | 2, default 2) used by edge capacity.
-- **Question (M4b):** should the early policy pull smelting toward its ore patch (short ore belts) or keep it compact
-  around the base (current behaviour, ore belts of 60–90 tiles on the test seeds)?
+Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
 
 Resolved 2026-10-14 (user, via the manager): M4a proposals P1 (mall validation) and P3 (validation feed, changed)
 → D33; P2 (ModuleDef schema) → §5.4.
@@ -651,3 +643,4 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   99% utilization target, measured vs planned rates with a reconciler, staged targets with headroom, disruption
   deferred to P2, graph export and in-game overlay); decisions D21–D29; lane-preserving routing between modules
   removed (`Port.lanes` → single-item ports with `Port.side`); M4/M5/M6 acceptance reference the graph work.
+- v0.11 (2026-10-14): D34 (M4b proposals P4–P8 approved), D35 (smelter placement as A/B policy option; M4 bar accepted).
