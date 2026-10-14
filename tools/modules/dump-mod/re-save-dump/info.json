@@ -1,0 +1,9 @@
+{
+  "name": "re-save-dump",
+  "version": "0.1.0",
+  "title": "Rival Engineers: save entity dump (prototype)",
+  "author": "rival-engineers",
+  "factorio_version": "2.0",
+  "description": "Dev tool. On first load into a save, writes every non-neutral entity of surface 1 to script-output/re-save-dump.json. Used by tools/modules/run_dump.sh.",
+  "dependencies": ["base"]
+}

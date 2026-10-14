@@ -1,0 +1,29 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	bpdecode "github.com/galpodlipnik1/factorio-blueprint-decoder"
+)
+
+func main() {
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	mode := bpdecode.DecodeStrict
+	if len(os.Args) > 2 && os.Args[2] == "recover" {
+		mode = bpdecode.DecodeRecover
+	}
+	res, err := bpdecode.Decode(data, bpdecode.DecodeOptions{Mode: mode})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ERR:", err)
+		os.Exit(1)
+	}
+	res.Library.PrototypeCatalog = nil
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", " ")
+	enc.Encode(res)
+}

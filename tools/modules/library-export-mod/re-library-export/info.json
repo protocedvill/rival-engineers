@@ -1,0 +1,9 @@
+{
+  "name": "re-library-export",
+  "version": "0.1.0",
+  "title": "Rival Engineers: blueprint library export (one-time helper)",
+  "author": "rival-engineers",
+  "factorio_version": "2.0",
+  "description": "Adds the /re-export-library console command, which writes every record of your blueprint library as a blueprint string to script-output/re-library/. Read-only: it never changes the library.",
+  "dependencies": ["base"]
+}
