@@ -28,11 +28,22 @@ python3 tools/render/render.py frames/*.json --gif -o out/timelapse.gif
 python3 tools/render/render.py frames/*.json --trail -o out/walk.png   # + the character's trail
 ```
 
+Soak runs (T3, SPEC §7) on fresh maps, headless at max speed, with a scorecard and frames per seed (not in CI):
+
+```bash
+npm run soak                                              # tools/harness/soak.toml: M3 acceptance, 5 seeds
+python3 tools/harness/soak.py -c tools/harness/two-factions.toml --gif
+python3 tools/harness/soak.py --seeds 11 --hours 0.5 --name dev   # quick one-off
+# → out/soak/<name>/scorecard.md, scorecard.json, seed-N/{telemetry.json,frames/,factorio-current.log}
+```
+
 In-game test logs (`[m1] ...` measurements) are printed only for failing tests. Read them from
 `.factorio-test/data/factorio-current.log`.
 
 Layout: `mod/src` holds the TypeScript sources (`control.ts` runtime, `settings.ts` settings stage,
 `character/` the Character Controller, `jobs/` factions, the Job Board (`board.ts`, pure) and the crew runtime,
-`tick.ts` the on_tick entry, `config.ts` the typed settings, `test/` in-game tests), `mod/unit`
+`strategy/` the research goal and the burner bootstrap brain, `world/` resource scanning and spawn placement,
+`telemetry.ts` telemetry and frame dumps, `tick.ts` the on_tick entry, `config.ts` the typed settings, `test/`
+in-game tests), `mod/unit`
 holds T1 unit tests for pure modules, `mod/static` holds files copied verbatim into the mod, `tools/` holds the build,
-render and (later) harness and module tooling, and `ci/mods` holds vendored test-only mods.
+render, soak harness (`tools/harness`) and (later) module tooling, and `ci/mods` holds vendored test-only mods.

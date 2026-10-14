@@ -57,3 +57,26 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   the test needs in `storage.testScratch`.
 - factorio-test prints `log()` output only for failing tests. Read measurements from
   `.factorio-test/data/factorio-current.log`.
+- `T2` runs on factorio-test's bundled **lab-tile save** (no resources, no terrain). For real terrain, create a
+  surface: `game.create_surface(name, { seed, autoplace_controls: { "enemy-base": { size: 0, ... } } })` gives
+  default Nauvis generation (see `test/bootstrap.test.ts`).
+- **Resources outside starting areas are sparse in 2.0** (one seed had no iron farther than ~400 tiles from the
+  origin in a 1536² area). A faction placed 300+ tiles out needs its own starting area: append its spawn to
+  `surface.map_gen_settings.starting_points` *before* those chunks generate (`world/spawn.ts`). The typed field
+  is readonly; cast. Nearby seeds can produce identical starting areas at the same spot (seeds 2/3 and 4/5 did),
+  so use spread-out seeds.
+- **Mining a resource tile under a ghost deconstructs the ghost** (`update_selected_entity` picks the ghost).
+  The controller refuses to mine when a ghost is selected, and the brain never plans sites over tiles being hand-mined.
+- The **pathfinder can't start from the 0.6-tile gap between two adjacent machines** (e.g. a coal drill pair),
+  though the character fits there and can walk out. `walk.ts` steps to a free spot and re-requests (escape phase).
+- `vector_to_place_result` reads back as an array (`{-0.5, -1.3}`, Lua indices 1 and 2), not `{x, y}`. A burner
+  drill's drop point lands on the *tile footprint* of an adjacent drill but just outside its collision box; the pair
+  still feeds itself.
+- Furnace output counts for `craft-item` research triggers (`steam-power`: 50 iron plates, `electronics`: 10
+  copper plates) with nothing queued; trigger techs complete on their own.
+- `--benchmark` ignores SIGTERM (the harness kills with SIGKILL), prints per-tick timings only at the very end, and
+  runs mods normally. `--create` runs `on_init` (the freeplay scenario's too, so its `freeplay` remote interface
+  exists); the first tick happens in the benchmark run.
+- Lua `require` cycles break module loading: keep shared state like the AI profiler hook in a leaf module
+  (`profiling.ts`) instead of importing `tick.ts` from modules `tick.ts` imports.
+- `LuaProfiler` output in a log line needs a localised string: `log(["", "text ", profiler])`.

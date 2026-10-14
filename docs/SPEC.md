@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.8** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.9** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -55,6 +55,7 @@ Two layers, by analogy:
 | D29 | Visibility | Graph export to JSON with a `tools/render` overlay, plus an in-game `rendering` debug overlay (§5.8). |
 | D30 | Research goal (2026-10-14) | v1 researches **only the red/green technologies reachable without steel production or crude oil** (§3.2). No one-off steel smelt, so `steel-axe` is out, and nothing behind `oil-processing`. The set is computed from prototypes at runtime: **42** technologies in vanilla 2.0.77. |
 | D31 | Hand speed (2026-10-14) | Crew place entities at a **configurable human pace**: `place-delay-ticks` (default 8) per entity once in reach, `belt-place-delay-ticks` (default 3) for belts, which players drag (§5.1, §5.7). |
+| D32 | Faction starting areas (2026-10-14) | With `spawn-mode = auto-distance`, each faction's spawn is registered as a **map-gen starting point** (`MapGenSettings.starting_points`, as the vanilla PvP scenario does for teams) before its surroundings are generated, so it gets starting-area resources like a player. Setting `spawn-starting-area` (default on); off = search naturally generated land only. Accepted by the user during M3: later milestones assume it. |
 
 ## 3. v1 Definition of Done
 
@@ -118,7 +119,9 @@ There are no `LuaPlayer`s. Each crew member is a bare `character` entity on the 
 The controller drives it only through player-equivalent APIs:
 
 - **Walk:** `surface.request_path` (async, the result arrives via `on_script_path_request_finished`). Follow
-  waypoints by setting `character.walking_state` each tick. Detect stuck movement and re-path.
+  waypoints by setting `character.walking_state` each tick. Detect stuck movement and re-path. If the pathfinder finds no path from where the character stands
+  (e.g. wedged in the 0.6-tile gap between two machines, which the grid pathfinder treats as blocked), step
+  straight to a free spot about a tile away and ask again, up to 3 times, as a player would.
 - **Mine:** set `character.update_selected_entity` and `character.mining_state`. Resources, trees and rocks
   are mined at real speed, and products go to the character inventory.
 - **Craft:** `character.begin_crafting` uses the real crafting queue and real times.
@@ -153,6 +156,11 @@ reach multiplier (scales build, reach and resource reach through the character's
   and fails it with a reason after `job-max-attempts` (dependents fail too). Transient blocks (a character
   standing in the footprint) and crew death release without spending an attempt. Stockpile takes in flight are
   reserved so crew members don't plan with the same items.
+- (M3) Haul jobs come in three payloads: a member's own **haul** of materials for its batch, a **deposit** of what
+  it carries into the depot (brain-driven factions empty their pockets between jobs), and a **transfer** that
+  collects output from a machine (furnace plates, a stone chest, a coal pair's surplus) into the depot. Fuel jobs
+  also feed ore into furnaces. Deliveries (gather → furnace, craft → depot) insert what fits; leftovers are
+  deposited.
 
 ### 5.3 Base Planner
 
@@ -318,6 +326,35 @@ tag → filter → in-game validation gate.
   research → green. These phases come out of the graph and current tech, not a script. Scripted heuristics
   are allowed only for the burner bootstrap if the planner can't express it cleanly. Document them if used.
 - **Research queue:** choose techs that unblock goals first, then the remaining red/green techs.
+- **Burner bootstrap (M3, `mod/src/strategy/bootstrap.ts`):** the first, simple strategy layer. Each faction's
+  brain runs every `brain-interval-ticks` (30) and turns goals into Job Board jobs; the crew does everything
+  physically. Entities and items come from prototypes (`strategy/catalog.ts`: the cheapest hand-craftable burner
+  drill, burner furnace and chest, the fuel = a resource product with a fuel value, ore → plate furnace recipes).
+  Scripted heuristics (allowed here, documented):
+  - **H1 goal list:** a depot chest, then burner sites interleaved by resource (lowest built/target ratio first,
+    targets from `bootstrap-sites`, default `iron-ore=8,coal=4,stone=2,copper-ore=4`). A fuel resource gets
+    self-feeding drill **pairs**, an ore gets a drill feeding a **furnace**, anything else a drill feeding a
+    **chest**. The first-electricity kit (`first-electricity-items`, default offshore pump, boiler, steam engine,
+    10 small poles) comes once every resource has half its sites; the remaining sites follow.
+  - **H2** at most 2 goals in progress, so materials go to the earliest goals.
+  - **H3** everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
+    jobs. Craft jobs take raw materials; the crafting queue makes intermediates.
+  - **H4 demand-driven production:** the materials of active jobs and the goal's items are the demand. A
+    shortfall is met by collecting from the faction's machines, then hand-crafting, then hand-mining (ore goes
+    straight into a furnace of its kind), with at most one hand-mining job per crew member.
+  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are collected on demand only.
+  - **H6** sites go on the patch chosen by distance and size from the depot, on the patch tiles nearest it,
+    facing it, one tile apart, on tiles free of trees, rocks and active hand-mining.
+  - **H7 exploration:** when a needed resource (or trees) has no known patch, the area around the base is
+    generated 64 tiles farther (up to 3 × `scan-radius`) and rescanned.
+- **World knowledge:** crew don't chart. At start the chunks within `scan-radius` (128) of the base are generated,
+  as for a player exploring, and scanned into resource patches (clusters of one resource, tiles within 2 of each
+  other); exploration (H7) and replanning rescan.
+- **Stall detection:** progress = plan steps (a goal done, a site part placed, a plan craft done). No progress for
+  `stall-ticks` (54000 = 15 game-minutes) logs a stall with a reason (current goal, what the plan waits for,
+  failure reasons since the last progress, job counts) and **replans**: every job is dropped, unbuilt site ghosts
+  are removed (partly built sites keep their built part and re-plan the rest), the surroundings are rescanned and
+  planning starts again from what exists. A stall counts as recovered at the next progress.
 - **Space Age compatibility (verified against 2.0.77 data, 2026-10-14):** Space Age does **not** change the
   ingredients of any red/green-chain recipe. It does move belts, undergrounds and splitters into a
   `pressing` category, and electronic circuits and electric poles into `electronics`. So the planner must
@@ -337,11 +374,17 @@ Default to configurable (D18). Settings live in three places:
   per-tick CPU budget; telemetry and render-dump interval; **hand speed** (`place-delay-ticks` 8,
   `belt-place-delay-ticks` 3, D31); the **research goal** inputs (`research-science-packs`,
   `research-excluded-triggers`, D30).
+- **Spawning (M3):** `auto-spawn` (default on, never under factorio-test) creates `faction-count` factions on the
+  first tick. `spawn-mode`: `auto-distance` (default; with `spawn-starting-area`, the first not-yet-generated spot
+  on rings from `spawn-min-distance` becomes a map-gen starting point (D32); otherwise generated regions are
+  searched for a spot with iron, copper, coal and stone within `spawn-resource-radius`, 96), `fixed-offsets`
+  (`spawn-fixed-offsets`), `scenario-defined` (only the `spawn_faction` remote). `random-ring` is not implemented.
+  Each crew member gets the freeplay starter items (read from the `freeplay` remote interface when present, else
+  the freeplay defaults); factions start with no research.
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
-- **Harness config** (`tools/harness/*.toml`): seeds, map-gen presets, game speed, run length, scorecard
-  thresholds.
+- **Harness config** (`tools/harness/*.toml`): seeds, map-gen settings, run length, mod config overrides.
 
 Every setting has a documented default that the v1 acceptance runs use. Settings must be read through one
 typed config module so tests can override them.
@@ -458,6 +501,12 @@ metrics in **M6**.
   the Steam install at `~/.steam/steam/steamapps/common/Factorio` (2.0.77, Space Age owned) is used for the
   Space Age smoke test. The user's `~/.factorio` is **never** used for test runs. Use an isolated
   `--config`/write-data dir.
+- **Soak harness (M3, `tools/harness/soak.py`, `npm run soak`):** per seed it creates a map (`--create`, biters
+  off), runs it with `--benchmark` (as fast as the CPU allows) in an isolated write-data dir
+  (`.factorio-test/soak/`), stops early once every faction is done, and writes `out/soak/<run>/scorecard.{md,json}`
+  plus entity frames for `tools/render/render.py --gif`. Config overrides reach the mod through a generated
+  helper mod calling `set_config_override` at map init; telemetry (`telemetry-interval-ticks`) and frame dumps
+  (`frame-dump-interval-ticks`) are mod settings, off by default.
 - **Scorecard** (per run, JSON + markdown): SPM over time, research completed, stall events and reasons,
   per-job-type time breakdown, ms/tick (avg and p99), entity counts, router failures.
 - **Layout policies:** T1 tests for each policy's pure parts (selection by stage/conditions, packing on
@@ -552,6 +601,9 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   placement (cliffs, water, ore, trees/rocks, own structures) with policy-defined corridor widths. New pluggable
   `LayoutPolicy` (§5.3, §5.7) with policy tests and soak A/B comparison (§7). M4/M5 acceptance now requires
   placement and routing on real generated terrain (§8).
+- v0.9 (2026-10-14, M3): burner bootstrap documented in §5.5 (heuristics H1–H7, world knowledge, stall
+  detection and replanning); spawning settings in §5.7; D32 faction starting areas via map-gen starting
+  points; soak harness in §7.
 - v0.8 (2026-10-14, user decisions): D30 research goal = red/green technologies reachable without steel or crude
   oil, computed from prototypes (42 in vanilla 2.0.77; §3.2 rewritten). D31 configurable hand speed (§5.1, §5.7).
 - v0.7 (2026-10-14): factory graph + throughput, from interview. New §5.8 (two-layer Factory Graph, ratio solver
