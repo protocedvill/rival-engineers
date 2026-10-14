@@ -59,8 +59,19 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   logged, not read.
 - factorio-test `.after_reload_script` re-runs the test file, so its locals are gone after the reload. Stash what
   the test needs in `storage.testScratch`.
-- factorio-test prints `log()` output only for failing tests. Read measurements from
-  `.factorio-test/data/factorio-current.log`.
+- factorio-test prints `log()` output only for failing tests. Read measurements from the shard's
+  `.factorio-test/shards/N/factorio-current.log` (`npm test` runs shards; `out/test-results.json` gives each test's
+  shard) or `.factorio-test/data/factorio-current.log` after `npm run test:serial`.
+- **T2 runs in parallel shards, each its own game** (`tools/test-parallel.mjs`). A test may only rely on state from
+  tests in its own unit: its file, or for files split in `tools/test-shards.json`, its group (e.g. the real-terrain
+  seed tests and their "4 of 5" summary share `storage.testScratch`). A new test that reads another test's results
+  must join that test's group in `tools/test-shards.json`, or the summary test sees "not run". Files not listed
+  there always run whole, in declaration order.
+- Shard data dirs are `.factorio-test/shards/N/`; never point two Factorio processes at the same write-data dir
+  (`.lock`, `factorio-current.log`, `mod-settings.dat`, script-output collide). `--benchmark` binds no network port.
+  Concurrent instances slow each other a lot on the dev laptop (i5-1240P: 4 P-cores + 8 E-cores, power-limited):
+  5 soak seeds at once each ran at about half speed (AI ms/tick doubled). Per-test durations from a parallel run and
+  soak ms/tick figures from `-j` > 1 are inflated: take performance numbers from a single-test run or `soak.py -j 1`.
 - `T2` runs on factorio-test's bundled **lab-tile save** (no resources, no terrain). For real terrain, create a
   surface: `game.create_surface(name, { seed, autoplace_controls: { "enemy-base": { size: 0, ... } } })` gives
   default Nauvis generation (see `test/bootstrap.test.ts`).
@@ -95,7 +106,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - T1 runs on whatever Lua is installed (5.3+ locally): it prints `3` and `3.0` differently, so format numbers with
   `%g` in test keys.
 - factorio-test filters are **Lua patterns**: no `|` alternation, and `-` is a quantifier (`"crew%-built"`). Run
-  several filters as separate runs. `npx factorio-test run` does not rebuild: `npm run build` first (or `npm test`).
+  several filters as separate arguments (any of them matches). `npx factorio-test run` does not rebuild: `npm run
+  build` first (or `npm test`, which also takes `--no-build`).
 - `helpers.table_to_json` writes an empty Lua table as `{}`, not `[]`: JSON readers (tools/render) must accept both.
 - Underground belts: `create_entity{type = "input"|"output", direction = flow direction}` for both ends (2.0); the
   routing tests follow `neighbours` / `belt_neighbours` to prove each route connects.

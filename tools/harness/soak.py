@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """T3 soak harness (SPEC §7): fresh maps, headless at max speed, telemetry, scorecard, render frames.
 
-For every seed in the config it:
+For every seed of every config it:
   1. creates a fresh map (`--create`, configurable map-gen; biters off by default) with the mod and a generated
      helper mod that applies the run's config overrides through the remote interface at map init;
   2. runs it with `--benchmark` (no rendering, as fast as the CPU allows) for up to `game_hours`, stopping early
      once every faction has finished the bootstrap (the mod writes script-output/rival-engineers/done.json);
   3. collects the mod's telemetry JSON, profiler lines and entity frames, and writes a JSON + markdown scorecard.
 
-Everything runs in an isolated write-data directory, .factorio-test/soak/, separate from factorio-test's
-.factorio-test/data and never ~/.factorio.
+Seeds (and configs) run concurrently, `--jobs` at a time (default: $SOAK_JOBS, else half the cores). Each run has its
+own isolated write-data directory, .factorio-test/soak/<name>/seed-N/, separate from factorio-test's and never
+~/.factorio. Concurrent runs slow each other a little (shared caches and memory bandwidth): compare wall and AI ms
+per tick only between runs with the same --jobs, and use --jobs 1 for performance numbers.
 
 Usage:
   python3 tools/harness/soak.py                               # tools/harness/soak.toml
   python3 tools/harness/soak.py -c tools/harness/two-factions.toml
   python3 tools/harness/soak.py --seeds 3 --hours 0.5 --gif   # overrides
+  python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/two-factions.toml -j 6
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -54,12 +58,13 @@ def load_config(path, args):
     return cfg
 
 
-def setup_dir(cfg):
-    """Write-data dir with the mod (symlinked build), the helper mod and a mod list."""
-    data = SOAK_DIR / "data"
+def setup_dir(cfg, seed):
+    """A run's own dir: write-data (the mod as a symlinked build, the helper mod, a mod list), config.ini, the map."""
+    run_dir = SOAK_DIR / cfg["run"]["name"] / f"seed-{seed}"
+    data = run_dir / "data"
     mods = data / "mods"
     mods.mkdir(parents=True, exist_ok=True)
-    (SOAK_DIR / "config.ini").write_text(f"[path]\nread-data={READ_DATA}\nwrite-data={data}\n")
+    (run_dir / "config.ini").write_text(f"[path]\nread-data={READ_DATA}\nwrite-data={data}\n")
     link = mods / "rival-engineers"
     if link.is_symlink() or link.exists():
         link.unlink()
@@ -82,7 +87,7 @@ def setup_dir(cfg):
         ("base", True), ("elevated-rails", False), ("quality", False), ("space-age", False),
         ("rival-engineers", True), ("rival-engineers-harness", True)]]}
     (mods / "mod-list.json").write_text(json.dumps(mod_list, indent=1))
-    return data
+    return run_dir
 
 
 def map_gen_settings(cfg):
@@ -97,17 +102,17 @@ def map_gen_settings(cfg):
     return settings
 
 
-def run_seed(cfg, data, seed, out_dir):
+def run_seed(cfg, seed, out_dir):
     run = cfg["run"]
+    run_dir = setup_dir(cfg, seed)
+    data = run_dir / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
     script_out = data / "script-output" / "rival-engineers"
     shutil.rmtree(script_out, ignore_errors=True)
-    saves = SOAK_DIR / "saves"
-    saves.mkdir(exist_ok=True)
-    save = saves / f"{run['name']}-seed-{seed}.zip"
-    mgs = SOAK_DIR / "map-gen-settings.json"
+    save = run_dir / "map.zip"
+    mgs = run_dir / "map-gen-settings.json"
     mgs.write_text(json.dumps(map_gen_settings(cfg)))
-    conf = str(SOAK_DIR / "config.ini")
+    conf = str(run_dir / "config.ini")
     subprocess.run([str(FACTORIO), "-c", conf, "--create", str(save), "--map-gen-settings", str(mgs),
                     "--map-gen-seed", str(seed)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     ticks = int(run["game_hours"] * TICKS_PER_HOUR)
@@ -256,38 +261,85 @@ def render_gifs(out_dir, results):
                                 "--scale", "3", "-o", str(gif)], check=False)
 
 
+def default_jobs(runs):
+    env = os.environ.get("SOAK_JOBS")
+    if env:
+        return max(1, int(env))
+    return max(1, min((os.cpu_count() or 2) // 2, runs))
+
+
+def failed_result(seed, error):
+    return {"seed": seed, "pass": False, "game_minutes": 0, "stopped_early": False, "wall_seconds": None,
+            "wall_ms_per_tick": None, "benchmark": None, "ai_ms_per_tick_avg": None, "ai_ms_per_tick_p99_interval": None,
+            "ai_ms_per_tick_max_interval": None, "errors": [f"harness: {error!r}"], "factions": {}}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-c", "--config", default=str(ROOT / "tools" / "harness" / "soak.toml"))
+    parser.add_argument("-c", "--config", action="append",
+                        help="config TOML; repeat it to run several configs together (default tools/harness/soak.toml)")
     parser.add_argument("--seeds", help="comma-separated seeds (overrides the config)")
     parser.add_argument("--hours", type=float, help="game hours per seed (overrides the config)")
-    parser.add_argument("--name", help="run name (output directory under out/soak/)")
+    parser.add_argument("--name", help="run name (output directory under out/soak/; one config only)")
+    parser.add_argument("-j", "--jobs", type=int, help="concurrent Factorio runs (default: $SOAK_JOBS, else half the cores)")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--gif", action="store_true", help="render a timelapse GIF per seed and faction")
     args = parser.parse_args()
-    cfg = load_config(args.config, args)
+    paths = args.config or [str(ROOT / "tools" / "harness" / "soak.toml")]
+    if args.name and len(paths) > 1:
+        sys.exit("--name needs a single config")
+    cfgs = [load_config(p, args) for p in paths]
+    names = [c["run"]["name"] for c in cfgs]
+    if len(set(names)) != len(names):
+        sys.exit(f"configs share a run name: {names}")
     if not FACTORIO.exists():
         sys.exit(f"headless Factorio not found at {FACTORIO} (see README → Development)")
     if not args.no_build:
         subprocess.run(["npm", "run", "build"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
-    data = setup_dir(cfg)
-    out_dir = ROOT / "out" / "soak" / cfg["run"]["name"]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    results = []
-    for seed in cfg["run"]["seeds"]:
-        print(f"seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
-        r = run_seed(cfg, data, seed, out_dir / f"seed-{seed}")
-        results.append(r)
-        for name, f in r["factions"].items():
-            print(f"  faction {name}: {'done at ' + str(f['done_minutes']) + ' min' if f['done'] else 'NOT done'}, "
-                  f"stalls {len(f['stalls'])}, goal {f['current_goal']}, sites {f['sites']}", flush=True)
-        print(f"  {r['game_minutes']} game min in {r['wall_seconds']} s; AI {r['ai_ms_per_tick_avg']} ms/tick", flush=True)
-        (out_dir / "scorecard.json").write_text(json.dumps({"config": cfg, "results": results}, indent=1))
-        (out_dir / "scorecard.md").write_text(markdown(cfg, results))
-    if args.gif:
-        render_gifs(out_dir, results)
-    passed = sum(1 for r in results if r["pass"])
-    print(f"{passed}/{len(results)} seeds passed. Scorecard: {out_dir / 'scorecard.md'}")
+    tasks = [(cfg, seed) for cfg in cfgs for seed in cfg["run"]["seeds"]]
+    jobs = args.jobs or default_jobs(len(tasks))
+    out_dirs = {}
+    for cfg in cfgs:
+        cfg["run"]["jobs"] = jobs  # recorded in scorecard.json: wall times depend on it
+        out_dirs[cfg["run"]["name"]] = ROOT / "out" / "soak" / cfg["run"]["name"]
+        out_dirs[cfg["run"]["name"]].mkdir(parents=True, exist_ok=True)
+    results = {name: {} for name in names}
+    started = time.time()
+    print(f"{len(tasks)} run(s), {jobs} at a time", flush=True)
+
+    def task(cfg, seed):
+        print(f"{cfg['run']['name']} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
+        return run_seed(cfg, seed, out_dirs[cfg["run"]["name"]] / f"seed-{seed}")
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(task, cfg, seed): (cfg, seed) for cfg, seed in tasks}
+        for fut in as_completed(futures):
+            cfg, seed = futures[fut]
+            name = cfg["run"]["name"]
+            try:
+                r = fut.result()
+            except Exception as e:  # a broken run fails its seed, not the others
+                r = failed_result(seed, e)
+            results[name][seed] = r
+            lines = [f"{name} seed {seed}: {r['game_minutes']} game min in {r['wall_seconds']} s; "
+                     f"AI {r['ai_ms_per_tick_avg']} ms/tick"]
+            for fname, f in r["factions"].items():
+                lines.append(f"  faction {fname}: {'done at ' + str(f['done_minutes']) + ' min' if f['done'] else 'NOT done'}, "
+                             f"stalls {len(f['stalls'])}, goal {f['current_goal']}, sites {f['sites']}")
+            lines += [f"  error: {e}" for e in r["errors"]]
+            print("\n".join(lines), flush=True)
+            # The scorecard so far, in config seed order.
+            ordered = [results[name][s] for s in cfg["run"]["seeds"] if s in results[name]]
+            (out_dirs[name] / "scorecard.json").write_text(json.dumps({"config": cfg, "results": ordered}, indent=1))
+            (out_dirs[name] / "scorecard.md").write_text(markdown(cfg, ordered))
+    for cfg in cfgs:
+        name = cfg["run"]["name"]
+        ordered = [results[name][s] for s in cfg["run"]["seeds"]]
+        if args.gif:
+            render_gifs(out_dirs[name], ordered)
+        passed = sum(1 for r in ordered if r["pass"])
+        print(f"{name}: {passed}/{len(ordered)} seeds passed. Scorecard: {out_dirs[name] / 'scorecard.md'}")
+    print(f"soak wall time {time.time() - started:.1f} s ({len(tasks)} run(s), {jobs} at a time)")
 
 
 if __name__ == "__main__":
