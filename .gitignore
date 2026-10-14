@@ -1,0 +1,8 @@
+node_modules/
+mod/build/
+.factorio-test/
+tools/modules/input/
+out/
+__pycache__/
+*.pyc
+.venv/
