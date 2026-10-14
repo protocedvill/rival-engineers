@@ -1,5 +1,5 @@
 import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
-import { clearConfigOverrides } from "../config"
+import { clearConfigOverrides, setConfigOverride } from "../config"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
@@ -25,8 +25,7 @@ import { feed, feeders, followRoute, layoutBill, layoutProblems, m4Modules, powe
 const SPEED = 100
 const SEEDS = [123456, 987654, 555555, 31337, 2718281]
 
-function surfaceFor(seed: number): LuaSurface {
-  const name = `m4b-${seed}`
+function surfaceFor(seed: number, name = `m4b-${seed}`): LuaSurface {
   const existing = game.surfaces[name]
   if (existing) return existing
   // Default Nauvis generation (cliffs, water, trees, starting area at the origin) with no enemy bases (D6).
@@ -167,6 +166,9 @@ describe("M4b routing", () => {
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
+    // The default budgets (settings.ts), pinned so the logged per-tick costs are at the defaults.
+    setConfigOverride("plannerWorkPerTick", 100)
+    setConfigOverride("terrainChunksPerTick", 2)
   })
 
   test("routing lab: 5 modules placed and routed, no crossings, right port sides, and red science reaches the labs", () => {
@@ -200,6 +202,7 @@ describe("M4b routing", () => {
       on_tick(() => {
         feed(fs)
         ticks++
+        if (ticks % 3600 === 0) print(`[m4b] lab factory: ${ticks / 3600} game-min`)
         if (ticks < RUN) return
         const progress = force.research_progress
         const packs = labPacks(s, layout)
@@ -246,6 +249,17 @@ describe("M4b routing", () => {
       startPlan({ id, surface: surface.name, force: faction.force, faction: faction.name, request: { modules: set.modules, connections: set.connections, center, region } })
       async(60 * 60 * 20)
       awaitPlan(id, `seed ${seed}`, ({ entry, ticks }) => {
+        // Terrain fingerprint: tells a planner difference from a terrain difference between runs.
+        const view = terrainView(storage.terrains![entry.terrain])
+        let hash = 0
+        for (let x = region.x; x < region.x + region.w; x++) {
+          for (let y = region.y; y < region.y + region.h; y++) {
+            const b = view.block(x, y)
+            const o = view.ore(x, y)
+            if (b !== 0 || o !== undefined) hash = (hash * 31 + (x - region.x) * 7 + (y - region.y) * 13 + b * 101 + (o !== undefined ? string.len(o) : 0)) % 1000000007
+          }
+        }
+        log(`[m4b] seed ${seed}: terrain hash ${hash}`)
         const result: string[] = []
         if (entry.phase !== "done") result.push(`plan failed: ${failures(entry)}`)
         else {
@@ -282,13 +296,10 @@ describe("M4b routing", () => {
   })
 
   test("crew-built [slow]: the crew build a routed real-terrain plan from a stockpile, and it runs", () => {
+    // Its own copy of the first seed's map (the seed test built at its origin with script).
     const seed = SEEDS[0]
-    const surface = surfaceFor(seed)
-    const center = { x: 0, y: 0 }
-    surface.request_to_generate_chunks(center, 5)
-    surface.force_generate_chunk_requests()
-    // A fresh area of the same surface (the seed test built at the origin): 160 tiles east.
-    const base = { x: 160, y: 0 }
+    const surface = surfaceFor(seed, `m4b-crew-${seed}`)
+    const base = { x: 0, y: 0 }
     surface.request_to_generate_chunks(base, 5)
     surface.force_generate_chunk_requests()
     const faction = createFaction(`m4b-crew`, { surface: surface.name, position: base, crew: 2 })
@@ -316,6 +327,13 @@ describe("M4b routing", () => {
           remaining[item as string] = n - put
         }
         addStockpile(faction, chest)
+      }
+      // Obstacles on the plan: a few trees on the longest route's tiles, which the crew must clear before building.
+      let longest = layout.routes[layout.routeOrder[0]]
+      for (const id of layout.routeOrder) if (layout.routes[id].length > longest.length) longest = layout.routes[id]
+      for (const i of [3, 8, 13]) {
+        const st = longest.steps[math.min(i, longest.steps.length - 1)]
+        surface.create_entity({ name: "tree-01", position: { x: st.x + 0.5, y: st.y + 0.5 } })
       }
       const build = startBuild(entry, { fuel: { item: "coal", count: 5 } })
       log(`[m4b] crew: ${specs.length} entities to build, ${build.clearJobs.length} trees/rocks to clear`)
@@ -346,7 +364,9 @@ describe("M4b routing", () => {
         const RUN = 60 * 60 * 8
         on_tick(() => {
           feed(fs)
-          if (++ticksRun < RUN) return
+          // A heartbeat on stdout: the test CLI kills Factorio after a stretch with no output.
+          if (++ticksRun % 3600 === 0) print(`[m4b] crew-built factory: ${ticksRun / 3600} game-min`)
+          if (ticksRun < RUN) return
           const progress = force.research_progress
           const packs = labPacks(surface, layout)
           log(`[m4b] crew-built run: ${tech} progress ${progress}, ${packs} red packs in the labs`)
@@ -426,10 +446,10 @@ describe("M4b routing", () => {
         t++
         for (const i of [1, 2]) {
           const line = db.get_transport_line(i)
-          if (t > 600) n += line.get_item_count()
+          if (t > 3600) n += line.get_item_count()
           line.clear()
         }
-        if (t < 600 + ticks) return
+        if (t < 3600 + ticks) return
         then((n / ticks) * 60)
         return false
       })

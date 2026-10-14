@@ -94,3 +94,12 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `products_finished` errors on mining drills (not a crafting machine).
 - T1 runs on whatever Lua is installed (5.3+ locally): it prints `3` and `3.0` differently, so format numbers with
   `%g` in test keys.
+- factorio-test filters are **Lua patterns**: no `|` alternation, and `-` is a quantifier (`"crew%-built"`). Run
+  several filters as separate runs. `npx factorio-test run` does not rebuild: `npm run build` first (or `npm test`).
+- `helpers.table_to_json` writes an empty Lua table as `{}`, not `[]`: JSON readers (tools/render) must accept both.
+- Underground belts: `create_entity{type = "input"|"output", direction = flow direction}` for both ends (2.0); the
+  routing tests follow `neighbours` / `belt_neighbours` to prove each route connects.
+- A new surface from `game.create_surface(name, {seed, ...})` has a starting area at the origin (iron, copper, coal,
+  stone and a lake within ~100 tiles). 160 tiles away there may be no iron within 112 tiles: plan near the origin.
+- Builds over trees/rocks are two-phase (`planner/runtime.ts`): clear jobs first, ghosts after, because the controller
+  refuses to mine where a ghost is selected.

@@ -2,6 +2,7 @@ import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
+import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
@@ -268,6 +269,55 @@ test("router: splitter tap feeds a second consumer from an existing route (split
   const g = buildGraph(state, policy({ topology: "splitter-tap" }), { tiers: TIERS, researched: {} })
   eq(g.physical.edges.length, 2, "two physical edges")
   eq(g.logical.edges[1].physical.length, 2, "the tapped flow maps to trunk + branch")
+})
+
+test("plan: a module whose port is walled in is re-placed elsewhere, then routed", () => {
+  const rows = field(40, 30)
+  // A closed pocket of unknown land around (33, 8).
+  for (let y = 5; y <= 11; y++) for (let x = 30; x <= 36; x++) if (x === 30 || x === 36 || y === 5 || y === 11) rows[y] = rows[y].substring(0, x) + "?" + rows[y].substring(x + 1)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 5, 20)
+  place(state, b, 33, 8)
+  const job = newRoutingJob(request([a, b], [conn("c", "a", "b")], 40, 30), YELLOW, state)
+  job.replaced = {} // planned by this job: allowed to move
+  runJob(job, terrain, F, policy())
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  eq(job.stats.replacements, 1, "one re-placement")
+  const moved = findModule(state, "b")!
+  ok(moved.rect.x !== 33 || moved.rect.y !== 8, "b moved out of the pocket")
+  noProblems(state, terrain, "re-placed")
+})
+
+test("build list: a splitter tap replaces the tapped belt; undergrounds carry their type", () => {
+  const rows = field(40, 30)
+  setCol(rows, 12, 0, 29, "~")
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  runJob(newRoutingJob(request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30), YELLOW, state, ["ab", "ac"]), terrain, F, policy({ topology: "splitter-tap" }))
+  const tap = state.routes["route:ac"].steps[0]
+  const specs = routeEntities(state)
+  let splitters = 0
+  let beltOnTap = 0
+  let ugIn = 0
+  let ugOut = 0
+  for (const e of specs) {
+    if (e.name === "splitter") splitters++
+    if (e.name === "transport-belt" && math.floor(e.x) === tap.x && math.floor(e.y) === tap.y) beltOnTap++
+    if (e.ioType === "input") ugIn++
+    if (e.ioType === "output") ugOut++
+  }
+  eq(splitters, 1, "one splitter")
+  eq(beltOnTap, 0, "no belt under the splitter")
+  ok(ugIn >= 1 && ugIn === ugOut, "underground pairs over the river")
 })
 
 function newLayoutWith(src: LayoutState): LayoutState {

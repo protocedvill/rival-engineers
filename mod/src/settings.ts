@@ -310,7 +310,7 @@ data.extend([
     type: "int-setting",
     name: Settings.plannerWorkPerTick,
     setting_type: "runtime-global",
-    default_value: 150,
+    default_value: 100,
     minimum_value: 10,
     maximum_value: 100000,
     order: "i-f",

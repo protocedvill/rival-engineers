@@ -19,6 +19,8 @@ npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with
 npm test                 # build + in-game tests (T2) on headless Factorio
 npm test -- "pattern"    # filter tests by Lua pattern
 npm test -- "validation fast"   # module validation lab without the slow modules (~1 min)
+npm test -- "routing lab"       # M4b: 5 modules placed, routed and run in a lab (~10 s)
+npm test -- "real terrain"      # M4b: the module set on 5 generated maps (~10 s; filters are Lua patterns: no "|", escape "-" as "%-")
 ```
 
 Curated modules (SPEC §5.4): edit a spec in `tools/modules/curated/`, then
@@ -32,6 +34,7 @@ Rendering entity dumps (written by the `dump_entities` remote call to `.factorio
 python3 tools/render/render.py DUMP.json -o out/frame.png
 python3 tools/render/render.py frames/*.json --gif -o out/timelapse.gif
 python3 tools/render/render.py frames/*.json --trail -o out/walk.png   # + the character's trail
+python3 tools/render/render.py DUMP.json --graph DUMP.graph.json -o out/graph.png   # + Factory Graph overlay
 ```
 
 Soak runs (T3, SPEC §7) on fresh maps, headless at max speed, with a scorecard and frames per seed (not in CI):
@@ -49,7 +52,9 @@ In-game test logs (`[m1] ...` measurements) are printed only for failing tests. 
 Layout: `mod/src` holds the TypeScript sources (`control.ts` runtime, `settings.ts` settings stage,
 `character/` the Character Controller, `jobs/` factions, the Job Board (`board.ts`, pure) and the crew runtime,
 `strategy/` the research goal and the burner bootstrap brain, `world/` resource scanning and spawn placement,
-`modules/` the module library (types, rate engine, generators, curated loader, transforms, stamping),
+`modules/` the module library (types, rate engine, generators, curated loader, transforms, stamping), `planner/` the
+layout planner (terrain model, LayoutPolicy, placement, A* belt router, plan jobs, Factory Graph physical layer and
+capacity math, the runtime that budgets it per tick and builds plans through the Job Board),
 `telemetry.ts` telemetry and frame dumps, `tick.ts` the on_tick entry, `config.ts` the typed settings, `test/`
 in-game tests), `mod/unit`
 holds T1 unit tests for pure modules, `mod/static` holds files copied verbatim into the mod, `tools/` holds the build,
