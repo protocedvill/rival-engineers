@@ -1,11 +1,21 @@
-# tools/modules: module-sourcing prototype
+# tools/modules: module sourcing
 
-Prototype tooling for SPEC §5.4 (Module Library). Findings and the recommended M4 pipeline are in
-`docs/reports/proto-module-sourcing.md`. Python is stdlib-only. Run it with `python3 -I`, because it
-reads untrusted downloads and save data.
+Tooling for SPEC §5.4 (Module Library). Python is stdlib-only. Run it with `python3 -I`, because it reads untrusted
+downloads and save data.
+
+On the M4 branch: `curate.py` (the curated module pipeline), `bpstring.py`, `factorioprints.py`, `data/` and
+`samples/`, brought over from `proto/module-sourcing` (whose report, `docs/reports/proto-module-sourcing.md` on that
+branch, has the findings). The save-harvesting tools (`run_dump.sh`, `dump-mod/`, `cluster.py`, `list_modules.py`,
+`dump_stats.py`, the library tools) stay on the prototype branch until a milestone needs them.
+
+| Tool | What it does |
+|---|---|
+| `curate.py show SPEC` / `build SPEC...` | Curated modules: blueprint (cached in `data/modules/sources/`) → normalised ModuleDef JSON in `data/modules/` per a spec in `curated/` (renames, recipe swaps, removals, additions, crop, ports, expand), plus a render dump and `ATTRIBUTION.md`. |
 
 Inputs go in `input/` and outputs in `out/`. Both are git-ignored. Copy saves and the blueprint
 library into `input/` first. Never point a tool at `~/.factorio`.
+
+Prototype-branch tools (for reference):
 
 | Tool | What it does |
 |---|---|
