@@ -215,3 +215,19 @@ export function expandTail(def: ModuleDef): ModuleEntity[] {
   if (!spec) return []
   return def.entities.filter((e) => (spec.axis === "x" ? e.x : e.y) >= spec.insertAt)
 }
+
+/**
+ * How to grow a module that is already built by k units with the fewest entities moved. Either the tail (entities
+ * at or beyond insertAt) moves forward and the origin stays, or the head (before insertAt) moves back and the
+ * origin shifts by −k × unit size along the axis. `moved` is in `def`'s (pre-growth) local coordinates; place
+ * `expandModule(def, k)` at `origin + originShift`. Coordinates are canonical (apply transforms afterwards).
+ */
+export function expandMoves(def: ModuleDef, k: number): { moved: ModuleEntity[]; originShift: { x: number; y: number } } {
+  const spec = def.expand
+  if (!spec) error(`module ${def.id} has no expand`)
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const tail = expandTail(def)
+  const head = def.entities.filter((e) => (spec.axis === "x" ? e.x : e.y) < spec.insertAt)
+  if (head.length < tail.length) return { moved: head, originShift: spec.axis === "x" ? { x: -k * size, y: 0 } : { x: 0, y: -k * size } }
+  return { moved: tail, originShift: { x: 0, y: 0 } }
+}

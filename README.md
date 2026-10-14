@@ -18,7 +18,13 @@ npm run typecheck        # T0
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
 npm test                 # build + in-game tests (T2) on headless Factorio
 npm test -- "pattern"    # filter tests by Lua pattern
+npm test -- "validation fast"   # module validation lab without the slow modules (~30 s)
 ```
+
+Curated modules (SPEC §5.4): edit a spec in `tools/modules/curated/`, then
+`python3 -I tools/modules/curate.py show SPEC` (character grid, to place ports) and
+`python3 -I tools/modules/curate.py build tools/modules/curated/*.json` (writes `data/modules/<id>.json`, a render
+dump in `data/modules/render/` and `ATTRIBUTION.md`).
 
 Rendering entity dumps (written by the `dump_entities` remote call to `.factorio-test/data/script-output/`):
 
@@ -43,7 +49,10 @@ In-game test logs (`[m1] ...` measurements) are printed only for failing tests. 
 Layout: `mod/src` holds the TypeScript sources (`control.ts` runtime, `settings.ts` settings stage,
 `character/` the Character Controller, `jobs/` factions, the Job Board (`board.ts`, pure) and the crew runtime,
 `strategy/` the research goal and the burner bootstrap brain, `world/` resource scanning and spawn placement,
+`modules/` the module library (types, rate engine, generators, curated loader, transforms, stamping),
 `telemetry.ts` telemetry and frame dumps, `tick.ts` the on_tick entry, `config.ts` the typed settings, `test/`
 in-game tests), `mod/unit`
 holds T1 unit tests for pure modules, `mod/static` holds files copied verbatim into the mod, `tools/` holds the build,
-render, soak harness (`tools/harness`) and (later) module tooling, and `ci/mods` holds vendored test-only mods.
+render, soak harness (`tools/harness`) and module tooling (`tools/modules`), `data/modules` holds the curated
+modules (JSON, built into the mod by `tools/build-mod.mjs`) with their sources and attribution, and `ci/mods` holds
+vendored test-only mods.

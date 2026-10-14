@@ -1,4 +1,4 @@
-import { expandModule, expandTail } from "../src/modules/build"
+import { expandModule, expandMoves, expandTail } from "../src/modules/build"
 import { assemblerRow, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
@@ -201,6 +201,18 @@ test("expandTail lists only the entities that move (the tail beyond insertAt)", 
   eq(tail.length, 5, "the merge belts and the two input port belts")
   for (const e of tail) ok(e.y >= base.expand!.insertAt, "tail entity beyond insertAt")
   eq(expandTail(miningOutpost(F, { resource: "iron-ore", rows: 2 })).length, 0, "outposts grow at the far end")
+  const m = expandMoves(base, 2)
+  eq(m.moved.length, 5, "the tail is smaller than the head")
+  eq(m.originShift.y, 0, "origin stays")
+})
+
+test("expandMoves: moving the head instead keeps every tail entity in place in the world", () => {
+  // A module whose head is small: one belt before insertAt, three after.
+  const base = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const def: ModuleDef = { ...base, expand: { ...base.expand!, insertAt: 1 } }
+  const m = expandMoves(def, 1)
+  eq(m.originShift.y, -4, "origin moves back one unit")
+  for (const e of m.moved) ok(e.y < 1, "only head entities move")
 })
 
 // --- Transforms ----------------------------------------------------------------------------------------------

@@ -82,3 +82,12 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - Lua `require` cycles break module loading: keep shared state like the AI profiler hook in a leaf module
   (`profiling.ts`) instead of importing `tick.ts` from modules `tick.ts` imports.
 - `LuaProfiler` output in a log line needs a localised string: `log(["", "text ", profiler])`.
+- **Inserter direction is the side it picks up from** (2.0): an inserter facing north takes from the tile north of
+  it and drops south. Yellow inserters move about one item per full turn (0.84/s), a bit more from belts.
+- **An inserter won't put ore into a burner furnace that has no fuel.** Furnaces early on a thin fuel lane hoard coal
+  and later ones never start: prime fuel lanes (the module validation lab does during warm-up).
+- `require` works only while control.lua is parsed: load data files at file scope, never lazily. TSTL resolves
+  `require` paths at compile time; generated Lua files need an entry in `noResolvePaths` (`tsconfig.base.json`).
+- `products_finished` errors on mining drills (not a crafting machine).
+- T1 runs on whatever Lua is installed (5.3+ locally): it prints `3` and `3.0` differently, so format numbers with
+  `%g` in test keys.

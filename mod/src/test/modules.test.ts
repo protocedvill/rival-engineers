@@ -12,7 +12,23 @@ import { LabResult, runModuleLab } from "./module-lab"
 const PASS_RATIO = 0.9
 const SPEED = 100
 
+/** Writes the module as a tools/render dump: script-output/modules/<id>.json (ports drawn as small grey squares). */
+function writeDump(def: ModuleDef): void {
+  const entities: Record<string, unknown>[] = []
+  for (const e of def.entities) {
+    const p = prototypes.entity[e.name]
+    const side = e.dir === 4 || e.dir === 12
+    const tw = side ? p.tile_height : p.tile_width
+    const th = side ? p.tile_width : p.tile_height
+    entities.push({ name: e.name, type: p.type, x: e.x, y: e.y, direction: e.dir ?? 0, force: "player", w: tw - 0.2, h: th - 0.2, tw, th })
+  }
+  for (const port of def.ports) entities.push({ name: "port", type: "port", x: port.pos.x, y: port.pos.y, direction: port.dir, force: "player", w: 0.4, h: 0.4, tw: 1, th: 1 })
+  const dump = { tick: 0, center: { x: def.footprint.w / 2, y: def.footprint.h / 2 }, radius: math.max(def.footprint.w, def.footprint.h) / 2 + 1, entities }
+  helpers.write_file(`modules/${string.gsub(def.id, "[/+]", "_")[0]}.json`, helpers.table_to_json(dump))
+}
+
 function report(name: string, def: ModuleDef, r: LabResult): void {
+  writeDump(def)
   const parts: string[] = []
   for (const [item, d] of pairs(r.declared)) parts.push(`${item} ${string.format("%.4f", r.measured[item] ?? 0)}/${string.format("%.4f", d)} (${string.format("%.1f", 100 * (r.ratio[item] ?? 0))}%)`)
   let worst = 1

@@ -567,7 +567,18 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-None currently.
+Proposed during M4a (agent proposals, **not decided**; details and evidence in `docs/reports/M4-report.md`):
+
+- **P1, mall validation (proposed):** for modules whose outputs go to chests (the mall), check the plate value of all
+  products together (≥ 90% of declared) plus a coverage run (every product made with chests capped at one slot),
+  instead of ≥ 90% per product. Measured per-product rates depend on which assembler reaches the shared gears and
+  circuits first (0–300% of the proportional split) while the total is 107%.
+- **P2, ModuleDef schema (proposed):** add port kind `chest-out`, `generator`, `recipes`, `mirrorable`, `anchor`
+  (water tiles / drill mining areas), `upkeep` (crew-fuelled burners), `notes`, `Rate.kind` and
+  `ModuleExpand.insertAt` to §5.4; modules include their own small poles, with a `power` port on one of them.
+- **P3, validation feed (proposed):** feed 1.1 × the declared input rates while measuring, after a warm-up at 3 ×
+  (≥ 1.5 items/s per port) that primes buffers; fed exactly at the declared rate from cold, the first furnaces on a
+  fuel lane hoard coal for minutes and the last never start.
 
 Resolved 2026-10-14: blueprint sources → D19 and §5.4 (agents decide, attribution required). Online sources
 are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runner choice → agent decides
