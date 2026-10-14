@@ -43,6 +43,7 @@ Two layers, by analogy:
 | D17 | Reporting | **Per-milestone reports** with renders and timelapses. No other routine check-ins. |
 | D18 | Configurability | **Config over constants.** Anything a player or tester might reasonably want to vary (faction count, crew size, spawn placement, targets, budgets, debug toggles) is a mod setting or a scenario/remote-interface parameter, not a hardcoded value. See §5.7. |
 | D19 | Module sourcing | Agents choose the sources (§5.4). Usable: any of the user's saves not modded in a way that changes early-game recipes, the user's blueprint library, and online blueprints (attribution required). Modules are prototype-grade. The user may replace them with custom modules later, so the module format must make swapping cheap. |
+| D20 | Steel (2026-10-14) | **v1 does not build steel production.** Steel smelting and every module or building that needs steel belong to a higher research tier (post-v1, P3). v1 still *researches* `steel-processing` as part of "all red/green techs" (§3 unchanged); researching techs needs only science packs, never steel. |
 
 ## 3. v1 Definition of Done
 
@@ -232,7 +233,7 @@ tag → filter → in-game validation gate.
 - **Wood** for small electric poles is not a belt resource. The crew gathers it (gather job on trees).
 - **Growth after v1 is roughly linear:** about 18–25 distinct modules through blue science, and about 40–60
   through the rocket.
-- Steel production is a proposal for v1 scope, open in §11.
+- **No steel production in v1** (D20): steel and everything that needs it are modules of a later tier.
 
 ### 5.5 Strategy
 
@@ -365,21 +366,11 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-1. **Skip steel production in v1?** (proposal from `docs/analysis/module-catalog-estimate.md`, 2026-10-14,
-   awaiting confirmation; §3 is unchanged until then.) No v1 module needs steel: steel unlocks only AM2,
-   steel furnaces, medium/big poles and other non-v1 buildings, and it would need a second smelting stage.
-   Research is unaffected: §3.2 still requires researching every red/green technology, steel-processing
-   included. Evidence from 2.0.77 `base/prototypes/technology.lua`: 61 technologies cost only red and/or green
-   packs. 41 of them depend (transitively) on `steel-processing`, which itself costs 50 red packs. Researching
-   them needs only science packs, never steel plates. The one exception is **`steel-axe`**, a
-   research-*trigger* technology (craft 50 steel plates, no science packs). It is not a "red/green science"
-   technology in the §3.2 sense, so skipping steel leaves it unresearched unless the crew smelts 50 steel by
-   hand (a handful of furnace loads). Proposed: skip steel *production modules* in v1, and treat `steel-axe`
-   as optional (or as a one-off crew job if the user wants it).
+None currently.
 
 Resolved 2026-10-14: blueprint sources → D19 and §5.4 (agents decide, attribution required). Online sources
 are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runner choice → agent decides
-(GitHub-hosted for T0–T2, local for T3/T4).
+(GitHub-hosted for T0–T2, local for T3/T4). Steel in v1 → D20 (no steel production; still researched).
 
 ## 12. References
 
@@ -403,4 +394,4 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   2.0.77 refuses pre-1.0 saves, `minecraft` save unusable, blueprint library is GUI-only and has no early-game
   modules) and M4 sourcing recommendation; module catalog summary (fused production units, first-class
   parametric generators, replication over size variants, lane-preserving router, `ModuleDef.site`, crew
-  gathers wood, one fused mall); §11 open question on skipping steel production in v1.
+  gathers wood, one fused mall); D20: no steel production in v1 (steel-processing is still researched).
