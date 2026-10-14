@@ -27,3 +27,22 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `foo.test.ts` compiles to `foo_test.lua`. Register test files by their Lua name in `control.ts`.
 - factorio-test `on_tick` handlers keep a test running until they return `false`. Use `everyTickFor` in
   `mod/src/test/lab.ts`.
+- `if (x)` on a value typed as a non-nullable object (e.g. a `Record<number, T>` lookup) draws a TSTL truthiness
+  warning. Declare it `T | undefined` and compare with `!== undefined`.
+- T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
+  `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
+  `math.atan2`, which Lua 5.3+ lacks.
+
+## Factorio engine gotchas
+
+- **`surface.request_path` paths straight through anything the requesting force could attack**: neutral trees and
+  walls, other forces' buildings. Only own/allied entities and indestructible ones block. Always request character
+  paths with `force: "neutral"` (see `character/pathing.ts`; pinned by an engine-capabilities test).
+- A player-less character's `walking_state` persists until changed (unlike a player's, which lasts one tick).
+  Stop walking and mining explicitly when an action ends.
+- `LuaProfiler.restart()` resumes without resetting. Use `reset()` to time one interval. Profiler values can only be
+  logged, not read.
+- factorio-test `.after_reload_script` re-runs the test file, so its locals are gone after the reload. Stash what
+  the test needs in `storage.testScratch`.
+- factorio-test prints `log()` output only for failing tests. Read measurements from
+  `.factorio-test/data/factorio-current.log`.
