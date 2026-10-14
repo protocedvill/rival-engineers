@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.5** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.6** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -17,8 +17,8 @@ Two layers, by analogy:
 - **Micro (the "baritone" layer):** a deterministic controller that drives a character body. It moves along a
   path, mines a rock, crafts 10 gears, and places a belt at (x, y) facing east.
 - **Macro (the "player brain"):** a recipe-graph planner that decides *what* the faction needs next. A base
-  planner places **blueprint modules** (smelter array, gear line, science line) on a grid and
-  **auto-routes belts** between their ports.
+  planner places **modules** (smelter array, gear line, science line) compactly on the real terrain and
+  **auto-routes belts** between their ports through narrow corridors.
 
 ## 2. Decisions (from interview, 2026-10-14)
 
@@ -31,7 +31,7 @@ Two layers, by analogy:
 | D5 | Start | **Player-like start** for each faction: vanilla starter items, burner phase, no head-start kit. |
 | D6 | World (v1) | **No biters** (v1 test maps disable enemy bases). AI factions are **neutral** to the human player and each other. |
 | D7 | v1 scope | Vanilla Nauvis progression **through red + green science** (automation + logistic science packs fully automated). |
-| D8 | Layout | **Modules + routed belts.** Blueprint modules on a grid, with belts A*-routed between tagged ports. No main bus. |
+| D8 | Layout | **Modules + routed belts.** Modules placed compactly on the real terrain (§5.3), with belts A*-routed between tagged ports through corridors. No main bus. Layout style is a pluggable `LayoutPolicy` per game stage (§5.3). |
 | D9 | Module source | **Both**: curated modules (from the user's library, saves and online) with tagged ports, plus **procedurally generated** fallback modules for any recipe without a curated one. |
 | D10 | Strategy | **Recipe-graph planner** driven by prototype data (recipes, techs, entities read at runtime), not a hardcoded build order. |
 | D11 | Language | **TypeScript → Lua** (TypeScriptToLua + `typed-factorio`). |
@@ -80,8 +80,8 @@ and recruiting new crew members.
 ┌────────────────────────────── per faction (LuaForce) ─────────────────────────────┐
 │ Strategy   recipe graph + tech tree → Goals ("12 red sci/min", "research X")        │
 │     ↓                                                                               │
-│ Base Planner   goals → ModuleInstances on a grid + belt/pole/pipe routes            │
-│     ↓          (module library, site selection, A* router, power planner)           │
+│ Base Planner   goals → ModuleInstances on real terrain + belt/pole/pipe routes      │
+│     ↓          (LayoutPolicy, module library, sites, A* router, power planner)      │
 │ Build Plan     ordered entity placements + deps + material bill                     │
 │     ↓                                                                               │
 │ Job Board      decomposes into Jobs: gather, craft, haul, place, fuel, clear        │
@@ -126,8 +126,35 @@ Debug options (off by default, never used in acceptance runs): teleport-when-stu
 
 ### 5.3 Base Planner
 
-- **Grid:** the base sits on a coarse grid (e.g. 8×8-tile cells). Modules snap to cells, and the space
-  between them is reserved for routing corridors.
+- **Real-terrain, compact placement** (replaces the coarse 8×8 grid of ≤ v0.5): placement works on the real
+  map and respects obstructions: **cliffs, water, resource patches** (never build over ore the faction will
+  need; mining modules are the exception), **trees and rocks** (clearable, at a cost: crew time plus the
+  clear job), and the faction's **own existing structures**. Bases are **compact like real play**, grown
+  outward from existing production, not modules floating in empty space. The gap between neighbouring
+  modules is a reserved **routing corridor** whose width is a **policy parameter** (`LayoutPolicy.corridor`):
+  about 1–2 tiles early game, growing later (4, 6, …). The best values are found empirically by tests and
+  soak runs (§7), not fixed here.
+- **Layout policies (pluggable strategy).** Different game stages and conditions need different layout
+  designs, so layout is a `LayoutPolicy` chosen per faction from the stage and conditions (terrain, free
+  space, researched tech):
+
+  ```ts
+  interface LayoutPolicy {
+    id: string;                          // "early-compact", "mid-blocks", …
+    applies(ctx: LayoutContext): number; // suitability score for stage/terrain/free space/tech; highest wins
+    corridor: { min: number; preferred: number };      // tiles between modules
+    moduleSelection: { preferGenerated: boolean; variants?: string[] }; // generator vs curated, variants
+    packing: "compact-cluster" | "blocks" | string;    // packing strategy (registered function)
+    expansion: "expand-first" | "new-module-first";    // grow an existing module (ModuleDef.expand) vs place a copy
+    obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number };
+  }
+  ```
+
+  Policies are **data plus small registered strategy functions** (packing, scoring), selected through config
+  (§5.7: a per-faction `layout-policy` setting, `auto` by default, or a remote-interface override), so new
+  policies can be added without touching the planner and **A/B-tested in soak runs** whose scorecards
+  compare policies (§7). v1 ships at least an **early-game compact policy** (compact cluster around existing
+  production, 1–2-tile corridors, expand-first, clear trees/rocks under a cost cap).
 - **Sites:** modules with `site` set are anchored by terrain (steam block at the shore, mines on a patch).
   Resource patches get mining modules (drills → belt) sized to the needed rate. The smelting and
   production core sits near the patches and grows outward.
@@ -137,8 +164,9 @@ Debug options (off by default, never used in acceptance runs): teleport-when-stu
 - **Power:** steam power module(s) sized to the demand, plus a pole-network planner (MST over consumers,
   pole reach-aware).
 - **Splitting and merging:** splitters for fan-out to multiple consumers.
-- **Incremental expansion:** existing modules are never torn down in v1, only added. Upgrades (like more
-  smelters) are new modules.
+- **Incremental expansion:** existing modules are never torn down in v1, only added. Growth either
+  **expands an existing module** along its declared axis (`ModuleDef.expand`, e.g. lengthen a smelter column)
+  or places a new copy; the active `LayoutPolicy.expansion` decides which is tried first.
 
 ### 5.4 Module Library
 
@@ -158,6 +186,14 @@ interface ModuleDef {
   rotatable: boolean;
   site?: "shore" | "resource-patch"; // terrain-anchored modules (steam block at the shore, mines on a patch)
   params?: Record<string, number>;   // generator parameters (e.g. furnace count) for source = "generated"
+  expand?: ModuleExpand;             // makes the module auto-expandable (a curated module promoted to a generator)
+}
+interface ModuleExpand {
+  unit: { footprint: { w: number; h: number }; entities: BlueprintEntity[] }; // the repeatable slice
+  axis: "x" | "y" | ("x" | "y")[];   // growth direction(s), in module-local coordinates
+  maxUnits: number;                  // cap (belt throughput, corridor length, …)
+  perUnit: { rates: { inputs: Rate[]; outputs: Rate[] }; machines: { name: string; count: number }[] };
+  ports: "shift" | Port[];           // ports move with the far end ("shift") or are given per unit
 }
 interface Port { kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power";
   pos: {x:number;y:number}; dir: Direction; item?: string; lanes?: "both"|"left"|"right"; }
@@ -221,6 +257,11 @@ tag → filter → in-game validation gate.
   about 2–3 layouts are curated: the green-science template, the mall and maybe the steam-block pipework.
   A generic "N assemblers in a row, input belt / inserters / output belt" generator still covers any recipe
   without a module. Generated modules go through the same validation.
+- **Generators vs curated modules:** generators are the **default for simple recipes at any stage**, early or
+  late. Curated modules are used where a generator can't express the layout (the green-science template, the
+  mall, tricky pipework). During planning a curated module can be **promoted to a generator**: when it declares
+  `expand` (a repeatable unit plus expansion axis/axes, a unit cap and per-unit rates and ports), the planner
+  can grow it in place (e.g. extend a column) instead of placing another copy.
 - **Scale by replication, not size variants:** each module defines one base unit (e.g. 12 furnaces, 5 red
   assemblers, 6 green assemblers) and the planner places k copies. Parameter tiers exist only where
   granularity matters (smelter 6/12/24, steam 1–4 boilers).
@@ -229,7 +270,7 @@ tag → filter → in-game validation gate.
 - **Belt lanes matter:** smelter columns take ore on one lane and coal on the other; lab arrays take red and
   green on one belt. `Port.lanes` is required, and the router must **preserve lane assignment**.
 - **Site-anchored modules:** `ModuleDef.site` says where terrain fixes the placement (§5.3 Sites), so the planner
-  places them by terrain rather than grid choice.
+  places them by terrain rather than by the packing strategy.
 - **Wood** for small electric poles is not a belt resource. The crew gathers it (gather job on trees).
 - **Growth after v1 is roughly linear:** about 18–25 distinct modules through blue science, and about 40–60
   through the rocket.
@@ -260,6 +301,7 @@ Default to configurable (D18). Settings live in three places:
   distance from players and between factions (default 300 tiles) and a resource-richness check radius;
   faction names and colours; diplomacy defaults (neutral in v1); player-parity toggles (debug only:
   teleport-when-stuck, instant-craft, reach multiplier); planner targets (SPM goal, which science packs);
+  layout policy per faction (`auto` or a policy id, §5.3) and policy parameters such as corridor widths;
   per-tick CPU budget; telemetry and render-dump interval.
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
@@ -313,6 +355,11 @@ typed config module so tests can override them.
   `--config`/write-data dir.
 - **Scorecard** (per run, JSON + markdown): SPM over time, research completed, stall events and reasons,
   per-job-type time breakdown, ms/tick (avg and p99), entity counts, router failures.
+- **Layout policies:** T1 tests for each policy's pure parts (selection by stage/conditions, packing on
+  synthetic obstacle grids, corridor widths, expand-vs-new decisions). T2 tests place and route on **real
+  generated terrain** (cliffs, water, trees, existing structures). T3 **policy A/B soak runs**: the same seeds
+  with different policies (or corridor widths), scorecards compared side by side (time-to-milestone, SPM,
+  router failures, clearing cost, base area).
 - **Renderer:** top-down schematic with a colour per entity category (belts show direction) and per
   faction. One frame every 5 game-minutes, assembled into a GIF.
 - **Regression gate:** a PR can't merge if T0–T2 fail. T3 scorecards are compared to `main`. A >10%
@@ -328,8 +375,8 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 | M1 | **Body** | Character Controller with all actions, path following and stuck recovery. T2 tests: a crew member walks 200 tiles around obstacles, mines 50 iron ore, crafts 10 gears, places a burner drill on ore and fuels it. |
 | M2 | **Crew and jobs** | Job Board with claims and batching. Two characters jointly build a ghost layout of 40 entities from a material stockpile, with no double-claims and no idle time over 10% while jobs exist. |
 | M3 | **Burner bootstrap** | From a vanilla start, one faction reaches self-sustaining burner mining of iron, copper, coal and stone plus stone furnaces. Done when the "first electricity" materials have been gathered. |
-| M4 | **Modules and routing** | Module library pipeline: ≥ 10 curated (from the user's blueprints) + generated fallback, all passing validation. The router connects 5 modules in a lab with no crossings through footprints. |
-| M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs. |
+| M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). |
+| M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. |
 | M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. |
 
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
@@ -395,3 +442,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   modules) and M4 sourcing recommendation; module catalog summary (fused production units, first-class
   parametric generators, replication over size variants, lane-preserving router, `ModuleDef.site`, crew
   gathers wood, one fused mall); D20: no steel production in v1 (steel-processing is still researched).
+- v0.6 (2026-10-14, user guidance): generators are the default for simple recipes at any stage; curated modules
+  can be promoted to generators via `ModuleDef.expand` (§5.4). §5.3 grid replaced by real-terrain compact
+  placement (cliffs, water, ore, trees/rocks, own structures) with policy-defined corridor widths. New pluggable
+  `LayoutPolicy` (§5.3, §5.7) with policy tests and soak A/B comparison (§7). M4/M5 acceptance now requires
+  placement and routing on real generated terrain (§8).
