@@ -26,6 +26,8 @@ export interface PlacementRequest {
   center: Vec
   /** Planning region: the search never leaves it. */
   region: Rect
+  /** Rectangles the footprint must not overlap (a module re-placed after its routes failed avoids its old spot). */
+  avoid?: Rect[]
 }
 
 interface TDef {
@@ -50,9 +52,14 @@ export interface PlacementSearch {
   wh: number
   row: number
   sat: Record<string, number[]>
-  /** Candidate cursor: transform index and origin offset index. */
+  /** Candidate cursor: transform index and origin offset index (on a grid of `stride`). */
   ti: number
   ci: number
+  /** 2: coarse pass, then the best few per transform are refined at ±1; 1: full scan (fallback). */
+  stride: number
+  top: { score: number; ox: number; oy: number }[][]
+  refine: { ti: number; ox: number; oy: number }[]
+  ri: number
   best?: { score: number; ti: number; ox: number; oy: number; coverage: number; clear: number }
   work: number
   reason?: string
@@ -104,9 +111,15 @@ export function newPlacement(req: PlacementRequest): PlacementSearch {
     sat: {},
     ti: 0,
     ci: 0,
+    stride: 2,
+    top: [],
+    refine: [],
+    ri: -1,
     work: 0,
   }
 }
+
+const TOP_K = 3
 
 /** Whether a tile is a site point: water with land next to it (shore), or ore of the resource. */
 function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): boolean {
@@ -144,7 +157,22 @@ function startWindow(s: PlacementSearch, policy: LayoutPolicy): void {
   }
   s.ti = 0
   s.ci = 0
+  s.stride = 2
+  s.top = []
+  s.refine = []
+  s.ri = -1
   s.phase = "sat"
+}
+
+function keepTop(s: PlacementSearch, ti: number, score: number, ox: number, oy: number): void {
+  let list = s.top[ti]
+  if (list === undefined) {
+    list = []
+    s.top[ti] = list
+  }
+  list.push({ score, ox, oy })
+  list.sort((a, b) => a.score - b.score)
+  if (list.length > TOP_K) list.pop()
 }
 
 /** Builds one row of the summed-area tables. */
@@ -152,32 +180,56 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const y = s.wy + s.row
   const W = s.ww + 1
   const resource = s.req.def.anchor?.resource
-  const rowSums: Record<string, number> = {}
-  for (const l of LAYERS) {
-    rowSums[l] = 0
-    s.sat[l].push(0)
-  }
+  const treeHard = policy.obstacles.trees !== "clear"
+  const rockHard = policy.obstacles.rocks !== "clear"
+  const clearTree = policy.router.clearTree
+  const clearRock = policy.router.clearRock
+  const aHard = s.sat.hard
+  const aOre = s.sat.ore
+  const aClear = s.sat.clear
+  const aWater = s.sat.water
+  const aMods = s.sat.mods
+  const aRes = s.sat.res
+  const occ = state.occ
+  const reserved = state.reserved
+  const routeOcc = state.routeOcc
+  let hard = 0
+  let ores = 0
+  let clear = 0
+  let water = 0
+  let mods = 0
+  let res = 0
   const base = (s.row + 1) * W
+  const prev = base - W
+  aHard[base] = 0
+  aOre[base] = 0
+  aClear[base] = 0
+  aWater[base] = 0
+  aMods[base] = 0
+  aRes[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
     const b = terrain.block(x, y)
-    const o = state.occ[k]
-    let hard = b === OWN || b === FOREIGN || b === WATER || b === CLIFF || b === UNKNOWN ? 1 : 0
-    if (b === TREE && policy.obstacles.trees !== "clear") hard = 1
-    if (b === ROCK && policy.obstacles.rocks !== "clear") hard = 1
-    if (o !== undefined || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined) hard = 1
+    const o = occ[k]
+    if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined) hard++
     const ore = terrain.ore(x, y)
-    rowSums.hard += hard
-    rowSums.ore += ore !== undefined ? 1 : 0
-    rowSums.clear += b === TREE ? policy.router.clearTree : b === ROCK ? policy.router.clearRock : 0
-    rowSums.water += b === WATER ? 1 : 0
-    rowSums.mods += o !== undefined && string.sub(o, 1, 2) === "m:" ? 1 : 0
-    rowSums.res += resource !== undefined && ore === resource ? 1 : 0
-    for (const l of LAYERS) {
-      const a = s.sat[l]
-      a[base + i + 1] = a[base - W + i + 1] + rowSums[l]
+    if (ore !== undefined) {
+      ores++
+      if (ore === resource) res++
     }
+    if (b === TREE) clear += clearTree
+    else if (b === ROCK) clear += clearRock
+    else if (b === WATER) water++
+    if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
+    const j = base + i + 1
+    const p = prev + i + 1
+    aHard[j] = aHard[p] + hard
+    aOre[j] = aOre[p] + ores
+    aClear[j] = aClear[p] + clear
+    aWater[j] = aWater[p] + water
+    aMods[j] = aMods[p] + mods
+    aRes[j] = aRes[p] + res
   }
   s.row++
 }
@@ -199,6 +251,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
   if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) return undefined
   if (sum(s, "hard", rect) !== 0) return undefined
+  for (const a of s.req.avoid ?? []) if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) return undefined
   const mining = isMining(def)
   if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) return undefined
   if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) return undefined
@@ -228,6 +281,8 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     const x = ox + p.ox
     const y = oy + p.oy
     if (sum(s, "hard", { x, y, w: 1, h: 1 }) !== 0) return undefined
+    // Port clearance: the tile beyond the outside tile is not another module or blocked, so the port has a lane out.
+    if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) return undefined
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]
     if (t === undefined) continue
@@ -284,13 +339,55 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         continue
       }
       satRow(s, state, terrain, policy)
-      used += s.ww / 8
+      used += s.ww / 2
       continue
     }
-    // Scan: candidates for transform ti, origin index ci over a (2R + 1)² square around the target.
+    // Scan: candidates for transform ti, origin index ci over a (2R + 1)² square around the target, every `stride`
+    // tiles; then refine (±1 around the best few per transform of a coarse pass).
     const R = policy.searchRadii[s.radiusIdx]
     const side = 2 * R + 1
+    const n = math.floor((side - 1) / s.stride) + 1
+    if (s.ri >= 0) {
+      if (s.ri >= s.refine.length) {
+        s.ti = s.tdefs.length
+        s.ri = -1
+        s.refine = []
+        s.stride = 0
+      } else {
+        const c = s.refine[s.ri]
+        const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy)
+        if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
+        s.ri++
+        used++
+        continue
+      }
+    }
     if (s.ti >= s.tdefs.length) {
+      if (s.stride === 2 && s.best !== undefined) {
+        // Refine around the coarse pass's best candidates.
+        const seen: Record<string, boolean> = {}
+        for (let ti = 0; ti < s.tdefs.length; ti++) {
+          for (const c of s.top[ti] ?? []) {
+            for (let dx = -1; dx <= 1; dx++) {
+              for (let dy = -1; dy <= 1; dy++) {
+                const key = `${ti}:${c.ox + dx},${c.oy + dy}`
+                if ((dx === 0 && dy === 0) || seen[key]) continue
+                seen[key] = true
+                s.refine.push({ ti, ox: c.ox + dx, oy: c.oy + dy })
+              }
+            }
+          }
+        }
+        s.ri = 0
+        continue
+      }
+      if (s.stride === 2) {
+        // Nothing feasible on the coarse grid: scan every origin before widening the radius.
+        s.stride = 1
+        s.ti = 0
+        s.ci = 0
+        continue
+      }
       if (s.best !== undefined) {
         const td = s.tdefs[s.best.ti]
         const m: PlacedModule = {
@@ -314,15 +411,18 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     }
     const td = s.tdefs[s.ti]
     const t = s.target!
-    const cx = s.ci % side
-    const cy = math.floor(s.ci / side)
+    const cx = (s.ci % n) * s.stride
+    const cy = math.floor(s.ci / n) * s.stride
     const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
     const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
     const e = evaluate(s, policy, td, ox, oy)
-    if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
+    if (e !== undefined) {
+      if (s.best === undefined || e.score < s.best.score - 1e-9) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
+      if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
+    }
     used++
     s.ci++
-    if (s.ci >= side * side) {
+    if (s.ci >= n * n) {
       s.ci = 0
       s.ti++
     }

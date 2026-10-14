@@ -147,41 +147,54 @@ export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {
   const surface = factionSurface(faction)
   const ghosts = surface.find_entities_filtered({ type: "entity-ghost", force: faction.force, area: options.area })
   let added = 0
-  for (const ghost of ghosts) {
-    const key = ghost.unit_number!
-    if (faction.ghostJobs[key] !== undefined) continue
-    const proto = ghost.ghost_prototype as LuaEntityPrototype
-    const toPlace = proto.items_to_place_this?.[0]
-    if (!toPlace) continue
-    const job = addJob(
+  for (const ghost of ghosts) if (addPlaceJob(faction, ghost, options) !== undefined) added++
+  return added
+}
+
+/**
+ * Adds a place job for one ghost (once per ghost; returns the job id, or undefined if it already has one or nothing
+ * places it), with optional dependencies (e.g. clear jobs on its tiles) and a fuel job for burners.
+ */
+export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: PlanGhostsOptions & { deps?: number[] } = {}): number | undefined {
+  const key = ghost.unit_number!
+  if (faction.ghostJobs[key] !== undefined) return undefined
+  const proto = ghost.ghost_prototype as LuaEntityPrototype
+  const toPlace = proto.items_to_place_this?.[0]
+  if (!toPlace) return undefined
+  const job = addJob(
+    faction.board,
+    {
+      kind: "place",
+      pos: { x: ghost.position.x, y: ghost.position.y },
+      footprint: tileRect(ghost.bounding_box),
+      materials: [{ item: toPlace.name, count: 1 }],
+      deps: options.deps,
+      priority: options.priority,
+      payload: { kind: "place", item: toPlace.name, entity: proto.name, position: ghost.position, direction: ghost.direction, ghost, ghostKey: key },
+    },
+    game.tick,
+  )
+  faction.ghostJobs[key] = job.id
+  const fuel = options.fuel
+  if (fuel && proto.burner_prototype !== undefined) {
+    addJob(
       faction.board,
       {
-        kind: "place",
-        pos: { x: ghost.position.x, y: ghost.position.y },
-        footprint: tileRect(ghost.bounding_box),
-        materials: [{ item: toPlace.name, count: 1 }],
+        kind: "fuel",
+        pos: job.pos,
+        materials: [{ item: fuel.item, count: fuel.count }],
+        deps: [job.id],
         priority: options.priority,
-        payload: { kind: "place", item: toPlace.name, entity: proto.name, position: ghost.position, direction: ghost.direction, ghost, ghostKey: key },
+        payload: { kind: "fuel", item: fuel.item, count: fuel.count, targetJob: job.id },
       },
       game.tick,
     )
-    faction.ghostJobs[key] = job.id
-    added++
-    const fuel = options.fuel
-    if (fuel && proto.burner_prototype !== undefined) {
-      addJob(
-        faction.board,
-        {
-          kind: "fuel",
-          pos: job.pos,
-          materials: [{ item: fuel.item, count: fuel.count }],
-          deps: [job.id],
-          priority: options.priority,
-          payload: { kind: "fuel", item: fuel.item, count: fuel.count, targetJob: job.id },
-        },
-        game.tick,
-      )
-    }
   }
-  return added
+  return job.id
+}
+
+/** Adds a clear job: the crew mines a tree or rock (or picks up one of the faction's own entities). */
+export function addClearJob(faction: FactionState, target: LuaEntity, priority?: number): number {
+  const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, payload: { kind: "clear", target } }, game.tick)
+  return job.id
 }

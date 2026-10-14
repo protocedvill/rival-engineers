@@ -6,6 +6,7 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
+import { exportGraph, getPlannerEntry, startPlan, StartPlanOptions } from "./planner/runtime"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
@@ -77,6 +78,20 @@ export function registerRemoteInterface(): void {
     write_telemetry: () => writeTelemetry(),
     /** The v1 research goal (SPEC §3.2), computed from prototypes. */
     research_goal: () => computeResearchGoal(),
+
+    // Layout planner (M4b).
+    /** Starts a layout job (scan, place, route under budget); see planner/runtime.ts StartPlanOptions. */
+    start_plan: (options: StartPlanOptions) => startPlan(options).id,
+    /** Phase, stats and failures of a layout job. */
+    plan_status: (id: string) => {
+      const e = getPlannerEntry(id)
+      return e && { phase: e.phase, scanTicks: e.scanTicks, planTicks: e.planTicks, stats: e.job?.stats, failures: e.job?.failures, build: e.build?.phase }
+    },
+    /** Writes the Factory Graph (both layers) of a layout job to script-output/<file>. */
+    dump_graph: (id: string, file: string) => {
+      const e = getPlannerEntry(id)
+      return e !== undefined && exportGraph(e, file)
+    },
 
     // Config (SPEC §5.7): tests and the harness override settings here.
     get_config: () => getConfig(),

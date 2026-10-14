@@ -31,4 +31,11 @@ export const Settings = {
   telemetryIntervalTicks: "rival-engineers-telemetry-interval-ticks",
   frameDumpIntervalTicks: "rival-engineers-frame-dump-interval-ticks",
   frameDumpRadius: "rival-engineers-frame-dump-radius",
+  layoutPolicy: "rival-engineers-layout-policy",
+  layoutCorridorMin: "rival-engineers-layout-corridor-min",
+  layoutCorridorPreferred: "rival-engineers-layout-corridor-preferred",
+  layoutTopology: "rival-engineers-layout-topology",
+  beltUtilization: "rival-engineers-belt-utilization",
+  plannerWorkPerTick: "rival-engineers-planner-work-per-tick",
+  terrainChunksPerTick: "rival-engineers-terrain-chunks-per-tick",
 } as const

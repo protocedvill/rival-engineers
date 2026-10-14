@@ -4,6 +4,12 @@ Usage:
   python3 tools/render/render.py DUMP.json [DUMP2.json ...] -o out.png   # one frame (last dump)
   python3 tools/render/render.py frames/*.json --gif -o timelapse.gif    # timelapse
   python3 tools/render/render.py frames/*.json --trail -o out.png         # + character trails
+  python3 tools/render/render.py DUMP.json --graph GRAPH.json -o out.png   # + Factory Graph overlay (SPEC D29)
+
+The graph overlay (written by the `dump_graph` remote call or the M4b tests) draws module boxes with their ids, ports
+(inputs cyan, outputs magenta), and each physical edge along its path, coloured by planned utilization of the belt
+(green < 50%, yellow < 90%, orange up to the utilization cap, red over it); undergrounds are dashed, splitters are
+white squares, external input stubs are grey. An edge whose overflow decision is not "none" gets a label.
 
 One tile = --scale pixels. Colours are by entity category. Outlines are by force, so factions
 are distinguishable.
@@ -88,7 +94,79 @@ def character_positions(dump):
     return [(e["x"], e["y"]) for e in dump["entities"] if e["type"] == "character"]
 
 
-def render(dump, box, scale, trail=None):
+def as_list(v):
+    """table_to_json writes empty Lua tables as {}."""
+    return v if isinstance(v, list) else []
+
+
+def utilization_colour(u, cap):
+    if u > cap + 1e-9:
+        return (230, 50, 50)
+    if u >= 0.9:
+        return (240, 150, 40)
+    if u >= 0.5:
+        return (230, 220, 60)
+    return (80, 210, 90)
+
+
+def dashed(draw, a, b, fill, width, dash=6):
+    (x0, y0), (x1, y1) = a, b
+    length = max(abs(x1 - x0), abs(y1 - y0))
+    n = max(1, int(length // dash))
+    for i in range(0, n, 2):
+        t0, t1 = i / n, min(1, (i + 1) / n)
+        draw.line([(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0), (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)], fill=fill, width=width)
+
+
+def draw_graph(draw, graph, box, scale):
+    x0, y0 = box[0], box[1]
+    px = lambda x, y: ((x + 0.5 - x0) * scale, (y + 0.5 - y0) * scale)
+    cap = graph.get("utilization", 0.99)
+    phys = graph.get("physical", {})
+    for n in as_list(phys.get("nodes")):
+        r = n["rect"]
+        draw.rectangle([(r["x"] - x0) * scale, (r["y"] - y0) * scale, (r["x"] + r["w"] - x0) * scale - 1, (r["y"] + r["h"] - y0) * scale - 1], outline=(250, 250, 250), width=2)
+        draw.text(((r["x"] - x0) * scale + 3, (r["y"] - y0) * scale + 2), n["id"], fill=(255, 255, 255))
+        for p in as_list(n.get("ports")):
+            if p["kind"] not in ("belt-in", "belt-out"):
+                continue
+            c = px(p["x"], p["y"])
+            colour = (60, 220, 230) if p["kind"] == "belt-in" else (230, 70, 220)
+            draw.ellipse([c[0] - scale * 0.3, c[1] - scale * 0.3, c[0] + scale * 0.3, c[1] + scale * 0.3], outline=colour, width=2)
+    for e in as_list(phys.get("edges")):
+        cap_info = e.get("capacity", {})
+        colour = (150, 150, 150) if e.get("external") else utilization_colour(cap_info.get("utilization", 0), cap)
+        width = max(2, scale // 3)
+        steps = as_list(e.get("path"))
+        pts = []
+        for i, st in enumerate(steps):
+            if st["kind"] == "splitter":
+                a, b = px(st["x"], st["y"]), px(st["x2"], st["y2"])
+                c = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                draw.rectangle([c[0] - scale * 0.4, c[1] - scale * 0.4, c[0] + scale * 0.4, c[1] + scale * 0.4], outline=(255, 255, 255), width=2)
+                pts = [b]
+                continue
+            p = px(st["x"], st["y"])
+            if st["kind"] == "ug-out" and pts:
+                if len(pts) > 1:
+                    draw.line(pts, fill=colour, width=width)
+                dashed(draw, pts[-1], p, colour, max(1, width - 1))
+                pts = [p]
+                continue
+            pts.append(p)
+        if steps:
+            last = steps[-1]
+            dx, dy = DIRECTION_VECTORS.get(last["dir"] * 4, (0, 0))
+            pts.append(px(last["x"] + dx * 0.6, last["y"] + dy * 0.6))
+        if len(pts) > 1:
+            draw.line(pts, fill=colour, width=width)
+        decision = e.get("decision", {}).get("action", "none")
+        if decision != "none" and steps:
+            s0 = steps[len(steps) // 2]
+            draw.text(px(s0["x"], s0["y"]), f"{e['item']} {cap_info.get('planned', 0):.1f}/{cap_info.get('capacity', 0):.0f} -> {decision}", fill=(255, 120, 120))
+
+
+def render(dump, box, scale, trail=None, graph=None):
     x0, y0, x1, y1 = box
     img = Image.new("RGB", (int((x1 - x0) * scale), int((y1 - y0) * scale)), BACKGROUND)
     draw = ImageDraw.Draw(img)
@@ -125,6 +203,9 @@ def render(dump, box, scale, trail=None):
             tip = (cx + vec[0] * scale * 0.4, cy + vec[1] * scale * 0.4)
             draw.line([(cx - vec[0] * scale * 0.3, cy - vec[1] * scale * 0.3), tip], fill=(30, 30, 30), width=2)
 
+    if graph:
+        draw_graph(draw, graph, box, scale)
+
     if trail and len(trail) > 1:
         draw.line([((x - x0) * scale, (y - y0) * scale) for x, y in trail], fill=TRAIL, width=max(2, scale // 2))
 
@@ -141,6 +222,8 @@ def main(argv):
     ap.add_argument("--gif", action="store_true", help="write all dumps as an animated timelapse")
     ap.add_argument("--frame-ms", type=int, default=400)
     ap.add_argument("--trail", action="store_true", help="draw the path walked by the (single) character across dumps")
+    ap.add_argument("--graph", help="Factory Graph JSON to overlay (module boxes, routes by utilization)")
+    ap.add_argument("--crop", help="x0,y0,x1,y1 world box to render instead of the dumps' extent")
     args = ap.parse_args(argv)
 
     dumps = []
@@ -149,6 +232,12 @@ def main(argv):
             dumps.append(json.load(f))
     dumps.sort(key=lambda d: d["tick"])
     box = bounds(dumps)
+    if args.crop:
+        box = tuple(float(v) for v in args.crop.split(","))
+    graph = None
+    if args.graph:
+        with open(args.graph) as f:
+            graph = json.load(f)
 
     trails = []
     trail = []
@@ -160,7 +249,7 @@ def main(argv):
         frames = [render(d, box, args.scale, t) for d, t in zip(dumps, trails)]
         frames[0].save(args.out, save_all=True, append_images=frames[1:], duration=args.frame_ms, loop=0)
     else:
-        render(dumps[-1], box, args.scale, trails[-1]).save(args.out)
+        render(dumps[-1], box, args.scale, trails[-1], graph).save(args.out)
     print(f"wrote {args.out}")
 
 

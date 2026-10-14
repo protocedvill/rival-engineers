@@ -64,6 +64,19 @@ export interface Config {
   /** Entity frame dumps every this many ticks (0 = off), for tools/render. */
   frameDumpIntervalTicks: number
   frameDumpRadius: number
+  /** LayoutPolicy id per faction, or "auto" (highest `applies`) (SPEC §5.3, §5.7). */
+  layoutPolicy: string
+  /** Corridor widths between modules (0 = the policy's own). */
+  layoutCorridorMin: number
+  layoutCorridorPreferred: number
+  /** "policy" (the policy's own), "point-to-point" or "splitter-tap" (D22). */
+  layoutTopology: string
+  /** D25: edges are planned up to this fraction of nominal belt capacity. */
+  beltUtilization: number
+  /** Planner budget: work units per tick (one placement candidate or one A* expansion each). */
+  plannerWorkPerTick: number
+  /** Terrain model budget: chunks scanned per tick. */
+  terrainChunksPerTick: number
 }
 
 export type ConfigKey = keyof Config
@@ -105,6 +118,13 @@ export function getConfig(): Config {
     telemetryIntervalTicks: setting(Settings.telemetryIntervalTicks),
     frameDumpIntervalTicks: setting(Settings.frameDumpIntervalTicks),
     frameDumpRadius: setting(Settings.frameDumpRadius),
+    layoutPolicy: setting(Settings.layoutPolicy),
+    layoutCorridorMin: setting(Settings.layoutCorridorMin),
+    layoutCorridorPreferred: setting(Settings.layoutCorridorPreferred),
+    layoutTopology: setting(Settings.layoutTopology),
+    beltUtilization: setting(Settings.beltUtilization),
+    plannerWorkPerTick: setting(Settings.plannerWorkPerTick),
+    terrainChunksPerTick: setting(Settings.terrainChunksPerTick),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

@@ -1,13 +1,13 @@
 // Layout planning job (SPEC §5.3): place a set of module instances on the terrain, then route their single-item belt
 // connections (D23), with rip-up-and-reroute when routes block each other. A resumable state machine (§5.6): each
 // `stepPlan` call does at most `budget` work units (a placement candidate or an A* expansion is one unit; a summed-area
-// table tile is 1/8), so the runtime spreads it over ticks. The job is plain data and lives in `storage`; the policy
+// table tile is 1/2), so the runtime spreads it over ticks. The job is plain data and lives in `storage`; the policy
 // is looked up by id each step. Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
-import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route } from "./layout"
+import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, stepPlacement, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
@@ -52,6 +52,8 @@ export interface PlanStats {
   expansions: number
   searches: number
   ripups: number
+  /** Modules taken out and placed again because a connection could not be routed. */
+  replacements: number
   maxStepWork: number
 }
 
@@ -71,6 +73,11 @@ export interface PlanJob {
   failures: Record<string, string>
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
   expanded: Record<string, { module: string; units: number }>
+  /** Modules taken out after a connection could not be routed, to be placed again elsewhere (then routing resumes). */
+  replaceQueue: string[]
+  replaced: Record<string, number>
+  /** Old footprints a re-placed module must avoid. */
+  avoid: Record<string, Rect[]>
   stats: PlanStats
 }
 
@@ -123,7 +130,10 @@ export function newPlanJob(request: PlanRequest, tier: BeltTier): PlanJob {
     ripCount: {},
     failures: {},
     expanded: {},
-    stats: { steps: 0, work: 0, placeWork: 0, routeWork: 0, expansions: 0, searches: 0, ripups: 0, maxStepWork: 0 },
+    replaceQueue: [],
+    replaced: {},
+    avoid: {},
+    stats: { steps: 0, work: 0, placeWork: 0, routeWork: 0, expansions: 0, searches: 0, ripups: 0, replacements: 0, maxStepWork: 0 },
   }
 }
 
@@ -254,7 +264,60 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
   }
 }
 
+function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const id = job.replaceQueue[0]
+  if (job.placement === undefined) {
+    const mreq = moduleRequest(job, id)
+    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: job.avoid[id] })
+  }
+  const s = job.placement
+  const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  job.stats.placeWork += used
+  if (s.phase === "done" || s.phase === "failed") {
+    if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
+    else job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+    job.placement = undefined
+    job.replaceQueue.shift()
+    if (job.replaceQueue.length === 0) job.phase = "route"
+  }
+  return used
+}
+
+/**
+ * A connection that rip-up could not route: take out one of its modules (the consumer first; never a site-anchored,
+ * built or expanded one, at most twice each) with every route touching it, and place it again away from its old
+ * footprint. Returns false if no module can move.
+ */
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts): boolean {
+  const ids = [c.to.module]
+  if (c.from !== undefined) ids.push(c.from.module)
+  for (const mid of ids) {
+    if (job.alias[mid] !== undefined) continue
+    const m = findModule(job.layout, mid)
+    if (m === undefined || m.fixed || m.canonical.site !== undefined || (job.replaced[mid] ?? 0) >= 2) continue
+    for (const rid of [...job.layout.routeOrder]) {
+      const r = job.layout.routes[rid]
+      if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
+      for (const removed of ripRoute(job.layout, rid)) {
+        const conn = removed.substring("route:".length)
+        if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
+      }
+    }
+    unmarkModule(job.layout, m, facts)
+    job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
+    job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
+    job.avoid[mid] = [...(job.avoid[mid] ?? []), m.rect]
+    job.replaceQueue.push(mid)
+    if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
+    job.stats.replacements++
+    job.phase = "place"
+    return true
+  }
+  return false
+}
+
 function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  if (job.replaceQueue.length > 0) return replaceStep(job, terrain, facts, policy, budget)
   if (job.placeIdx >= job.order.length) {
     startRouting(job)
     return 0
@@ -305,7 +368,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   return used
 }
 
-function routeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   if (job.current === undefined) {
     const id = job.queue.shift()
     if (id === undefined) {
@@ -350,7 +413,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, bud
   if (st === "failed") {
     if (!cur.rip) restart(true)
     else {
-      job.failures[cur.conn] = cur.search.reason ?? "no path"
+      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = cur.search.reason ?? "no path"
       job.current = undefined
     }
     return used
@@ -373,7 +436,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, bud
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
     if (n >= policy.router.maxRipups) {
-      job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
       job.current = undefined
       return used
     }
@@ -397,7 +460,7 @@ export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
   while (used < budget && (job.phase === "place" || job.phase === "route")) {
     const before = used
     if (job.phase === "place") used += placeStep(job, terrain, facts, policy, budget - used)
-    else used += routeStep(job, terrain, policy, budget - used)
+    else used += routeStep(job, terrain, facts, policy, budget - used)
     if (used === before) used += 0.01
   }
   job.stats.steps++
@@ -423,6 +486,8 @@ export function newRoutingJob(request: PlanRequest, tier: BeltTier, layout: Layo
   const job = newPlanJob(request, tier)
   job.layout = layout
   job.placeIdx = job.order.length
+  // Modules that already exist never move.
+  for (const m of layout.modules) job.replaced[m.id] = math.huge
   startRouting(job)
   if (queue !== undefined) job.queue = [...queue]
   return job
