@@ -15,6 +15,8 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Determinism rules in SPEC §5.6 are hard constraints. All persistent state goes in `storage`, use no
   `math.random`, and check `.valid` before using an entity.
 - Prefer configurable settings over constants (SPEC §5.7).
+- **Never record a decision as user-approved** unless the user actually approved it. Agent proposals go
+  into SPEC §11 Open questions and the milestone report, marked "proposed", until the user decides.
 
 ## Commands
 
