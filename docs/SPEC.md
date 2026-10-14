@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.6** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.7** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -44,6 +44,15 @@ Two layers, by analogy:
 | D18 | Configurability | **Config over constants.** Anything a player or tester might reasonably want to vary (faction count, crew size, spawn placement, targets, budgets, debug toggles) is a mod setting or a scenario/remote-interface parameter, not a hardcoded value. See §5.7. |
 | D19 | Module sourcing | Agents choose the sources (§5.4). Usable: any of the user's saves not modded in a way that changes early-game recipes, the user's blueprint library, and online blueprints (attribution required). Modules are prototype-grade. The user may replace them with custom modules later, so the module format must make swapping cheap. |
 | D20 | Steel (2026-10-14) | **v1 does not build steel production.** Steel smelting and every module or building that needs steel belong to a higher research tier (post-v1, P3). v1 still *researches* `steel-processing` as part of "all red/green techs" (§3 unchanged); researching techs needs only science packs, never steel. |
+| D21 | Solver (2026-10-14) | Recursive **ratio solver** for v1 behind a `Solver` interface; an in-Lua LP solver can replace it in P3. Resumable and tick-budgeted (§5.8). |
+| D22 | Topology | How one producer feeds many consumers is a **LayoutPolicy** decision: point-to-point belts early, per-item trunks with splitter taps later; A/B-tested (§5.8). |
+| D23 | Belts between nodes | **One item type per belt between graph nodes.** Mixed lanes only inside a module/generator; ports are single-item; no lane-preserving routing between modules (§5.8). |
+| D24 | Capacity overflow | When demand exceeds an edge's capacity: upgrade belt tier, add parallel belts/routes, or build a new producer cluster sized for growth. The choice is a policy decision (§5.8). |
+| D25 | Utilization target | Edges are planned up to a configurable fraction of nominal capacity, **default 99%**, tuned from soak evidence (§5.8). |
+| D26 | Plan vs reality | Nodes and edges store planned and **measured** per-module rates; a reconciler classifies nodes (ok/starved/backed up/unpowered/unfuelled) and replans the root cause (§5.8). |
+| D27 | Horizon | **Staged targets with headroom:** build for the current stage target, size trunks, space and corridors for the next (default 2×, per policy) (§5.8). |
+| D28 | Disruption | Deferred to P2: v1 assumes a static world (no depletion relocation, no rebuilding destroyed modules) (§5.8). |
+| D29 | Visibility | Graph export to JSON with a `tools/render` overlay, plus an in-game `rendering` debug overlay (§5.8). |
 
 ## 3. v1 Definition of Done
 
@@ -158,9 +167,9 @@ Debug options (off by default, never used in acceptance runs): teleport-when-stu
 - **Sites:** modules with `site` set are anchored by terrain (steam block at the shore, mines on a patch).
   Resource patches get mining modules (drills → belt) sized to the needed rate. The smelting and
   production core sits near the patches and grows outward.
-- **Router:** A* on tiles with belts, undergrounds (respecting max length), turns and lane awareness. It must
-  preserve belt **lane assignment** from port to port (`Port.lanes`), e.g. ore + coal or red + green sharing one belt.
-  Rip-up-and-reroute when a route fails. Routes must not cross module footprints.
+- **Router:** A* on tiles with belts, undergrounds (respecting max length) and turns. Belts between modules carry
+  one item type (D23, §5.8), so the router does not preserve lane assignment between modules. It only respects
+  which side of a port a belt must arrive on (`Port.side`). Rip-up-and-reroute when a route fails. Routes must not cross module footprints.
 - **Power:** steam power module(s) sized to the demand, plus a pole-network planner (MST over consumers,
   pole reach-aware).
 - **Splitting and merging:** splitters for fan-out to multiple consumers.
@@ -196,7 +205,8 @@ interface ModuleExpand {
   ports: "shift" | Port[];           // ports move with the far end ("shift") or are given per unit
 }
 interface Port { kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power";
-  pos: {x:number;y:number}; dir: Direction; item?: string; lanes?: "both"|"left"|"right"; }
+  pos: {x:number;y:number}; dir: Direction; item?: string; // single-item (D23)
+  side?: "left"|"right"; } // which side a belt must arrive on (side-loading), if it matters
 ```
 
 Pipelines (`tools/modules/`, Python or TS, run offline):
@@ -267,8 +277,9 @@ tag → filter → in-game validation gate.
   granularity matters (smelter 6/12/24, steam 1–4 boilers).
 - The **mall is one fused module** (about 10 AM1 with gears and circuits made inside, fed by iron and copper
   belts) that outputs to **chests the crew empties**. No filter inserters are needed.
-- **Belt lanes matter:** smelter columns take ore on one lane and coal on the other; lab arrays take red and
-  green on one belt. `Port.lanes` is required, and the router must **preserve lane assignment**.
+- **Belt lanes:** mixed lanes (ore + coal for a smelter column, red + green for a lab array) exist only **inside** a
+  module or generator, which merges single-item inputs at its boundary. Ports are single-item and belts between
+  modules carry one item (D23, §5.8).
 - **Site-anchored modules:** `ModuleDef.site` says where terrain fixes the placement (§5.3 Sites), so the planner
   places them by terrain rather than by the packing strategy.
 - **Wood** for small electric poles is not a belt resource. The crew gathers it (gather job on trees).
@@ -321,6 +332,77 @@ typed config module so tests can override them.
   Scheduler under a per-tick budget.
 - Entity references are re-validated (`.valid`) before every use.
 - Telemetry output goes through `helpers.write_file` (server-side only, no gameplay effect).
+
+### 5.8 Factory Graph and throughput (interview 2026-10-14)
+
+The planner tracks the whole factory of each faction as a **two-layer graph** stored in `storage`.
+
+**Logical layer: what flows.** Nodes are production units (module instances, each running one or more
+recipes; mining outposts; power; labs; sinks such as crew-supplied chests). Edges are item flows with
+**planned rate** and **measured rate** (items/s). The planner reasons here: targets, ratios, deficits.
+
+**Physical layer: how it's built.** Nodes are module instances with their **ports**, plus belt
+infrastructure: belt segments, splitters, undergrounds and side-load points. Edges are physical connections
+with **capacity**, derived from belt tier (yellow 15/s, red 30/s, blue 45/s, so 7.5/15/22.5 per lane) and
+from the rates of inserters at the endpoints. Every logical edge maps to one or more physical paths. The
+router and throughput checks work here.
+
+**Solver (D21):** a recursive **ratio solver** for v1. The red/green chain has no byproducts or loops.
+It sits behind a `Solver` interface so an in-Lua **LP solver** (cf. the Factory Solver mod) can replace it in
+P3, when oil cracking and byproducts arrive. Solving is a resumable, tick-budgeted job like all heavy work
+(§5.6).
+
+**Topology (D22):** how one producer feeds many consumers is decided by the **LayoutPolicy**. Early
+policies use short point-to-point belts. Later policies use per-item trunk lines with splitter taps between
+blocks. Policies are A/B-tested in soak runs.
+
+**One item per belt between nodes (D23):** belts transiting **between** graph nodes carry exactly one
+item type. Mixed lanes (ore + coal for a smelter column, red + green for labs) are allowed only **inside** a
+module or generator, which may merge single-item inputs at its boundary. So module ports are single-item,
+and the router does not need lane-preserving routing between modules. It only respects which side of
+a port a belt must arrive on. (This replaces the earlier "router must preserve lane assignment" note.)
+
+**Capacity overflow (D24):** when planned demand on an edge exceeds its usable capacity, the planner may:
+(1) **upgrade the belt tier** once researched, (2) **add parallel belts / routes**, or (3) **create new
+producers and new connections**, building another production cluster sized for future growth rather
+than stretching one supply line. Picking between them is a policy decision. Fused modules still use
+direct insertion internally; that's a module design choice, not an overflow remedy.
+
+**Utilization target (D25):** edges are planned up to a configurable fraction of nominal capacity,
+**default 99%**. Measurement plus reconciliation (below) catches the cases where real throughput
+(compression gaps, inserter timing) falls short. Soak scorecards report how often that happens, so the default
+can be tuned with evidence.
+
+**Plan vs reality (D26):** nodes and edges store planned and **measured** rates. Measurements are sampled
+every few game-seconds (configurable) from machine output counters (`products_finished` deltas), inserter
+and belt sampling at ports, and input/output buffer fullness. Per-faction flow statistics are too coarse;
+we need per-module numbers. The reconciler classifies each node: *ok*, *starved* (input shortfall,
+traced upstream to the root cause), *backed up* (output blocked), *unpowered* or *unfuelled*. It then
+emits replanning goals for the root cause, not the symptom.
+
+**Horizon (D27): staged targets with headroom.** Plan and build for the current stage target (e.g.
+30 SPM in v1), but size trunk belts and reserve space and corridor width for the next stage target (default
+2×, configurable per policy). Build incrementally toward it.
+
+**Disruption (D28):** deferred to P2. v1 assumes a static world: no ore-depletion relocation and no
+rebuilding destroyed modules. The stored graph plus build plan is what P2's rebuild and relocate will use.
+In v1, a stall caused by depletion just shows up as a starved node in telemetry.
+
+**Visibility (D29):**
+- **Graph export:** the graph (both layers, planned and measured rates, node status) is dumped to JSON
+  next to entity dumps. `tools/render` overlays nodes and edges coloured by utilization (planned vs measured)
+  and status.
+- **In-game overlay:** a debug setting draws module boxes, edges, rates and node status using the
+  `rendering` API in the live game.
+
+**Testing:** T1 tests cover the solver (ratios for the red/green chain against hand-computed values,
+e.g. 30+30 SPM → 3.75 Fe/s, 1.25 Cu/s), capacity math and overflow decisions. T2 tests cover measurement
+(a deliberately starved module gets classified *starved* with the right upstream cause), and so does a
+lab with a deliberately undersized belt.
+
+**Milestones:** the solver and logical graph come with **M5** (planner). The physical layer and capacity
+math come with **M4** (routing). Measurement, the reconciler and the overlay come with **M5**, with scorecard
+metrics in **M6**.
 
 ## 6. Repository layout (target)
 
@@ -375,9 +457,9 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 | M1 | **Body** | Character Controller with all actions, path following and stuck recovery. T2 tests: a crew member walks 200 tiles around obstacles, mines 50 iron ore, crafts 10 gears, places a burner drill on ore and fuels it. |
 | M2 | **Crew and jobs** | Job Board with claims and batching. Two characters jointly build a ghost layout of 40 entities from a material stockpile, with no double-claims and no idle time over 10% while jobs exist. |
 | M3 | **Burner bootstrap** | From a vanilla start, one faction reaches self-sustaining burner mining of iron, copper, coal and stone plus stone furnaces. Done when the "first electricity" materials have been gathered. |
-| M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). |
-| M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. |
-| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. |
+| M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). Factory Graph **physical layer** and **capacity math** (§5.8): T1 capacity/overflow tests and a T2 lab with a deliberately undersized belt. |
+| M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. Factory Graph **solver** and **logical layer**, **measurement**, **reconciler** and **in-game overlay** (§5.8): T1 solver ratio tests, and a T2 test where a deliberately starved module is classified *starved* with the right upstream cause. |
+| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
 
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
 oil, blue science and bots (crew switches to construction robots) · **P4** inter-faction diplomacy and war
@@ -447,3 +529,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   placement (cliffs, water, ore, trees/rocks, own structures) with policy-defined corridor widths. New pluggable
   `LayoutPolicy` (§5.3, §5.7) with policy tests and soak A/B comparison (§7). M4/M5 acceptance now requires
   placement and routing on real generated terrain (§8).
+- v0.7 (2026-10-14): factory graph + throughput, from interview. New §5.8 (two-layer Factory Graph, ratio solver
+  behind a `Solver` interface, topology by policy, one item per belt between nodes, capacity overflow remedies,
+  99% utilization target, measured vs planned rates with a reconciler, staged targets with headroom, disruption
+  deferred to P2, graph export and in-game overlay); decisions D21–D29; lane-preserving routing between modules
+  removed (`Port.lanes` → single-item ports with `Port.side`); M4/M5/M6 acceptance reference the graph work.
