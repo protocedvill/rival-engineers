@@ -1,0 +1,778 @@
+{
+ "id": "green-line-hellpet",
+ "provenance": "factorioprints: \"Science Pack Logistic (green) - 0.18\" by HellPet, https://factorioprints.com/view/-KuTnAwncOKWGdRP8txp, licence: none stated; normalised for Rival Engineers (see notes)",
+ "description": "Logistic science from iron and copper plates: cable, circuit, gear, inserter and belt assemblers feed six science assemblers",
+ "footprint": {
+  "w": 19,
+  "h": 12
+ },
+ "entities": [
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 1.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 2.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 3.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 10.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 11.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 12.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 13.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 14.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 15.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 16.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 18.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 0.5,
+   "y": 1.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 1.5,
+   "y": 1.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 1.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 1.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 10.5,
+   "y": 1.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 14.5,
+   "y": 1.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 2.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 2.5
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 2.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 6.5,
+   "y": 2.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 8.5,
+   "y": 2.5,
+   "recipe": "inserter"
+  },
+  {
+   "name": "inserter",
+   "x": 10.5,
+   "y": 2.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 12.5,
+   "y": 2.5,
+   "recipe": "iron-gear-wheel"
+  },
+  {
+   "name": "inserter",
+   "x": 14.5,
+   "y": 2.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 16.5,
+   "y": 2.5,
+   "recipe": "transport-belt"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 3.5,
+   "recipe": "copper-cable"
+  },
+  {
+   "name": "inserter",
+   "x": 6.5,
+   "y": 3.5,
+   "dir": 12
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 3.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 14.5,
+   "y": 3.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 4.5,
+   "y": 4.5,
+   "recipe": "electronic-circuit"
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 4.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 4.5,
+   "dir": 4
+  },
+  {
+   "name": "underground-belt",
+   "x": 10.5,
+   "y": 4.5,
+   "dir": 4,
+   "ioType": "input"
+  },
+  {
+   "name": "inserter",
+   "x": 11.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 13.5,
+   "y": 4.5,
+   "dir": 4,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 14.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 15.5,
+   "y": 4.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 16.5,
+   "y": 4.5
+  },
+  {
+   "name": "inserter",
+   "x": 17.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 1.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "output"
+  },
+  {
+   "name": "inserter",
+   "x": 2.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "input"
+  },
+  {
+   "name": "underground-belt",
+   "x": 7.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 5.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 5.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 10.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 11.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "input"
+  },
+  {
+   "name": "underground-belt",
+   "x": 12.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 14.5,
+   "y": 5.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 15.5,
+   "y": 5.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 16.5,
+   "y": 5.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 17.5,
+   "y": 5.5,
+   "dir": 12,
+   "ioType": "input"
+  },
+  {
+   "name": "transport-belt",
+   "x": 18.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 0.5,
+   "y": 6.5,
+   "dir": 12,
+   "ioType": "output"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 1.5,
+   "y": 6.5
+  },
+  {
+   "name": "underground-belt",
+   "x": 2.5,
+   "y": 6.5,
+   "dir": 12,
+   "ioType": "input"
+  },
+  {
+   "name": "transport-belt",
+   "x": 3.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 10.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 11.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 12.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 13.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 14.5,
+   "y": 6.5,
+   "dir": 12,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 16.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 17.5,
+   "y": 6.5,
+   "dir": 12,
+   "ioType": "input"
+  },
+  {
+   "name": "splitter",
+   "x": 15.5,
+   "y": 7.0,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 1.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 2.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 3.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 10.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 11.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 12.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 13.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 14.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 16.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 7.5,
+   "dir": 12
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 0.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 2.5,
+   "y": 8.5
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 8.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 4.5,
+   "y": 8.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 8.5
+  },
+  {
+   "name": "inserter",
+   "x": 9.5,
+   "y": 8.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 8.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 11.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 12.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 14.5,
+   "y": 8.5
+  },
+  {
+   "name": "inserter",
+   "x": 15.5,
+   "y": 8.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 16.5,
+   "y": 8.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 17.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 4.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 7.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 13.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 16.5,
+   "y": 10.5,
+   "recipe": "logistic-science-pack"
+  }
+ ],
+ "ports": [
+  {
+   "id": "out",
+   "kind": "belt-out",
+   "pos": {
+    "x": 0.5,
+    "y": 6.5
+   },
+   "dir": 12,
+   "item": "logistic-science-pack"
+  },
+  {
+   "id": "in-copper-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 18.5,
+    "y": 0.5
+   },
+   "dir": 12,
+   "item": "copper-plate"
+  },
+  {
+   "id": "in-iron-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 18.5,
+    "y": 5.5
+   },
+   "dir": 12,
+   "item": "iron-plate"
+  },
+  {
+   "id": "power",
+   "kind": "power",
+   "pos": {
+    "x": 1.5,
+    "y": 1.5
+   },
+   "dir": 0
+  }
+ ],
+ "rotatable": true,
+ "mirrorable": true,
+ "notes": [
+  "assembling-machine-2 -> assembling-machine-1 and fast-inserter -> inserter (v1 tier, D20)",
+  "the two inserters that picked from the neighbouring tile's bus (east edge) became belt ports: copper (row 0) and iron (row 5)",
+  "tileable pass-throughs (west edge) end at the module edge; the science belt (row 6) is the output port",
+  "not expandable: the feeder block (cable, circuit, gear, inserter, belt assemblers) is not periodic and every cut through it breaks a direct-insertion link; grow by placing another copy"
+ ],
+ "recipe": "logistic-science-pack"
+}

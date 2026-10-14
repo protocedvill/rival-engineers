@@ -1,0 +1,87 @@
+{
+ "id": "green-line-hellpet",
+ "source": "data/modules/sources/-KuTnAwncOKWGdRP8txp.json",
+ "attribution": {
+  "title": "Science Pack Logistic (green) - 0.18",
+  "author": "HellPet",
+  "url": "https://factorioprints.com/view/-KuTnAwncOKWGdRP8txp",
+  "licence": "none stated"
+ },
+ "description": "Logistic science from iron and copper plates: cable, circuit, gear, inserter and belt assemblers feed six science assemblers",
+ "recipe": "logistic-science-pack",
+ "replace": {
+  "assembling-machine-2": "assembling-machine-1",
+  "fast-inserter": "inserter"
+ },
+ "remove_at": [
+  [
+   18.5,
+   0.5
+  ],
+  [
+   18.5,
+   5.5
+  ]
+ ],
+ "add": [
+  {
+   "name": "transport-belt",
+   "x": 18.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 18.5,
+   "y": 5.5,
+   "dir": 12
+  }
+ ],
+ "ports": [
+  {
+   "id": "out",
+   "kind": "belt-out",
+   "pos": {
+    "x": 0.5,
+    "y": 6.5
+   },
+   "dir": 12,
+   "item": "logistic-science-pack"
+  },
+  {
+   "id": "in-copper-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 18.5,
+    "y": 0.5
+   },
+   "dir": 12,
+   "item": "copper-plate"
+  },
+  {
+   "id": "in-iron-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 18.5,
+    "y": 5.5
+   },
+   "dir": 12,
+   "item": "iron-plate"
+  },
+  {
+   "id": "power",
+   "kind": "power",
+   "pos": {
+    "x": 1.5,
+    "y": 1.5
+   },
+   "dir": 0
+  }
+ ],
+ "notes": [
+  "assembling-machine-2 -> assembling-machine-1 and fast-inserter -> inserter (v1 tier, D20)",
+  "the two inserters that picked from the neighbouring tile's bus (east edge) became belt ports: copper (row 0) and iron (row 5)",
+  "tileable pass-throughs (west edge) end at the module edge; the science belt (row 6) is the output port",
+  "not expandable: the feeder block (cable, circuit, gear, inserter, belt assemblers) is not periodic and every cut through it breaks a direct-insertion link; grow by placing another copy"
+ ]
+}

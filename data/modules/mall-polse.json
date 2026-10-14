@@ -1,0 +1,1340 @@
+{
+ "id": "mall-polse",
+ "provenance": "factorioprints: \"Mall (Early game)\" by P\u00f8lse m\u00f8lsen, https://factorioprints.com/view/-L6BR_CuYr2y4y8tx1M1, licence: none stated; normalised for Rival Engineers (see notes)",
+ "description": "Early mall: gears and circuits made at the bottom go up a two-belt trunk with iron; twelve product assemblers fill chests the crew empties",
+ "footprint": {
+  "w": 18,
+  "h": 40
+ },
+ "entities": [
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 0.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 0.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 1.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 1.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 1.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 1.5,
+   "recipe": "pipe-to-ground"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 1.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 1.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 2.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 2.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 3.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 3.5
+  },
+  {
+   "name": "inserter",
+   "x": 9.5,
+   "y": 3.5,
+   "dir": 8
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 3.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 4.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 4.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 5.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 5.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 5.5,
+   "recipe": "pipe"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 5.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 6.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 6.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 7.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 7.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 7.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 7.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 8.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 8.5
+  },
+  {
+   "name": "iron-chest",
+   "x": 0.5,
+   "y": 9.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 9.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 9.5,
+   "recipe": "long-handed-inserter"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 9.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 9.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 9.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 9.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 9.5,
+   "recipe": "underground-belt"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 9.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 9.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 10.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 10.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 10.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 11.5
+  },
+  {
+   "name": "inserter",
+   "x": 4.5,
+   "y": 11.5,
+   "dir": 8
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 11.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 11.5
+  },
+  {
+   "name": "inserter",
+   "x": 9.5,
+   "y": 11.5,
+   "dir": 8
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 11.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 12.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 12.5
+  },
+  {
+   "name": "iron-chest",
+   "x": 0.5,
+   "y": 13.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 13.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 13.5,
+   "recipe": "inserter"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 13.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 13.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 13.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 13.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 13.5,
+   "recipe": "transport-belt"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 13.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 13.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 14.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 14.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 14.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 14.5,
+   "dir": 12
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 15.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 15.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 15.5
+  },
+  {
+   "name": "inserter",
+   "x": 9.5,
+   "y": 15.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 15.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 16.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 16.5
+  },
+  {
+   "name": "iron-chest",
+   "x": 0.5,
+   "y": 17.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 17.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 17.5,
+   "recipe": "iron-chest"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 17.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 17.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 17.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 17.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 17.5,
+   "recipe": "splitter"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 17.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 17.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 18.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 18.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 18.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 18.5,
+   "dir": 12
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 19.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 19.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 19.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 19.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 20.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 20.5
+  },
+  {
+   "name": "iron-chest",
+   "x": 0.5,
+   "y": 21.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 21.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 21.5,
+   "recipe": "assembling-machine-1"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 21.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 21.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 21.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 21.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 21.5,
+   "recipe": "electric-mining-drill"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 21.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 21.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 22.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 22.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 22.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 22.5,
+   "dir": 12
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 23.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 23.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 23.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 23.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 24.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 24.5
+  },
+  {
+   "name": "iron-chest",
+   "x": 0.5,
+   "y": 25.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 25.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 25.5,
+   "recipe": "iron-gear-wheel"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 25.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 25.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 25.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 25.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 25.5,
+   "recipe": "burner-inserter"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 25.5,
+   "dir": 12
+  },
+  {
+   "name": "iron-chest",
+   "x": 13.5,
+   "y": 25.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 5.5,
+   "y": 26.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 26.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 26.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 26.5,
+   "dir": 12
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 27.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 27.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 27.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 27.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 28.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 28.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 29.5,
+   "recipe": "iron-gear-wheel"
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 29.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 29.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 14.5,
+   "y": 29.5,
+   "recipe": "copper-cable"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 16.5,
+   "y": 29.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 29.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 30.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 30.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 30.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 30.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 30.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 30.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 30.5,
+   "recipe": "electronic-circuit"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 30.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 16.5,
+   "y": 30.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 30.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 31.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 1.5,
+   "y": 31.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 5.5,
+   "y": 31.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 31.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 31.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 31.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 31.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 16.5,
+   "y": 31.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 31.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 32.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 32.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 32.5,
+   "recipe": "iron-gear-wheel"
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 32.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 32.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 32.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 10.5,
+   "y": 32.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 14.5,
+   "y": 32.5,
+   "recipe": "copper-cable"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 16.5,
+   "y": 32.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 32.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 33.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 33.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 33.5
+  },
+  {
+   "name": "inserter",
+   "x": 8.5,
+   "y": 33.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 33.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 16.5,
+   "y": 33.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 33.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 34.5
+  },
+  {
+   "name": "inserter",
+   "x": 1.5,
+   "y": 34.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 5.5,
+   "y": 34.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 34.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 34.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 8.5,
+   "y": 34.5,
+   "dir": 4
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 10.5,
+   "y": 34.5,
+   "recipe": "electronic-circuit"
+  },
+  {
+   "name": "inserter",
+   "x": 12.5,
+   "y": 34.5,
+   "dir": 4
+  },
+  {
+   "name": "inserter",
+   "x": 16.5,
+   "y": 34.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 34.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 35.5
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 1.5,
+   "y": 35.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 3.5,
+   "y": 35.5,
+   "recipe": "iron-gear-wheel"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 5.5,
+   "y": 35.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 35.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 14.5,
+   "y": 35.5,
+   "recipe": "copper-cable"
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 35.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 36.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 36.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 36.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 0.5,
+   "y": 37.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 1.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 2.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 3.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 37.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 37.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 9.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 10.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 11.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 12.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 13.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 14.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 15.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 16.5,
+   "y": 37.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 17.5,
+   "y": 37.5
+  },
+  {
+   "name": "splitter",
+   "x": 7.0,
+   "y": 38.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 38.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 7.5,
+   "y": 39.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 8.5,
+   "y": 39.5
+  }
+ ],
+ "ports": [
+  {
+   "id": "in-iron-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 7.5,
+    "y": 39.5
+   },
+   "dir": 0,
+   "item": "iron-plate"
+  },
+  {
+   "id": "in-copper-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 8.5,
+    "y": 39.5
+   },
+   "dir": 0,
+   "item": "copper-plate"
+  },
+  {
+   "id": "power",
+   "kind": "power",
+   "pos": {
+    "x": 3.5,
+    "y": 7.5
+   },
+   "dir": 0
+  },
+  {
+   "id": "chest-long-handed-inserter",
+   "kind": "chest-out",
+   "pos": {
+    "x": 0.5,
+    "y": 9.5
+   },
+   "dir": 0,
+   "item": "long-handed-inserter"
+  },
+  {
+   "id": "chest-inserter",
+   "kind": "chest-out",
+   "pos": {
+    "x": 0.5,
+    "y": 13.5
+   },
+   "dir": 0,
+   "item": "inserter"
+  },
+  {
+   "id": "chest-iron-chest",
+   "kind": "chest-out",
+   "pos": {
+    "x": 0.5,
+    "y": 17.5
+   },
+   "dir": 0,
+   "item": "iron-chest"
+  },
+  {
+   "id": "chest-assembling-machine-1",
+   "kind": "chest-out",
+   "pos": {
+    "x": 0.5,
+    "y": 21.5
+   },
+   "dir": 0,
+   "item": "assembling-machine-1"
+  },
+  {
+   "id": "chest-iron-gear-wheel",
+   "kind": "chest-out",
+   "pos": {
+    "x": 0.5,
+    "y": 25.5
+   },
+   "dir": 0,
+   "item": "iron-gear-wheel"
+  },
+  {
+   "id": "chest-pipe-to-ground",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 1.5
+   },
+   "dir": 0,
+   "item": "pipe-to-ground"
+  },
+  {
+   "id": "chest-pipe",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 5.5
+   },
+   "dir": 0,
+   "item": "pipe"
+  },
+  {
+   "id": "chest-underground-belt",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 9.5
+   },
+   "dir": 0,
+   "item": "underground-belt"
+  },
+  {
+   "id": "chest-transport-belt",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 13.5
+   },
+   "dir": 0,
+   "item": "transport-belt"
+  },
+  {
+   "id": "chest-splitter",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 17.5
+   },
+   "dir": 0,
+   "item": "splitter"
+  },
+  {
+   "id": "chest-electric-mining-drill",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 21.5
+   },
+   "dir": 0,
+   "item": "electric-mining-drill"
+  },
+  {
+   "id": "chest-burner-inserter",
+   "kind": "chest-out",
+   "pos": {
+    "x": 13.5,
+    "y": 25.5
+   },
+   "dir": 0,
+   "item": "burner-inserter"
+  }
+ ],
+ "rotatable": true,
+ "mirrorable": true,
+ "notes": [
+  "assembling-machine-2 -> assembling-machine-1 and fast-inserter -> inserter (v1 tier, D20); lamps removed",
+  "recipes: fast-inserter -> iron-chest, assembling-machine-2 (needs steel) -> iron-gear-wheel, gun-turret -> burner-inserter (copper feed removed); the direct-insertion inserters that fed them were removed",
+  "the two firearm-magazine assemblers (top left) were removed",
+  "the chest buffer below the input splitter is replaced by two input belt ports (iron, copper)",
+  "the assembling-machine-1 assembler got an output inserter and chest (it fed the removed assembling-machine-2)"
+ ]
+}

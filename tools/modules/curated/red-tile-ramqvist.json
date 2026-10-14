@@ -1,0 +1,25 @@
+{
+ "id": "red-tile-ramqvist",
+ "source": "data/modules/sources/-KnQ865j-qQ21WoUPbd3.json",
+ "blueprint": 1,
+ "attribution": {"title": "Tileable Science Production 1.0-2.0 - Early to Mid Game (Vanilla): Automation Science 1.5/s (Gear-input)", "author": "Christoffer Ramqvist", "url": "https://factorioprints.com/view/-KnQ865j-qQ21WoUPbd3", "licence": "none stated"},
+ "description": "Automation science from copper plates and gears: two columns of science assemblers around a copper belt and a gear belt",
+ "recipe": "automation-science-pack",
+ "replace": {"assembling-machine-2": "assembling-machine-1"},
+ "remove": ["constant-combinator"],
+ "remove_at": [[4.5, 17.5]],
+ "crop": [0, 3, 11, 18],
+ "ports": [
+  {"id": "out", "kind": "belt-out", "pos": {"x": 4.5, "y": 0.5}, "dir": 0, "item": "automation-science-pack"},
+  {"id": "in-copper-plate", "kind": "belt-in", "pos": {"x": 5.5, "y": 0.5}, "dir": 8, "item": "copper-plate"},
+  {"id": "in-iron-gear-wheel", "kind": "belt-in", "pos": {"x": 6.5, "y": 0.5}, "dir": 8, "item": "iron-gear-wheel"},
+  {"id": "power", "kind": "power", "pos": {"x": 3.5, "y": 1.5}, "dir": 0}
+ ],
+ "expand": {"axis": "y", "insertAt": 8, "maxUnits": 6, "unitFrom": [2, 8]},
+ "notes": [
+  "assembling-machine-2 -> assembling-machine-1 (v1 tier, D20); constant combinators (labels) removed",
+  "the bus connection (undergrounds above the tile) is cropped; the belts' top tiles are the ports",
+  "the pass-through underground from the tile below (bottom of the output chain) is removed",
+  "expand: the tile repeats every 6 rows (4 science assemblers); units are copies of rows 2-7"
+ ]
+}

@@ -1,0 +1,685 @@
+{
+ "id": "red-tile-ramqvist",
+ "provenance": "factorioprints: \"Tileable Science Production 1.0-2.0 - Early to Mid Game (Vanilla): Automation Science 1.5/s (Gear-input)\" by Christoffer Ramqvist, https://factorioprints.com/view/-KnQ865j-qQ21WoUPbd3, licence: none stated; normalised for Rival Engineers (see notes)",
+ "description": "Automation science from copper plates and gears: two columns of science assemblers around a copper belt and a gear belt",
+ "footprint": {
+  "w": 11,
+  "h": 15
+ },
+ "entities": [
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "transport-belt",
+   "x": 4.5,
+   "y": 0.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 0.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 0.5,
+   "dir": 8,
+   "ioType": "input"
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 7.5,
+   "y": 0.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 1.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 1.5
+  },
+  {
+   "name": "underground-belt",
+   "x": 4.5,
+   "y": 1.5,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 1.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 1.5,
+   "dir": 4
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 7.5,
+   "y": 1.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 9.5,
+   "y": 1.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 3.5,
+   "y": 2.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 4.5,
+   "y": 2.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 2.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 2.5,
+   "dir": 8,
+   "ioType": "output"
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 2.5,
+   "dir": 12
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 3.5,
+   "y": 3.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 4.5,
+   "y": 3.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 3.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 3.5,
+   "dir": 8,
+   "ioType": "input"
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 3.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 4.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 4.5,
+   "dir": 8
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 9.5,
+   "y": 4.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 4.5,
+   "y": 5.5,
+   "ioType": "input"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 5.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 5.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 7.5,
+   "y": 5.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 4.5,
+   "y": 6.5,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 6.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 6.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 7.5,
+   "y": 6.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 7.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 7.5
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 7.5,
+   "dir": 8
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 7.5,
+   "y": 7.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 9.5,
+   "y": 7.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 3.5,
+   "y": 8.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 4.5,
+   "y": 8.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 8.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 8.5,
+   "dir": 8,
+   "ioType": "output"
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 8.5,
+   "dir": 12
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 3.5,
+   "y": 9.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 4.5,
+   "y": 9.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 9.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 9.5,
+   "dir": 8,
+   "ioType": "input"
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 9.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 10.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 10.5,
+   "dir": 8
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 9.5,
+   "y": 10.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 11.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 4.5,
+   "y": 11.5,
+   "ioType": "input"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 11.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 11.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 7.5,
+   "y": 11.5,
+   "dir": 12
+  },
+  {
+   "name": "inserter",
+   "x": 3.5,
+   "y": 12.5,
+   "dir": 12
+  },
+  {
+   "name": "underground-belt",
+   "x": 4.5,
+   "y": 12.5,
+   "ioType": "output"
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 12.5,
+   "dir": 8
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 6.5,
+   "y": 12.5,
+   "dir": 4
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 7.5,
+   "y": 12.5,
+   "dir": 12
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 1.5,
+   "y": 13.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 3.5,
+   "y": 13.5
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 4.5,
+   "y": 13.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 13.5,
+   "dir": 8
+  },
+  {
+   "name": "underground-belt",
+   "x": 6.5,
+   "y": 13.5,
+   "dir": 8,
+   "ioType": "output"
+  },
+  {
+   "name": "small-electric-pole",
+   "x": 7.5,
+   "y": 13.5
+  },
+  {
+   "name": "assembling-machine-1",
+   "x": 9.5,
+   "y": 13.5,
+   "recipe": "automation-science-pack"
+  },
+  {
+   "name": "long-handed-inserter",
+   "x": 3.5,
+   "y": 14.5,
+   "dir": 4
+  },
+  {
+   "name": "transport-belt",
+   "x": 5.5,
+   "y": 14.5,
+   "dir": 8
+  },
+  {
+   "name": "transport-belt",
+   "x": 6.5,
+   "y": 14.5,
+   "dir": 8
+  },
+  {
+   "name": "inserter",
+   "x": 7.5,
+   "y": 14.5,
+   "dir": 12
+  }
+ ],
+ "ports": [
+  {
+   "id": "out",
+   "kind": "belt-out",
+   "pos": {
+    "x": 4.5,
+    "y": 0.5
+   },
+   "dir": 0,
+   "item": "automation-science-pack"
+  },
+  {
+   "id": "in-copper-plate",
+   "kind": "belt-in",
+   "pos": {
+    "x": 5.5,
+    "y": 0.5
+   },
+   "dir": 8,
+   "item": "copper-plate"
+  },
+  {
+   "id": "in-iron-gear-wheel",
+   "kind": "belt-in",
+   "pos": {
+    "x": 6.5,
+    "y": 0.5
+   },
+   "dir": 8,
+   "item": "iron-gear-wheel"
+  },
+  {
+   "id": "power",
+   "kind": "power",
+   "pos": {
+    "x": 3.5,
+    "y": 1.5
+   },
+   "dir": 0
+  }
+ ],
+ "rotatable": true,
+ "mirrorable": true,
+ "notes": [
+  "assembling-machine-2 -> assembling-machine-1 (v1 tier, D20); constant combinators (labels) removed",
+  "the bus connection (undergrounds above the tile) is cropped; the belts' top tiles are the ports",
+  "the pass-through underground from the tile below (bottom of the output chain) is removed",
+  "expand: the tile repeats every 6 rows (4 science assemblers); units are copies of rows 2-7"
+ ],
+ "recipe": "automation-science-pack",
+ "expand": {
+  "axis": "y",
+  "insertAt": 8,
+  "maxUnits": 6,
+  "unit": {
+   "footprint": {
+    "w": 11,
+    "h": 6
+   },
+   "entities": [
+    {
+     "name": "long-handed-inserter",
+     "x": 3.5,
+     "y": 0.5,
+     "dir": 4
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 4.5,
+     "y": 0.5,
+     "dir": 4
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 0.5,
+     "dir": 8
+    },
+    {
+     "name": "underground-belt",
+     "x": 6.5,
+     "y": 0.5,
+     "dir": 8,
+     "ioType": "output"
+    },
+    {
+     "name": "inserter",
+     "x": 7.5,
+     "y": 0.5,
+     "dir": 12
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 3.5,
+     "y": 1.5,
+     "dir": 4
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 4.5,
+     "y": 1.5,
+     "dir": 4
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 1.5,
+     "dir": 8
+    },
+    {
+     "name": "underground-belt",
+     "x": 6.5,
+     "y": 1.5,
+     "dir": 8,
+     "ioType": "input"
+    },
+    {
+     "name": "inserter",
+     "x": 7.5,
+     "y": 1.5,
+     "dir": 12
+    },
+    {
+     "name": "assembling-machine-1",
+     "x": 1.5,
+     "y": 2.5,
+     "recipe": "automation-science-pack"
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 2.5,
+     "dir": 8
+    },
+    {
+     "name": "assembling-machine-1",
+     "x": 9.5,
+     "y": 2.5,
+     "recipe": "automation-science-pack"
+    },
+    {
+     "name": "inserter",
+     "x": 3.5,
+     "y": 3.5,
+     "dir": 12
+    },
+    {
+     "name": "underground-belt",
+     "x": 4.5,
+     "y": 3.5,
+     "ioType": "input"
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 3.5,
+     "dir": 8
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 6.5,
+     "y": 3.5,
+     "dir": 4
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 7.5,
+     "y": 3.5,
+     "dir": 12
+    },
+    {
+     "name": "inserter",
+     "x": 3.5,
+     "y": 4.5,
+     "dir": 12
+    },
+    {
+     "name": "underground-belt",
+     "x": 4.5,
+     "y": 4.5,
+     "ioType": "output"
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 4.5,
+     "dir": 8
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 6.5,
+     "y": 4.5,
+     "dir": 4
+    },
+    {
+     "name": "long-handed-inserter",
+     "x": 7.5,
+     "y": 4.5,
+     "dir": 12
+    },
+    {
+     "name": "assembling-machine-1",
+     "x": 1.5,
+     "y": 5.5,
+     "recipe": "automation-science-pack"
+    },
+    {
+     "name": "small-electric-pole",
+     "x": 3.5,
+     "y": 5.5
+    },
+    {
+     "name": "transport-belt",
+     "x": 5.5,
+     "y": 5.5,
+     "dir": 8
+    },
+    {
+     "name": "small-electric-pole",
+     "x": 7.5,
+     "y": 5.5
+    },
+    {
+     "name": "assembling-machine-1",
+     "x": 9.5,
+     "y": 5.5,
+     "recipe": "automation-science-pack"
+    }
+   ]
+  }
+ }
+}
