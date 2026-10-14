@@ -5,25 +5,34 @@ import { stampModule, worldPos } from "../modules/stamp"
 import { ModuleDef, Port } from "../modules/types"
 import { createLab, Lab } from "./lab"
 
-// Validation lab (SPEC §5.4 step 4, T2): stamps a module into a cleared lab, feeds every input port at its declared
-// rate × `feedFactor` by inserting items at the back of a feeder belt, collects every output (sink belts are
+// Validation lab (SPEC §5.4 step 4, T2): stamps a module into a cleared lab, feeds every input port at exactly its
+// declared rate (D33) by inserting items at the back of a feeder belt, collects every output (sink belts are
 // emptied each tick, output chests periodically), keeps crew-fuelled burners topped up (as the crew would), powers
-// the module from an electric-energy-interface (or loads a steam block with one) and measures the output rates
-// after a warm-up. The module passes at ≥ 90% of its declared output rate.
+// the module from an electric-energy-interface (or loads a steam block with one), waits until the output rates reach
+// a steady state (sliding windows agree within a tolerance, with a cap on the warm-up) and then measures. The module
+// passes at ≥ 90% of its declared output rate.
 
 export const LAB_FORCE = "re-module-lab"
 const DEBUG_BELTS = false
 
 export interface LabOptions {
+  /** Minimum warm-up before steady-state detection may end it. */
   warmupTicks: number
   measureTicks: number
-  /** Input feed = declared rate × feedFactor while measuring (default 1.1). */
+  /** Input feed = declared rate × feedFactor (default 1.0, D33). */
   feedFactor?: number
   /**
-   * Feed factor during warm-up (default 3, at least 1.5 items/s per port): primes belts and machine buffers (e.g.
-   * every burner's fuel slot along a fuel lane) so the measurement sees the steady state, not the fill-up.
+   * Steady-state detection (D33): after `warmupTicks`, the warm-up ends once the output rates of the last
+   * `steadyWindows` windows of `steadyWindowTicks` each agree within `steadyTolerance` (relative to their mean), or
+   * at `maxWarmupTicks` (then `steady` is false in the result). Without `maxWarmupTicks` the warm-up is exactly
+   * `warmupTicks`.
    */
-  warmupFeedFactor?: number
+  maxWarmupTicks?: number
+  steadyWindowTicks?: number
+  steadyWindows?: number
+  steadyTolerance?: number
+  /** Judge steadiness on this weighted sum of the outputs (malls: plate value) instead of per output. */
+  steadyWeights?: Record<string, number>
   /**
    * Malls: bar every output chest to this many slots and never empty it (the crew takes only what it needs), so
    * full chests stop their assemblers and the rest of the mall gets the intermediates. Measures what each chest got.
@@ -41,6 +50,11 @@ export interface LabResult {
   problems: string[]
   /** Crafting machines and labs at the end: for diagnosing a failure. */
   machines: string[]
+  /** Ticks of warm-up before measuring, and whether the outputs had reached a steady state by then. */
+  warmupTicks: number
+  steady: boolean
+  /** Output rates of the warm-up windows (items/s, worst output relative to declared), for reports. */
+  windowRatios: number[]
 }
 
 export function labForce(): LuaForce {
@@ -54,6 +68,8 @@ export function labForce(): LuaForce {
 
 interface Feeder {
   item: string
+  /** Items inserted so far. */
+  inserted: number
   perTick: number
   credit: number
   lines: LuaTransportLine[]
@@ -143,8 +159,7 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   const sinks: LuaEntity[] = []
   const chests: LuaEntity[] = []
   const belt = (def.params?.belt as string | undefined) ?? "transport-belt"
-  const feedFactor = opts.feedFactor ?? 1.1
-  const warmupFeedFactor = opts.warmupFeedFactor ?? 3
+  const feedFactor = opts.feedFactor ?? 1.0
   for (const port of def.ports) {
     if (port.kind === "belt-in" || port.kind === "belt-out") {
       const local = portOutsideTile(port)
@@ -157,7 +172,7 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
       if (port.kind === "belt-out") sinks.push(b)
       else {
         const rate = rateOf(def.rates.inputs, port.item!)
-        feeders.push({ item: port.item!, perTick: rate / 60, credit: 0, lines: [b.get_transport_line(1), b.get_transport_line(2)], next: 0 })
+        feeders.push({ item: port.item!, inserted: 0, perTick: rate / 60, credit: 0, lines: [b.get_transport_line(1), b.get_transport_line(2)], next: 0 })
       }
     } else if (port.kind === "chest-out") {
       const c = surface.find_entities_filtered({ position: worldPos(origin, port.pos), type: "container" })[0]
@@ -209,32 +224,81 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   const declared: Record<string, number> = {}
   for (const r of def.rates.outputs) declared[r.item] = r.perSecond
   const measured: Record<string, number> = {}
-  const counts: Record<string, number> = {}
-  let energy = 0
-  let researchStart = 0
   const researchUnits = (): number => {
     const tech = force.current_research
     if (tech === undefined) return 0
     return force.research_progress * tech.research_unit_count
   }
 
+  // Cumulative output since the start (sinks, chests, power, research), for steady-state windows and measuring.
+  const cumulative: Record<string, number> = {}
+  const add = (item: string, n: number): void => {
+    cumulative[item] = (cumulative[item] ?? 0) + n
+  }
+  const snapshot = (): Record<string, number> => {
+    const out: Record<string, number> = {}
+    for (const [k, v] of pairs(cumulative)) out[k] = v
+    if (declared["research-unit"] !== undefined) out["research-unit"] = researchUnits()
+    for (const f of feeders) out[`feed:${f.item}`] = f.inserted
+    return out
+  }
+
+  const windowTicks = opts.steadyWindowTicks ?? 60 * 30
+  const windowsNeeded = opts.steadyWindows ?? 3
+  const tolerance = opts.steadyTolerance ?? 0.03
+  const maxWarmup = opts.maxWarmupTicks ?? opts.warmupTicks
+  const windowRatios: number[] = []
+  const windowRates: Record<string, number>[] = []
+  let lastSnap = snapshot()
+  let warmupEnd: number | undefined = maxWarmup === opts.warmupTicks ? opts.warmupTicks : undefined
+  let steady = maxWarmup === opts.warmupTicks
+  let measureStart: Record<string, number> = {}
+
+  // Steady (D33): the mean output rate of the last `windowsNeeded` windows is within `tolerance` of the mean of the
+  // group before it (per output, or of the weighted sum), and over the last group every feeder delivered its
+  // scheduled items (a backed-up input means the module is not yet, or never, consuming at its declared rate).
+  const groupMean = (key: (this: void, rates: Record<string, number>) => number, from: number): number => {
+    let sum = 0
+    for (let i = from; i < from + windowsNeeded; i++) sum += key(windowRates[i])
+    return sum / windowsNeeded
+  }
+  const isSteady = (): boolean => {
+    const n = windowRates.length
+    if (n < 2 * windowsNeeded) return false
+    const keys: ((this: void, rates: Record<string, number>) => number)[] = []
+    const weights = opts.steadyWeights
+    if (weights !== undefined) {
+      keys.push((rates) => {
+        let v = 0
+        for (const [item, w] of pairs(weights)) v += (rates[item] ?? 0) * w
+        return v
+      })
+    } else for (const [item] of pairs(declared)) keys.push((rates) => rates[item] ?? 0)
+    for (const key of keys) {
+      const last = groupMean(key, n - windowsNeeded)
+      const prev = groupMean(key, n - 2 * windowsNeeded)
+      if (last <= 0 || math.abs(last - prev) > tolerance * last) return false
+    }
+    for (const f of feeders) {
+      const scheduled = f.perTick * feedFactor * 60
+      if (groupMean((rates) => rates[`feed:${f.item}`] ?? 0, n - windowsNeeded) < (1 - tolerance) * scheduled) return false
+    }
+    return true
+  }
+
   let tick = 0
-  const total = opts.warmupTicks + opts.measureTicks
-  async(total + 600)
+  async(maxWarmup + opts.measureTicks + 600)
   on_tick(() => {
     tick++
-    // Feed.
-    const warm = tick <= opts.warmupTicks
     for (const f of feeders) {
-      // Warm-up: at least 1.5 items/s per port, so slow lanes (fuel) prime every buffer along them.
-      const perTick = warm ? math.max(f.perTick * warmupFeedFactor, 1.5 / 60) : f.perTick * feedFactor
-      f.credit = math.min(f.credit + perTick, 20)
+      f.credit = math.min(f.credit + f.perTick * feedFactor, 20)
       while (f.credit >= 1) {
         let inserted = false
         for (let k = 0; k < 2; k++) {
           const line = f.lines[(f.next + k) % 2]
           if (line.can_insert_at_back() && line.insert_at_back({ name: f.item, count: 1 })) {
             f.next = (f.next + k + 1) % 2
+            f.inserted++
             inserted = true
             break
           }
@@ -243,19 +307,19 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         f.credit -= 1
       }
     }
-    // Collect.
-    const measuring = tick > opts.warmupTicks
     for (const s of sinks) {
       for (const i of [1, 2]) {
         const line = s.get_transport_line(i)
-        if (measuring) lineContents(line, counts)
+        const c: Record<string, number> = {}
+        lineContents(line, c)
+        for (const [item, n] of pairs(c)) add(item, n)
         line.clear()
       }
     }
-    if (opts.chestBar === undefined && (tick % 60 === 0 || tick === opts.warmupTicks || tick === total)) {
+    if (opts.chestBar === undefined && tick % 60 === 0) {
       for (const c of chests) {
         const inv = c.get_inventory(defines.inventory.chest)!
-        if (measuring) for (const it of inv.get_contents()) counts[it.name] = (counts[it.name] ?? 0) + it.count
+        for (const it of inv.get_contents()) add(it.name, it.count)
         inv.clear()
       }
     }
@@ -266,16 +330,34 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         if (fi !== undefined && fi.is_empty()) fi.insert({ name: fuel, count: 5 })
       }
     }
-    if (measuring) for (const e of engines) energy += e.energy_generated_last_tick
-    if (tick === opts.warmupTicks) researchStart = researchUnits()
-    if (tick < total) return
-    if (opts.chestBar !== undefined) {
-      for (const c of chests) for (const it of c.get_inventory(defines.inventory.chest)!.get_contents()) counts[it.name] = (counts[it.name] ?? 0) + it.count
+    for (const e of engines) add("electricity", e.energy_generated_last_tick)
+
+    if (warmupEnd === undefined) {
+      if (tick % windowTicks === 0) {
+        const snap = snapshot()
+        const rates: Record<string, number> = {}
+        let worst = math.huge
+        for (const [item, v] of pairs(snap)) rates[item] = ((v - (lastSnap[item] ?? 0)) / windowTicks) * 60
+        for (const [item, d] of pairs(declared)) worst = math.min(worst, (rates[item] ?? 0) / d)
+        windowRates.push(rates)
+        windowRatios.push(worst)
+        lastSnap = snap
+        if (tick >= opts.warmupTicks && isSteady()) {
+          warmupEnd = tick
+          steady = true
+        } else if (tick >= maxWarmup) warmupEnd = tick
+        if (warmupEnd !== undefined) measureStart = snapshot()
+      }
+      return
     }
-    const seconds = opts.chestBar !== undefined ? total / 60 : opts.measureTicks / 60
-    for (const [item, n] of pairs(counts)) measured[item] = n / seconds
-    if (powerOut > 0) measured["electricity"] = (energy / opts.measureTicks) * 60
-    if (declared["research-unit"] !== undefined) measured["research-unit"] = (researchUnits() - researchStart) / seconds
+    if (tick === warmupEnd) measureStart = snapshot()
+    if (tick < warmupEnd + opts.measureTicks) return
+    for (const c of chests) for (const it of c.get_inventory(defines.inventory.chest)!.get_contents()) add(it.name, it.count)
+    // A capped mall counts everything its chests got since the start.
+    if (opts.chestBar !== undefined) measureStart = {}
+    const end = snapshot()
+    const seconds = opts.chestBar !== undefined ? tick / 60 : opts.measureTicks / 60
+    for (const [item, n] of pairs(end)) measured[item] = (n - (measureStart[item] ?? 0)) / seconds
     const ratio: Record<string, number> = {}
     for (const [item, d] of pairs(declared)) ratio[item] = (measured[item] ?? 0) / d
     const machines: string[] = []
@@ -298,7 +380,7 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         machines.push(`belt@${e.position.x - origin.x},${e.position.y - origin.y} L=${l} R=${serpent.line(c2)}`)
       }
     }
-    onDone({ declared, measured, ratio, problems, machines })
+    onDone({ declared, measured, ratio, problems, machines, warmupTicks: warmupEnd, steady, windowRatios })
     done()
     return false
   })

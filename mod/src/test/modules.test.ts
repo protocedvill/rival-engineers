@@ -2,11 +2,11 @@ import { LuaForce, LuaTechnologyPrototype } from "factorio:runtime"
 import { CatalogEntry, catalogModule, generatedModule, V1_CATALOG } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
-import { LabResult, runModuleLab } from "./module-lab"
+import { LabOptions, LabResult, runModuleLab } from "./module-lab"
 
-// M4 validation lab (SPEC §5.4 step 4): every generator at representative parameters and every curated module is
-// stamped into a lab, fed at its declared input rates (× 1.1), and must deliver ≥ 90% of its declared output
-// rates after a warm-up. Slow modules (long craft cycles) carry "[slow]" in their test name, so a quick run can
+// M4 validation lab (SPEC §5.4 step 4, D33): every generator at representative parameters and every curated module is
+// stamped into a lab, fed at exactly its declared input rates, and must deliver ≥ 90% of its declared output rates
+// (malls: of their total plate throughput, plus product coverage) once its outputs reach a steady state. Slow modules (long craft cycles) carry "[slow]" in their test name, so a quick run can
 // filter them out: npm test -- "validation fast".
 
 const PASS_RATIO = 0.9
@@ -34,7 +34,8 @@ function report(name: string, def: ModuleDef, r: LabResult): void {
   let worst = 1
   for (const [, ratio] of pairs(r.ratio)) worst = math.min(worst, ratio)
   if (worst < PASS_RATIO) for (const m of r.machines) log(`[module-lab-debug] ${name} ${m}`)
-  log(`[module-lab] ${name} | ${def.id} | ${parts.join(" ; ")}${r.problems.length > 0 ? " | problems: " + r.problems.join(", ") : ""}`)
+  const windows = r.windowRatios.map((w) => string.format("%.2f", w)).join(",")
+  log(`[module-lab] ${name} | ${def.id} | ${parts.join(" ; ")} | warm-up ${string.format("%.1f", r.warmupTicks / 3600)} min, ${r.steady ? "steady" : "NOT steady"} [${windows}]${r.problems.length > 0 ? " | problems: " + r.problems.join(", ") : ""}`)
 }
 
 /** Plates (input-port items) per item, through the recipes made inside the module. */
@@ -104,9 +105,12 @@ function researchPrerequisites(force: LuaForce, tech: string): void {
   }
 }
 
-function timing(def: ModuleDef, slow: boolean): { warmupTicks: number; measureTicks: number } {
-  // Long enough for ≥ 20 cycles of the slowest machine and for belts to fill.
-  return slow ? { warmupTicks: 60 * 90, measureTicks: 60 * 300 } : { warmupTicks: 60 * 45, measureTicks: 60 * 120 }
+function timing(slow: boolean): LabOptions {
+  // Minimum warm-up, then steady-state detection (D33): 3 windows agreeing within 3%, capped. Measurement: ≥ 20
+  // cycles of the slowest machine.
+  return slow
+    ? { warmupTicks: 60 * 90, maxWarmupTicks: 60 * 60 * 60, steadyWindowTicks: 60 * 60, measureTicks: 60 * 300 }
+    : { warmupTicks: 60 * 45, maxWarmupTicks: 60 * 60 * 15, steadyWindowTicks: 60 * 30, measureTicks: 60 * 120 }
 }
 
 function labTest(entry: CatalogEntry): void {
@@ -124,7 +128,15 @@ function labTest(entry: CatalogEntry): void {
         force.add_research(tech.name)
       }
     }
-    runModuleLab(def, { ...timing(def, entry.slow === true), setupForce }, (r) => check(entry.name, def, r))
+    let steadyWeights: Record<string, number> | undefined
+    if (hasChests(def)) {
+      steadyWeights = {}
+      for (const r of def.rates.outputs) steadyWeights[r.item] = rawCost(def, r.item)
+    }
+    const opts = { ...timing(entry.slow === true), setupForce, steadyWeights }
+    // A mall's products are lumpy (an assembler is worth ~22 plates): measure its plate value over 15 minutes.
+    if (steadyWeights !== undefined) opts.measureTicks = 60 * 60 * 15
+    runModuleLab(def, opts, (r) => check(entry.name, def, r))
   })
 }
 
@@ -139,10 +151,10 @@ describe("module validation lab", () => {
   })
   for (const entry of V1_CATALOG) labTest(entry)
 
-  test("validation slow: the mall makes every product when its chests are capped", () => {
+  test("validation slow: the mall makes every product (chests capped, 20 game-min)", () => {
     const def = catalogModule({ name: "mall", curated: "mall-polse" })
-    runModuleLab(def, { warmupTicks: 0, measureTicks: 60 * 60 * 10, chestBar: 1 }, (r) => {
-      report("mall coverage (chests capped at 1 slot, 10 min)", def, r)
+    runModuleLab(def, { warmupTicks: 0, measureTicks: 60 * 60 * 20, chestBar: 1 }, (r) => {
+      report("mall coverage (chests capped at 1 slot, 20 min)", def, r)
       assert(r.problems.length === 0, r.problems.join(", "))
       const missing: string[] = []
       for (const p of def.ports) if (p.kind === "chest-out" && (r.measured[p.item!] ?? 0) <= 0) missing.push(p.item!)

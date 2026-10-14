@@ -55,34 +55,40 @@ passing validation: **met** (M4a). Router, LayoutPolicy on real terrain, physica
   (water and ore created from its anchor), powers it from an `electric-energy-interface` on a pole next to the power
   port (a steam block gets the interface as its load instead), feeds every input port by inserting items at the back
   of a feeder belt outside the port, empties sink belts every tick and output chests every second, refuels the
-  crew-fuelled burners (`upkeep`), and measures after a warm-up. Feed: **1.1 × declared** while measuring; during
-  warm-up 3 × declared, at least 1.5 items/s per port, to prime buffers (see "Findings"). Runs at `game.speed` 100.
-  Test names carry `validation fast:` or `validation slow:` for filtering.
+  crew-fuelled burners (`upkeep`), and measures once the module is in a steady state. Feed: **exactly 1.0 × declared**
+  throughout (D33, user decision 2026-10-14). Steady state: after a minimum warm-up (45 s fast / 90 s slow), two
+  consecutive groups of 3 windows (30 s / 60 s) agree within 3% on every output (malls: on their plate value) and
+  every feeder delivered its full feed over the last group; warm-up capped at 15 / 60 game-minutes. Runs at
+  `game.speed` 100. Test names carry `validation fast:` or `validation slow:` for filtering.
 - `stampModule` (real entities or ghosts), `expandModule`, `expandTail`, `expandMoves`, `V1_CATALOG`,
   `curatedModule`, `generatedModule` (memoised per session; derived from prototypes only).
 
-### Validation results (T2, game speed 100, measured / declared)
+### Validation results (T2, game speed 100, fed 1.0 × declared, measured after steady state; D33)
 
-| Module (catalog entry) | Declared | Measured | % |
-|---|---|---|---|
-| smelter-column iron, 12 furnaces | 3.75 plates/s | 3.708 | 98.9 |
-| smelter-column copper, 4 | 1.25 | 1.250 | 100.0 |
-| smelter-column stone-brick, 4 | 1.25 bricks/s | 1.242 | 99.3 |
-| mining-outpost iron, 4 rows × 2, electric | 4.0 ore/s | 4.000 | 100.0 |
-| mining-outpost coal, 3 rows × 2, burner | 1.5 | 1.500 | 100.0 |
-| steam-block, 2 boilers | 3.6 MW | 3.584 MW | 99.6 |
-| assembler-row gears, 4 | 3.024 gears/s | 3.600 | 119.0 |
-| assembler-row cable, 2 | 3.36 cable/s | 3.425 | 101.9 |
-| assembler-row belts, 2 | 3.024 belts/s | 3.425 | 113.3 |
-| red-line, 2 units | 0.4 red/s | 0.400 | 100.0 |
-| circuit-block, 1 unit | 1.787 circuits/s | 1.800 | 100.7 |
-| lab-array, 4 labs (researching the largest red+green tech) | 0.1333 units/s | 0.1333 | 100.0 |
-| curated red-tile-ramqvist | 1.0 red/s | 1.000 | 100.0 |
-| curated green-line-hellpet | 0.28 green/s | 0.283 | 101.2 |
-| curated mall-polse (aggregate, plates/s in products) | 7.088 | 7.605 | 107.3 |
-| curated mall-polse coverage (chests capped at 1 slot, 10 game-min) | every product | all 12 made | pass |
+| Module (catalog entry) | Declared | Measured | % | Warm-up to steady state |
+|---|---|---|---|---|
+| smelter-column iron, 12 furnaces | 3.75 plates/s | 3.660 | 97.6 | 15.0 min |
+| smelter-column copper, 4 | 1.25 | 1.250 | 100.0 | 23.0 min |
+| smelter-column stone-brick, 4 | 1.25 bricks/s | 1.203 | 96.3 | 19.0 min |
+| mining-outpost iron, 4 rows × 2, electric | 4.0 ore/s | 4.000 | 100.0 | 3.5 min |
+| mining-outpost coal, 3 rows × 2, burner | 1.5 | 1.500 | 100.0 | 3.5 min |
+| steam-block, 2 boilers | 3.6 MW | 3.533 MW | 98.1 | 3.5 min |
+| assembler-row gears, 4 | 3.024 gears/s | 3.017 | 99.8 | 3.5 min |
+| assembler-row cable, 2 | 3.36 cable/s | 3.358 | 100.0 | 3.5 min |
+| assembler-row belts, 2 | 3.024 belts/s | 3.017 | 99.8 | 3.5 min |
+| red-line, 2 units | 0.4 red/s | 0.400 | 100.0 | 7.0 min |
+| circuit-block, 1 unit | 1.787 circuits/s | 1.792 | 100.3 | 3.5 min |
+| lab-array, 4 labs (researching the largest red+green tech) | 0.1333 units/s | 0.1333 | 100.0 | 8.0 min |
+| curated red-tile-ramqvist | 1.0 red/s | 1.000 | 100.0 | 7.0 min |
+| curated green-line-hellpet | 0.28 green/s | 0.280 | 100.0 | 9.0 min |
+| curated mall-polse (plate value of all products, 15 min) | 7.088 | 6.551 | 92.4 | 7.0 min |
+| curated mall-polse coverage (chests capped at 1 slot, 20 game-min) | every product | all 12 made | pass | n/a |
 
-Times: the 16 validation tests take about 80 s (fast group ~30 s). Rendered modules: `docs/reports/m4/*.png`.
+With the earlier 1.1× feed after a 3× primed warm-up (M4a as first submitted), the same modules measured 98.9–119%
+(mall 107%). At 1.0× the gear and belt rows come down from 119% / 113% to 99.8%: the excess was the over-feed.
+
+Times: the 16 validation tests take about 3.5 min (the smelter columns, now `slow`, need 15–23 game-minutes to
+stabilise). Rendered modules: `docs/reports/m4/*.png`.
 
 | Smelter column (12) | Steam block (2) | Circuit block | Red tile (curated) | Green line (curated) | Mall (curated) |
 |---|---|---|---|---|---|
@@ -97,7 +103,7 @@ Times: the 16 validation tests take about 80 s (fast group ~30 s). Rendered modu
   instances (no overlaps, inside the footprint, every powered entity covered, one pole network, single-item
   ports on the edge), expansion ≡ regeneration for every generator, `expandTail`/`expandMoves`, transforms (all
   4 rotations × mirror stay valid and powered; port side swaps on mirror; 4 quarter turns are the identity).
-- **T2**: 16 new tests (15 catalog entries + mall coverage). Full suite locally: **60/60 pass** in 2 min 44 s.
+- **T2**: 16 new tests (15 catalog entries + mall coverage). Validation group with the D33 rule: ~3.5 min locally.
 - **CI** (GitHub Actions `Test`, T0–T2) on `m4-modules-routing`: success (3 min 28 s).
 
 ### Findings
@@ -107,10 +113,15 @@ Times: the 16 validation tests take about 80 s (fast group ~30 s). Rendered modu
 - **Yellow inserter throughput** measured ≈ 0.90–0.95 items/s from belts and ≈ 0.84–0.86 from machines, i.e. about
   one item per full turn (60 × 0.014 = 0.84) or a little better. The engine uses 0.9 (belt) and 1.0 (machine) of
   0.84/s; every declared rate is within 0–19% below measurement (conservative).
-- **A burner furnace's inserter does not insert ore while the furnace has no fuel.** Fed exactly at the declared
-  coal rate, the first furnaces on a fuel lane hoard coal into their fuel slots for minutes and the last ones never
-  start (the 12-furnace column measured 40% before priming). Real builds should prime fuel lanes (or saturate them);
-  the lab primes during warm-up. Worth knowing for M5's bootstrap of the first smelter column.
+- **A burner furnace's inserter does not insert ore while the furnace has no fuel, and furnaces hoard coal.** Fed
+  exactly at the declared coal rate, the first furnaces on a fuel lane fill their fuel slots before passing coal on,
+  so the last ones start late. At 1.0× (D33) the columns plateau for minutes (copper ×4: 49–51% of declared from
+  1 to 2 game-min; iron ×12: still 75% after 3 min) and only reach steady state after **15–23 game-minutes**, then
+  measure 96–100%. They are therefore tagged `slow` with a 60-minute warm-up cap. The steady-state check requires
+  every feeder to keep up, which is what tells the hoarding plateau (ore backs up) from the real steady state. For
+  M5: a new smelter column takes ~20 minutes to reach its rate unless the crew primes its fuel lane.
+- **Mall coverage at 1.0× needs longer than 10 minutes:** with chests capped at one slot, `pipe-to-ground` was not made
+  within 10 game-minutes at 1.0× (it was at 1.1×); within 20 minutes every product appears.
 - **Mall throughput is not per-product.** Products share gears and circuits; the assemblers nearest the trunk inlet
   take most of them, so per-product rates range from 0% to 300% of the proportional split while the total is 107%.
   The validation therefore checks the plate value of all products together (≥ 90%) plus a coverage run with chests
@@ -140,14 +151,15 @@ Times: the 16 validation tests take about 80 s (fast group ~30 s). Rendered modu
 - Blueprint strings are cached in the repo (`data/modules/sources/`) for reproducibility, with attribution; the
   site states no licence.
 
-### Proposals (not decisions; also in SPEC §11)
+### Proposals: decided
 
-- **P1 (validation criterion for malls):** for modules whose outputs go to chests, replace "each output ≥ 90% of
-  declared" by "plate value of all outputs ≥ 90%" plus "every product made with capped chests". This changes how an
-  acceptance threshold is applied, so it needs the user's approval; the tests implement it today.
-- **P2 (ModuleDef schema):** adopt the additions listed above into SPEC §5.4.
-- **P3 (validation feed):** feed 1.1 × declared while measuring after a primed warm-up (3 ×, ≥ 1.5 items/s per port),
-  instead of exactly the declared rates throughout, which measures the fill-up rather than the module.
+The user decided M4a's three proposals on 2026-10-14 (via the manager, not in this session):
+
+- **P1 (mall validation): accepted.** ≥ 90% of the declared plate value of all products plus a product-coverage run;
+  every other module keeps ≥ 90% per output. SPEC D33.
+- **P2 (ModuleDef schema): accepted.** Documented in SPEC §5.4.
+- **P3 (validation feed): changed by the user.** No 1.1× feed and no primed warm-up: feed exactly 1.0× and measure
+  after a steady state (detected automatically, capped warm-up). SPEC D33, implemented as described above.
 
 ## Interface for M4b (how the planner consumes modules)
 

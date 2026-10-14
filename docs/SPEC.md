@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.9** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.10** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -56,6 +56,7 @@ Two layers, by analogy:
 | D30 | Research goal (2026-10-14) | v1 researches **only the red/green technologies reachable without steel production or crude oil** (§3.2). No one-off steel smelt, so `steel-axe` is out, and nothing behind `oil-processing`. The set is computed from prototypes at runtime: **42** technologies in vanilla 2.0.77. |
 | D31 | Hand speed (2026-10-14) | Crew place entities at a **configurable human pace**: `place-delay-ticks` (default 8) per entity once in reach, `belt-place-delay-ticks` (default 3) for belts, which players drag (§5.1, §5.7). |
 | D32 | Faction starting areas (2026-10-14) | With `spawn-mode = auto-distance`, each faction's spawn is registered as a **map-gen starting point** (`MapGenSettings.starting_points`, as the vanilla PvP scenario does for teams) before its surroundings are generated, so it gets starting-area resources like a player. Setting `spawn-starting-area` (default on); off = search naturally generated land only. Proposed during M3 and confirmed by the user on 2026-10-14 (default on). Later milestones assume it. |
+| D33 | Module validation (2026-10-14, user decision on M4a proposals P1 and P3) | Modules are fed **exactly 1.0× their declared input rates** throughout (no over-feeding, no priming) and measured only once they reach a **steady state** (detected automatically, with a generous cap on the warm-up; the detection rule is an implementation parameter, §7). A module that never stabilises is reported as a finding, not papered over. Each output must then reach **≥ 90% of declared**. **Malls** (outputs into chests) are judged on the **plate value of all products together (≥ 90% of declared)** plus a **product-coverage run** (chests capped at one slot, every product appears). Decided by the user via the manager; P1 accepted as proposed, P3 changed from "1.1× after a 3× primed warm-up" to this rule. |
 
 ## 3. v1 Definition of Done
 
@@ -233,10 +234,24 @@ interface ModuleExpand {
   perUnit: { rates: { inputs: Rate[]; outputs: Rate[] }; machines: { name: string; count: number }[] };
   ports: "shift" | Port[];           // ports move with the far end ("shift") or are given per unit
 }
-interface Port { kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power";
+interface Port { id: string; kind: "belt-in"|"belt-out"|"pipe-in"|"pipe-out"|"power"|"chest-out";
   pos: {x:number;y:number}; dir: Direction; item?: string; // single-item (D23)
   side?: "left"|"right"; } // which side a belt must arrive on (side-loading), if it matters
 ```
+
+Fields added in M4a (accepted by the user 2026-10-14, M4a proposal P2; the code's `mod/src/modules/types.ts` is
+the reference):
+
+- **Port kind `chest-out`:** a chest the crew empties (malls). `power` is a small pole *inside* the module: **modules
+  carry their own small poles** (periodic, so growing never moves one), and the planner's pole network connects to
+  the `power` port.
+- `generator` (generator name for generated modules), `recipes` (every recipe run inside), `mirrorable` (false when
+  the layout depends on handedness), `notes` (normalisation notes).
+- **`anchor`** for site modules: `water` rectangles (shore: must be water, the footprint land) and `miningAreas` +
+  `resource` (patch: drill mining areas that must cover ore).
+- **`upkeep.fuel`:** burners the crew must refuel by hand (not fed from a port).
+- **`Rate.kind`:** `item`, `power` (`electricity` in W) or `research` (`research-unit`/s).
+- **`ModuleExpand.insertAt`:** the coordinate on the axis where units are inserted (entities and ports beyond it shift).
 
 Pipelines (`tools/modules/`, Python or TS, run offline):
 1. **Import** from three kinds of source. Every module records `provenance`.
@@ -276,8 +291,9 @@ Pipelines (`tools/modules/`, Python or TS, run offline):
 2. **Tag:** infer ports automatically: belts leaving the footprint and the item type from the recipe. A
    human-readable review file is produced for anything ambiguous.
 3. **Filter:** drop modules that need tech beyond v1 (bots, beacons, modules, oil).
-4. **Validate:** every module gets an in-game test. It is stamped into a lab, fed inputs, and must reach
-   ≥ 90% of its declared output rate.
+4. **Validate:** every module gets an in-game test. It is stamped into a lab, fed exactly its declared input rates,
+   and once its outputs reach a steady state it must reach ≥ 90% of its declared output rate (malls: of the plate
+   value of all products, plus a product-coverage run). See D33.
 
 **Sourcing recommendation for M4** (from `docs/reports/proto-module-sourcing.md` on `proto/module-sourcing`):
 curated modules come mostly from **curated early-game blueprints on factorioprints** (small, tileable,
@@ -514,6 +530,11 @@ metrics in **M6**.
   generated terrain** (cliffs, water, trees, existing structures). T3 **policy A/B soak runs**: the same seeds
   with different policies (or corridor widths), scorecards compared side by side (time-to-milestone, SPM,
   router failures, clearing cost, base area).
+- **Module validation (D33):** fed at 1.0× declared; steady state = after a minimum warm-up, two consecutive groups
+  of 3 sampling windows (30 s, 60 s for slow modules) agree within 3% on each output rate (malls: on their plate
+  value) and every input port took its full feed over the last group. Warm-up cap 15 game-min (fast) / 60 (slow).
+  Then ≥ 90% per output; malls: ≥ 90% of total plate value (measured over 15 min) plus product coverage (20 min,
+  chests capped at one slot). Long warm-ups are tagged `validation slow`.
 - **Renderer:** top-down schematic with a colour per entity category (belts show direction) and per
   faction. One frame every 5 game-minutes, assembled into a GIF.
 - **Regression gate:** a PR can't merge if T0–T2 fail. T3 scorecards are compared to `main`. A >10%
@@ -567,18 +588,8 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-Proposed during M4a (agent proposals, **not decided**; details and evidence in `docs/reports/M4-report.md`):
-
-- **P1, mall validation (proposed):** for modules whose outputs go to chests (the mall), check the plate value of all
-  products together (≥ 90% of declared) plus a coverage run (every product made with chests capped at one slot),
-  instead of ≥ 90% per product. Measured per-product rates depend on which assembler reaches the shared gears and
-  circuits first (0–300% of the proportional split) while the total is 107%.
-- **P2, ModuleDef schema (proposed):** add port kind `chest-out`, `generator`, `recipes`, `mirrorable`, `anchor`
-  (water tiles / drill mining areas), `upkeep` (crew-fuelled burners), `notes`, `Rate.kind` and
-  `ModuleExpand.insertAt` to §5.4; modules include their own small poles, with a `power` port on one of them.
-- **P3, validation feed (proposed):** feed 1.1 × the declared input rates while measuring, after a warm-up at 3 ×
-  (≥ 1.5 items/s per port) that primes buffers; fed exactly at the declared rate from cold, the first furnaces on a
-  fuel lane hoard coal for minutes and the last never start.
+Resolved 2026-10-14 (user, via the manager): M4a proposals P1 (mall validation) and P3 (validation feed, changed)
+→ D33; P2 (ModuleDef schema) → §5.4.
 
 Resolved 2026-10-14: blueprint sources → D19 and §5.4 (agents decide, attribution required). Online sources
 are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runner choice → agent decides
@@ -597,6 +608,10 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 - Factorio Lua API: https://lua-api.factorio.com/latest/
 
 ## Changelog
+
+- v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
+  mall plate value + coverage); ModuleDef schema additions in §5.4 (chest-out, anchor, upkeep, mirrorable, insertAt,
+  Rate.kind, modules carry their own poles); §11 P1–P3 resolved.
 
 - v0.1 (2026-10-14): initial draft from research + interview.
 - v0.2 (2026-10-14): stacked milestone PRs; prototypes on throwaway `proto/*` branches (§9, D16).

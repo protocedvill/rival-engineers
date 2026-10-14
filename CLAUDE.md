@@ -87,7 +87,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - **Inserter direction is the side it picks up from** (2.0): an inserter facing north takes from the tile north of
   it and drops south. Yellow inserters move about one item per full turn (0.84/s), a bit more from belts.
 - **An inserter won't put ore into a burner furnace that has no fuel.** Furnaces early on a thin fuel lane hoard coal
-  and later ones never start: prime fuel lanes (the module validation lab does during warm-up).
+  and the last ones start late: at exactly the declared coal rate a column takes 15–23 game-min to reach its rate
+  (D33 validation waits for steady state; a real build should prime its fuel lane).
 - `require` works only while control.lua is parsed: load data files at file scope, never lazily. TSTL resolves
   `require` paths at compile time; generated Lua files need an entry in `noResolvePaths` (`tsconfig.base.json`).
 - `products_finished` errors on mining drills (not a crafting machine).

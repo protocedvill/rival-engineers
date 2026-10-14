@@ -18,7 +18,7 @@ npm run typecheck        # T0
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
 npm test                 # build + in-game tests (T2) on headless Factorio
 npm test -- "pattern"    # filter tests by Lua pattern
-npm test -- "validation fast"   # module validation lab without the slow modules (~30 s)
+npm test -- "validation fast"   # module validation lab without the slow modules (~1 min)
 ```
 
 Curated modules (SPEC §5.4): edit a spec in `tools/modules/curated/`, then

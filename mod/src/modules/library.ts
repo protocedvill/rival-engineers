@@ -93,9 +93,9 @@ export interface CatalogEntry {
 }
 
 export const V1_CATALOG: CatalogEntry[] = [
-  { name: "smelter iron 12", generator: "smelter-column", params: { recipe: "iron-plate", furnaces: 12 } },
-  { name: "smelter copper 4", generator: "smelter-column", params: { recipe: "copper-plate", furnaces: 4 } },
-  { name: "smelter stone-brick 4", generator: "smelter-column", params: { recipe: "stone-brick", furnaces: 4 } },
+  { name: "smelter iron 12", generator: "smelter-column", params: { recipe: "iron-plate", furnaces: 12 }, slow: true },
+  { name: "smelter copper 4", generator: "smelter-column", params: { recipe: "copper-plate", furnaces: 4 }, slow: true },
+  { name: "smelter stone-brick 4", generator: "smelter-column", params: { recipe: "stone-brick", furnaces: 4 }, slow: true },
   { name: "mining iron 4x2 electric", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2 } },
   { name: "mining coal 3x2 burner", generator: "mining-outpost", params: { resource: "coal", rows: 3, sides: 2, drill: "burner-mining-drill" } },
   { name: "steam 2 boilers", generator: "steam-block", params: { boilers: 2 } },
