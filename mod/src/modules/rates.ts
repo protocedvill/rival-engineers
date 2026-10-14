@@ -8,9 +8,11 @@
 //    efficiency is lower when picking from a belt). A machine's crafts/s is capped by the sum of its input
 //    inserters over the items it needs per craft (fuel included), and by its output inserters over the items it
 //    makes per craft. Labs passing packs on to other labs need capacity for the whole chain behind them.
-// 3. Internal balance: an item both made and used inside the module is internal. If the makers fall short, users
-//    slow down proportionally; if nothing takes the surplus out (no output port), makers slow down.
-//    Iterated to a fixed point (modules are acyclic).
+// 3. Internal balance (`balance`): "final" machines make what leaves the module (their product has an output port
+//    and they don't feed another machine directly, or they fill an output chest; labs and drills); the others make
+//    intermediates. Final machines run at a common fraction t of their capacity; intermediate makers of an item
+//    share its demand in proportion to their capacity. t is the largest value (≤ 1) no intermediate group exceeds
+//    its capacity at. (A small LP solved exactly because the recipe graph inside a module is acyclic and linear.)
 // 4. What is left over: consumption of items with an input port → inputs; production of items with an output port
 //    → outputs. Burner fuel fed from a fuel port is an input; other burners go to `upkeep` (crew-fuelled).
 // 5. Steam power: min(boilers, engines, pumps) in watts → output "electricity". Electric demand of the module's
@@ -21,8 +23,8 @@ import { entityRect, tileKey } from "./geometry"
 import { Dir, MachineCount, ModuleEntity, ModuleRates, Port, Rate } from "./types"
 
 /** Inserter efficiency (fraction of one item per full rotation), calibrated by the validation lab (M4 report). */
-export const INSERTER_EFFICIENCY_FROM_BELT = 0.85
-export const INSERTER_EFFICIENCY_FROM_MACHINE = 0.95
+export const INSERTER_EFFICIENCY_FROM_BELT = 0.9
+export const INSERTER_EFFICIENCY_FROM_MACHINE = 1
 
 export interface RateOptions {
   /** Inserter hand size (non-bulk inserters; 1 without research). */
@@ -72,6 +74,9 @@ interface Node {
   hasOutInserter: boolean
   /** Labs fed by this lab through inserters. */
   feeds: number[]
+  /** Output inserters drop into another machine (direct insertion) / into a chest. */
+  toMachine: boolean
+  toChest: boolean
 }
 
 function addTo(map: Record<string, number>, key: string, v: number): void {
@@ -108,10 +113,13 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
 
   const inPortItems: Record<string, boolean> = {}
   const outPortItems: Record<string, boolean> = {}
+  /** Output items leaving on belts: their makers are final unless they feed another machine directly. */
+  const beltOutItems: Record<string, boolean> = {}
   for (const p of ports) {
     if (p.item === undefined) continue
     if (p.kind === "belt-in" || p.kind === "pipe-in") inPortItems[p.item] = true
     if (p.kind === "belt-out" || p.kind === "pipe-out" || p.kind === "chest-out") outPortItems[p.item] = true
+    if (p.kind === "belt-out" || p.kind === "pipe-out") beltOutItems[p.item] = true
   }
   let fuelItem: string | undefined
   for (const [item] of pairs(inPortItems)) if (facts.fuelValue(item) > 0) fuelItem = item
@@ -221,6 +229,8 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
       nodes[from].outCap += cap
       nodes[from].hasOutInserter = true
       if (to !== undefined && nodes[from].kind === "lab" && nodes[to]?.kind === "lab") nodes[from].feeds.push(to)
+      if (to !== undefined && nodes[to] !== undefined) nodes[from].toMachine = true
+      if (to !== undefined && facts.entity(entities[to].name)?.type === "container") nodes[from].toChest = true
     }
   }
 
@@ -264,47 +274,8 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
     }
   }
 
-  // --- internal balance
-  for (let iter = 0; iter < 50; iter++) {
-    const prod: Record<string, number> = {}
-    const cons: Record<string, number> = {}
-    const makers: Record<string, number[]> = {}
-    const users: Record<string, number[]> = {}
-    for (const i of order) {
-      const n = nodes[i]
-      for (const [item, a] of pairs(n.outs)) {
-        addTo(prod, item, a * n.rate)
-        ;(makers[item] ??= []).push(i)
-      }
-      for (const [item, a] of pairs(n.ins)) {
-        addTo(cons, item, a * n.rate)
-        ;(users[item] ??= []).push(i)
-      }
-    }
-    let changed = false
-    for (const [item, list] of pairs(users)) {
-      const p = prod[item] ?? 0
-      const c = cons[item] ?? 0
-      if (inPortItems[item] || makers[item] === undefined) continue
-      if (p < c - 1e-9) {
-        const s = p / c
-        for (const i of list) nodes[i].rate *= s
-        changed = true
-      }
-    }
-    for (const [item, list] of pairs(makers)) {
-      if (outPortItems[item] || item === "research-unit") continue
-      const p = prod[item] ?? 0
-      const c = cons[item] ?? 0
-      if (p > c + 1e-9) {
-        const s = c / p
-        if (c === 0) warnings.push(`${item} is made but neither used nor output`)
-        for (const i of list) nodes[i].rate *= s
-        changed = true
-      }
-    }
-    if (!changed) break
-  }
+  // --- internal balance (see the header, step 3)
+  balance(nodes, order, inPortItems, beltOutItems, warnings)
 
   // --- totals
   const inputs: Record<string, number> = {}
@@ -362,8 +333,115 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
   return { rates: { inputs: sortedRates(inputs, kindOf), outputs: sortedRates(outputs, kindOf) }, machines, activity, ideal, upkeepFuel, warnings }
 }
 
+function mainOut(n: Node): string | undefined {
+  for (const [item] of pairs(n.outs)) return item
+  return undefined
+}
+
+/**
+ * Sets every node's rate (see the header, step 3). Nodes come in with their capacity (inserter-capped) as `rate`.
+ * Items with an input port are raw: never constrained here.
+ */
+function balance(nodes: Record<number, Node>, order: number[], inPort: Record<string, boolean>, outPort: Record<string, boolean>, warnings: string[]): void {
+  const cap: Record<number, number> = {}
+  const isFinal: Record<number, boolean> = {}
+  const consumers: Record<string, number[]> = {}
+  const inter: Record<string, number[]> = {}
+  const hybrid: Record<string, number[]> = {}
+  for (const i of order) {
+    const n = nodes[i]
+    cap[i] = n.rate
+    const item = mainOut(n)
+    isFinal[i] = n.kind !== "crafter" || n.toChest || (item !== undefined && outPort[item] === true && !n.toMachine)
+    for (const [ing] of pairs(n.ins)) (consumers[ing] ??= []).push(i)
+  }
+  for (const i of order) {
+    const item = mainOut(nodes[i])
+    if (item === undefined) continue
+    if (!isFinal[i]) (inter[item] ??= []).push(i)
+    else if (nodes[i].toMachine) (hybrid[item] ??= []).push(i)
+  }
+  // Items only final machines make, passing some on by direct insertion (a mall's belt assembler feeding the
+  // splitter assembler): the machines they feed get at most what those makers produce.
+  for (let pass = 0; pass < 8; pass++) {
+    let changed = false
+    for (const [item, makers] of pairs(hybrid)) {
+      if (inter[item] !== undefined || inPort[item]) continue
+      let h = 0
+      for (const m of makers) h += cap[m] * (nodes[m].outs[item] ?? 0)
+      let d = 0
+      for (const c of consumers[item] ?? []) d += cap[c] * (nodes[c].ins[item] ?? 0)
+      if (d > h + 1e-12) {
+        for (const c of consumers[item] ?? []) cap[c] *= h / d
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+  // Demand at t = 1 for each internal item, and the utilisation of its intermediate makers.
+  const util: Record<string, number> = {}
+  const visiting: Record<string, boolean> = {}
+  const required = (i: number): number => {
+    if (isFinal[i]) return cap[i]
+    const item = mainOut(nodes[i])
+    return item === undefined ? 0 : cap[i] * utilisation(item)
+  }
+  const supply = (list: number[] | undefined, item: string): number => {
+    let s = 0
+    for (const p of list ?? []) s += cap[p] * (nodes[p].outs[item] ?? 0)
+    return s
+  }
+  const demand = (item: string): number => {
+    let d = 0
+    for (const c of consumers[item] ?? []) d += required(c) * (nodes[c].ins[item] ?? 0)
+    return d
+  }
+  function utilisation(item: string): number {
+    const known = util[item]
+    if (known !== undefined) return known
+    if (visiting[item]) {
+      warnings.push(`cycle through ${item}`)
+      return 0
+    }
+    visiting[item] = true
+    const residual = demand(item) - supply(hybrid[item], item)
+    const capacity = supply(inter[item], item)
+    const u = residual <= 0 ? 0 : capacity > 0 ? residual / capacity : 0
+    if (capacity === 0 && !outPort[item] && consumers[item] === undefined) warnings.push(`${item} is made but neither used nor output`)
+    visiting[item] = false
+    util[item] = u
+    return u
+  }
+  let t = 1
+  const items: string[] = []
+  for (const [item] of pairs(consumers)) items.push(item)
+  items.sort()
+  for (const item of items) {
+    if (inPort[item]) continue
+    const d = demand(item)
+    const h = supply(hybrid[item], item)
+    const c = supply(inter[item], item)
+    if (d <= h + 1e-12) continue
+    if (c === 0) {
+      if (hybrid[item] === undefined) {
+        warnings.push(`${item} is needed but has no input port`)
+        t = 0
+      }
+      continue
+    }
+    t = Math.min(t, c / (d - h))
+  }
+  for (const i of order) {
+    if (isFinal[i]) nodes[i].rate = t * cap[i]
+    else {
+      const item = mainOut(nodes[i])
+      nodes[i].rate = item === undefined ? 0 : t * cap[i] * utilisation(item)
+    }
+  }
+}
+
 function newNode(index: number, kind: NodeKind, ideal: number): Node {
-  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [] }
+  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [], toMachine: false, toChest: false }
 }
 
 /** The rate of `item` in a rate list (0 if absent). */

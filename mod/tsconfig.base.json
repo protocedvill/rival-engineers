@@ -19,6 +19,6 @@
     "noImplicitGlobalVariables": true,
     "luaLibImport": "require-minimal",
     "sourceMapTraceback": false,
-    "noResolvePaths": ["__factorio-test__/init"]
+    "noResolvePaths": ["__factorio-test__/init", "modules.curated_data"]
   }
 }

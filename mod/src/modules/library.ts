@@ -13,12 +13,12 @@ import { CuratedModuleFile, ModuleDef } from "./types"
 /** @noSelf */
 declare function require(this: void, module: string): unknown
 
-let curatedFiles: Record<string, CuratedModuleFile> | undefined
+// Factorio only allows `require` while control.lua is being parsed, so the data loads with this file.
+const curatedFiles = require("modules.curated_data") as Record<string, CuratedModuleFile>
 const curatedCache: Record<string, ModuleDef> = {}
 const generatedCache: Record<string, ModuleDef> = {}
 
 function files(): Record<string, CuratedModuleFile> {
-  curatedFiles ??= require("modules.curated_data") as Record<string, CuratedModuleFile>
   return curatedFiles
 }
 
