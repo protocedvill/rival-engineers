@@ -1,64 +1,15 @@
-import { LuaEntity, LuaEntityPrototype, MapPosition } from "factorio:runtime"
+import { LuaEntity, MapPosition } from "factorio:runtime"
+import { spawnFaction, SpawnFactionOptions } from "./autospawn"
 import { cancel, createController, enqueue, getAction, isIdle } from "./character/controller"
 import { ActionSpec } from "./character/types"
 import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride } from "./config"
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
+import { brainReport, startBootstrap } from "./strategy/bootstrap"
+import { computeResearchGoal } from "./strategy/research"
+import { dumpEntities, writeTelemetry } from "./telemetry"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
-
-interface DumpedEntity {
-  name: string
-  type: string
-  x: number
-  y: number
-  direction: number
-  force: string
-  /** Collision box size (tiles). */
-  w: number
-  h: number
-  /** Footprint in whole tiles, rotation applied. */
-  tw: number
-  th: number
-  /** Ghosts: the planned entity's name and type (footprint fields describe the planned entity). */
-  ghost_name?: string
-  ghost_type?: string
-}
-
-/** Writes all entities in a square area to script-output/<file> as JSON, for tools/render. */
-function dumpEntities(file: string, center: MapPosition, radius: number): number {
-  const surface = game.surfaces[1]
-  const entities = surface.find_entities_filtered({
-    area: [
-      [center.x - radius, center.y - radius],
-      [center.x + radius, center.y + radius],
-    ],
-  })
-  const out: DumpedEntity[] = []
-  for (const e of entities) {
-    const ghost = e.type === "entity-ghost"
-    const proto = ghost ? (e.ghost_prototype as LuaEntityPrototype) : e.prototype
-    const box = proto.collision_box
-    // Rotated non-square entities swap their footprint.
-    const sideways = e.direction === defines.direction.east || e.direction === defines.direction.west
-    out.push({
-      name: e.name,
-      type: e.type,
-      x: e.position.x,
-      y: e.position.y,
-      direction: e.direction,
-      force: e.force.name,
-      w: box.right_bottom.x - box.left_top.x,
-      h: box.right_bottom.y - box.left_top.y,
-      tw: sideways ? proto.tile_height : proto.tile_width,
-      th: sideways ? proto.tile_width : proto.tile_height,
-      ghost_name: ghost ? proto.name : undefined,
-      ghost_type: ghost ? proto.type : undefined,
-    })
-  }
-  helpers.write_file(file, helpers.table_to_json({ tick: game.tick, center, radius, entities: out }), false)
-  return out.length
-}
 
 function mustFaction(name: string) {
   const faction = getFaction(name)
@@ -79,13 +30,15 @@ function factionStats(name: string) {
     const m = storage.crew[id]
     crew.push({ id, dead: m.dead, claims: m.claims.length, stats: m.stats })
   }
-  return { force: faction.force, counters: board.counters, jobs: byStatus, crew }
+  return { force: faction.force, counters: board.counters, jobs: byStatus, crew, brain: brainReport(faction) }
 }
 
 export function registerRemoteInterface(): void {
   remote.add_interface("rival-engineers", {
     version: () => script.active_mods["rival-engineers"],
-    dump_entities: dumpEntities,
+    /** dump_entities(file, center, radius, surface?, water?) */
+    dump_entities: (file: string, center: MapPosition, radius: number, surface?: string, water?: boolean) =>
+      dumpEntities(file, center, radius, surface !== undefined ? game.surfaces[surface] : undefined, water),
 
     // Character Controller (M1). M2's Job Board calls the same functions directly.
     create_controller: (character: LuaEntity) => createController(character),
@@ -110,8 +63,20 @@ export function registerRemoteInterface(): void {
     set_faction_paused: (faction: string, paused: boolean) => {
       mustFaction(faction).paused = paused
     },
-    /** Board counters, job counts by status and per-crew stats. */
+    /** Board counters, job counts by status, per-crew stats and the brain's report. */
     faction_stats: (faction: string) => factionStats(faction),
+
+    // Burner bootstrap (M3).
+    /** Spawns a faction per `spawn-mode` (or at `options.position`) with starter items and the bootstrap brain. */
+    spawn_faction: (name: string, options?: SpawnFactionOptions) => spawnFaction(name, options).force,
+    /** Starts the bootstrap brain for an existing faction whose crew stands near `base`. */
+    start_bootstrap: (name: string, base: MapPosition) => {
+      startBootstrap(mustFaction(name), base)
+    },
+    faction_report: (name: string) => brainReport(mustFaction(name)),
+    write_telemetry: () => writeTelemetry(),
+    /** The v1 research goal (SPEC §3.2), computed from prototypes. */
+    research_goal: () => computeResearchGoal(),
 
     // Config (SPEC §5.7): tests and the harness override settings here.
     get_config: () => getConfig(),

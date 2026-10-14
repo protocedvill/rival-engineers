@@ -44,6 +44,11 @@ export interface Config {
   spawnResourceRadius: number
   /** fixed-offsets: "x,y;x,y;..." offsets from the player spawn, one per faction. */
   spawnFixedOffsets: string
+  /**
+   * auto-distance: give each faction a map-gen starting area (MapGenSettings.starting_points, as the PvP
+   * scenario does for teams) at a not-yet-generated spot, so it gets starting resources like a player.
+   */
+  spawnStartingArea: boolean
   /** Chunks within this radius of the base are generated (like a player exploring) and scanned for resources. */
   scanRadius: number
   /** The strategy layer re-evaluates each faction every this many ticks. */
@@ -91,6 +96,7 @@ export function getConfig(): Config {
     spawnMinDistance: setting(Settings.spawnMinDistance),
     spawnResourceRadius: setting(Settings.spawnResourceRadius),
     spawnFixedOffsets: setting(Settings.spawnFixedOffsets),
+    spawnStartingArea: setting(Settings.spawnStartingArea),
     scanRadius: setting(Settings.scanRadius),
     brainIntervalTicks: setting(Settings.brainIntervalTicks),
     bootstrapSites: setting(Settings.bootstrapSites),

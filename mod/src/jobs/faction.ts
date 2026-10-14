@@ -1,4 +1,4 @@
-import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, MapPosition } from "factorio:runtime"
+import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { createController, destroyController } from "../character/controller"
 import { getConfig } from "../config"
 import { addJob, newBoard, Rect } from "./board"
@@ -14,6 +14,10 @@ export interface CreateFactionOptions {
   position?: MapPosition
   /** Crew size; default: the `crew-size` setting. */
   crew?: number
+  /** Surface name; default: the first surface (nauvis). */
+  surface?: string
+  /** Give each crew member the freeplay starter items (D5). */
+  starterItems?: Record<string, number>
 }
 
 export function getFaction(name: string): FactionState | undefined {
@@ -22,6 +26,10 @@ export function getFaction(name: string): FactionState | undefined {
 
 export function factionForce(faction: FactionState): LuaForce {
   return game.forces[faction.force]
+}
+
+export function factionSurface(faction: FactionState): LuaSurface {
+  return game.surfaces[faction.surface]
 }
 
 /** Neutral to everyone (D6): cease-fire both ways with every other force except the biters. */
@@ -42,6 +50,7 @@ export function createFaction(name: string, options: CreateFactionOptions = {}):
   makeNeutral(force)
   const faction: FactionState = {
     name,
+    surface: options.surface ?? game.surfaces[1].name,
     force: forceName,
     crew: [],
     stockpiles: [],
@@ -54,7 +63,11 @@ export function createFaction(name: string, options: CreateFactionOptions = {}):
   storage.factionOrder.push(name)
   if (options.position) {
     const count = options.crew ?? getConfig().crewSize
-    for (let i = 0; i < count; i++) spawnCrew(faction, options.position)
+    for (let i = 0; i < count; i++) {
+      const member = spawnCrew(faction, options.position)
+      const items = options.starterItems
+      if (items) for (const item in items) member.character.insert({ name: item, count: items[item] })
+    }
   }
   return faction
 }
@@ -77,7 +90,7 @@ export function destroyFaction(name: string): void {
 
 /** Creates a character for the faction on free ground near `position` and adds it to the crew. */
 export function spawnCrew(faction: FactionState, position: MapPosition): CrewMember {
-  const surface = game.surfaces[1]
+  const surface = factionSurface(faction)
   const at = surface.find_non_colliding_position("character", position, 32, 0.5) ?? position
   const character = surface.create_entity({ name: "character", position: at, force: faction.force })
   assert(character, "spawned a crew character")
@@ -131,7 +144,7 @@ export interface PlanGhostsOptions {
  * number of place jobs added. The ghosts stay as the visible plan until a crew member fills them.
  */
 export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {}): number {
-  const surface = game.surfaces[1]
+  const surface = factionSurface(faction)
   const ghosts = surface.find_entities_filtered({ type: "entity-ghost", force: faction.force, area: options.area })
   let added = 0
   for (const ghost of ghosts) {

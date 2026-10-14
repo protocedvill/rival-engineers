@@ -22,8 +22,11 @@ export type ActionSpec =
    * then the item is consumed and the ghost revived, so it keeps its settings. On failure the ghost stays.
    */
   | { kind: "place"; item: string; position: MapPosition; direction?: defines.direction; ghost?: LuaEntity }
-  /** Move `count` of `item` from the character into `entity`. */
-  | { kind: "insert"; entity: LuaEntity; item: string; count: number }
+  /**
+   * Move `count` of `item` from the character into `entity`. Strict by default. With `allowPartial`, moves
+   * what the character has (up to `count`) and what fits; it fails only if the character has none.
+   */
+  | { kind: "insert"; entity: LuaEntity; item: string; count: number; allowPartial?: boolean }
   /**
    * Move `count` of `item` from `entity` into the character. Strict by default: fails with `not-enough`
    * if fewer are there. With `allowPartial`, takes whatever is there up to `count`, like a player

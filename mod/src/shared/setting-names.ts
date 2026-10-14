@@ -22,6 +22,7 @@ export const Settings = {
   spawnMinDistance: "rival-engineers-spawn-min-distance",
   spawnResourceRadius: "rival-engineers-spawn-resource-radius",
   spawnFixedOffsets: "rival-engineers-spawn-fixed-offsets",
+  spawnStartingArea: "rival-engineers-spawn-starting-area",
   scanRadius: "rival-engineers-scan-radius",
   brainIntervalTicks: "rival-engineers-brain-interval-ticks",
   bootstrapSites: "rival-engineers-bootstrap-sites",

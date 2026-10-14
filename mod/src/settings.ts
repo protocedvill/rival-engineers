@@ -189,6 +189,13 @@ data.extend([
     order: "a-g",
   },
   {
+    type: "bool-setting",
+    name: Settings.spawnStartingArea,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "a-h",
+  },
+  {
     type: "int-setting",
     name: Settings.scanRadius,
     setting_type: "runtime-global",

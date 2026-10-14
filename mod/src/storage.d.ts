@@ -27,6 +27,10 @@ declare global {
     factionOrder: string[]
     crew: Record<number, CrewMember>
     nextCrewId: number
+    /** Set by on_init: create the configured factions on the first tick. */
+    autoSpawnPending?: boolean
+    /** The soak harness's done.json has been written. */
+    allDoneWritten?: boolean
     /** Scratch space for factorio-test tests that must find their objects again after a reload. */
     testScratch?: Record<string, unknown>
   }

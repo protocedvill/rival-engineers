@@ -6,7 +6,8 @@
     "build": "node tools/build-mod.mjs",
     "typecheck": "tsc -p mod/tsconfig.json --noEmit && tsc -p mod/tsconfig.settings.json --noEmit && tsc -p mod/tsconfig.unit.json --noEmit",
     "test:unit": "node tools/run-unit-tests.mjs",
-    "test": "npm run build && factorio-test run"
+    "test": "npm run build && factorio-test run",
+    "soak": "python3 tools/harness/soak.py"
   },
   "devDependencies": {
     "factorio-test": "3.1.0",

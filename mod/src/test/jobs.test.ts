@@ -4,7 +4,7 @@ import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob } from "../jobs/board"
 import { addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
-import { setAiProfiler } from "../tick"
+import { setAiProfiler } from "../profiling"
 import { at, createLab, itemCount, Lab } from "./lab"
 
 // M2 acceptance (SPEC §8): crews build ghost layouts through the Job Board. Debug parity toggles stay off.

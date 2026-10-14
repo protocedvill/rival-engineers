@@ -265,9 +265,14 @@ function primaryProduct(entity: LuaEntity): string | undefined {
   return first?.type === "item" ? first.name : undefined
 }
 
-function mineTick(character: LuaEntity, target: LuaEntity): void {
+/** Starts or continues mining `target`. False if something else (a ghost) would be mined instead. */
+function mineTick(character: LuaEntity, target: LuaEntity): boolean {
   character.update_selected_entity(target.position)
+  const selected = character.selected
+  // A player mining here would deconstruct the ghost on top of the ore; don't.
+  if (selected && selected.valid && selected !== target && selected.type === "entity-ghost") return false
   character.mining_state = { mining: true, position: target.position }
+  return true
 }
 
 function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "mine" }>, config: Config, tick: number): StepResult {
@@ -305,7 +310,7 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
     return fail("inventory-full", action.item)
   }
   if (stalled(action, gained + character.character_mining_progress, config, tick)) return fail("stalled", "mining made no progress")
-  mineTick(character, target)
+  if (!mineTick(character, target)) return fail("not-minable", "a ghost covers the target")
   return "running"
 }
 
@@ -425,11 +430,14 @@ function stepTransfer(
   }
   const item = spec.item
   if (spec.kind === "insert") {
-    if (itemCount(character, item) < spec.count) return fail("missing-item", `${item}: have ${itemCount(character, item)} of ${spec.count}`)
-    const removed = character.remove_item({ name: item, count: spec.count })
+    const have = itemCount(character, item)
+    if (spec.allowPartial ? have === 0 : have < spec.count) return fail("missing-item", `${item}: have ${have} of ${spec.count}`)
+    const want = math.min(have, spec.count)
+    const removed = character.remove_item({ name: item, count: want })
     const inserted = removed > 0 ? entity.insert({ name: item, count: removed }) : 0
     if (inserted < removed) character.insert({ name: item, count: removed - inserted })
     action.stats.items = inserted
+    if (spec.allowPartial) return "done"
     return inserted < spec.count ? fail("target-full", `inserted ${inserted} of ${spec.count}`) : "done"
   }
   const available = entity.get_item_count(item)
@@ -475,6 +483,6 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
   }
   if (action.item && !character.can_insert({ name: action.item, count: 1 })) return fail("inventory-full", action.item)
   if (stalled(action, character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
-  mineTick(character, entity)
+  if (!mineTick(character, entity)) return fail("not-minable", "a ghost covers the target")
   return "running"
 }

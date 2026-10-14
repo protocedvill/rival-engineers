@@ -21,6 +21,7 @@ import {
   selectJob,
   addJob,
 } from "./board"
+import { factionSurface } from "./faction"
 import { CrewMember, FactionState, JobPayload } from "./types"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
@@ -35,6 +36,16 @@ type CrewJob = Job<JobPayload>
 
 /** Unpenalised releases of one job before a blocked placement counts as a failed attempt after all. */
 const MAX_DEFERRALS = 40
+
+/** Jobs a crew member creates and claims for itself (never selected from the board). */
+function isSelfJob(job: CrewJob): boolean {
+  return job.payload.kind === "haul" || job.payload.kind === "deposit"
+}
+
+/** Jobs whose actions may partly fail without failing the job: moving what is there is the point. */
+function isLenientJob(job: CrewJob): boolean {
+  return isSelfJob(job) || job.payload.kind === "transfer"
+}
 
 export function onCrewTick(): void {
   const order = storage.factionOrder
@@ -79,8 +90,14 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
     if (member.dead) continue
     const stats = member.stats
     stats.ticks++
-    if (member.claims.length > 0) stats.busyTicks++
-    else if (ready > 0) stats.idleTicks++
+    if (member.claims.length > 0) {
+      stats.busyTicks++
+      const current = member.actions[0]
+      const job = current?.job !== undefined ? faction.board.jobs[current.job] : undefined
+      const kind = job ? job.payload.kind : "walk"
+      stats.byKind ??= {}
+      stats.byKind[kind] = (stats.byKind[kind] ?? 0) + 1
+    } else if (ready > 0) stats.idleTicks++
   }
 }
 
@@ -93,7 +110,7 @@ function onDeath(faction: FactionState, member: CrewMember, tick: number): void 
   for (const jobId of member.claims) {
     const job = board.jobs[jobId]
     // A haul belongs to the member; nobody else can finish it.
-    if (job.kind === "haul" && job.status === "claimed") failJob(board, jobId, "crew-invalid", tick, member.id)
+    if (isSelfJob(job) && job.status === "claimed") failJob(board, jobId, "crew-invalid", tick, member.id)
   }
   releaseAllOf(board, member.id, tick, "crew-invalid")
   for (const ca of member.actions) unreserve(faction, ca.reserve)
@@ -128,7 +145,7 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     if (ca.job === undefined) continue // the walk to the standing spot
     const job = board.jobs[ca.job]
     if (job.status !== "claimed" || job.claimedBy !== member.id) continue
-    if (job.kind === "haul") {
+    if (isLenientJob(job)) {
       // Partial or failed takes don't fail the haul: a job short of materials fails on its own.
       if (status !== "succeeded" && action) job.reason = `${action.reason ?? status} ${action.detail ?? ""}`
       if (!hasMoreActionsFor(member, job.id)) finishJob(faction, member, job, action, tick)
@@ -160,11 +177,34 @@ function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, acti
   complete(faction.board, job.id, member.id, tick)
   removeClaim(member, job.id)
   if (job.kind !== "haul") member.stats.jobsDone++
+  // A finished craft is a plan step for the strategy layer's stall detection.
+  if (faction.brain && job.payload.kind === "craft") faction.brain.steps++
+}
+
+/**
+ * Drops everything a member is doing: cancels its actions, gives back its claims (without penalty; its own
+ * hauls and deposits fail) and its stockpile reservations. Used when the strategy layer replans.
+ */
+export function resetMember(faction: FactionState, member: CrewMember, tick: number): void {
+  for (const ca of member.actions) {
+    cancel(ca.action)
+    unreserve(faction, ca.reserve)
+  }
+  member.actions = []
+  const board = faction.board
+  for (const jobId of member.claims) {
+    const job = board.jobs[jobId]
+    if (job === undefined || job.status !== "claimed") continue
+    if (isSelfJob(job)) failJob(board, jobId, "reset", tick, member.id)
+    else release(board, jobId, member.id, tick, { reason: "reset", penalize: false, maxAttempts: 1, retryTicks: 0 })
+  }
+  member.claims = []
+  member.spot = undefined
 }
 
 function charactersIn(faction: FactionState, rect: Rect | undefined): boolean {
   if (!rect) return false
-  const found = game.surfaces[1].find_entities_filtered({
+  const found = factionSurface(faction).find_entities_filtered({
     type: "character",
     area: [
       [rect.x1, rect.y1],
@@ -278,6 +318,9 @@ function dropDeadJobs(faction: FactionState, tick: number): void {
     let gone: string | undefined
     if (payload.kind === "place" && !payload.ghost.valid) gone = "ghost-removed"
     else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
+    else if (payload.kind === "gather" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
+    else if (payload.kind === "craft" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
+    else if (payload.kind === "transfer" && (!payload.from.valid || !payload.to.valid)) gone = "target-invalid"
     else if (payload.kind === "fuel" && depsDone(board, job) && !fuelTarget(faction, job)) gone = "target-invalid"
     if (gone !== undefined) failJob(board, id, gone, tick)
   }
@@ -315,8 +358,10 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   dropDeadJobs(faction, tick)
   const held = heldItems(character)
   const avail = availableItems(faction, held)
+  // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
+  if (faction.brain && deposit(faction, member, held, tick)) return
   const accept = (job: CrewJob): boolean => {
-    if (job.kind === "haul" || !hasMaterials(job, avail)) return false
+    if (isSelfJob(job) || !hasMaterials(job, avail)) return false
     if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
     return true
   }
@@ -361,6 +406,47 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   for (const job of jobs) enqueueWork(faction, member, job)
 }
 
+/** Item types a crew member keeps on itself instead of depositing (its own weapons and armour). */
+const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true }
+
+/**
+ * Puts what the member carries into the faction's stockpiles (whatever fits). Returns whether it queued
+ * anything. Creates a deposit job the member claims for itself, like a haul.
+ */
+function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number): boolean {
+  const piles = validStockpiles(faction)
+  if (piles.length === 0) return false
+  const names: string[] = []
+  for (const item in held) if (held[item] > 0 && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
+  if (names.length === 0) return false
+  names.sort()
+  const board = faction.board
+  let job: CrewJob | undefined
+  for (const item of names) {
+    let chest: LuaEntity | undefined
+    let bestD = 0
+    for (const pile of piles) {
+      if (!pile.can_insert({ name: item, count: 1 })) continue
+      const d = distance(member.character.position, pile.position)
+      if (chest === undefined || d < bestD) {
+        chest = pile
+        bestD = d
+      }
+    }
+    if (!chest) continue
+    if (!job) {
+      job = addJob(board, { kind: "haul", pos: chest.position, payload: { kind: "deposit", forMember: member.id } }, tick)
+      claim(board, [job.id], member.id, tick)
+      member.claims.push(job.id)
+    }
+    const action = enqueue(member.controller, { kind: "insert", entity: chest, item, count: held[item], allowPartial: true })
+    member.actions.push({ action, job: job.id })
+  }
+  if (!job) return false
+  member.stats.deposits = (member.stats.deposits ?? 0) + 1
+  return true
+}
+
 function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], tick: number): void {
   const board = faction.board
   const from = member.character.position
@@ -402,20 +488,36 @@ function enqueueWork(faction: FactionState, member: CrewMember, job: CrewJob): v
       push(enqueue(ctrl, { kind: "place", item: payload.item, position: payload.position, direction: payload.direction, ghost: payload.ghost }))
       break
     case "fuel":
-      push(enqueue(ctrl, { kind: "insert", entity: fuelTarget(faction, job)!, item: payload.item, count: payload.count }))
+      push(enqueue(ctrl, { kind: "insert", entity: fuelTarget(faction, job)!, item: payload.item, count: payload.count, allowPartial: payload.partial }))
       break
     case "gather":
       push(enqueue(ctrl, { kind: "mine", target: payload.target, count: payload.count }))
-      if (payload.deliverTo) push(enqueue(ctrl, { kind: "insert", entity: payload.deliverTo, item: payload.item, count: payload.count }))
+      if (payload.deliverTo) push(enqueue(ctrl, { kind: "insert", entity: payload.deliverTo, item: payload.item, count: payload.count, allowPartial: true }))
       break
     case "craft":
       push(enqueue(ctrl, { kind: "craft", recipe: payload.recipe, count: payload.count }))
+      if (payload.deliverTo && payload.item) {
+        push(enqueue(ctrl, { kind: "insert", entity: payload.deliverTo, item: payload.item, count: payload.count * craftYield(payload.recipe, payload.item), allowPartial: true }))
+      }
+      break
+    case "transfer":
+      push(enqueue(ctrl, { kind: "take", entity: payload.from, item: payload.item, count: payload.count, allowPartial: true }))
+      push(enqueue(ctrl, { kind: "insert", entity: payload.to, item: payload.item, count: payload.count, allowPartial: true }))
       break
     case "clear":
       if (payload.target.force.name === faction.force) push(enqueue(ctrl, { kind: "pickUp", entity: payload.target }))
       else push(enqueue(ctrl, { kind: "mine", target: payload.target }))
       break
     case "haul":
+    case "deposit":
       break
   }
+}
+
+/** Items of `item` one craft of `recipe` yields. */
+export function craftYield(recipe: string, item: string): number {
+  for (const p of prototypes.recipe[recipe].products) {
+    if (p.type === "item" && p.name === item) return p.amount ?? p.amount_min ?? 1
+  }
+  return 1
 }
