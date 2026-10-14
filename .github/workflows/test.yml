@@ -1,0 +1,52 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Pinned to the stable release the mod targets (SPEC D12). Bump together with typed-factorio.
+  FACTORIO_VERSION: "2.0.77"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Typecheck (T0)
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
+      - uses: actions/cache@v6
+        id: factorio-cache
+        with:
+          path: .factorio-test/factorio
+          key: factorio-headless-${{ env.FACTORIO_VERSION }}
+      - name: Download Factorio headless
+        if: steps.factorio-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .factorio-test
+          curl -fsSL "https://factorio.com/get-download/${FACTORIO_VERSION}/headless/linux64" | tar -xJ -C .factorio-test
+
+      # factorio-test is vendored (MIT) so CI needs no mod-portal credentials.
+      - name: Provide vendored mods
+        run: mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
+
+      - name: In-game tests (T2)
+        run: npx factorio-test run --no-frozen-lockfile
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-output
+          path: |
+            out/
+            .factorio-test/data/factorio-current.log
+            .factorio-test/data/script-output/

@@ -1,0 +1,6 @@
+{
+  "modPath": "./mod/build",
+  "factorioPath": "./.factorio-test/factorio/bin/x64/factorio",
+  "dataDirectory": "./.factorio-test/data",
+  "outputFile": "./out/test-results.json"
+}
