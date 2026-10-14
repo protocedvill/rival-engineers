@@ -1,0 +1,7 @@
+{
+  "_comment": "How tools/test-parallel.mjs splits test files into shard units. A file not listed runs as one unit. \"each\": every test is its own unit. A list of Lua patterns: the tests matching one pattern stay together (they share state, e.g. storage.testScratch), every other test is its own unit. Split only files whose tests are independent of each other.",
+  "split": {
+    "test/modules_test": "each",
+    "test/routing_test": ["real terrain"]
+  }
+}
