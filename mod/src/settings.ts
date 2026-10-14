@@ -1,5 +1,6 @@
 import { Settings } from "./shared/setting-names"
 
+// Every runtime setting is read through mod/src/config.ts (SPEC §5.7).
 data.extend([
   {
     type: "int-setting",
@@ -18,6 +19,42 @@ data.extend([
     minimum_value: 1,
     maximum_value: 8,
     order: "b",
+  },
+  {
+    type: "int-setting",
+    name: Settings.controllerStepsPerTick,
+    setting_type: "runtime-global",
+    default_value: 32,
+    minimum_value: 1,
+    maximum_value: 1000,
+    order: "c-a",
+  },
+  {
+    type: "int-setting",
+    name: Settings.stuckTicks,
+    setting_type: "runtime-global",
+    default_value: 60,
+    minimum_value: 10,
+    maximum_value: 3600,
+    order: "c-b",
+  },
+  {
+    type: "int-setting",
+    name: Settings.maxRepaths,
+    setting_type: "runtime-global",
+    default_value: 5,
+    minimum_value: 0,
+    maximum_value: 100,
+    order: "c-c",
+  },
+  {
+    type: "int-setting",
+    name: Settings.actionStallTicks,
+    setting_type: "runtime-global",
+    default_value: 1200,
+    minimum_value: 60,
+    maximum_value: 216000,
+    order: "c-d",
   },
   {
     type: "bool-setting",

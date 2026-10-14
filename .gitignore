@@ -1,5 +1,6 @@
 node_modules/
 mod/build/
+mod/build-unit/
 .factorio-test/
 tools/modules/input/
 out/

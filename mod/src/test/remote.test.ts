@@ -33,6 +33,22 @@ describe("remote interface", () => {
     assert(count === 1, `dumped ${count}`)
   })
 
+  test("drives a character controller and config overrides", () => {
+    const lab = createLab(8)
+    const character = lab.surface.create_entity({ name: "character", position: lab.origin, force: "player" })!
+    character.insert({ name: "iron-plate", count: 2 })
+    const ctrl = remote.call("rival-engineers", "create_controller", character) as number
+    const id = remote.call("rival-engineers", "enqueue", ctrl, { kind: "craft", recipe: "iron-gear-wheel", count: 1 }) as number
+    remote.call("rival-engineers", "set_config_override", "stuckTicks", 123)
+    assert((remote.call("rival-engineers", "get_config") as { stuckTicks: number }).stuckTicks === 123)
+    remote.call("rival-engineers", "clear_config_overrides")
+    after_ticks(40, () => {
+      const a = remote.call("rival-engineers", "action", id) as { status: string }
+      assert(a.status === "succeeded", `status ${a.status}`)
+      assert(remote.call("rival-engineers", "is_idle", ctrl) === true)
+    })
+  })
+
   test("demo scene timelapse frames for the renderer", () => {
     const lab = createLab(16)
     buildDemoLine(lab, getOrCreateForce("rival-demo-a"), -6)

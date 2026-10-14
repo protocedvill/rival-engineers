@@ -21,6 +21,10 @@ jobs:
 
       - name: Typecheck (T0)
         run: npm run typecheck
+      - name: Install Lua 5.2 (T1)
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends lua5.2
+      - name: Unit tests (T1)
+        run: npm run test:unit
       - name: Build
         run: npm run build
 

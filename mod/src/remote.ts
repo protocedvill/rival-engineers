@@ -1,4 +1,7 @@
-import { MapPosition } from "factorio:runtime"
+import { LuaEntity, MapPosition } from "factorio:runtime"
+import { cancel, createController, enqueue, getAction, isIdle } from "./character/controller"
+import { ActionSpec } from "./character/types"
+import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride } from "./config"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
@@ -54,5 +57,21 @@ export function registerRemoteInterface(): void {
   remote.add_interface("rival-engineers", {
     version: () => script.active_mods["rival-engineers"],
     dump_entities: dumpEntities,
+
+    // Character Controller (M1). M2's Job Board calls the same functions directly.
+    create_controller: (character: LuaEntity) => createController(character),
+    enqueue: (controllerId: number, spec: ActionSpec) => enqueue(controllerId, spec),
+    cancel: (actionId: number) => cancel(actionId),
+    is_idle: (controllerId: number) => isIdle(controllerId),
+    /** Status, failure reason and stats of an action (kept for the controller's last 64 actions). */
+    action: (actionId: number) => {
+      const a = getAction(actionId)
+      return a && { id: a.id, kind: a.spec.kind, status: a.status, reason: a.reason, detail: a.detail, stats: a.stats, placed: a.placed }
+    },
+
+    // Config (SPEC §5.7): tests and the harness override settings here.
+    get_config: () => getConfig(),
+    set_config_override: <K extends ConfigKey>(key: K, value: Config[K] | undefined) => setConfigOverride(key, value),
+    clear_config_overrides: () => clearConfigOverrides(),
   })
 }

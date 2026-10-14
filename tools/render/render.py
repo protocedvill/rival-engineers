@@ -3,6 +3,7 @@
 Usage:
   python3 tools/render/render.py DUMP.json [DUMP2.json ...] -o out.png   # one frame (last dump)
   python3 tools/render/render.py frames/*.json --gif -o timelapse.gif    # timelapse
+  python3 tools/render/render.py frames/*.json --trail -o out.png         # + character trails
 
 One tile = --scale pixels. Colours are by entity category. Outlines are by force, so factions
 are distinguishable.
@@ -69,7 +70,14 @@ def bounds(dumps):
     return min(xs0), min(ys0), max(xs1), max(ys1)
 
 
-def render(dump, box, scale):
+TRAIL = (255, 90, 90)
+
+
+def character_positions(dump):
+    return [(e["x"], e["y"]) for e in dump["entities"] if e["type"] == "character"]
+
+
+def render(dump, box, scale, trail=None):
     x0, y0, x1, y1 = box
     img = Image.new("RGB", (int((x1 - x0) * scale), int((y1 - y0) * scale)), BACKGROUND)
     draw = ImageDraw.Draw(img)
@@ -85,13 +93,18 @@ def render(dump, box, scale):
             w, h = e["tw"], e["th"]
         left = (e["x"] - w / 2 - x0) * scale
         top = (e["y"] - h / 2 - y0) * scale
-        rect = [left + 1, top + 1, left + w * scale - 1, top + h * scale - 1]
-        draw.rectangle(rect, fill=TYPE_COLOURS.get(e["type"], OTHER), outline=force_colour(e["force"]), width=2)
+        # Inset by a pixel when there is room, so neighbours stay distinct at small scales.
+        inset = 1 if min(w, h) * scale > 4 else 0
+        rect = [left + inset, top + inset, max(left + inset, left + w * scale - inset), max(top + inset, top + h * scale - inset)]
+        draw.rectangle(rect, fill=TYPE_COLOURS.get(e["type"], OTHER), outline=force_colour(e["force"]), width=2 if inset else 1)
         vec = DIRECTION_VECTORS.get(e["direction"])
         if e["type"] in DIRECTIONAL_TYPES and vec:
             cx, cy = (e["x"] - x0) * scale, (e["y"] - y0) * scale
             tip = (cx + vec[0] * scale * 0.4, cy + vec[1] * scale * 0.4)
             draw.line([(cx - vec[0] * scale * 0.3, cy - vec[1] * scale * 0.3), tip], fill=(30, 30, 30), width=2)
+
+    if trail and len(trail) > 1:
+        draw.line([((x - x0) * scale, (y - y0) * scale) for x, y in trail], fill=TRAIL, width=max(2, scale // 2))
 
     draw.text((4, 4), f"tick {dump['tick']}  entities {len(dump['entities'])}", fill=(230, 230, 230))
     return img
@@ -104,6 +117,7 @@ def main(argv):
     ap.add_argument("--scale", type=int, default=12, help="pixels per tile")
     ap.add_argument("--gif", action="store_true", help="write all dumps as an animated timelapse")
     ap.add_argument("--frame-ms", type=int, default=400)
+    ap.add_argument("--trail", action="store_true", help="draw the path walked by the (single) character across dumps")
     args = ap.parse_args(argv)
 
     dumps = []
@@ -113,11 +127,17 @@ def main(argv):
     dumps.sort(key=lambda d: d["tick"])
     box = bounds(dumps)
 
+    trails = []
+    trail = []
+    for d in dumps:
+        trail = trail + character_positions(d)[:1]
+        trails.append(trail if args.trail else None)
+
     if args.gif:
-        frames = [render(d, box, args.scale) for d in dumps]
+        frames = [render(d, box, args.scale, t) for d, t in zip(dumps, trails)]
         frames[0].save(args.out, save_all=True, append_images=frames[1:], duration=args.frame_ms, loop=0)
     else:
-        render(dumps[-1], box, args.scale).save(args.out)
+        render(dumps[-1], box, args.scale, trails[-1]).save(args.out)
     print(f"wrote {args.out}")
 
 

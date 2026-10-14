@@ -2,7 +2,7 @@ import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 
 // Test lab: a cleared, flat, generated area far from spawn, one per test, so tests don't interact.
 
-let nextLab = 0
+let nextLabX = 0
 
 export interface Lab {
   surface: LuaSurface
@@ -12,8 +12,9 @@ export interface Lab {
 
 export function createLab(radius = 32): Lab {
   const surface = game.surfaces[1]
-  // Labs march along y = 2000 in steps of 4 * radius.
-  const origin = { x: 4 * radius * nextLab++, y: 2000 }
+  // Labs march along y = 2000 with a gap between them, whatever their sizes.
+  const origin = { x: nextLabX + radius, y: 2000 }
+  nextLabX += 2 * radius + 64
   surface.request_to_generate_chunks(origin, Math.ceil(radius / 32) + 1)
   surface.force_generate_chunk_requests()
   const area = {

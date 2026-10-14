@@ -1,9 +1,16 @@
+import { PathfinderWaypoint } from "factorio:runtime"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
 import { at, createLab, everyTickFor, itemCount, spawnEngineer } from "./lab"
 
 // M0 spike: can a character entity with NO attached player perform every player action the crew
 // needs, using player-equivalent APIs (SPEC §5.1)? These tests pin those engine assumptions so a
 // Factorio update that breaks them fails CI instead of silently breaking the AI.
+
+function maxDetour(y0: number, path: PathfinderWaypoint[]): number {
+  let max = 0
+  for (const wp of path) max = math.max(max, math.abs(wp.position.y - y0))
+  return max
+}
 
 describe("player-less character", () => {
   test("walks when walking_state is set", () => {
@@ -36,7 +43,7 @@ describe("player-less character", () => {
     const lab = createLab()
     const character = spawnEngineer(lab, -10, 0)
     for (let y = -8; y <= 8; y++) {
-      lab.surface.create_entity({ name: "stone-wall", position: at(lab, 0, y), force: "neutral" })
+      lab.surface.create_entity({ name: "stone-wall", position: at(lab, 0.5, y + 0.5), force: "neutral" })
     }
     const id = requestCharacterPath(character, at(lab, 10, 0))
     async(600)
@@ -44,8 +51,50 @@ describe("player-less character", () => {
       const req = getPathRequest(id)!
       if (req.status === "pending") return
       assert(req.status === "found", `path status ${req.status}`)
-      assert(req.path!.length > 2, "path has waypoints")
+      assert(maxDetour(lab.origin.y, req.path!) > 8, "path goes around the wall, not through it")
       forgetPathRequest(id)
+      done()
+    })
+  })
+
+  test("pathfinder only routes around obstacles when requested as the neutral force", () => {
+    // The unit pathfinder treats entities the requesting force could attack as destroyable and paths
+    // through them. Requested as the character's own force, it walks straight through a neutral wall
+    // (and trees, and other forces' buildings). As the neutral force, everything blocks. If this test
+    // fails, an engine update changed that behaviour: revisit requestCharacterPath.
+    const lab = createLab()
+    const character = spawnEngineer(lab, -10, 0)
+    for (let y = -20; y <= 20; y++) {
+      lab.surface.create_entity({ name: "stone-wall", position: at(lab, 0.5, y + 0.5), force: "neutral" })
+    }
+    const request = (force: string) => {
+      const id = lab.surface.request_path({
+        bounding_box: character.prototype.collision_box,
+        collision_mask: character.prototype.collision_mask,
+        start: character.position,
+        goal: at(lab, 10, 0),
+        force,
+        radius: 1,
+        entity_to_ignore: character,
+        pathfind_flags: { cache: false },
+      })
+      storage.pathRequests[id] = { status: "pending" } // collected by the mod's handler
+      return id
+    }
+    const asPlayer = request("player")
+    const asNeutral = request("neutral")
+    async(600)
+    on_tick(() => {
+      const p = getPathRequest(asPlayer)!
+      const n = getPathRequest(asNeutral)!
+      if (p.status === "pending" || n.status === "pending") return
+      const through = maxDetour(lab.origin.y, p.path!)
+      const around = maxDetour(lab.origin.y, n.path!)
+      log(`[spike] wall detour as player force: ${through}, as neutral force: ${around}`)
+      assert(through < 1, "player-force path goes through the neutral wall")
+      assert(around > 20, "neutral-force path goes around")
+      forgetPathRequest(asPlayer)
+      forgetPathRequest(asNeutral)
       done()
     })
   })
