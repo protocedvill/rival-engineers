@@ -57,6 +57,7 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
   }
   if (t === "lab") f.researchSpeed = p.get_researching_speed()
   if (t === "transport-belt" || t === "underground-belt" || t === "splitter") f.beltSpeed = p.belt_speed
+  if (t === "underground-belt") f.maxUnderground = p.max_underground_distance
   if (t === "generator") {
     f.maxPowerPerTick = tryCall(() => p.get_max_power_output())
     f.fluidPerTick = tryCall(() => p.get_fluid_usage_per_tick())

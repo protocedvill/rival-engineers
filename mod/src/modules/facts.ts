@@ -39,6 +39,8 @@ export interface EntityFacts {
   researchSpeed?: number
   /** Belts: tiles per tick. */
   beltSpeed?: number
+  /** Underground belts: the farthest an exit may be from its entrance (5 for yellow: 4 tiles in between). */
+  maxUnderground?: number
   /** Generators (steam engine): max power in J/tick and steam per tick. */
   maxPowerPerTick?: number
   fluidPerTick?: number

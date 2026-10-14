@@ -34,6 +34,8 @@ const RECIPES: RecipeFacts[] = [
   r("lab", 2, [["electronic-circuit", 10], ["iron-gear-wheel", 10], ["transport-belt", 4]], [["lab", 1]]),
   r("electric-mining-drill", 2, [["electronic-circuit", 3], ["iron-gear-wheel", 5], ["iron-plate", 10]], [["electric-mining-drill", 1]]),
   r("burner-mining-drill", 2, [["iron-gear-wheel", 3], ["stone-furnace", 1], ["iron-plate", 3]], [["burner-mining-drill", 1]]),
+  r("fast-transport-belt", 0.5, [["iron-gear-wheel", 5], ["transport-belt", 1]], [["fast-transport-belt", 1]]),
+  r("express-transport-belt", 0.5, [["iron-gear-wheel", 10], ["fast-transport-belt", 1]], [["express-transport-belt", 1]]),
   r("burner-inserter", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["burner-inserter", 1]]),
 ]
 
@@ -52,8 +54,14 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "long-handed-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.02, pickupVector: { x: 0, y: -2 }, dropVectorIns: { x: 0, y: 2.2 }, energyPerTick: 335, electric: true }),
   e({ name: "burner-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.013, pickupVector: { x: 0, y: -1 }, dropVectorIns: { x: 0, y: 1.2 }, energyPerTick: 2400, burner: true }),
   e({ name: "transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.03125 }),
-  e({ name: "underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.03125 }),
+  e({ name: "underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.03125, maxUnderground: 5 }),
   e({ name: "splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.03125 }),
+  e({ name: "fast-transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.0625 }),
+  e({ name: "fast-underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.0625, maxUnderground: 7 }),
+  e({ name: "fast-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.0625 }),
+  e({ name: "express-transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.09375 }),
+  e({ name: "express-underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.09375, maxUnderground: 9 }),
+  e({ name: "express-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.09375 }),
   e({ name: "iron-chest", type: "container", tileW: 1, tileH: 1 }),
   e({ name: "pipe", type: "pipe", tileW: 1, tileH: 1 }),
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
@@ -80,6 +88,8 @@ const UNLOCKS: Record<string, string> = {
   pipe: "steam-power",
   "small-electric-pole": "electronics",
   "electric-mining-drill": "electronics",
+  "fast-transport-belt": "logistics-2",
+  "express-transport-belt": "logistics-3",
 }
 
 export const vanillaFacts: ProtoFacts = {
