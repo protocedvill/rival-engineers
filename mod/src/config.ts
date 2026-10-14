@@ -27,11 +27,43 @@ export interface Config {
   batchMaxJobs: number
   /** Ticks a job waits after a transient failure (e.g. a character standing in the way). */
   jobBlockedRetryTicks: number
+  /** Hand speed: ticks a crew member takes to place one entity once in reach (SPEC §5.7). */
+  placeDelayTicks: number
+  /** Hand speed for belts (transport-belt type), which players drag. */
+  beltPlaceDelayTicks: number
+  /** Science packs of the research goal (§3.2), comma-separated item names. */
+  researchSciencePacks: string
+  /** Items, entities or fluids the research goal may not need (trigger technologies), comma-separated. */
+  researchExcludedTriggers: string
+  /** Create `factionCount` factions on a new map (never while factorio-test is running). */
+  autoSpawn: boolean
+  spawnMode: string
+  /** auto-distance: minimum distance from players' spawn and from other factions. */
+  spawnMinDistance: number
+  /** auto-distance: starting resources must lie within this radius of a spawn. */
+  spawnResourceRadius: number
+  /** fixed-offsets: "x,y;x,y;..." offsets from the player spawn, one per faction. */
+  spawnFixedOffsets: string
+  /** Chunks within this radius of the base are generated (like a player exploring) and scanned for resources. */
+  scanRadius: number
+  /** The strategy layer re-evaluates each faction every this many ticks. */
+  brainIntervalTicks: number
+  /** Bootstrap target: burner drills per resource, "resource=count,...". */
+  bootstrapSites: string
+  /** The first-electricity kit the bootstrap ends with, "item=count,...". */
+  firstElectricityItems: string
+  /** No planner progress for this long is a stall (SPEC §3: 15 game-minutes). */
+  stallTicks: number
+  /** Telemetry JSON written every this many ticks (0 = off). */
+  telemetryIntervalTicks: number
+  /** Entity frame dumps every this many ticks (0 = off), for tools/render. */
+  frameDumpIntervalTicks: number
+  frameDumpRadius: number
 }
 
 export type ConfigKey = keyof Config
 
-function setting<T extends number | boolean>(name: string): T {
+function setting<T extends number | boolean | string>(name: string): T {
   return settings.global[name].value as T
 }
 
@@ -50,6 +82,23 @@ export function getConfig(): Config {
     jobRetryTicks: setting(Settings.jobRetryTicks),
     batchMaxJobs: setting(Settings.batchMaxJobs),
     jobBlockedRetryTicks: setting(Settings.jobBlockedRetryTicks),
+    placeDelayTicks: setting(Settings.placeDelayTicks),
+    beltPlaceDelayTicks: setting(Settings.beltPlaceDelayTicks),
+    researchSciencePacks: setting(Settings.researchSciencePacks),
+    researchExcludedTriggers: setting(Settings.researchExcludedTriggers),
+    autoSpawn: setting(Settings.autoSpawn),
+    spawnMode: setting(Settings.spawnMode),
+    spawnMinDistance: setting(Settings.spawnMinDistance),
+    spawnResourceRadius: setting(Settings.spawnResourceRadius),
+    spawnFixedOffsets: setting(Settings.spawnFixedOffsets),
+    scanRadius: setting(Settings.scanRadius),
+    brainIntervalTicks: setting(Settings.brainIntervalTicks),
+    bootstrapSites: setting(Settings.bootstrapSites),
+    firstElectricityItems: setting(Settings.firstElectricityItems),
+    stallTicks: setting(Settings.stallTicks),
+    telemetryIntervalTicks: setting(Settings.telemetryIntervalTicks),
+    frameDumpIntervalTicks: setting(Settings.frameDumpIntervalTicks),
+    frameDumpRadius: setting(Settings.frameDumpRadius),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

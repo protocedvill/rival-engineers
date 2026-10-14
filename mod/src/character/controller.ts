@@ -367,7 +367,12 @@ function stepPlace(character: LuaEntity, action: ActionRecord, spec: Extract<Act
     const result = approach(character, action, { kind: "build", position: spec.position }, spec.position, config, tick)
     if (result !== "done") return result
     action.phase = "work"
+    // Hand speed (SPEC §5.7): a placement takes a moment once in reach, like a player aiming and clicking.
+    // Belts are drag-placed, so they go faster.
+    const belt = prototypes.entity[entityName].type === "transport-belt"
+    action.readyTick = tick + (belt ? config.beltPlaceDelayTicks : config.placeDelayTicks)
   }
+  if (tick < (action.readyTick ?? 0)) return "running"
   const direction = spec.direction ?? defines.direction.north
   // The player's build check: reach, collisions and placement rules.
   if (!character.can_place_entity({ name: entityName, position: spec.position, direction })) {

@@ -14,5 +14,5 @@ registerRemoteInterface()
 
 if (script.active_mods["factorio-test"]) {
   const init = require("__factorio-test__/init") as (this: void, files: string[], config?: object) => void
-  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test"], { load_luassert: false })
+  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test", "test/research_test"], { load_luassert: false })
 }

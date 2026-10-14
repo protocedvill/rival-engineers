@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.7** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.8** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -43,7 +43,7 @@ Two layers, by analogy:
 | D17 | Reporting | **Per-milestone reports** with renders and timelapses. No other routine check-ins. |
 | D18 | Configurability | **Config over constants.** Anything a player or tester might reasonably want to vary (faction count, crew size, spawn placement, targets, budgets, debug toggles) is a mod setting or a scenario/remote-interface parameter, not a hardcoded value. See §5.7. |
 | D19 | Module sourcing | Agents choose the sources (§5.4). Usable: any of the user's saves not modded in a way that changes early-game recipes, the user's blueprint library, and online blueprints (attribution required). Modules are prototype-grade. The user may replace them with custom modules later, so the module format must make swapping cheap. |
-| D20 | Steel (2026-10-14) | **v1 does not build steel production.** Steel smelting and every module or building that needs steel belong to a higher research tier (post-v1, P3). v1 still *researches* `steel-processing` as part of "all red/green techs" (§3 unchanged); researching techs needs only science packs, never steel. |
+| D20 | Steel (2026-10-14) | **v1 does not build steel production.** Steel smelting and every module or building that needs steel belong to a higher research tier (post-v1, P3). v1 still *researches* `steel-processing` (a pack technology) as part of the research goal (§3.2, D30). |
 | D21 | Solver (2026-10-14) | Recursive **ratio solver** for v1 behind a `Solver` interface; an in-Lua LP solver can replace it in P3. Resumable and tick-budgeted (§5.8). |
 | D22 | Topology | How one producer feeds many consumers is a **LayoutPolicy** decision: point-to-point belts early, per-item trunks with splitter taps later; A/B-tested (§5.8). |
 | D23 | Belts between nodes | **One item type per belt between graph nodes.** Mixed lanes only inside a module/generator; ports are single-item; no lane-preserving routing between modules (§5.8). |
@@ -53,6 +53,8 @@ Two layers, by analogy:
 | D27 | Horizon | **Staged targets with headroom:** build for the current stage target, size trunks, space and corridors for the next (default 2×, per policy) (§5.8). |
 | D28 | Disruption | Deferred to P2: v1 assumes a static world (no depletion relocation, no rebuilding destroyed modules) (§5.8). |
 | D29 | Visibility | Graph export to JSON with a `tools/render` overlay, plus an in-game `rendering` debug overlay (§5.8). |
+| D30 | Research goal (2026-10-14) | v1 researches **only the red/green technologies reachable without steel production or crude oil** (§3.2). No one-off steel smelt, so `steel-axe` is out, and nothing behind `oil-processing`. The set is computed from prototypes at runtime: **42** technologies in vanilla 2.0.77. |
+| D31 | Hand speed (2026-10-14) | Crew place entities at a **configurable human pace**: `place-delay-ticks` (default 8) per entity once in reach, `belt-place-delay-ticks` (default 3) for belts, which players drag (§5.1, §5.7). |
 
 ## 3. v1 Definition of Done
 
@@ -61,8 +63,16 @@ All three must hold:
 1. **Sustained throughput:** from a fresh random seed (vanilla, biters off), each faction with the default crew
    reaches **≥ 30 red + 30 green science/min sustained over 30 game-minutes** within **8 game-hours**.
    The target must pass on **≥ 9 of 10 fixed CI seeds** and **≥ 18 of 20 random seeds**.
-2. **Research:** each faction autonomously researches **every technology that needs only red and green
-   science** (vanilla tech tree, read from prototypes).
+2. **Research:** each faction autonomously researches **every red/green technology reachable without steel
+   production or crude oil** (D30). The set is derived from prototypes at runtime, never hardcoded
+   (`mod/src/strategy/research.ts`). A technology is in it when it is not hidden, all its prerequisites are in
+   it, and either (a) every research-unit ingredient is one of the configured packs (`research-science-packs`,
+   default red + green), or (b) it is a trigger technology whose trigger is a plain craft/build/mine trigger on
+   something not in `research-excluded-triggers` (default `steel-plate`, `crude-oil`). Orbit, space-platform,
+   spawner-capture and scripted triggers are out. In vanilla 2.0.77 that is **42** technologies: 39 researched
+   with packs plus the `steam-power`, `electronics` and `automation-science-pack` triggers. It excludes
+   `steel-axe` (craft 50 steel plates), `oil-processing` (mine crude oil) and the 22 pack technologies behind
+   it. A T2 test pins the count.
 3. **Looks like a player base:** timelapse renders are approved by the user in the final v1 milestone report.
    Modules should be recognisable, belts tidy, and there should be no belt spaghetti through other modules.
 
@@ -117,6 +127,8 @@ The controller drives it only through player-equivalent APIs:
   This is the one place we emulate the player "build" action. Its rule checks must match the player's.
   Filling a ghost runs the same check (ghosts don't collide), then consumes the item and `revive`s the ghost,
   so the entity keeps the ghost's settings, as when a player builds over a ghost.
+- **Hand speed:** a placement takes `place-delay-ticks` (default 8) once in reach, `belt-place-delay-ticks`
+  (default 3) for belts (D31). Insert, take and pick-up have no extra delay (mining has its real time).
 - **Insert / take / pick up:** reach-checked inventory transfers. `take` is strict by default; with
   `allowPartial` it takes whatever is there up to the count, like a player grabbing a stack. Pick-up (mining a
   placed entity) returns the item. Cancelling a craft also cancels the crafts it queued (ingredients return).
@@ -322,7 +334,9 @@ Default to configurable (D18). Settings live in three places:
   faction names and colours; diplomacy defaults (neutral in v1); player-parity toggles (debug only:
   teleport-when-stuck, instant-craft, reach multiplier); planner targets (SPM goal, which science packs);
   layout policy per faction (`auto` or a policy id, §5.3) and policy parameters such as corridor widths;
-  per-tick CPU budget; telemetry and render-dump interval.
+  per-tick CPU budget; telemetry and render-dump interval; **hand speed** (`place-delay-ticks` 8,
+  `belt-place-delay-ticks` 3, D31); the **research goal** inputs (`research-science-packs`,
+  `research-excluded-triggers`, D30).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -538,6 +552,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
   placement (cliffs, water, ore, trees/rocks, own structures) with policy-defined corridor widths. New pluggable
   `LayoutPolicy` (§5.3, §5.7) with policy tests and soak A/B comparison (§7). M4/M5 acceptance now requires
   placement and routing on real generated terrain (§8).
+- v0.8 (2026-10-14, user decisions): D30 research goal = red/green technologies reachable without steel or crude
+  oil, computed from prototypes (42 in vanilla 2.0.77; §3.2 rewritten). D31 configurable hand speed (§5.1, §5.7).
 - v0.7 (2026-10-14): factory graph + throughput, from interview. New §5.8 (two-layer Factory Graph, ratio solver
   behind a `Solver` interface, topology by policy, one item per belt between nodes, capacity overflow remedies,
   99% utilization target, measured vs planned rates with a reconciler, staged targets with headroom, disruption

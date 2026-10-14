@@ -115,6 +115,8 @@ export interface ActionRecord {
   goalCount?: number
   lastProgressTick?: number
   lastProgressValue?: number
+  /** A `place` action places on this tick or later (hand speed). */
+  readyTick?: number
   /** The entity a `place` action created. */
   placed?: LuaEntity
 }
