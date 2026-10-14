@@ -3,7 +3,7 @@
 
 [run]
 name = "m3-one-faction"
-seeds = [1, 2, 3, 4, 5]
+seeds = [11, 222, 3333, 44444, 555555]   # spread out: nearby seeds can share a starting-area layout
 game_hours = 2.0          # cap per seed; the run stops early once every faction is done
 stop_when_done = true
 
@@ -13,4 +13,5 @@ enemy_bases = false       # D6: v1 maps have no biters
 [mod]                     # config overrides (camelCase keys of mod/src/config.ts), applied at map init
 factionCount = 1
 telemetryIntervalTicks = 3600     # 1 game-minute
-frameDumpIntervalTicks = 9000     # 2.5 game-minutes
+frameDumpIntervalTicks = 1800     # 30 game-seconds
+frameDumpRadius = 64

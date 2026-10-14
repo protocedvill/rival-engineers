@@ -133,11 +133,21 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
   const smelts: Record<string, string> = {}
   const oreOf: Record<string, string> = {}
   const furnaceCats = prototypes.entity[furnace!.entity].crafting_categories ?? {}
+  // The fuel: the first resource (configured ones first, then any, by name) whose product burns.
+  const allResources: string[] = []
+  for (const [name] of pairs(prototypes.get_entity_filtered([{ filter: "type", type: "resource" }]))) allResources.push(name as string)
+  allResources.sort()
+  for (const res of [...resources, ...allResources]) {
+    const item = prototypes.entity[res]?.mineable_properties.products?.[0]?.name
+    if (item !== undefined && prototypes.item[item] !== undefined && prototypes.item[item].fuel_value > 0) {
+      fuel = item
+      break
+    }
+  }
   for (const res of resources) {
     const products = prototypes.entity[res]?.mineable_properties.products
     const item = products?.[0]?.name
     if (!item) continue
-    if (fuel === undefined && (prototypes.item[item]?.fuel_value ?? 0) > 0) fuel = item
     // A furnace recipe with this single ingredient (e.g. iron-ore → iron-plate).
     const recipes = prototypes.get_recipe_filtered([{ filter: "has-ingredient-item", elem_filters: [{ filter: "name", name: item }] }])
     const names: string[] = []

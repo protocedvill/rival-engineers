@@ -26,7 +26,8 @@ import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 //     coal pairs), by hand-crafting, or by hand-mining (ore goes straight into a furnace of its kind).
 //     Hand-mining is capped at one job per crew member.
 //  H5 Burners are refuelled when they hold less than FUEL_LOW_MINUTES of fuel, up to FUEL_TOP_MINUTES.
-//     Furnace outputs are also collected when they pass COLLECT_FULL, so machines never block.
+//     Outputs are collected only on demand: a full furnace just pauses its drill until plates are needed
+//     (collecting everything filled depot after depot with plates nobody needed).
 //  H6 Sites go on the patch chosen by distance and size from the hub (the depot), on the patch tiles
 //     nearest the depot, facing it, one tile apart, on tiles free of trees and rocks.
 
@@ -37,7 +38,6 @@ const FUEL_TOP_MINUTES = 8
 const PAIR_KEEP = 10
 /** A pair drill's surplus is collected once it holds this much. */
 const PAIR_COLLECT_AT = 30
-const COLLECT_FULL = 80
 /** Coal the depot should hold on top of open fuel jobs. */
 const FUEL_BUFFER = 20
 const GATHER_CHUNK = 20
@@ -784,10 +784,6 @@ function maintain(ctx: Ctx): void {
       ctx.oreInbound[ore] = (ctx.oreInbound[ore] ?? 0) + count
       break
     }
-  }
-  // Anti-blocking: empty full furnace outputs and stone chests even with no demand.
-  for (const src of collectSources(ctx, undefined)) {
-    if (src.amount >= COLLECT_FULL) collect(ctx, src.entity, src.item, src.amount)
   }
 }
 

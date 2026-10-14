@@ -425,21 +425,25 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
   for (const item of names) {
     let chest: LuaEntity | undefined
     let bestD = 0
+    let fits = 0
     for (const pile of piles) {
-      if (!pile.can_insert({ name: item, count: 1 })) continue
+      const room = pile.get_inventory(defines.inventory.chest)!.get_insertable_count(item)
+      if (room <= 0) continue
       const d = distance(member.character.position, pile.position)
       if (chest === undefined || d < bestD) {
         chest = pile
         bestD = d
+        fits = room
       }
     }
+    // Only what fits: a member must never keep walking back to a full depot with the same items.
     if (!chest) continue
     if (!job) {
       job = addJob(board, { kind: "haul", pos: chest.position, payload: { kind: "deposit", forMember: member.id } }, tick)
       claim(board, [job.id], member.id, tick)
       member.claims.push(job.id)
     }
-    const action = enqueue(member.controller, { kind: "insert", entity: chest, item, count: held[item], allowPartial: true })
+    const action = enqueue(member.controller, { kind: "insert", entity: chest, item, count: math.min(held[item], fits), allowPartial: true })
     member.actions.push({ action, job: job.id })
   }
   if (!job) return false

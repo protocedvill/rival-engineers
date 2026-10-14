@@ -2,7 +2,7 @@
 
 [run]
 name = "m3-two-factions"
-seeds = [1]
+seeds = [11]
 game_hours = 2.0
 stop_when_done = true
 
@@ -12,4 +12,4 @@ enemy_bases = false
 [mod]
 factionCount = 2
 telemetryIntervalTicks = 3600
-frameDumpIntervalTicks = 9000
+frameDumpIntervalTicks = 1800

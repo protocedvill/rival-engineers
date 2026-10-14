@@ -122,6 +122,21 @@ describe("character controller", () => {
     })
   })
 
+  test("steps out of a gap between machines that the pathfinder can't start from", () => {
+    // Seen in a soak: a crew member stood in the 0.6-tile gap between the collision boxes of two burner drills
+    // of a coal pair (one tile apart) when they were built. The pathfinder finds no path from there, though the
+    // character fits and can walk out. Like a player, the walker steps to a free spot and asks again.
+    const lab = createLab(24)
+    const character = spawnEngineer(lab, 0.375, 0.94)
+    lab.surface.create_entity({ name: "burner-mining-drill", position: at(lab, 1, 0), direction: defines.direction.south, force: "player" })
+    lab.surface.create_entity({ name: "burner-mining-drill", position: at(lab, 1, 2), direction: defines.direction.north, force: "player" })
+    const id = enqueue(createController(character), { kind: "walk", goal: at(lab, -15, 0.5) })
+    awaitAction(id, 1200, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      log(`[m3] escaped the drill gap and arrived in ${a.finishedTick! - a.startedTick!} ticks`)
+    })
+  })
+
   test("fails with no-path when the goal is walled in", () => {
     const lab = createLab(32)
     const character = spawnEngineer(lab, -15, 0)

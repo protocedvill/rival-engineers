@@ -72,7 +72,7 @@ export interface WalkState {
   /** Arrive when within this distance of `goal`. */
   radius: number
   reach?: ReachGoal
-  phase: "request" | "pending" | "retry-wait" | "follow"
+  phase: "request" | "pending" | "retry-wait" | "follow" | "escape"
   requestId?: number
   retryAtTick?: number
   waypoints?: MapPosition[]
@@ -83,6 +83,10 @@ export interface WalkState {
   /** Pathfinder "try again later" answers so far. */
   busyRetries: number
   teleports: number
+  /** Escapes so far: steps out of a spot the pathfinder can't start from (e.g. wedged between machines). */
+  escapes?: number
+  escapeTo?: MapPosition
+  escapeUntil?: number
 }
 
 /** Counters reported with the result, for telemetry and tests. */

@@ -76,7 +76,13 @@ function factionTelemetry() {
     const crew = []
     for (const id of f.crew) {
       const m = storage.crew[id]
-      crew.push({ id, dead: m.dead, stats: m.stats })
+      const pocket: Record<string, number> = {}
+      if (!m.dead && m.character.valid) for (const e of m.character.get_main_inventory()!.get_contents()) pocket[e.name] = e.count
+      const ctrl = storage.controllers[m.controller]
+      const lastId = ctrl?.finished[ctrl.finished.length - 1]
+      const last = lastId !== undefined ? storage.actions[lastId] : undefined
+      const lastAction = last && { kind: last.spec.kind, status: last.status, reason: last.reason, detail: last.detail, tick: last.finishedTick }
+      crew.push({ id, dead: m.dead, stats: m.stats, pocket, lastAction, position: m.character.valid ? m.character.position : undefined })
     }
     const board = f.board
     const jobs: Record<string, number> = {}
@@ -85,7 +91,9 @@ function factionTelemetry() {
       const k = `${j.payload.kind}:${j.status}`
       jobs[k] = (jobs[k] ?? 0) + 1
     }
-    out[name] = { force: f.force, brain: brainReport(f), counters: board.counters, activeJobs: jobs, crew }
+    const depot: Record<string, number> = {}
+    for (const chest of f.stockpiles) if (chest.valid) for (const e of chest.get_inventory(defines.inventory.chest)!.get_contents()) depot[e.name] = (depot[e.name] ?? 0) + e.count
+    out[name] = { depot, force: f.force, brain: brainReport(f), counters: board.counters, activeJobs: jobs, crew }
   }
   return out
 }

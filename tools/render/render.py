@@ -44,8 +44,19 @@ TYPE_COLOURS = {
     "entity-ghost": (100, 100, 140),
 }
 OTHER = (150, 150, 150)
+# Some entities are coloured by name rather than type (resources by ore, so patches are recognisable).
+NAME_COLOURS = {
+    "iron-ore": (72, 96, 122),
+    "copper-ore": (150, 82, 46),
+    "coal": (16, 16, 16),
+    "stone": (128, 112, 82),
+    "uranium-ore": (70, 120, 40),
+    "crude-oil": (90, 40, 90),
+}
+WATER = (38, 64, 100)
+CLIFF = (96, 80, 64)
 # Neutral and resource-like entities are drawn first so buildings sit on top.
-LAYER = {"resource": 0, "tree": 1, "simple-entity": 1, "character": 9}
+LAYER = {"resource": 0, "cliff": 1, "tree": 1, "simple-entity": 1, "character": 9}
 # Factorio 2.0 directions are 16-way: 0=N, 4=E, 8=S, 12=W.
 DIRECTION_VECTORS = {0: (0, -1), 4: (1, 0), 8: (0, 1), 12: (-1, 0)}
 DIRECTIONAL_TYPES = {"transport-belt", "underground-belt", "splitter", "inserter"}
@@ -85,6 +96,8 @@ def render(dump, box, scale, trail=None):
         draw.line([((gx - x0) * scale, 0), ((gx - x0) * scale, img.height)], fill=GRID)
     for gy in range(int(y0), int(y1) + 1, 8):
         draw.line([(0, (gy - y0) * scale), (img.width, (gy - y0) * scale)], fill=GRID)
+    for tx, ty in dump.get("water") or []:
+        draw.rectangle([(tx - x0) * scale, (ty - y0) * scale, (tx + 1 - x0) * scale - 1, (ty + 1 - y0) * scale - 1], fill=WATER)
 
     for e in sorted(dump["entities"], key=lambda e: LAYER.get(e["type"], 5)):
         w, h = max(e["w"], 0.4), max(e["h"], 0.4)
@@ -100,7 +113,12 @@ def render(dump, box, scale, trail=None):
             # Planned entity: an outline in the planned type's colour, no fill.
             draw.rectangle(rect, outline=TYPE_COLOURS.get(e["ghost_type"], OTHER), width=1)
             continue
-        draw.rectangle(rect, fill=TYPE_COLOURS.get(e["type"], OTHER), outline=force_colour(e["force"]), width=2 if inset else 1)
+        fill = NAME_COLOURS.get(e["name"]) or (CLIFF if e["type"] == "cliff" else TYPE_COLOURS.get(e["type"], OTHER))
+        if e["type"] in ("resource", "tree", "cliff"):
+            # Terrain: plain fill, no outline, so patches read as areas.
+            draw.rectangle([left, top, left + w * scale - 1, top + h * scale - 1], fill=fill)
+            continue
+        draw.rectangle(rect, fill=fill, outline=force_colour(e["force"]), width=2 if inset else 1)
         vec = DIRECTION_VECTORS.get(e["direction"])
         if e["type"] in DIRECTIONAL_TYPES and vec:
             cx, cy = (e["x"] - x0) * scale, (e["y"] - y0) * scale
@@ -110,7 +128,8 @@ def render(dump, box, scale, trail=None):
     if trail and len(trail) > 1:
         draw.line([((x - x0) * scale, (y - y0) * scale) for x, y in trail], fill=TRAIL, width=max(2, scale // 2))
 
-    draw.text((4, 4), f"tick {dump['tick']}  entities {len(dump['entities'])}", fill=(230, 230, 230))
+    minutes = dump["tick"] / 3600
+    draw.text((4, 4), f"{minutes:5.1f} game-min  tick {dump['tick']}", fill=(230, 230, 230))
     return img
 
 
