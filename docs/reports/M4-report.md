@@ -97,7 +97,8 @@ Times: the 16 validation tests take about 80 s (fast group ~30 s). Rendered modu
   instances (no overlaps, inside the footprint, every powered entity covered, one pole network, single-item
   ports on the edge), expansion ≡ regeneration for every generator, `expandTail`/`expandMoves`, transforms (all
   4 rotations × mirror stay valid and powered; port side swaps on mirror; 4 quarter turns are the identity).
-- **T2**: 16 new tests (15 catalog entries + mall coverage). Full suite: see "CI".
+- **T2**: 16 new tests (15 catalog entries + mall coverage). Full suite locally: **60/60 pass** in 2 min 44 s.
+- **CI** (GitHub Actions `Test`, T0–T2) on `m4-modules-routing`: success (3 min 28 s).
 
 ### Findings
 
