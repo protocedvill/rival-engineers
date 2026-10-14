@@ -17,6 +17,8 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Prefer configurable settings over constants (SPEC §5.7).
 - **Never record a decision as user-approved** unless the user actually approved it. Agent proposals go
   into SPEC §11 Open questions and the milestone report, marked "proposed", until the user decides.
+  If the user approves something directly in your session, record it as approved and say in your
+  report that the user approved it in-session (with date), so the manager can tell it from a proposal.
 
 ## Commands
 
