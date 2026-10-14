@@ -69,8 +69,8 @@ export function isIdle(controllerId: number): boolean {
 }
 
 /**
- * Cancels a queued or running action. A running action stops walking and mining at once. Crafts that
- * were already handed to the character's crafting queue keep going (like a player who walks away).
+ * Cancels a queued or running action. A running action stops walking and mining at once. A running
+ * craft also cancels the crafts it queued, which returns their ingredients.
  */
 export function cancel(actionId: number): boolean {
   const action = storage.actions[actionId]
@@ -130,6 +130,7 @@ function stepController(ctrl: ControllerState, config: Config, tick: number): vo
     finishAll(ctrl, "failed", "character-invalid")
     return
   }
+  applyReachMultiplier(ctrl, config.debugReachMultiplier)
   const actionId = ctrl.queue[0]
   if (actionId === undefined) return
   const action = storage.actions[actionId]
@@ -145,7 +146,11 @@ function stepController(ctrl: ControllerState, config: Config, tick: number): vo
 }
 
 function finish(ctrl: ControllerState, action: ActionRecord, status: ActionStatus, reason?: FailureReason, detail?: string): void {
-  if (action.status === "running" && ctrl.character.valid) stopCharacter(ctrl.character)
+  if (action.status === "running" && ctrl.character.valid) {
+    stopCharacter(ctrl.character)
+    // Crafting runs one action at a time, so every craft still queued was started by this action.
+    if (action.spec.kind === "craft" && status !== "succeeded") cancelQueuedCrafts(ctrl.character)
+  }
   action.status = status
   action.reason = reason
   action.detail = detail
@@ -162,6 +167,30 @@ function finishAll(ctrl: ControllerState, status: ActionStatus, reason?: Failure
   // Copy: finish() removes from the queue.
   const ids = [...ctrl.queue]
   for (const id of ids) finish(ctrl, storage.actions[id], status, reason)
+}
+
+function cancelQueuedCrafts(character: LuaEntity): void {
+  // Cancel from the back; a bounded loop in case the engine keeps an entry.
+  for (let guard = 0; guard < 100 && character.crafting_queue_size > 0; guard++) {
+    const queue = character.crafting_queue!
+    const last = queue[queue.length - 1]
+    character.cancel_crafting({ index: last.index, count: last.count })
+  }
+}
+
+/**
+ * Debug only (breaks player parity): scales the character's build, reach and resource reach through the
+ * player-equivalent per-character bonuses. Applied lazily whenever the configured multiplier changes.
+ */
+function applyReachMultiplier(ctrl: ControllerState, multiplier: number): void {
+  if ((ctrl.reachMultiplier ?? 1) === multiplier) return
+  const character = ctrl.character
+  const proto = character.prototype
+  // The bonuses are whole tiles (uint), so round down.
+  character.character_build_distance_bonus = math.floor((proto.build_distance ?? 0) * (multiplier - 1))
+  character.character_reach_distance_bonus = math.floor((proto.reach_distance ?? 0) * (multiplier - 1))
+  character.character_resource_reach_distance_bonus = math.floor((proto.reach_resource_distance ?? 0) * (multiplier - 1))
+  ctrl.reachMultiplier = multiplier
 }
 
 function stopCharacter(character: LuaEntity): void {
@@ -344,17 +373,26 @@ function stepPlace(character: LuaEntity, action: ActionRecord, spec: Extract<Act
   if (!character.can_place_entity({ name: entityName, position: spec.position, direction })) {
     return fail("cannot-place", `${entityName} at ${spec.position.x},${spec.position.y} (distance ${distance(character.position, spec.position)})`)
   }
+  const ghost = spec.ghost
+  if (ghost && !ghost.valid) return fail("target-invalid", "ghost removed")
   character.remove_item({ name: spec.item, count: 1 })
-  const entity = character.surface.create_entity({
-    name: entityName,
-    position: spec.position,
-    direction,
-    force: character.force,
-    raise_built: true,
-  })
+  let entity: LuaEntity | undefined
+  if (ghost) {
+    // Like a player building over a ghost: the ghost becomes the entity and keeps its settings.
+    const [, revived] = ghost.revive({ raise_revive: true })
+    entity = revived ?? undefined
+  } else {
+    entity = character.surface.create_entity({
+      name: entityName,
+      position: spec.position,
+      direction,
+      force: character.force,
+      raise_built: true,
+    })
+  }
   if (!entity) {
     character.insert({ name: spec.item, count: 1 })
-    return fail("cannot-place", "create_entity failed")
+    return fail("cannot-place", ghost ? "ghost revive failed" : "create_entity failed")
   }
   action.placed = entity
   action.stats.items = 1
@@ -390,13 +428,20 @@ function stepTransfer(
     return inserted < spec.count ? fail("target-full", `inserted ${inserted} of ${spec.count}`) : "done"
   }
   const available = entity.get_item_count(item)
-  if (available < spec.count) return fail("not-enough", `${item}: ${available} of ${spec.count} available`)
-  if (!character.can_insert({ name: item, count: spec.count })) return fail("inventory-full", item)
-  const removed = entity.remove_item({ name: item, count: spec.count })
+  let want = spec.count
+  if (spec.allowPartial) {
+    if (available === 0) return fail("not-enough", `${item}: none available`)
+    want = math.min(available, spec.count)
+  } else if (available < spec.count) {
+    return fail("not-enough", `${item}: ${available} of ${spec.count} available`)
+  }
+  if (!character.can_insert({ name: item, count: spec.allowPartial ? 1 : want })) return fail("inventory-full", item)
+  const removed = entity.remove_item({ name: item, count: want })
   const inserted = removed > 0 ? character.insert({ name: item, count: removed }) : 0
   if (inserted < removed) entity.insert({ name: item, count: removed - inserted })
   action.stats.items = inserted
-  return inserted < spec.count ? fail("inventory-full", `took ${inserted} of ${spec.count}`) : "done"
+  if (spec.allowPartial) return inserted > 0 ? "done" : fail("inventory-full", item)
+  return inserted < want ? fail("inventory-full", `took ${inserted} of ${want}`) : "done"
 }
 
 function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "pickUp" }>, config: Config, tick: number): StepResult {

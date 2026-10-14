@@ -51,8 +51,13 @@ export function reachSatisfied(character: LuaEntity, reach: ReachGoal): boolean 
 export function pathRadiusFor(character: LuaEntity, reach: ReachGoal | undefined, radius: number): number {
   if (!reach) return Math.max(0.3, radius / 2)
   switch (reach.kind) {
-    case "entity":
+    case "entity": {
+      // Trees and rocks are mined like resources: can_reach_entity uses the short resource reach for them
+      // (about 2.7 tiles plus their box), not reach_distance.
+      const type = reach.entity.valid ? reach.entity.type : ""
+      if (type === "tree" || type === "simple-entity") return Math.max(0.5, character.resource_reach_distance - 1.2)
       return Math.max(1, character.reach_distance - 3)
+    }
     case "resource":
       return Math.max(0.5, character.resource_reach_distance - 1.2)
     case "build":

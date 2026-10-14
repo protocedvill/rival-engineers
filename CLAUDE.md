@@ -29,6 +29,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   `mod/src/test/lab.ts`.
 - `if (x)` on a value typed as a non-nullable object (e.g. a `Record<number, T>` lookup) draws a TSTL truthiness
   warning. Declare it `T | undefined` and compare with `!== undefined`.
+- `noImplicitSelf` does **not** cover inline arrow functions assigned to a property of a generic options object
+  (e.g. `planBatch(..., { isFree: (p) => ... })`): TSTL compiled it with a `self` parameter and the call shifted
+  every argument. Declare callback types as `(this: void, ...) => ...`.
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
@@ -40,6 +43,14 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   paths with `force: "neutral"` (see `character/pathing.ts`; pinned by an engine-capabilities test).
 - A player-less character's `walking_state` persists until changed (unlike a player's, which lasts one tick).
   Stop walking and mining explicitly when an action ends.
+- `can_reach_entity` uses the **short mining reach** (≈ `resource_reach_distance` 2.7 + the box) for trees and
+  rocks, not `reach_distance` (10). Walks toward a tree/rock must aim inside that (`walk.ts` `pathRadiusFor`).
+- **Script-creating an entity on top of a ghost removes the ghost.** In tests, place obstacles before ghosts.
+  A character's death and corpse do not remove ghosts.
+- `character.can_place_entity` ignores ghosts, so filling a ghost uses the normal player check followed by
+  `ghost.revive{raise_revive=true}` (keeps the ghost's settings; raises `script_raised_revive`, not `_built`).
+- A crew member's last action can succeed on the tick it dies. Read finished actions before handling death, or
+  a placed entity's job gets released and its (revived, so invalid) ghost looks "removed".
 - `LuaProfiler.restart()` resumes without resetting. Use `reset()` to time one interval. Profiler values can only be
   logged, not read.
 - factorio-test `.after_reload_script` re-runs the test file, so its locals are gone after the reload. Stash what

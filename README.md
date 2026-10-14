@@ -32,6 +32,7 @@ In-game test logs (`[m1] ...` measurements) are printed only for failing tests. 
 `.factorio-test/data/factorio-current.log`.
 
 Layout: `mod/src` holds the TypeScript sources (`control.ts` runtime, `settings.ts` settings stage,
-`character/` the Character Controller, `config.ts` the typed settings, `test/` in-game tests), `mod/unit`
+`character/` the Character Controller, `jobs/` factions, the Job Board (`board.ts`, pure) and the crew runtime,
+`tick.ts` the on_tick entry, `config.ts` the typed settings, `test/` in-game tests), `mod/unit`
 holds T1 unit tests for pure modules, `mod/static` holds files copied verbatim into the mod, `tools/` holds the build,
 render and (later) harness and module tooling, and `ci/mods` holds vendored test-only mods.

@@ -115,13 +115,18 @@ The controller drives it only through player-equivalent APIs:
 - **Place:** validate with `surface.can_place_entity` and `character.can_reach`/`build_distance` and the
   inventory count, then remove the item and `surface.create_entity{..., force, raise_built=true}`.
   This is the one place we emulate the player "build" action. Its rule checks must match the player's.
-- **Insert / take / pick up:** reach-checked inventory transfers. Pick-up (mining a placed entity) returns
-  the item.
+  Filling a ghost runs the same check (ghosts don't collide), then consumes the item and `revive`s the ghost,
+  so the entity keeps the ghost's settings, as when a player builds over a ghost.
+- **Insert / take / pick up:** reach-checked inventory transfers. `take` is strict by default; with
+  `allowPartial` it takes whatever is there up to the count, like a player grabbing a stack. Pick-up (mining a
+  placed entity) returns the item. Cancelling a craft also cancels the crafts it queued (ingredients return).
 
 M0 is a spike to verify that every one of these works on a character with no attached player.
 Fallbacks must still respect parity: the same timing and reach.
 
-Debug options (off by default, never used in acceptance runs): teleport-when-stuck, instant craft.
+Debug options (off by default, never used in acceptance runs): teleport-when-stuck, instant craft, and a
+reach multiplier (scales build, reach and resource reach through the character's
+`character_*_distance_bonus` fields, the same per-character bonuses research grants).
 
 ### 5.2 Job Board (multi-agent)
 
@@ -132,6 +137,10 @@ Debug options (off by default, never used in acceptance runs): teleport-when-stu
   gather/craft jobs feed build jobs.
 - Planned entities are shown as **ghosts on the faction's force** so humans and renders can see intent.
   Crew members fill them physically.
+- Claims are exclusive and all-or-nothing per batch. A failed attempt releases the job with exponential back-off
+  and fails it with a reason after `job-max-attempts` (dependents fail too). Transient blocks (a character
+  standing in the footprint) and crew death release without spending an attempt. Stockpile takes in flight are
+  reserved so crew members don't plan with the same items.
 
 ### 5.3 Base Planner
 

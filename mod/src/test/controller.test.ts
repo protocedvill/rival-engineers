@@ -54,7 +54,10 @@ describe("character controller", () => {
     for (const id of [...storage.controllerOrder]) destroyController(id)
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft, "debug parity toggles must be off in acceptance tests")
+    assert(
+      !config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1,
+      "debug parity toggles must be off in acceptance tests",
+    )
   })
 
   test("walks 200 tiles through a wall maze and arrives", () => {
@@ -158,6 +161,20 @@ describe("character controller", () => {
     })
   })
 
+  test("mines a tree 8 tiles away: trees use the short mining reach, not reach_distance", () => {
+    const lab = createLab(16)
+    const tree = lab.surface.create_entity({ name: "tree-01", position: at(lab, -8.5, 0.5) })!
+    const character = spawnEngineer(lab)
+    character.teleport(at(lab, -3.5, 0.5))
+    assert(!character.can_reach_entity(tree), "a tree 5 tiles away is out of reach (reach_distance is 10)")
+    character.teleport(at(lab, 0, 0))
+    const id = enqueue(createController(character), { kind: "mine", target: tree })
+    awaitAction(id, 600, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      assert(!tree.valid && itemCount(character, "wood") > 0, "tree mined into wood")
+    })
+  })
+
   test("crafts 10 gears at real speed", () => {
     const lab = createLab(8)
     const character = spawnEngineer(lab)
@@ -254,6 +271,64 @@ describe("character controller", () => {
     })
   })
 
+  test("take with allowPartial grabs what is there; strict take still fails", () => {
+    const lab = createLab(16)
+    const character = spawnEngineer(lab)
+    const chest = lab.surface.create_entity({ name: "wooden-chest", position: at(lab, 6.5, 0.5), force: "player" })!
+    chest.insert({ name: "coal", count: 3 })
+    const ctrl = createController(character)
+    const strict = enqueue(ctrl, { kind: "take", entity: chest, item: "coal", count: 10 })
+    const partial = enqueue(ctrl, { kind: "take", entity: chest, item: "coal", count: 10, allowPartial: true })
+    const empty = enqueue(ctrl, { kind: "take", entity: chest, item: "coal", count: 10, allowPartial: true })
+    awaitAction(empty, 600, (a) => {
+      const s = getAction(strict)!
+      assert(s.status === "failed" && s.reason === "not-enough", describeAction(s))
+      const p = getAction(partial)!
+      assert(p.status === "succeeded" && p.stats.items === 3, describeAction(p))
+      assert(itemCount(character, "coal") === 3 && chest.get_item_count("coal") === 0)
+      assert(a.status === "failed" && a.reason === "not-enough", `nothing left: ${describeAction(a)}`)
+    })
+  })
+
+  test("cancelling a craft cancels its queued crafts and returns the ingredients", () => {
+    const lab = createLab(8)
+    const character = spawnEngineer(lab)
+    character.insert({ name: "iron-plate", count: 20 })
+    const id = enqueue(createController(character), { kind: "craft", recipe: "iron-gear-wheel", count: 10 })
+    after_ticks(70, () => {
+      assert(getAction(id)!.status === "running" && character.crafting_queue_size > 0, "crafting")
+      assert(cancel(id))
+      assert(character.crafting_queue_size === 0, "crafting queue emptied")
+      const gears = itemCount(character, "iron-gear-wheel")
+      assert(gears >= 1 && gears < 10, `crafted ${gears} before the cancel`)
+      assert(itemCount(character, "iron-plate") === 20 - 2 * gears, `plates returned: ${itemCount(character, "iron-plate")}`)
+    })
+  })
+
+  test("fills a ghost under player rules: the build check passes over it, and the ghost becomes the entity", () => {
+    const lab = createLab(16)
+    const character = spawnEngineer(lab)
+    character.insert({ name: "inserter", count: 2 })
+    const make = (x: number) =>
+      lab.surface.create_entity({ name: "entity-ghost", inner_name: "inserter", position: at(lab, x, 0.5), direction: defines.direction.east, force: "player" })!
+    const ghost = make(4.5)
+    // An obstacle first: script-creating an entity on a ghost would remove the ghost.
+    lab.surface.create_entity({ name: "stone-wall", position: at(lab, 6.5, 0.5), force: "neutral" })
+    const blockedGhost = make(6.5)
+    assert(character.can_place_entity({ name: "inserter", position: ghost.position, direction: defines.direction.east }), "a ghost does not block the player's build check")
+    const ctrl = createController(character)
+    const ok = enqueue(ctrl, { kind: "place", item: "inserter", position: ghost.position, direction: defines.direction.east, ghost })
+    const blocked = enqueue(ctrl, { kind: "place", item: "inserter", position: blockedGhost.position, direction: defines.direction.east, ghost: blockedGhost })
+    awaitAction(blocked, 300, (b) => {
+      const a = getAction(ok)!
+      assert(a.status === "succeeded", describeAction(a))
+      assert(!ghost.valid && a.placed!.valid && a.placed!.name === "inserter" && a.placed!.direction === defines.direction.east, "ghost revived as the entity")
+      assert(b.status === "failed" && b.reason === "cannot-place", describeAction(b))
+      assert(blockedGhost.valid, "a failed fill leaves the ghost")
+      assert(itemCount(character, "inserter") === 1, "only the placed item was used")
+    })
+  })
+
   test("cancel stops a walk and the queue moves on", () => {
     const lab = createLab(32)
     const character = spawnEngineer(lab, -20, 0)
@@ -329,6 +404,19 @@ describe("character controller", () => {
       awaitAction(id, 5, (a) => {
         assert(a.status === "succeeded", describeAction(a))
         assert(itemCount(character, "iron-gear-wheel") === 10)
+      })
+    })
+
+    test("reach multiplier lets the character place from farther away without walking", () => {
+      setConfigOverride("debugReachMultiplier", 3)
+      const lab = createLab(32)
+      const character = spawnEngineer(lab)
+      character.insert({ name: "wooden-chest", count: 1 })
+      const id = enqueue(createController(character), { kind: "place", item: "wooden-chest", position: at(lab, 20.5, 0.5) })
+      awaitAction(id, 600, (a) => {
+        assert(a.status === "succeeded", describeAction(a))
+        assert(a.stats.walkTicks === 0, `walked ${a.stats.walkTicks} ticks`)
+        assert(character.build_distance >= 30, `build distance ${character.build_distance}`)
       })
     })
 

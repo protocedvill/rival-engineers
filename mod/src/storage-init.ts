@@ -8,4 +8,8 @@ export function initStorage(): void {
   storage.nextControllerId ??= 1
   storage.actions ??= {}
   storage.nextActionId ??= 1
+  storage.factions ??= {}
+  storage.factionOrder ??= []
+  storage.crew ??= {}
+  storage.nextCrewId ??= 1
 }

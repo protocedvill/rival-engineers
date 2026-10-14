@@ -1,6 +1,7 @@
 import { PathfinderWaypoint } from "factorio:runtime"
 import { ActionRecord, ControllerState } from "./character/types"
 import { Config } from "./config"
+import { CrewMember, FactionState } from "./jobs/types"
 
 declare global {
   interface PathRequestState {
@@ -20,6 +21,12 @@ declare global {
     nextControllerId: number
     actions: Record<number, ActionRecord>
     nextActionId: number
+    /** AI factions by name (SPEC §5.7), each with its own force, crew and Job Board. */
+    factions: Record<string, FactionState>
+    /** Faction names in creation order, for deterministic iteration. */
+    factionOrder: string[]
+    crew: Record<number, CrewMember>
+    nextCrewId: number
     /** Scratch space for factorio-test tests that must find their objects again after a reload. */
     testScratch?: Record<string, unknown>
   }

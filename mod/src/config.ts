@@ -17,6 +17,16 @@ export interface Config {
   actionStallTicks: number
   debugTeleportWhenStuck: boolean
   debugInstantCraft: boolean
+  /** Debug only: multiplies build, reach and resource reach. 1 = player parity. */
+  debugReachMultiplier: number
+  /** Attempts before a failing job is marked failed (Job Board). */
+  jobMaxAttempts: number
+  /** Back-off before a released job may be claimed again; doubles with each failed attempt. */
+  jobRetryTicks: number
+  /** Most jobs one crew member claims as one locality batch. */
+  batchMaxJobs: number
+  /** Ticks a job waits after a transient failure (e.g. a character standing in the way). */
+  jobBlockedRetryTicks: number
 }
 
 export type ConfigKey = keyof Config
@@ -35,6 +45,11 @@ export function getConfig(): Config {
     actionStallTicks: setting(Settings.actionStallTicks),
     debugTeleportWhenStuck: setting(Settings.debugTeleportWhenStuck),
     debugInstantCraft: setting(Settings.debugInstantCraft),
+    debugReachMultiplier: setting(Settings.debugReachMultiplier),
+    jobMaxAttempts: setting(Settings.jobMaxAttempts),
+    jobRetryTicks: setting(Settings.jobRetryTicks),
+    batchMaxJobs: setting(Settings.batchMaxJobs),
+    jobBlockedRetryTicks: setting(Settings.jobBlockedRetryTicks),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

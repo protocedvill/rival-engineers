@@ -8,4 +8,9 @@ export const Settings = {
   actionStallTicks: "rival-engineers-action-stall-ticks",
   debugTeleportWhenStuck: "rival-engineers-debug-teleport-when-stuck",
   debugInstantCraft: "rival-engineers-debug-instant-craft",
+  debugReachMultiplier: "rival-engineers-debug-reach-multiplier",
+  jobMaxAttempts: "rival-engineers-job-max-attempts",
+  jobRetryTicks: "rival-engineers-job-retry-ticks",
+  batchMaxJobs: "rival-engineers-batch-max-jobs",
+  jobBlockedRetryTicks: "rival-engineers-job-blocked-retry-ticks",
 } as const

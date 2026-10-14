@@ -96,6 +96,10 @@ def render(dump, box, scale, trail=None):
         # Inset by a pixel when there is room, so neighbours stay distinct at small scales.
         inset = 1 if min(w, h) * scale > 4 else 0
         rect = [left + inset, top + inset, max(left + inset, left + w * scale - inset), max(top + inset, top + h * scale - inset)]
+        if e["type"] == "entity-ghost" and e.get("ghost_type"):
+            # Planned entity: an outline in the planned type's colour, no fill.
+            draw.rectangle(rect, outline=TYPE_COLOURS.get(e["ghost_type"], OTHER), width=1)
+            continue
         draw.rectangle(rect, fill=TYPE_COLOURS.get(e["type"], OTHER), outline=force_colour(e["force"]), width=2 if inset else 1)
         vec = DIRECTION_VECTORS.get(e["direction"])
         if e["type"] in DIRECTIONAL_TYPES and vec:

@@ -16,12 +16,20 @@ export type ActionSpec =
   | { kind: "mine"; target?: LuaEntity; position?: MapPosition; count?: number }
   /** Hand-craft `count` crafts of `recipe` at real speed. */
   | { kind: "craft"; recipe: string; count: number }
-  /** Place one `item` at `position` facing `direction` (default north). */
-  | { kind: "place"; item: string; position: MapPosition; direction?: defines.direction }
+  /**
+   * Place one `item` at `position` facing `direction` (default north). With `ghost`, fill that ghost like a
+   * player building over it: the player's build check runs with the ghost present (ghosts don't collide),
+   * then the item is consumed and the ghost revived, so it keeps its settings. On failure the ghost stays.
+   */
+  | { kind: "place"; item: string; position: MapPosition; direction?: defines.direction; ghost?: LuaEntity }
   /** Move `count` of `item` from the character into `entity`. */
   | { kind: "insert"; entity: LuaEntity; item: string; count: number }
-  /** Move `count` of `item` from `entity` into the character. */
-  | { kind: "take"; entity: LuaEntity; item: string; count: number }
+  /**
+   * Move `count` of `item` from `entity` into the character. Strict by default: fails with `not-enough`
+   * if fewer are there. With `allowPartial`, takes whatever is there up to `count`, like a player
+   * grabbing a stack; it fails only if there is none at all.
+   */
+  | { kind: "take"; entity: LuaEntity; item: string; count: number; allowPartial?: boolean }
   /** Mine a placed entity back into the inventory. */
   | { kind: "pickUp"; entity: LuaEntity }
 
@@ -119,4 +127,6 @@ export interface ControllerState {
   /** Finished action ids, oldest first; trimmed to keep storage bounded. */
   finished: number[]
   dead: boolean
+  /** Debug reach multiplier currently applied to the character (undefined = 1). */
+  reachMultiplier?: number
 }
