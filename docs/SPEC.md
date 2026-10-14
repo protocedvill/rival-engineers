@@ -55,7 +55,7 @@ Two layers, by analogy:
 | D29 | Visibility | Graph export to JSON with a `tools/render` overlay, plus an in-game `rendering` debug overlay (§5.8). |
 | D30 | Research goal (2026-10-14) | v1 researches **only the red/green technologies reachable without steel production or crude oil** (§3.2). No one-off steel smelt, so `steel-axe` is out, and nothing behind `oil-processing`. The set is computed from prototypes at runtime: **42** technologies in vanilla 2.0.77. |
 | D31 | Hand speed (2026-10-14) | Crew place entities at a **configurable human pace**: `place-delay-ticks` (default 8) per entity once in reach, `belt-place-delay-ticks` (default 3) for belts, which players drag (§5.1, §5.7). |
-| D32 | Faction starting areas (2026-10-14) | With `spawn-mode = auto-distance`, each faction's spawn is registered as a **map-gen starting point** (`MapGenSettings.starting_points`, as the vanilla PvP scenario does for teams) before its surroundings are generated, so it gets starting-area resources like a player. Setting `spawn-starting-area` (default on); off = search naturally generated land only. Accepted by the user during M3: later milestones assume it. |
+| D32 | Faction starting areas (2026-10-14) | With `spawn-mode = auto-distance`, each faction's spawn is registered as a **map-gen starting point** (`MapGenSettings.starting_points`, as the vanilla PvP scenario does for teams) before its surroundings are generated, so it gets starting-area resources like a player. Setting `spawn-starting-area` (default on); off = search naturally generated land only. Proposed during M3 and confirmed by the user on 2026-10-14 (default on). Later milestones assume it. |
 
 ## 3. v1 Definition of Done
 
