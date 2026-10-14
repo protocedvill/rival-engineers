@@ -76,6 +76,25 @@ export interface Route {
   ripped: number
 }
 
+/** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */
+export interface PlannedPole {
+  id: string
+  name: string
+  x: number
+  y: number
+  /** The pole line (network edge) it belongs to. */
+  line: string
+}
+
+/** One edge of the pole network: poles from a powered component to a module. */
+export interface PoleLine {
+  id: string
+  /** The module joined to the network, and the owner of the powered pole it was joined from. */
+  to: string
+  from: string
+  poles: string[]
+}
+
 export interface LayoutState {
   modules: PlacedModule[]
   /** Module footprints ("m:<id>") and tiles module entities interact with outside their footprint ("x:<id>"). */
@@ -90,6 +109,9 @@ export interface LayoutState {
   spans: Record<string, UgSpan[]>
   routes: Record<string, Route>
   routeOrder: string[]
+  /** Poles between modules (power.ts), occupying `occ` tiles tagged "x:<line>". */
+  poles?: PlannedPole[]
+  poleLines?: PoleLine[]
 }
 
 export function newLayout(): LayoutState {
