@@ -70,6 +70,7 @@ Two layers, by analogy:
 | D44 | Spawn distance (2026-10-15, user decision on P17, changed) | Factions spawn as far out as the config says (`spawn-min-distance`), **default 450+ tiles**, which is beyond the chunks a new game queues around the origin, so starting points get their lakes from normal map generation. The lake repair from M5a.2 stays only as a fallback for configs that spawn inside the queued area. |
 | D45 | Ground claims (2026-10-15, user decision on P18) | P18 approved, **including the 1-tile margins** for other factions, provided it costs no noticeable performance (measure it). |
 | D46 | Ore fields (2026-10-15, user) | **Factions never share an ore field.** A patch (connected ore field) that another faction mines or has claimed is off limits for bootstrap sites, mining modules and growth; spawn placement must give each faction its own fields. |
+| D47 | Conflict repair (2026-10-15, user decision on P19) | P19 approved as built: blocked routes are rerouted, a blocked module or pole moves its whole goal, at most `conflict-max-repairs` (3) per goal. **M6:** relocate only the blocked module (and its routes) instead of the whole goal. |
 
 ## 3. v1 Definition of Done
 
@@ -568,7 +569,7 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 | M3 | **Burner bootstrap** | From a vanilla start, one faction reaches self-sustaining burner mining of iron, copper, coal and stone plus stone furnaces. Done when the "first electricity" materials have been gathered. |
 | M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). Factory Graph **physical layer** and **capacity math** (§5.8): T1 capacity/overflow tests and a T2 lab with a deliberately undersized belt. |
 | M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. Factory Graph **solver** and **logical layer**, **measurement**, **reconciler** and **in-game overlay** (§5.8): T1 solver ratio tests, and a T2 test where a deliberately starved module is classified *starved* with the right upstream cause. |
-| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
+| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Conflict repair relocates only the blocked module and its routes (D47). Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
 
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
 oil, blue science and bots (crew switches to construction robots) · **P4** inter-faction diplomacy and war
@@ -644,13 +645,13 @@ M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-repo
   treat them, and other factions' ghosts, as foreign structures. First come, first served. A finished plan whose tiles
   another faction claimed meanwhile (or a foreign entity stands on) counts as a failed attempt. Open: whether margins
   should count for other factions (they cost space where two factions share an ore field).
-- **P19, conflict repair (proposed, a first piece of the M5b reconciler / M6 multi-faction):** before a build's retry
+- **P19, conflict repair (approved → D47):** before a build's retry
   round and before it counts as built, its parts are checked against the world. A route blocked by another force's
   entity is rerouted (old pieces the crew picks up first, then new ghosts); a blocked module or pole gives up the whole
   goal's location (built entities deconstructed, parts dropped from the layout and graph, the design plans it again).
   At most `conflict-max-repairs` (3) per goal. Refinement left for M6: relocate only the blocked module.
 
-Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never). P19 still proposed.
+Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
 
 Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
 
@@ -677,7 +678,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
-- v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D46; §11 P17, P18 resolved.
+- v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D47; §11 P17–P19 resolved.
 - v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.
 - v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
 - v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
