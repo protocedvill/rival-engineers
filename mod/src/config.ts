@@ -49,6 +49,12 @@ export interface Config {
    * scenario does for teams) at a not-yet-generated spot, so it gets starting resources like a player.
    */
   spawnStartingArea: boolean
+  /** Starting area: a spawn needs water within this radius (0 = no check); the starting-lake repair works in it. */
+  spawnWaterRadius: number
+  /** Starting area: repaint the starting lake when the spawn's tiles were generated before its starting point. */
+  spawnLakeRepair: boolean
+  /** Starting area: repair only when at least this many tiles the elevation noise makes water are land. */
+  spawnLakeRepairMinTiles: number
   /** Chunks within this radius of the base are generated (like a player exploring) and scanned for resources. */
   scanRadius: number
   /** The strategy layer re-evaluates each faction every this many ticks. */
@@ -132,6 +138,9 @@ export function getConfig(): Config {
     spawnResourceRadius: setting(Settings.spawnResourceRadius),
     spawnFixedOffsets: setting(Settings.spawnFixedOffsets),
     spawnStartingArea: setting(Settings.spawnStartingArea),
+    spawnWaterRadius: setting(Settings.spawnWaterRadius),
+    spawnLakeRepair: setting(Settings.spawnLakeRepair),
+    spawnLakeRepairMinTiles: setting(Settings.spawnLakeRepairMinTiles),
     scanRadius: setting(Settings.scanRadius),
     brainIntervalTicks: setting(Settings.brainIntervalTicks),
     bootstrapSites: setting(Settings.bootstrapSites),

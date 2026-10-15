@@ -1,0 +1,23 @@
+# Two factions on one map through the M5a goal (automated red science), defaults otherwise (D13: 2 factions × 2 crew).
+# The run ends when both factions are done. Scorecard: python3 tools/harness/m5_scorecard.py out/soak/m5-two-factions
+
+[run]
+name = "m5-two-factions"
+seeds = [11, 222, 3333]
+game_hours = 3.0
+stop_when_done = true
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 2
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 7200
+frameDumpRadius = 120
+soakDoneMilestone = "automated-red-science"

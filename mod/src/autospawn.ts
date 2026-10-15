@@ -28,7 +28,8 @@ export function spawnFaction(name: string, options: SpawnFactionOptions = {}): F
   const faction = createFaction(name, { position: choice.position, crew: options.crew, surface: surface.name, starterItems: starterItems() })
   startBootstrap(faction, choice.position)
   faction.brain!.spawnNote = choice.note
-  log(`[rival-engineers] faction ${name} spawned at ${choice.position.x},${choice.position.y} after checking ${choice.checked} spot(s)${choice.note ? ": " + choice.note : ""}`)
+  if (choice.lakeRepaired !== undefined && choice.lakeRepaired > 0) faction.brain!.spawnNote = `${choice.note ? choice.note + "; " : ""}starting lake repaired (${choice.lakeRepaired} tiles)`
+  log(`[rival-engineers] faction ${name} spawned at ${choice.position.x},${choice.position.y} after checking ${choice.checked} spot(s)${faction.brain!.spawnNote ? ": " + faction.brain!.spawnNote : ""}`)
   return faction
 }
 

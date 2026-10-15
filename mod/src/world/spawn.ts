@@ -12,6 +12,8 @@ export interface SpawnChoice {
   checked: number
   /** Why the spot is a compromise, if it is one. */
   note?: string
+  /** Tiles the starting-lake repair turned into water (starting area only). */
+  lakeRepaired?: number
 }
 
 /**
@@ -190,14 +192,73 @@ export function findSpawnStartingArea(surface: LuaSurface, config: Config, salt:
       points.push(candidate)
       mgs.starting_points = points
       surface.map_gen_settings = mgs as never
-      exploreNow(surface, candidate, radius)
+      const waterR = config.spawnWaterRadius
+      exploreNow(surface, candidate, math.max(radius, waterR))
+      const repaired = config.spawnLakeRepair && waterR > 0 ? repairStartingLake(surface, candidate, waterR, config.spawnLakeRepairMinTiles) : 0
       const land = landAt(surface, candidate)
       if (!land) continue
       const patches = scanPatches(surface, land, radius)
-      if (scoreSpot(patches, land, required, radius) !== undefined) return { position: land, patches, checked }
+      if (scoreSpot(patches, land, required, radius) === undefined) continue
+      if (waterR > 0 && !hasWater(surface, land, waterR)) continue
+      return { position: land, patches, checked, lakeRepaired: repaired }
     }
   }
   return undefined
+}
+
+/** Whether any water tile lies within `radius` of `p`. */
+export function hasWater(surface: LuaSurface, p: MapPosition, radius: number): boolean {
+  return surface.count_tiles_filtered({ position: p, radius, collision_mask: "water_tile", limit: 1 }) > 0
+}
+
+/**
+ * The tile vanilla Nauvis map generation puts at `elevation`, if it is water: `water` where elevation < 0,
+ * `deepwater` where its probability wins (base/prototypes/tile/tiles.lua: water_base(0, 100), water_base(-2, 200)).
+ */
+function waterTileFor(elevation: number): string | undefined {
+  if (elevation >= 0) return undefined
+  const water = 100 * math.min(-elevation, 1)
+  const deep = elevation <= -2 ? 200 * math.min(-2 - elevation, 1) : -1
+  return deep > water ? "deepwater" : "water"
+}
+
+/**
+ * Starting-lake repair (M5a.2). When a new game starts, the engine queues a wide area around the origin for
+ * generation (about 10 chunks out) and computes tiles for it on worker threads; those chunks do not count as
+ * generated yet. A faction starting point registered on top of them gets its starting-area resources (placed at a
+ * later chunk stage) but not its starting lake: the tiles were computed before the point existed. The surface's
+ * elevation noise already includes the point, so this repaints water (and deep water) on the generated land tiles
+ * within `radius` of `center` where that noise is below zero, but only when at least `minTiles` of them disagree:
+ * a correctly generated area differs from the noise in a handful of shore tiles, which stay as they are.
+ * Returns the number of tiles repainted. Deterministic: the noise and the tiles are game state.
+ */
+export function repairStartingLake(surface: LuaSurface, center: MapPosition, radius: number, minTiles: number): number {
+  if (prototypes.tile["water"] === undefined || prototypes.tile["deepwater"] === undefined) return 0
+  const cx = math.floor(center.x)
+  const cy = math.floor(center.y)
+  const positions: MapPosition[] = []
+  for (let x = cx - radius; x < cx + radius; x++) {
+    for (let y = cy - radius; y < cy + radius; y++) {
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > radius * radius) continue
+      if (!surface.is_chunk_generated({ x: math.floor(x / 32), y: math.floor(y / 32) })) continue
+      positions.push({ x, y })
+    }
+  }
+  if (positions.length === 0) return 0
+  const elevation = surface.calculate_tile_properties(["elevation"], positions)["elevation"]
+  if (elevation === undefined) return 0
+  const tiles: { name: string; position: MapPosition }[] = []
+  for (let i = 0; i < positions.length; i++) {
+    const name = waterTileFor(elevation[i])
+    if (name === undefined) continue
+    if (surface.get_tile(positions[i].x, positions[i].y).collides_with("water_tile")) continue
+    tiles.push({ name, position: positions[i] })
+  }
+  if (tiles.length < minTiles) return 0
+  // Like map generation: no entity or decorative stands in water (trees, rocks and ore there are removed).
+  surface.set_tiles(tiles, true, true, true, false)
+  log(`[rival-engineers] starting lake at ${cx},${cy} was missing (tiles generated before its starting point): repainted ${tiles.length} water tiles from the elevation noise`)
+  return tiles.length
 }
 
 /** fixed-offsets: the `index`th offset (1-based, wrapping) from the player spawn, on the nearest land. */
