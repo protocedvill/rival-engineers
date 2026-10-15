@@ -65,6 +65,8 @@ Two layers, by analogy:
 | D39 | Crew pace (2026-10-15, user) | No artificial "think time" slowdown: the crews are already slower than a human because they work inefficiently. Efficiency improvements (batching, crafting while walking) are wanted, not throttling. |
 | D40 | Bootstrap sizing (2026-10-15, user) | Bootstrap drill/furnace counts are **settings**, with the current values as defaults. |
 | D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
+| D42 | Buffer depots on modules (2026-10-15, user) | Modules may carry a small **buffer**: an inserter into a chest at the end of a line (e.g. a furnace stack) that the crew treats as a depot to collect from. Not every module gets one; agents use judgement and list each module's choice in the milestone report for the user to verify. |
+| D43 | Bootstrap depletion (2026-10-15, user; exception to D28) | Bootstrap mining sites that deplete (or are about to) are deconstructed and rebuilt on remaining ore, so runs don't die. D28's static-world assumption still holds for the planned factory. |
 
 ## 3. v1 Definition of Done
 
