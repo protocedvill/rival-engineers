@@ -719,7 +719,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 ## Changelog
 
 - v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).
-- v0.14 (2026-10-15, M5b): §11 P21–P22 proposed (reconciler remedies, edge flow probes); §5.7 measurement, reconciler
+- v0.15 (2026-10-15, M5b): §11 P21–P22 proposed (reconciler remedies, edge flow probes); §5.7 measurement, reconciler
   and `layout-smelting` (D35) settings.
 - v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D47; §11 P17–P19 resolved.
 - v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.

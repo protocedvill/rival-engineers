@@ -586,3 +586,71 @@ automated red science (seed 555555: four iron smelt sites, the first at ~20 game
 (a) Full `npm test` runs: 1 × ~7 min. (b) Targeted tests (arena groups, controller, bootstrap, conflicts, job board,
 T1): ~15 runs, ~8 min. (c) Soaks: M5 acceptance 5 seeds × 1 round (~25 min) and 2 factions 5 seeds × 1 round
 (~35 min) at -j 5. (d) Everything else (reading, design, code, report): ~1.5 h.
+
+## M5b: measurement, reconciler, graph overlay, near-ore smelting (2026-10-15)
+
+SPEC §5.8 (D26, D29), §8 M5, D35. Commits d270953, c798fcf, a52925f (final code).
+
+### Built
+
+- **Measurement** (`strategy/measure.ts`, runtime). Per Factory Graph node, every `measure-interval-ticks` (300): each
+  machine of a built node (crafting machines, drills, labs, boilers, steam engines, found once per build in the
+  module's rect) goes into one state class by its `status`: working, starved (missing ingredients, no ore, no water),
+  blocked (output full), unpowered, unfuelled, idle (no research, no recipe…). Crafting machines add `products_finished`
+  deltas × the recipe's products and ingredients (counted rates); a starved crafter's input inventory says which
+  ingredient is missing, a starved lab which pack. Drills and labs have no counter: rates are the working share × full
+  speed (`estimated`). Steam engines add generated power (`load` = generated / the node's full output). The module's
+  **inserters** are sampled for power and fuel too: furnaces behind unpowered inserters only say `no_ingredients`
+  (found by the T2 tests). Cumulative counters go into a ring; `node.measured` is the difference across the ring
+  (a sliding window of `measure-window-samples`, 12 = 1 game-min). **Chests are never sampled**, so D42 buffer chests
+  are never demand. Per **belt edge**, one probe at a time per faction (`measure-probe-ticks`, 600): the belt tile at
+  the consumer's port is sampled more often than an item takes to cross it; items on belts keep a `unique_id`, so new
+  ids per second are the flow the consumer actually gets (15.00/s measured on a saturated yellow belt). The probe also
+  records how often the tiles at both ports were full. Edges are probed round-robin, the reconciler's requests first.
+  Results: `node.measured` (rates, state shares, missing items, inserter power/fuel), `edge.measuredRate`,
+  `measuredTick`, `measuredFull {from, to}`, `capacityRate`.
+- **Reconciler** (`strategy/reconcile.ts`, pure, T1 `mod/unit/reconcile.test.ts`, 12 tests). Each sample:
+  1. **Classify** every built node past `reconcile-warmup-ticks` (counted from the latest build of the node and its
+     direct feeders): power nodes are unfuelled / starved (no water) / ok; otherwise ≥ 50% of machine time without power
+     or fuel (machines or the module's inserters) marks unpowered / unfuelled; else a **deficit** (measured output below
+     planned × (1 − `reconcile-shortfall`)) takes the state with the most machine time (starved, backed-up, unpowered,
+     unfuelled; under 10% is noise). Idle nodes (labs without research) and sinks (the mall) are ok.
+  2. **Hysteresis:** a node's status changes only after the new raw status held for `reconcile-confirm` (3) evaluations.
+  3. **Root cause:** starved → the most-missing item's in-edge: a stale edge asks for a probe first (no action); the edge
+     at ≥ 90% of its belt's capacity → **at-capacity** (undersized belt); items waiting at the consumer's port →
+     **intake-limited** consumer; items piling up at the producer and not arriving → **broken** edge; otherwise the
+     producer: if it is starved/unpowered/unfuelled recurse into it; if it makes much more than arrives the belt is
+     **filling** (wait); if it runs flat out (≥ 85% working) it is **undersized**; else "below plan". Unfuelled → its
+     fuel edges the same way, or **crew fuel** when it has none. Unpowered → the power node: unfuelled/starved recurse;
+     at ≥ 85% load **undersized power**; else the **pole line** is suspect. Backed-up → downstream: a broken or full
+     edge, or the consumer's own cause, else **low demand**.
+  4. **Remedies** (P21, proposed) for root causes only, deduplicated (a starved consumer and its backed-up producer give
+     one remedy): undersized producer or power → a **grow** goal (+1 `expand` unit, the M5a expand-first machinery,
+     never while a plan is in flight); broken route / pole line → a **repair** goal (`checkBuild` finds the missing
+     belts or poles, ghosts and place jobs for the crew); crew fuel → an **upkeep** pass now. At most
+     `reconcile-max-remedies` (3) per root cause, `reconcile-cooldown-ticks` (5 min) apart. At-capacity edges,
+     intake-limited modules, depletion (D28) and low demand are reported only.
+  Node `status`, `statusReason`, `statusTick`, `cause {kind, id, what, why}` are in the graph export; the telemetry
+  `factory.reconciler` report has evaluations, status counts and changes, causes, remedies and probes; `m5_scorecard.py`
+  prints a reconciler section per seed.
+- **In-game overlay** (`review/graph-overlay.ts`, layer "Factory graph" in the inspector, Ctrl+Shift+I): each module's
+  box coloured by status (green ok, amber starved, blue backed-up, purple unpowered, red unfuelled, grey unknown /
+  under construction) with `role: status · measured/planned/s` (power: load %), the root cause under the box, and each
+  belt edge as a dashed line between its ports with `item measured/planned/s` (orange when under 75% of plan).
+- **D35 near-ore smelting** (`LayoutPolicy.smelting`: `compact-core` | `near-ore`, setting `layout-smelting`, default
+  unchanged: `compact-core`). Near-ore: each smelter's ore outposts are placed before it (on the ore nearest the cluster
+  centre) and the smelter clusters around its outpost's port. T1: iron 70 tiles from the consumer: compact-core puts the
+  smelter 11.5 tiles from the gear row and 64.5 from the outpost, near-ore the reverse.
+
+### Tests
+
+- **T2 `test/reconciler.test.ts`** (5 tests, ~70 s): outpost → smelter column → gear row built from real entities.
+  (1) **Deliberately starved**: the outpost has no power; the gear row and the smelter are classified **starved** with
+  root cause the **outpost** (unpowered, no power node). (2) **Backed-up**: the gear row has no power; the smelter is
+  **backed-up** with root cause the gear row. (3) **Unfuelled**: furnaces without coal → **unfuelled**, cause crew fuel;
+  the gear row starves with the smelter's fuel as root cause. (4) **Labs fed by an undersized belt**: 12 fast labs
+  could take 36 packs/s through fast inserters, a 25/s source feeds a yellow belt: the probe measures **15.0/s**, the
+  labs are starved and the root cause is the pack edge **at capacity**. (5) **End to end**: a belt is cut out of the
+  built ore route; the edge is found broken, a **repair** goal re-places it, the crew (one member, belts in a chest)
+  builds it and the smelter is **ok** again.
+- T1: reconciler (12), D35 near-ore placement (1). Full T2 **97/97** on a52925f (`npm test`, 372 s, 8 shards).
