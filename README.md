@@ -81,3 +81,57 @@ holds T1 unit tests for pure modules, `mod/static` holds files copied verbatim i
 render, soak harness (`tools/harness`) and module tooling (`tools/modules`), `data/modules` holds the curated
 modules (JSON, built into the mod by `tools/build-mod.mjs`) with their sources and attribution, and `ci/mods` holds
 vendored test-only mods.
+
+## Watching the AI in game
+
+Run the mod live in your own Steam Factorio (2.0.77) and see where the crews' time goes.
+
+```bash
+npm run review                      # build, set up the review profile, start the sandbox scenario
+npm run review -- --factions 1 --crew 3   # change the faction count / crew size (kept until changed)
+npm run review -- --space-age       # also enable space-age, quality and elevated-rails (off by default)
+npm run review -- --menu            # open the main menu instead (to load a save, change mod settings...)
+npm run review -- --load NAME       # load .factorio-review/saves/NAME.zip
+npm run review -- --no-launch       # set up only, print the command
+```
+
+**Review profile.** Everything lives in `.factorio-review/` in the **main checkout** (git-ignored): its own
+`config/config.ini`, `mods/mod-list.json`, `mods/mod-settings.dat`, `saves/` and `factorio-current.log`. Your normal
+`~/.factorio` (mods, saves) is never written; on first setup its `config.ini` is copied (graphics, keybindings) with
+the paths pointed at the review profile (`--fresh-config` skips that). `mods/rival-engineers` is a symlink to
+`<main checkout>/mod/build`, so any `npm run build` in the main checkout (yours or an agent's) is what the game loads
+on its next start. Run from a worktree, the script still uses the main checkout's build and profile
+(`REVIEW_ROOT=<dir>` overrides that, e.g. to try a worktree's build in its own profile). The game is started as
+`…/steamapps/common/Factorio/bin/x64/factorio --config .factorio-review/config/config.ini --load-scenario
+rival-engineers/sandbox` while Steam runs (`--via-steam` uses `steam -applaunch 427520` instead). Steam's launch
+options are not touched. First start takes a while (sprite loading).
+
+**Sandbox.** `npm run review` starts **Rival Engineers sandbox** directly; from the menu it is under
+New Game → Scenarios. You are a **spectator** (free camera, WASD; no body), biters are off (setting "Sandbox
+scenario: keep biters"), it is always day, the inspector opens, and the camera jumps to the first faction once it
+spawns. Factions spawn on the first tick per the mod settings (faction count, crew size, spawn placement and
+starting areas, SPEC §5.7 / D32). In a normal freeplay game with the mod, the inspector works the same way; its
+**Spectate / Take body** button switches between your character and a spectator camera.
+
+**Inspector** (Ctrl+Shift+I, or the magnifier button on the shortcut bar):
+- Top row: game speed ×1–×16, Pause/Resume, Step (one tick), Spectate. Overlay checkboxes: *Crew paths and
+  actions* (each crew member's walk path, its target, and "#id action · category Ns" above its head) and *Planned
+  entities* (ghosts outlined in the faction's colour, brighter when claimed). Overlays are drawn only for you.
+- Faction (◀ ▶ to cycle, Go to base): the brain's current goal, what it waits on, the Job Board (ready, claimed,
+  waiting on dependencies, in back-off, done, failed, releases), the oldest job nobody is working and why, and
+  stalls (with the current one, if any).
+- Crew table: what each member is doing now and for how long, its job and action queue, and its recent share of
+  idle+waiting, hauling and walking+pathing. **Follow** puts the camera in remote view centred on that member
+  (Esc leaves it); **Inspect** selects it.
+- Selected member: action and phase, job, queue, and the **time breakdown** since it spawned and over the last
+  minute of game time, in seconds and %: walking, stuck/pathing, mining, crafting, placing, hauling (haul, deposit
+  and transfer jobs including their walks, and every insert/take), waiting for materials (ready jobs exist but none
+  it can take), idle (no ready job), other. Hover a category for its definition. Plus jobs done/released, busy time
+  by job kind and the last failed action.
+
+Reading it: high *hauling* means depot round trips dominate; high *waiting* means the board has work but no
+materials (look at the oldest waiting job); high *idle* means the brain has nothing queued (look at "Brain waiting
+on"); high *stuck/pathing* means the pathfinder or terrain is the problem (turn on the path overlay and follow).
+Time accounting is in `mod/src/review/time.ts` (storage only, deterministic, never changes what the crew does).
+The in-game Factory Graph overlay (M5b, SPEC §5.8 D29) plugs in as another overlay layer:
+`registerOverlayLayer(...)` in `mod/src/review/overlay.ts`.

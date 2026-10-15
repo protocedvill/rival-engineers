@@ -77,6 +77,8 @@ export interface Config {
   plannerWorkPerTick: number
   /** Terrain model budget: chunks scanned per tick. */
   terrainChunksPerTick: number
+  /** Sandbox scenario (live review): keep biters. Off: no enemy bases, peaceful. */
+  sandboxEnemies: boolean
 }
 
 export type ConfigKey = keyof Config
@@ -125,6 +127,7 @@ export function getConfig(): Config {
     beltUtilization: setting(Settings.beltUtilization),
     plannerWorkPerTick: setting(Settings.plannerWorkPerTick),
     terrainChunksPerTick: setting(Settings.terrainChunksPerTick),
+    sandboxEnemies: setting(Settings.sandboxEnemies),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

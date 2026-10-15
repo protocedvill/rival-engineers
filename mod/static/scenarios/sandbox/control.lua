@@ -1,0 +1,3 @@
+-- Rival Engineers sandbox (live review). The mod does the setup (mod/src/review/sandbox.ts): players start as
+-- spectators with the inspector open, biters are off unless the "Sandbox scenario: keep biters" setting is on,
+-- and the AI factions spawn per the mod settings.
