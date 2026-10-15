@@ -82,7 +82,14 @@ export function pathRadiusFor(character: LuaEntity, reach: ReachGoal | undefined
       // Trees and rocks are mined like resources: can_reach_entity uses the short resource reach for them
       // (about 2.7 tiles plus their box), not reach_distance.
       const type = reach.entity.valid ? reach.entity.type : ""
-      if (type === "tree" || type === "simple-entity") return Math.max(0.5, character.resource_reach_distance - 1.2)
+      // The reach counts from the box, so a big rock (2×2) can be reached from farther: aim at its box plus the margin.
+      // With only the margin, every pathfinder end node next to a big rock collided with it and the walk failed
+      // ("no path"; a rock under a planned outpost stayed and its ghosts were never placed, seed 3333).
+      if (type === "tree" || type === "simple-entity") {
+        const box = reach.entity.bounding_box
+        const half = Math.min(box.right_bottom.x - box.left_top.x, box.right_bottom.y - box.left_top.y) / 2
+        return Math.max(0.5, character.resource_reach_distance - 1.2 + half)
+      }
       return Math.max(1, character.reach_distance - 3)
     }
     case "resource":
