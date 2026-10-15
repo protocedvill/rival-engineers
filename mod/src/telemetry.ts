@@ -131,10 +131,10 @@ function dumpFrames(): void {
     const brain = f.brain
     if (!brain) continue
     const center = brain.hub ?? brain.base
-    const base = `rival-engineers/frames/${name}/frame-${string.format("%09d", game.tick)}`
-    dumpEntities(`${base}.json`, center, config.frameDumpRadius, game.surfaces[f.surface], true)
-    // The Factory Graph next to each frame (tools/render --frame-graphs overlays it).
-    exportFactoryGraph(name, `${base}.graph.json`)
+    const frame = `frame-${string.format("%09d", game.tick)}`
+    dumpEntities(`rival-engineers/frames/${name}/${frame}.json`, center, config.frameDumpRadius, game.surfaces[f.surface], true)
+    // The Factory Graph at the same tick, in its own folder (tools/render --graph-dir overlays it per frame).
+    exportFactoryGraph(name, `rival-engineers/graphs/${name}/${frame}.graph.json`)
   }
 }
 

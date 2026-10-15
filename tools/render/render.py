@@ -18,6 +18,7 @@ import argparse
 import colorsys
 import hashlib
 import json
+from pathlib import Path
 import sys
 
 from PIL import Image, ImageDraw
@@ -133,6 +134,15 @@ def draw_graph(draw, graph, box, scale):
             c = px(p["x"], p["y"])
             colour = (60, 220, 230) if p["kind"] == "belt-in" else (230, 70, 220)
             draw.ellipse([c[0] - scale * 0.3, c[1] - scale * 0.3, c[0] + scale * 0.3, c[1] + scale * 0.3], outline=colour, width=2)
+    # Pole lines between modules (planned by the pole network planner).
+    for p in as_list(graph.get("poles")):
+        c = px(p["x"], p["y"])
+        draw.rectangle([c[0] - scale * 0.25, c[1] - scale * 0.25, c[0] + scale * 0.25, c[1] + scale * 0.25], fill=(240, 210, 60))
+    lifecycle = {n["id"]: n.get("lifecycle") for n in as_list(graph.get("logical", {}).get("nodes")) if isinstance(n, dict)}
+    for n in as_list(phys.get("nodes")):
+        if lifecycle.get(n["id"]) in ("planned", "building"):
+            r = n["rect"]
+            draw.text(((r["x"] - x0) * scale + 3, (r["y"] - y0) * scale + 12), lifecycle[n["id"]], fill=(255, 200, 80))
     for e in as_list(phys.get("edges")):
         cap_info = e.get("capacity", {})
         colour = (150, 150, 150) if e.get("external") else utilization_colour(cap_info.get("utilization", 0), cap)
@@ -224,6 +234,7 @@ def main(argv):
     ap.add_argument("--trail", action="store_true", help="draw the path walked by the (single) character across dumps")
     ap.add_argument("--graph", help="Factory Graph JSON to overlay (module boxes, routes by utilization)")
     ap.add_argument("--crop", help="x0,y0,x1,y1 world box to render instead of the dumps' extent")
+    ap.add_argument("--graph-dir", help="per-frame Factory Graphs: DIR/<dump name>.graph.json overlays each frame")
     args = ap.parse_args(argv)
 
     dumps = []
@@ -245,11 +256,21 @@ def main(argv):
         trail = trail + character_positions(d)[:1]
         trails.append(trail if args.trail else None)
 
+    def frame_graph(path):
+        if not args.graph_dir:
+            return graph
+        g = Path(args.graph_dir) / (Path(path).stem + ".graph.json")
+        if not g.exists():
+            return None
+        with open(g) as f:
+            return json.load(f)
+
+    paths = sorted(args.dumps, key=lambda p: json.load(open(p))["tick"])
     if args.gif:
-        frames = [render(d, box, args.scale, t) for d, t in zip(dumps, trails)]
+        frames = [render(d, box, args.scale, t, frame_graph(p)) for d, t, p in zip(dumps, trails, paths)]
         frames[0].save(args.out, save_all=True, append_images=frames[1:], duration=args.frame_ms, loop=0)
     else:
-        render(dumps[-1], box, args.scale, trails[-1], graph).save(args.out)
+        render(dumps[-1], box, args.scale, trails[-1], frame_graph(paths[-1]) if args.graph_dir else graph).save(args.out)
     print(f"wrote {args.out}")
 
 

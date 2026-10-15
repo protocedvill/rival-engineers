@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""M5 scorecard (SPEC §8 M5): reads a soak run's per-seed telemetry (out/soak/<run>/seed-N/telemetry.json, written by
+tools/harness/soak.py with tools/harness/m5.toml) and reports, per seed and faction, whether automated red science
+reached the labs with research progressing, the game time, its breakdown by phase, stalls, and AI ms/tick.
+
+The generic soak scorecard judges the M3 milestone; this one judges M5's.
+
+Usage: python3 tools/harness/m5_scorecard.py out/soak/m5-red-science [--milestone automated-red-science]
+Writes <run>/m5-scorecard.md and m5-scorecard.json next to the soak scorecard.
+"""
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+PHASES = [
+    ("bootstrap", None, "first-electricity-materials"),
+    ("power + labs", "first-electricity-materials", "labs-built"),
+    ("research to unblock", "labs-built", "production-planned"),
+    ("production build", "production-planned", "production-built"),
+    ("automation verified", "production-built", "automated-red-science"),
+]
+DURATION = re.compile(r"\[re-telemetry\] tick=(\d+) ticks=(\d+) ai=Duration: ([0-9.]+)ms")
+
+
+def minutes(t):
+    return None if t is None else round(t / 3600, 1)
+
+
+def seed_result(seed_dir, milestone):
+    tele = seed_dir / "telemetry.json"
+    if not tele.exists():
+        return None
+    t = json.loads(tele.read_text())
+    log = (seed_dir / "factorio-current.log").read_text(errors="replace") if (seed_dir / "factorio-current.log").exists() else ""
+    intervals = [(int(n), float(ms)) for _, n, ms in DURATION.findall(log) if int(n) > 0]
+    ai = sum(ms for _, ms in intervals) / max(1, sum(n for n, _ in intervals)) if intervals else None
+    per = sorted(ms / n for n, ms in intervals)
+    p99 = per[min(len(per) - 1, int(0.99 * len(per)))] if per else None
+    out = {"seed": seed_dir.name, "tick": t.get("tick", 0), "ai_ms_per_tick": ai, "ai_ms_p99_interval": p99, "factions": {}}
+    for name, f in (t.get("factions") or {}).items():
+        brain = f.get("brain") or {}
+        ms = brain.get("milestones") or {}
+        stalls = brain.get("stalls") or []
+        if isinstance(stalls, dict):
+            stalls = list(stalls.values())
+        done = ms.get(milestone)
+        phases = {}
+        for label, a, b in PHASES:
+            ta = 0 if a is None else ms.get(a)
+            tb = ms.get(b)
+            phases[label] = minutes(tb - ta) if ta is not None and tb is not None else None
+        fac = f.get("factory") or {}
+        unrecovered = [s for s in stalls if s.get("recoveredTick") is None]
+        out["factions"][name] = {
+            "pass": done is not None,
+            "minutes": minutes(done),
+            "phases": phases,
+            "milestones": {k: minutes(v) for k, v in sorted(ms.items(), key=lambda kv: kv[1])},
+            "stalls": len(stalls),
+            "unrecovered_stalls": len(unrecovered) if done is None else 0,
+            "stall_reasons": [s.get("reason") for s in stalls][:5],
+            "goals": fac.get("goals"),
+            "waiting": fac.get("waiting"),
+            "research": f.get("research"),
+            "design": fac.get("design"),
+            "verify": fac.get("verify"),
+        }
+    return out
+
+
+def main(argv):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("run")
+    ap.add_argument("--milestone", default="automated-red-science")
+    args = ap.parse_args(argv)
+    run = Path(args.run)
+    results = []
+    for d in sorted(run.glob("seed-*"), key=lambda p: int(p.name.split("-")[1])):
+        r = seed_result(d, args.milestone)
+        if r:
+            results.append(r)
+    passed = sum(1 for r in results if r["factions"] and all(f["pass"] for f in r["factions"].values()))
+    lines = [f"# M5 scorecard: {run.name}", "", f"Seeds passed: **{passed}/{len(results)}** (milestone `{args.milestone}`: "
+             "automated red science feeding labs with research progressing). Game minutes.", "",
+             "| Seed | Pass | Total | " + " | ".join(p[0] for p in PHASES) + " | Stalls | AI ms/tick avg / p99 |",
+             "|---|---|---|" + "---|" * len(PHASES) + "---|---|"]
+    for r in results:
+        for name, f in r["factions"].items():
+            ph = " | ".join("—" if f["phases"][p[0]] is None else str(f["phases"][p[0]]) for p in PHASES)
+            ai = "—" if r["ai_ms_per_tick"] is None else f"{r['ai_ms_per_tick']:.3f} / {r['ai_ms_p99_interval']:.3f}"
+            lines.append(f"| {r['seed'].split('-')[1]} | {'✅' if f['pass'] else '❌'} | {f['minutes'] if f['pass'] else '— (' + str(minutes(r['tick'])) + ' run)'} | {ph} | {f['stalls']} | {ai} |")
+    lines += ["", "## Milestones", ""]
+    for r in results:
+        for name, f in r["factions"].items():
+            lines.append(f"- {r['seed']}: " + ", ".join(f"{k} {v}" for k, v in f["milestones"].items()))
+    lines += ["", "## Not passed / stalls", ""]
+    for r in results:
+        for name, f in r["factions"].items():
+            if not f["pass"] or f["stalls"]:
+                lines.append(f"- {r['seed']}: waiting {f['waiting']}; stalls {f['stall_reasons']}")
+    (run / "m5-scorecard.md").write_text("\n".join(lines) + "\n")
+    (run / "m5-scorecard.json").write_text(json.dumps(results, indent=1))
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

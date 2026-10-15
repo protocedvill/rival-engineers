@@ -1,4 +1,5 @@
-import { LuaEntity, LuaProfiler, MapPosition, Product } from "factorio:runtime"
+import { onHandCrafted } from "./triggers"
+import { LuaEntity, LuaForce, LuaProfiler, MapPosition, Product } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { distance } from "./steering"
 import { ActionRecord, ActionSpec, ActionStatus, ControllerState, FailureReason, ReachGoal } from "./types"
@@ -356,9 +357,16 @@ function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<Act
   }
   const gained = itemCount(character, action.item!) - action.baseline!
   action.stats.items = gained
-  if (gained >= action.goalCount!) return "done"
+  if (gained >= action.goalCount!) {
+    onHandCrafted(character.force as LuaForce, action.item!, gained)
+    return "done"
+  }
   if (character.crafting_queue_size === 0) return fail("craft-interrupted", `got ${gained} of ${action.goalCount}`)
-  if (stalled(action, gained + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
+  // Progress counts finished queue entries too: intermediates (a lab's circuits, gears, belts) each restart
+  // crafting_queue_progress at 0, so a long chain of them must not look stalled.
+  let queued = 0
+  for (const q of character.crafting_queue ?? []) queued += q.count
+  if (stalled(action, gained * 1000 - queued + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
   return "running"
 }
 

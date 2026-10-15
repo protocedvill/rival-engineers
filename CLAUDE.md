@@ -115,3 +115,19 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   stone and a lake within ~100 tiles). 160 tiles away there may be no iron within 112 tiles: plan near the origin.
 - Builds over trees/rocks are two-phase (`planner/runtime.ts`): clear jobs first, ghosts after, because the controller
   refuses to mine where a ghost is selected.
+- **A player-less character's hand-crafting does not fire `craft-item` research triggers** (`automation-science-pack`:
+  craft a lab). Machine output does (furnace plates fire `steam-power`/`electronics`). The controller emulates the
+  trigger for crew crafts (`character/triggers.ts`); an engine-capabilities test pins the gap.
+- **Hand-crafts with intermediates restart `crafting_queue_progress` at 0 for each queued intermediate.** A stall check
+  on `gained + crafting_queue_progress` fails any craft whose chain takes longer than `action-stall-ticks` (a lab is
+  ~21 s), and the cancel leaves the finished intermediates behind: thousands of circuits piled up in one soak. Progress
+  now also counts finished queue entries.
+- Revived small-pole ghosts (`ghost.revive`) connect their copper wires to poles in reach, like a player's build: the
+  pole network planner only has to put poles within wire reach (T2 "power-up").
+- Plans on top of a faction's base (`newPlanJob(..., base)`) copy the layout; existing modules are `fixed` and existing
+  routes `Route.fixed` (never ripped). A finished plan's layout *becomes* the faction's (`strategy/factory.ts`).
+- Lua 5.3+ (T1) prints `43` and `43.0` differently: keys built from coordinates that went through arithmetic (module
+  expansion) must use `%g`, or equal positions compare unequal (planner/grow.ts).
+- Soak graph dumps go to `script-output/rival-engineers/graphs/<faction>/`, not `frames/`: soak.py renders every
+  `frames/*/*.json` as an entity dump.
+
