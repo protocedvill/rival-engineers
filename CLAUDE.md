@@ -150,3 +150,12 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   crew mine the tree, a built belt on ore gets picked up. The controller mines from a corner of the target's box where
   the target itself is selected, refuses built entities over ore, and mines trees/rocks first. After the selected
   entity is mined away, a player-less character's `mining_state` stays idle: set `{mining: false}` once, then resume.
+- **A new game queues chunks ~10 chunks around the origin before `on_init`** and computes their tiles on worker
+  threads; `is_chunk_generated` stays false for them. A starting point appended over them (faction spawns at ~336
+  tiles) gets starting-area ores (placed at a later chunk stage) but **no starting lake**. Soaks (`--create` save, then
+  `--benchmark`) don't show it; the sandbox scenario and new freeplay games do (`world/spawn.ts` repairs the lake).
+- `surface.calculate_tile_properties({"elevation"}, positions)` evaluates the current noise program, already including
+  starting points appended a moment ago. Nauvis water tiles match `elevation < 0` sampled at the tile's integer corner
+  (x, y), not its centre (2–10 shore tiles differ in a 192² area).
+- Starting a headless game from a scenario: `--start-server-load-scenario rival-engineers/sandbox --server-settings S`
+  with `auto_pause: false`, and keep stdin open (`sleep N | factorio ...`) or it exits on EOF.
