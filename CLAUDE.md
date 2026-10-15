@@ -15,6 +15,11 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Determinism rules in SPEC §5.6 are hard constraints. All persistent state goes in `storage`, use no
   `math.random`, and check `.valid` before using an entity.
 - Prefer configurable settings over constants (SPEC §5.7).
+- **Escalate magic numbers to the user.** Every tuning number you introduce (thresholds, distances, counts, timeouts,
+  weights, margins...) is listed in the milestone report's "Magic numbers for the user" table: name, where it lives,
+  current value, why that value, and whether it is already a setting. The user decides which become settings and their
+  values. Guesses and placeholders are fine during development and testing. Numbers that come from game data or
+  mechanics (recipes, prototype values, engine limits like reach or belt speed) are exempt.
 - **Never record a decision as user-approved** unless the user actually approved it. Agent proposals go
   into SPEC §11 Open questions and the milestone report, marked "proposed", until the user decides.
   If the user approves something directly in your session, record it as approved and say in your
