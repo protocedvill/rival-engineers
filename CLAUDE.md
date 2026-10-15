@@ -165,4 +165,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   entity (`controller.ts` `selectPoint`); the mining arena (`test/mining-arena.test.ts`) pins it.
 - Several `update_selected_entity` calls in one tick leave the selection on the **last** point: re-select the
   wanted point right before setting `mining_state`.
-
+- **Items on belts keep a `unique_id`** (`LuaTransportLine.get_detailed_contents()`) while they move from belt to belt:
+  sampling one belt tile more often than an item takes to cross it and counting new ids measures its flow exactly
+  (15.00/s on a full yellow belt; `strategy/measure.ts` edge probes). A belt entity's transport line covers that tile only.
+- **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
+  electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
+  fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

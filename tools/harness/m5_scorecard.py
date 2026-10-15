@@ -26,6 +26,9 @@ GHOSTS_LEFT = re.compile(r"(goal g\d+ \d+ ghosts left) \(round (\d+)\): (.*)")
 DURATION = re.compile(r"\[re-telemetry\] tick=(\d+) ticks=(\d+) ai=Duration: ([0-9.]+)ms")
 
 
+RECONCILER = re.compile(r"reconciler ((?:grow|repair|upkeep) .*)")
+
+
 def minutes(t):
     return None if t is None else round(t / 3600, 1)
 
@@ -77,6 +80,7 @@ def seed_result(seed_dir, milestone):
             "research": f.get("research"),
             "design": fac.get("design"),
             "verify": fac.get("verify"),
+            "reconciler": fac.get("reconciler"),
         }
     return out
 
@@ -106,6 +110,21 @@ def main(argv):
     for r in results:
         for name, f in r["factions"].items():
             lines.append(f"- {r['seed']}: " + ", ".join(f"{k} {v}" for k, v in f["milestones"].items()))
+    lines += ["", "## Reconciler (M5b): node statuses at the end, remedies, root causes", ""]
+    for r in results:
+        log = (Path(args.run) / r["seed"] / "factorio-current.log")
+        acted = RECONCILER.findall(log.read_text(errors="replace")) if log.exists() else []
+        for name, f in r["factions"].items():
+            rc = f.get("reconciler") or {}
+            if not rc:
+                lines.append(f"- {r['seed']} {name}: not running")
+                continue
+            lines.append(f"- {r['seed']} {name}: {rc.get('evaluations')} evaluations, {rc.get('probes')} edge probes; statuses "
+                         f"{rc.get('statuses')}; status changes {rc.get('changes')}; remedies {rc.get('remedies') or {}}")
+            for c in (rc.get("causes") or [])[:6]:
+                lines.append(f"  - cause: {c[:300]}")
+            for a in acted[:8]:
+                lines.append(f"  - remedy: {a[:300]}")
     lines += ["", "## Not passed / stalls", ""]
     soak = {}
     if (run / "scorecard.json").exists():
