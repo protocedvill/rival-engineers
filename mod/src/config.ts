@@ -93,6 +93,8 @@ export interface Config {
   factoryBuildPriority: number
   /** Telemetry writes done.json (the soak harness stops) once every faction reached this milestone. */
   soakDoneMilestone: string
+  /** Sandbox scenario (live review): keep biters. Off: no enemy bases, peaceful. */
+  sandboxEnemies: boolean
 }
 
 export type ConfigKey = keyof Config
@@ -149,6 +151,7 @@ export function getConfig(): Config {
     factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
     factoryBuildPriority: setting(Settings.factoryBuildPriority),
     soakDoneMilestone: setting(Settings.soakDoneMilestone),
+    sandboxEnemies: setting(Settings.sandboxEnemies),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

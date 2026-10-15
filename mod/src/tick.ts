@@ -3,6 +3,7 @@ import { onControllerTick } from "./character/controller"
 import { onCrewTick } from "./jobs/crew"
 import { onPlannerTick } from "./planner/runtime"
 import * as profiling from "./profiling"
+import { onReviewTick } from "./review/index"
 import { onBrainTick } from "./strategy/bootstrap"
 import { onFactoryTick } from "./strategy/factory"
 import { onTelemetryTick } from "./telemetry"
@@ -24,4 +25,5 @@ export function onTick(): void {
     p.total.add(p.tick)
   }
   onTelemetryTick()
+  onReviewTick()
 }

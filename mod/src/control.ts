@@ -6,6 +6,7 @@ declare function require(this: void, module: string): unknown
 import { onPathRequestFinished } from "./character/pathing"
 import { onEntityChanged } from "./planner/terrain"
 import { registerRemoteInterface } from "./remote"
+import { registerReview } from "./review/index"
 import { initStorage } from "./storage-init"
 import { onResearchFinished } from "./strategy/bootstrap"
 import { onTick } from "./tick"
@@ -32,8 +33,9 @@ for (const ev of [
   script.on_event(ev, (e) => onEntityChanged((e as { entity?: LuaEntity }).entity))
 }
 registerRemoteInterface()
+registerReview()
 
 if (script.active_mods["factorio-test"]) {
   const init = require("__factorio-test__/init") as (this: void, files: string[], config?: object) => void
-  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test", "test/research_test", "test/bootstrap_test", "test/modules_test", "test/routing_test", "test/factory_test"], { load_luassert: false })
+  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test", "test/research_test", "test/bootstrap_test", "test/modules_test", "test/routing_test", "test/review_test", "test/factory_test"], { load_luassert: false })
 }

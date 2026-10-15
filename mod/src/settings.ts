@@ -395,4 +395,11 @@ data.extend([
     allow_blank: false,
     order: "k-a",
   },
+  {
+    type: "bool-setting",
+    name: Settings.sandboxEnemies,
+    setting_type: "runtime-global",
+    default_value: false,
+    order: "y-a",
+  },
 ])
