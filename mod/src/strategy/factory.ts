@@ -1070,6 +1070,7 @@ const RECONCILE_MIN_ACTIVE = 0.1
 const RECONCILE_BUSY_SHARE = 0.85
 const RECONCILE_EDGE_FULL = 0.9
 const RECONCILE_PORT_FULL = 0.5
+const RECONCILE_ARRIVED_SHARE = 0.75
 
 export function reconcileParams(config: Config): ReconcileParams {
   return {
@@ -1081,6 +1082,7 @@ export function reconcileParams(config: Config): ReconcileParams {
     busyShare: RECONCILE_BUSY_SHARE,
     edgeFull: RECONCILE_EDGE_FULL,
     portFull: RECONCILE_PORT_FULL,
+    arrivedShare: RECONCILE_ARRIVED_SHARE,
     // An edge measurement is fresh for one node window.
     probeMaxAge: config.measureIntervalTicks * config.measureWindowSamples,
     maxRemedies: config.reconcileMaxRemedies,

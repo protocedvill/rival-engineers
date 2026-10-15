@@ -39,6 +39,10 @@ export interface Counters {
   missing: Record<string, number>
   /** Steam engines: generated W summed over samples. */
   energy: number
+  /** Inserters: samples, and samples without power / fuel. */
+  insSamples: number
+  insUnpowered: number
+  insUnfuelled: number
 }
 
 type MachineKind = "crafter" | "drill" | "lab" | "boiler" | "generator"
@@ -52,6 +56,8 @@ interface Machine {
 
 export interface NodeMeter {
   machines: Machine[]
+  /** The module's inserters (power and fuel only). */
+  inserters: LuaEntity[]
   /** The node's builtTick when the machines were found (a grown node is searched again). */
   builtTick: number
   /** Lab packs (the module's belt-in items). */
@@ -155,7 +161,7 @@ function statusName(status: number): string {
 // Nodes
 
 function newCounters(tick: number): Counters {
-  return { tick, samples: 0, working: 0, starved: 0, blocked: 0, unpowered: 0, unfuelled: 0, idle: 0, made: {}, used: {}, missing: {}, energy: 0 }
+  return { tick, samples: 0, working: 0, starved: 0, blocked: 0, unpowered: 0, unfuelled: 0, idle: 0, made: {}, used: {}, missing: {}, energy: 0, insSamples: 0, insUnpowered: 0, insUnfuelled: 0 }
 }
 
 function copyCounters(c: Counters): Counters {
@@ -171,9 +177,9 @@ function kindOf(type: string): MachineKind | undefined {
   return undefined
 }
 
-function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n: LogicalNode): { machines: Machine[]; packs: string[] } {
+function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n: LogicalNode): { machines: Machine[]; packs: string[]; inserters: LuaEntity[] } {
   const m = findModule(layout, n.id)
-  if (m === undefined) return { machines: [], packs: [] }
+  if (m === undefined) return { machines: [], packs: [], inserters: [] }
   const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
   const machines: Machine[] = []
   for (const e of surface.find_entities_filtered({ area, force, type: MACHINE_TYPES })) {
@@ -185,7 +191,8 @@ function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n
   }
   const packs: string[] = []
   for (const p of m.def.ports) if (p.kind === "belt-in" && p.item !== undefined) packs.push(p.item)
-  return { machines, packs }
+  const inserters = surface.find_entities_filtered({ area, force, type: "inserter" })
+  return { machines, packs, inserters }
 }
 
 function add(t: Record<string, number>, k: string, v: number): void {
@@ -297,7 +304,9 @@ function evaluate(n: LogicalNode, meter: NodeMeter): void {
     outputs = scaled(n.capacity.outputs, states.working)
     inputs = scaled(n.capacity.inputs, states.working, n.planned.inputs)
   }
-  n.measured = { tick: cur.tick, window, inputs, outputs, machines: meter.machines.length, states, missing, estimated, load }
+  const ins = cur.insSamples - old.insSamples
+  const inserters = ins > 0 ? { unpowered: (cur.insUnpowered - old.insUnpowered) / ins, unfuelled: (cur.insUnfuelled - old.insUnfuelled) / ins } : undefined
+  n.measured = { tick: cur.tick, window, inputs, outputs, machines: meter.machines.length, states, missing, estimated, load, inserters }
 }
 
 /**
@@ -315,15 +324,26 @@ export function sampleNodes(meter: MeterState, graph: LogicalGraph, layout: Layo
     let nm = meter.nodes[id]
     if (nm === undefined || nm.builtTick !== built) {
       const found = findMachines(surface, force, layout, n)
-      nm = { machines: found.machines, packs: found.packs, builtTick: built, cum: newCounters(tick), ring: [] }
+      nm = { machines: found.machines, inserters: found.inserters, packs: found.packs, builtTick: built, cum: newCounters(tick), ring: [] }
       meter.nodes[id] = nm
     }
     let lost = false
     for (const mc of nm.machines) if (!sampleMachine(nm.cum, mc, nm.packs)) lost = true
+    for (const e of nm.inserters) {
+      if (!e.valid) {
+        lost = true
+        continue
+      }
+      const cls = statusClass(e.status as unknown as number | undefined)
+      nm.cum.insSamples++
+      if (cls === "unpowered") nm.cum.insUnpowered++
+      else if (cls === "unfuelled") nm.cum.insUnfuelled++
+    }
     if (lost) {
       // A machine is gone (mined, destroyed): look again next sample, keep the counters.
       const found = findMachines(surface, force, layout, n)
       nm.machines = found.machines
+      nm.inserters = found.inserters
     }
     nm.cum.tick = tick
     nm.ring.push(copyCounters(nm.cum))

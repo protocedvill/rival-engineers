@@ -14,6 +14,7 @@ const P: ReconcileParams = {
   busyShare: 0.85,
   edgeFull: 0.9,
   portFull: 0.5,
+  arrivedShare: 0.75,
   probeMaxAge: 3600,
   maxRemedies: 2,
   cooldownTicks: 1000,
@@ -154,6 +155,14 @@ test("starved by an undersized producer: the outpost runs flat out, the belt is 
   eq(r.remedies.length, 1, "one remedy")
   eq(r.remedies[0].kind, "grow", "grow")
   eq(r.remedies[0].node, "mine", "the outpost")
+})
+
+test("a belt still filling: the producer makes much more than arrives → wait (no grow)", () => {
+  const g = chain(st({ working: 0.97 }), 2, st({ working: 0.3, starved: 0.7 }), 0.4, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.4, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "filling", g.nodes.smelt.cause!.why)
+  eq(r.remedies.length, 0, "no remedy")
 })
 
 test("broken belt: items pile up at the producer and none arrive → repair the route; the producer is backed up for the same cause", () => {

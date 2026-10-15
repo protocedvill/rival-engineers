@@ -46,6 +46,11 @@ export interface Measured {
   missing?: Record<string, number>
   /** Rates estimated from the working share and full-speed rates (drills, labs) rather than counted. */
   estimated?: boolean
+  /**
+   * Inserters inside the module: share of their samples without power / without fuel. Furnaces behind unpowered
+   * inserters only look starved; this tells the real cause.
+   */
+  inserters?: { unpowered: number; unfuelled: number }
   /** Power nodes: generated power / the node's full output (0..1). */
   load?: number
 }

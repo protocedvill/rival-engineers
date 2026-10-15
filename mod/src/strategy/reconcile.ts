@@ -27,6 +27,8 @@ export interface ReconcileParams {
   minActive: number
   /** A producer whose working share is at least this runs flat out (undersized if its consumer still starves). */
   busyShare: number
+  /** A producer is undersized only when at least this share of what it makes arrives (else the belt is filling). */
+  arrivedShare: number
   /** A belt edge measured at this fraction of its usable capacity is full (undersized for its demand). */
   edgeFull: number
   /** A port tile full in at least this share of probe samples has items piling up. */
@@ -124,6 +126,12 @@ export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStat
   if (active < p.minActive) return { status: "ok", why: `idle ${pct(s.idle)}` }
   if (s.unpowered >= p.badShare) return { status: "unpowered", why: `no or low power ${pct(s.unpowered)}` }
   if (s.unfuelled >= p.badShare) return { status: "unfuelled", why: `no fuel ${pct(s.unfuelled)}` }
+  // Machines starved behind their own inserters without power or fuel: the inserters are the cause.
+  const ins = m.inserters
+  if (ins !== undefined && s.working < 1 - p.shortfall) {
+    if (ins.unpowered >= p.badShare) return { status: "unpowered", why: `inserters without power ${pct(ins.unpowered)}` }
+    if (ins.unfuelled >= p.badShare) return { status: "unfuelled", why: `inserters without fuel ${pct(ins.unfuelled)}` }
+  }
   // Sinks (the mall) run at a fraction of their capacity by design and stop when their chests are full.
   if (n.kind === "sink" || n.item === undefined) return { status: "ok", why: "sink" }
   const planned = rateIn(n.planned.outputs, n.item)
@@ -202,6 +210,11 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       }
       // The belt is sparse at both ends: the producer doesn't make enough.
       if (prod.status === "starved" || prod.status === "unfuelled" || prod.status === "unpowered") return trace(t, prod, depth + 1)
+      // The producer makes more than arrives: the belt between is still filling (or losing items). Wait.
+      const made = rateIn(prod.measured?.outputs ?? [], item)
+      if (made > 0 && (e.measuredRate ?? 0) < p.arrivedShare * made) {
+        return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item} but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+      }
       if (shares(prod).working >= p.busyShare) {
         remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
         return { kind: "node", id: prod.id, what: "undersized", why: `${label(prod)} runs flat out and ${label(n)} still lacks ${item}` }
