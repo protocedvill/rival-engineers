@@ -5,3 +5,4 @@ The manager batches these into agent tasks. Each fix gets a regression test; tic
 | # | Reported | Bug | Status |
 |---|---|---|---|
 | B1 | 2026-10-15 | Crew fail to mine trees about 70% of the time: they reach the tree at an odd angle and can't mine it, or stop mining too early. Build a **tree/rock mining arena** (T2) covering trees and rocks of every kind, approach angles, off-grid positions, clusters, trees over ore and next to buildings, measuring success rate and time per target. Fix until it is reliable. | open |
+| B2 | 2026-10-15 | Splitters follow the D36 rule too: when a plan with splitters is n tiles shorter (setting) than one without, research them first instead of building excessively long belts. Goes with the D36 underground work in M5b. | open |
