@@ -397,7 +397,7 @@ Default to configurable (D18). Settings live in three places:
 
 - **Map/startup settings** (`settings.lua`, startup or runtime-global): faction count; crew size per faction;
   spawn placement mode (`auto-distance` | `fixed-offsets` | `random-ring` | `scenario-defined`) with a minimum
-  distance from players and between factions (default 300 tiles) and a resource-richness check radius;
+  distance from players and between factions (default 450 tiles, D44) and a resource-richness check radius;
   faction names and colours; diplomacy defaults (neutral in v1); player-parity toggles (debug only:
   teleport-when-stuck, instant-craft, reach multiplier); planner targets (SPM goal, which science packs);
   layout policy per faction (`auto` or a policy id, §5.3) and policy parameters such as corridor widths;

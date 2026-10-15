@@ -12,14 +12,14 @@ import { planGrowth } from "../planner/grow"
 import { markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
-import { findModule, LayoutState, newLayout } from "../planner/layout"
+import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, removeEdge, removeNode } from "../planner/logical"
 import { abandonParts, applyDiff, checkBuild } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
 import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
-import { claimOwner, foreignEntitiesOn } from "../world/claims"
+import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
@@ -521,6 +521,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   const reserved = ctx.faction.brain!.reserved
   for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
+  claimModuleFields(ctx, m)
   for (const c of plan.rerouted) for (const k of f.layout.routes[`route:${c}`]?.tiles ?? []) reserved[k] = true
   g.growBuild = { phase: "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [] }
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
@@ -767,6 +768,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   for (const id of parts.modules) {
     const m = findModule(job.layout, id)!
     for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
+    claimModuleFields(ctx, m)
   }
   const fuel = ctx.faction.brain!.catalog.fuel
   startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts })
@@ -779,6 +781,21 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
 }
 
 /** Power edges: the power node to every consumer node, physical = the pole lines that joined it. */
+/** D46: a mining module's ore fields (under its drills' mining areas) become the faction's. */
+function claimModuleFields(ctx: Ctx, m: PlacedModule): void {
+  const resource = m.def.anchor?.resource
+  const areas = m.def.anchor?.miningAreas
+  if (resource === undefined || areas === undefined) return
+  const brain = ctx.faction.brain!
+  brain.oreFields ??= {}
+  for (const a of areas) {
+    const area = { left_top: { x: m.origin.x + a.x, y: m.origin.y + a.y }, right_bottom: { x: m.origin.x + a.x + a.w, y: m.origin.y + a.y + a.h } }
+    for (const e of ctx.surface.find_entities_filtered({ name: resource, area })) {
+      claimOreField(ctx.surface, brain.oreFields, resource, math.floor(e.position.x), math.floor(e.position.y))
+    }
+  }
+}
+
 function powerEdges(f: FactoryState): void {
   const power = nodesOf(f.graph, "power")[0]
   if (power === undefined) return

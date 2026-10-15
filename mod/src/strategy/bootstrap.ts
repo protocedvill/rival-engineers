@@ -5,7 +5,7 @@ import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
-import { claimed, otherClaims } from "../world/claims"
+import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { mallSources } from "./factory"
@@ -505,6 +505,10 @@ function createSite(ctx: Ctx, kind: SiteKind, parts: PlannedPart[], resource?: s
     ghosts.push(ghost)
   }
   site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1)
+  if (resource !== undefined) {
+    ctx.brain.oreFields ??= {}
+    for (const p of parts) if (p.onOre) claimOreField(ctx.surface, ctx.brain.oreFields, resource, p.x1, p.y1)
+  }
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
     const ghost = ghosts[i]
@@ -1084,6 +1088,7 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
   const patch = bestPatch(ctx.brain.patches, name, near, 1)
   if (!patch) return undefined
   const p = { x: math.min(math.max(near.x, patch.x1), patch.x2), y: math.min(math.max(near.y, patch.y1), patch.y2) }
+  const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (const radius of [10, 24, 64]) {
     const found = ctx.surface.find_entities_filtered({ name, position: p, radius })
     let best: LuaEntity | undefined
@@ -1091,6 +1096,8 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
     for (const e of found) {
       if (e.amount < count) continue
       if (ctx.brain.reserved[tkey(math.floor(e.position.x), math.floor(e.position.y))]) continue
+      // D46: never in another faction's field (nor on its claimed ground).
+      if (others.length > 0 && claimed(others, tkey(math.floor(e.position.x), math.floor(e.position.y)))) continue
       const k = `res:${math.floor(e.position.x)},${math.floor(e.position.y)}`
       if (keyActive(ctx, k)) continue
       const d = positionDistance(e.position, near)

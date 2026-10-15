@@ -29,14 +29,18 @@ export function requiredResources(config: Config): string[] {
 /** Smallest patch (tiles) that counts as a starting resource. */
 export const MIN_START_PATCH_TILES = 24
 
-function scoreSpot(patches: Patch[], at: MapPosition, required: string[], radius: number): number | undefined {
+function scoreSpot(patches: Patch[], at: MapPosition, required: string[], radius: number, rivals: MapPosition[] = []): number | undefined {
   // Sum over required resources of the distance to the nearest big-enough patch; undefined if one is missing.
+  // D46: a patch nearer to another faction's base than to this spot is that faction's, not a starting resource here.
   let total = 0
   for (const name of required) {
     let best: number | undefined
     for (const p of patches) {
       if (p.name !== name || p.tiles < MIN_START_PATCH_TILES) continue
       const d = distanceToPatch(p, at)
+      let theirs = false
+      for (const r of rivals) if (distanceToPatch(p, r) < d) theirs = true
+      if (theirs) continue
       if (d <= radius && (best === undefined || d < best)) best = d
     }
     if (best === undefined) return undefined
@@ -58,6 +62,16 @@ export function spawnKeepAways(surface: LuaSurface): MapPosition[] {
   return away
 }
 
+/** Bases of the factions already on `surface` (D46: their fields are not starting resources for a new one). */
+export function rivalBases(surface: LuaSurface): MapPosition[] {
+  const out: MapPosition[] = []
+  for (const name of storage.factionOrder) {
+    const f = storage.factions[name]
+    if (f.brain && f.surface === surface.name) out.push(f.brain.base)
+  }
+  return out
+}
+
 /** A free land spot for a character within 16 tiles of `p`, or undefined (water, cliffs...). */
 function landAt(surface: LuaSurface, p: MapPosition): MapPosition | undefined {
   return surface.find_non_colliding_position("character", p, 16, 1) ?? undefined
@@ -75,6 +89,7 @@ function landAt(surface: LuaSurface, p: MapPosition): MapPosition | undefined {
 export function findSpawnAutoDistance(surface: LuaSurface, config: Config, salt: number): SpawnChoice {
   const origin = game.forces.player.get_spawn_position(surface)
   const away = spawnKeepAways(surface)
+  const rivals = rivalBases(surface)
   const required = requiredResources(config)
   const radius = config.spawnResourceRadius
   const region = radius * 2
@@ -100,7 +115,7 @@ export function findSpawnAutoDistance(surface: LuaSurface, config: Config, salt:
         for (let gy = -region + radius / 2; gy <= region - radius / 2; gy += 16) {
           const p = { x: center.x + gx, y: center.y + gy }
           if (!farEnough(p)) continue
-          const score = scoreSpot(patches, p, required, radius)
+          const score = scoreSpot(patches, p, required, radius, rivals)
           if (score !== undefined && score < bestScore) {
             best = p
             bestScore = score
@@ -118,7 +133,7 @@ export function findSpawnAutoDistance(surface: LuaSurface, config: Config, salt:
         for (let gy = -region / 2; gy <= region / 2; gy += 16) {
           const p = { x: center.x + gx, y: center.y + gy }
           if (!farEnough(p)) continue
-          const score = scoreSpot(patches, p, required, region)
+          const score = scoreSpot(patches, p, required, region, rivals)
           if (score !== undefined && score < relaxedScore) {
             relaxed = p
             relaxedScore = score
@@ -198,7 +213,7 @@ export function findSpawnStartingArea(surface: LuaSurface, config: Config, salt:
       const land = landAt(surface, candidate)
       if (!land) continue
       const patches = scanPatches(surface, land, radius)
-      if (scoreSpot(patches, land, required, radius) === undefined) continue
+      if (scoreSpot(patches, land, required, radius, rivalBases(surface)) === undefined) continue
       if (waterR > 0 && !hasWater(surface, land, waterR)) continue
       return { position: land, patches, checked, lakeRepaired: repaired }
     }

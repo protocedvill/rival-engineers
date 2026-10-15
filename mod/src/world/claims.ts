@@ -6,7 +6,10 @@ import { keyX, keyY, tkey } from "../planner/grid"
 // Other factions treat them as foreign structures: their planner (factionView), bootstrap site placement and plan
 // adoption never use a tile another faction on the same surface claimed. First come, first served, like players.
 
-/** The reserved-tile sets of every other faction on `surface`, in faction order (deterministic). */
+/**
+ * The claimed-tile sets of every other faction on `surface`, in faction order (deterministic): its reserved tiles
+ * (sites, modules, routes, poles, with their margins: D45) and the ore fields it mines (D46).
+ */
 export function otherClaims(faction: string, surface: string): Record<number, boolean>[] {
   const out: Record<number, boolean>[] = []
   for (const name of storage.factionOrder) {
@@ -15,8 +18,56 @@ export function otherClaims(faction: string, surface: string): Record<number, bo
     if (f === undefined || f.surface !== surface) continue
     const r = f.brain?.reserved
     if (r !== undefined) out.push(r)
+    const o = f.brain?.oreFields
+    if (o !== undefined) out.push(o)
   }
   return out
+}
+
+/** D46: the ore-field tile sets of every other faction on `surface`. */
+export function otherOreFields(faction: string, surface: string): Record<number, boolean>[] {
+  const out: Record<number, boolean>[] = []
+  for (const name of storage.factionOrder) {
+    if (name === faction) continue
+    const f = storage.factions[name]
+    if (f !== undefined && f.surface === surface && f.brain?.oreFields !== undefined) out.push(f.brain.oreFields)
+  }
+  return out
+}
+
+/** Ore tiles of one resource closer than this (Chebyshev) are one field, as in the resource scan. */
+const FIELD_JOIN = 2
+/** A field claim floods at most this far from its seed tile (starting fields are well under it). */
+const FIELD_RADIUS = 160
+
+/**
+ * D46: claims the whole ore field (connected tiles of `name`) around tile (x, y) for a faction: adds its tiles to
+ * `fields`. A no-op when the tile is claimed already. Returns the number of tiles added.
+ */
+export function claimOreField(surface: LuaSurface, fields: Record<number, boolean>, name: string, x: number, y: number): number {
+  if (fields[tkey(x, y)]) return 0
+  const found = surface.find_entities_filtered({ name, area: [[x - FIELD_RADIUS, y - FIELD_RADIUS], [x + FIELD_RADIUS, y + FIELD_RADIUS]] })
+  const present: Record<number, boolean> = {}
+  for (const e of found) present[tkey(math.floor(e.position.x), math.floor(e.position.y))] = true
+  if (!present[tkey(x, y)]) return 0
+  let added = 0
+  const stack: number[] = [x, y]
+  fields[tkey(x, y)] = true
+  while (stack.length > 0) {
+    const ty = stack.pop()!
+    const tx = stack.pop()!
+    added++
+    for (let dx = -FIELD_JOIN; dx <= FIELD_JOIN; dx++) {
+      for (let dy = -FIELD_JOIN; dy <= FIELD_JOIN; dy++) {
+        const k = tkey(tx + dx, ty + dy)
+        if (present[k] && !fields[k]) {
+          fields[k] = true
+          stack.push(tx + dx, ty + dy)
+        }
+      }
+    }
+  }
+  return added
 }
 
 /** Whether any of `claims` contains tile key `k`. */

@@ -15,6 +15,7 @@ import { planReroute } from "../planner/reroute"
 import { claimView, stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
+import { claimOreField } from "../world/claims"
 import { at, createLab, Lab } from "./lab"
 import { followRoute } from "./route-lab"
 
@@ -125,6 +126,39 @@ describe("faction conflicts", () => {
           for (let y = math.floor(p.position.y - 1); y < p.position.y + 1; y++) assert(!b.brain!.reserved[tkey(x, y)], `a's ${p.entity} at ${p.position.x - ox},${p.position.y - oy} is on b's claimed tile ${x - ox},${y - oy}`)
         }
       }
+      done()
+      return false
+    })
+  })
+
+  test("factions never share an ore field: another faction's field is off limits for bootstrap sites and the planner (D46)", () => {
+    const lab = createLab(48)
+    // Field A: near the hub, two clumps 2 tiles apart (one field). Field B: 14 tiles farther (a separate field).
+    for (let x = 6; x < 12; x++) for (let y = -8; y < 0; y++) lab.surface.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 20000 })
+    for (let x = 13; x < 16; x++) for (let y = -8; y < 0; y++) lab.surface.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 20000 })
+    for (let x = 30; x < 38; x++) for (let y = -8; y < 0; y++) lab.surface.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 20000 })
+    setConfigOverride("scanRadius", 48)
+    setConfigOverride("bootstrapSites", "coal=2")
+    setConfigOverride("firstElectricityItems", "")
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const b = faction(lab, "field", -30, 30)
+    b.brain!.oreFields = {}
+    const n = claimOreField(lab.surface, b.brain!.oreFields, "coal", ox + 6, oy - 8)
+    assert(n === 6 * 8 + 3 * 8, `the claim covers the whole field A (both clumps): ${n} tiles`)
+    assert(!b.brain!.oreFields[tkey(ox + 30, oy - 8)], "field B is not claimed")
+    const a = faction(lab, "far", 0, 8, false)
+    const t = scan(lab, `conf-field-${seq}`, a.force)
+    const view = claimView(a.name, lab.surface.name, terrainView(t))
+    assert(view.ore(ox + 7, oy - 4) === "claimed:coal", `a sees b's field as claimed ore: ${view.ore(ox + 7, oy - 4)}`)
+    assert(view.ore(ox + 31, oy - 4) === "coal", "field B is coal to a")
+    async(3600)
+    on_tick(() => {
+      let site
+      for (const s of a.brain!.sites) if (s.kind === "pair") site = s
+      if (site === undefined) return
+      for (const p of site.parts) assert(p.position.x - ox >= 29, `a's ${p.entity} at ${p.position.x - ox},${p.position.y - oy} is on b's field`)
+      assert(a.brain!.oreFields !== undefined && a.brain!.oreFields[tkey(ox + 30, oy - 8)], "a claimed field B")
       done()
       return false
     })

@@ -167,7 +167,7 @@ data.extend([
     type: "int-setting",
     name: Settings.spawnMinDistance,
     setting_type: "runtime-global",
-    default_value: 300,
+    default_value: 450,
     minimum_value: 0,
     maximum_value: 100000,
     order: "a-e",

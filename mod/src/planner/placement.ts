@@ -268,8 +268,11 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     let have = 0
     let all = 0
     for (const a of def.anchor?.miningAreas ?? []) {
-      const n = sum(s, "res", { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h })
+      const area = { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h }
+      const n = sum(s, "res", area)
       if (n === undefined || n < policy.minOreCoverage * a.w * a.h) return undefined
+      // B6: a drill mines every ore in its area; a second ore would clog the single-item line (D23).
+      if (sum(s, "ore", area)! !== n) return undefined
       have += n
       all += a.w * a.h
     }
@@ -515,6 +518,18 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       const r = state.reserved[kk]
       if (r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`) return { ok: false, reason: `reserved at ${x},${y}`, movedPorts: [], moved: [] }
       if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }
+    }
+  }
+  if (mining) {
+    // B6: the grown drills' mining areas must not reach a second ore (or another faction's field, D46).
+    const resource = canon.anchor?.resource
+    for (const a of placed.anchor?.miningAreas ?? []) {
+      for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
+        for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
+          const ore = terrain.ore(x, y)
+          if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
+        }
+      }
     }
   }
   const ring = inflate(rect, policy.corridor.min)

@@ -13,7 +13,7 @@ import { stampModule } from "../modules/stamp"
 import { BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
-import { claimed, otherClaims } from "../world/claims"
+import { claimed, otherClaims, otherOreFields } from "../world/claims"
 import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
 import { LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
@@ -152,6 +152,7 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   const faction = name !== undefined ? storage.factions[name] : undefined
   const reserved = ownReserved ? faction?.brain?.reserved : undefined
   const others = name !== undefined ? otherClaims(name, surface) : []
+  const fields = name !== undefined ? otherOreFields(name, surface) : []
   if (reserved === undefined && others.length === 0) return base
   const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
   return {
@@ -164,7 +165,12 @@ export function claimView(name: string | undefined, surface: string, base: Terra
       if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined)) return b
       return OWN
     },
-    ore: (x, y) => base.ore(x, y),
+    // D46: ore of another faction's field is not this faction's resource (a drill reaching it is refused, B6).
+    ore: (x, y) => {
+      const o = base.ore(x, y)
+      if (o !== undefined && fields.length > 0 && claimed(fields, tkey(x, y))) return `claimed:${o}`
+      return o
+    },
   }
 }
 

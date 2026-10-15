@@ -87,6 +87,8 @@ export interface BrainState {
   goals: Goal[]
   /** Tile keys reserved by sites (footprint and margin). */
   reserved: Record<number, boolean>
+  /** D46: tile keys of the ore fields this faction mines (bootstrap sites, mining modules); off limits to others. */
+  oreFields?: Record<number, boolean>
   /** Dedupe: a maintenance key ("fuel:<unit>") → its active job id. */
   jobKeys: Record<string, number>
   /** Milestone name → tick first reached. */
