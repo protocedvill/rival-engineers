@@ -48,6 +48,7 @@ export const Settings = {
   factoryResearchUnitTime: "rival-engineers-factory-research-unit-time",
   factoryHandFeedLabs: "rival-engineers-factory-hand-feed-labs",
   factoryBuildPriority: "rival-engineers-factory-build-priority",
+  conflictMaxRepairs: "rival-engineers-conflict-max-repairs",
   soakDoneMilestone: "rival-engineers-soak-done-milestone",
   factoryMall: "rival-engineers-factory-mall",
   factoryMallUtilization: "rival-engineers-factory-mall-utilization",

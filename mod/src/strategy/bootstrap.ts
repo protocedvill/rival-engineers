@@ -5,6 +5,7 @@ import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
+import { claimed, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { mallSources } from "./factory"
@@ -320,9 +321,12 @@ function layout(catalog: Catalog, kind: SiteKind, c: MapPosition, direction: def
 }
 
 function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): boolean {
+  const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (let x = part.x1; x < part.x2; x++) {
     for (let y = part.y1; y < part.y2; y++) {
       if (ctx.brain.reserved[tkey(x, y)]) return false
+      // Another faction's claim (M5a.2): its sites, planned modules and routes.
+      if (claimed(others, tkey(x, y))) return false
       if (part.onOre && !ore[tkey(x, y)]) return false
       // Never plan over a tile someone is hand-mining: mining there would deconstruct the ghost.
       if (keyActive(ctx, `res:${x},${y}`)) return false
@@ -411,8 +415,9 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
         if (math.max(math.abs(dx), math.abs(dy)) !== r) continue
         const part = partAt(catalog.chest, catalog.chestItem, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
         let ok = true
+        const others = otherClaims(ctx.faction.name, ctx.faction.surface)
         for (let x = part.x1 - 2; x < part.x2 + 2 && ok; x++) {
-          for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)]) ok = false
+          for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
         }
         if (!ok) continue
         if (ctx.surface.count_entities_filtered({ type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue

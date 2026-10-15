@@ -9,14 +9,17 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
 import { planGrowth } from "../planner/grow"
-import { markDirty, terrainView } from "../planner/terrain"
+import { markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { buildGraph, FactoryGraph } from "../planner/graph"
-import { Rect, tkey, Vec } from "../planner/grid"
+import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import { findModule, LayoutState, newLayout } from "../planner/layout"
-import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf } from "../planner/logical"
+import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, removeEdge, removeNode } from "../planner/logical"
+import { abandonParts, applyDiff, checkBuild } from "../planner/conflicts"
+import { planReroute } from "../planner/reroute"
 import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
-import { entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
+import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
+import { claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
@@ -83,6 +86,9 @@ export interface FactoryGoal {
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
+  /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
+  repairs?: number
+  rework?: { clearJobs: number[]; add: EntitySpec[] }
 }
 
 export interface FactoryState {
@@ -477,7 +483,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   if (t === undefined) return false
   const policy = policyFor(ctx.config)
   const tier = tiers()[0]
-  const plan = planGrowth(f.layout, terrainView(t), prototypeFacts, policy, tier, gr.node, gr.units)
+  const plan = planGrowth(f.layout, claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
   if (!plan.ok) {
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
     return false
@@ -609,14 +615,18 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
   if (getPlannerEntry(id) !== undefined) removePlan(id)
-  // Undergrounds only once they can be crafted (`logistics`).
-  const ug = tiers()[0]?.underground
-  const ugRecipe = ug !== undefined ? (prototypeFacts.recipeForItem(ug) ?? ug) : undefined
-  const maxUnderground = ugRecipe !== undefined && ctx.force.recipes[ugRecipe]?.enabled ? undefined : 1
+  const maxUnderground = maxUndergroundNow(ctx)
   startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground })
   g.plan = id
   g.status = "planning"
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) attempt ${g.attempts}: ${g.nodes.length} modules, ${connections.length} connections, region radius ${r}`)
+}
+
+/** Undergrounds only once they can be crafted (`logistics`): 1 (none) before. */
+function maxUndergroundNow(ctx: Ctx): number | undefined {
+  const ug = tiers()[0]?.underground
+  const ugRecipe = ug !== undefined ? (prototypeFacts.recipeForItem(ug) ?? ug) : undefined
+  return ugRecipe !== undefined && ctx.force.recipes[ugRecipe]?.enabled ? undefined : 1
 }
 
 function updateGoals(ctx: Ctx): void {
@@ -637,7 +647,9 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     return
   }
   if (entry.phase === "scan" || entry.phase === "plan") return
-  if (entry.phase === "failed") {
+  // Planned against a terrain scan: another faction (or a player) may have claimed or built on its ground since.
+  const contest = entry.phase === "done" ? contested(ctx, entry) : undefined
+  if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
@@ -645,6 +657,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       const m = string.match(k as string, "^module:(.*)$")[0]
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
     }
+    if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
     // With frame dumps on (soaks), keep the failed layout for tools/render (--graph over the nearest frame).
@@ -666,11 +679,36 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       }
       return
     }
-    g.radius = math.floor(g.radius * 1.5)
+    // A contested plan retries in the same region: the terrain now shows the claim.
+    if (contest === undefined) g.radius = math.floor(g.radius * 1.5)
     planGoal(ctx, g)
     return
   }
   adoptPlan(ctx, g)
+}
+
+/** The new parts of a finished plan on ground another faction claimed or something foreign stands on, if any. */
+function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof getPlannerEntry>>): string | undefined {
+  const job = entry.job!
+  const parts: BuildParts = { modules: [], routes: [], poles: [] }
+  for (const m of job.layout.modules) if (!job.baseModules[m.id]) parts.modules.push(m.id)
+  for (const id of job.layout.routeOrder) if (!job.baseRoutes[id]) parts.routes.push(id)
+  for (const id of job.poleJob?.added ?? []) parts.poles.push(id)
+  const keys = partTiles(job.layout, parts)
+  const claims: Record<string, number> = {}
+  let n = 0
+  for (const k of keys) {
+    const owner = claimOwner(ctx.faction.name, ctx.faction.surface, k)
+    if (owner === undefined) continue
+    claims[owner] = (claims[owner] ?? 0) + 1
+    n++
+  }
+  const foreign = foreignEntitiesOn(ctx.surface, ctx.faction.force, keys)
+  if (n === 0 && foreign.length === 0) return undefined
+  const who: string[] = []
+  for (const name of storage.factionOrder) if (claims[name] !== undefined) who.push(`${claims[name]} tiles claimed by faction ${name}`)
+  if (foreign.length > 0) who.push(`${foreign.length} foreign entities (${foreign[0].name} of ${foreign[0].force.name} at ${foreign[0].position.x},${foreign[0].position.y})`)
+  return `contested: ${who.join(", ")}`
 }
 
 /** A finished plan becomes the faction's layout; its new parts become graph nodes and edges and are built. */
@@ -772,13 +810,19 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     ctx.faction.brain!.steps += done - g.placed
     g.placed = done
   }
+  if (g.rework !== undefined && !rework(ctx, g, b)) return
   if (b.phase !== "done") return
   // Every job finished: ghosts left over (failed jobs, a replan dropping jobs) get new place jobs.
   const left: LuaEntity[] = []
   for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
+  if (left.length > 0 && ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+  // Before a retry round and before calling the build done: is any part blocked by something the faction doesn't own?
+  if (resolveConflicts(ctx, g, entry)) {
+    g.lastRound = ctx.tick
+    return
+  }
   if (left.length > 0) {
     // Never give up on a build (its nodes are in the graph): retry the leftovers every BUILD_ROUND_TICKS, saying why.
-    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
     g.lastRound = ctx.tick
     g.rounds++
     g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
@@ -799,6 +843,139 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   ctx.faction.brain!.steps++
   mark(ctx.faction, `${g.kind}-built`)
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) built at tick ${ctx.tick} (${g.placed} placements, ${g.rounds} extra rounds)`)
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Conflicts (M5a.2): parts of a build blocked by something the faction doesn't own
+
+type Entry = NonNullable<ReturnType<typeof getPlannerEntry>>
+
+/**
+ * Checks a goal's build against the world (planner/conflicts.ts). Blocked routes are rerouted around the blocker (the
+ * old pieces the new route doesn't reuse are picked up first); a blocked module or pole gives up the goal's location:
+ * its built entities are deconstructed, its parts leave the layout and its nodes the graph, and the goal fails so the
+ * design starts it again elsewhere. At most `conflict-max-repairs` repairs per goal. Returns whether it acted.
+ */
+function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
+  const b = entry.build!
+  if (b.parts === undefined) return false
+  const check = checkBuild(ctx.surface, ctx.faction.force, ctx.f.layout, b.parts)
+  if (check.conflicts.length === 0) return false
+  const what = check.conflicts.map((c) => `${c.kind} ${c.id} at ${c.at.x},${c.at.y} blocked by ${c.blocker}`).join("; ")
+  if ((g.repairs ?? 0) >= ctx.config.conflictMaxRepairs) {
+    g.reason = `conflict, no repairs left: ${what}`
+    return false
+  }
+  // A plan in progress works on a copy of the layout and replaces it when adopted: repair after it.
+  if (planning(ctx.f) !== undefined) {
+    g.reason = `conflict, waiting for the current plan: ${what}`
+    return true
+  }
+  g.repairs = (g.repairs ?? 0) + 1
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} conflict (repair ${g.repairs}): ${what}`)
+  const routes: string[] = []
+  let relocate = false
+  for (const c of check.conflicts) {
+    if (c.kind === "route") routes.push(c.id)
+    else relocate = true
+  }
+  if (!relocate && reroute(ctx, g, entry, routes)) return true
+  relocateGoal(ctx, g, entry, what)
+  return true
+}
+
+function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): boolean {
+  const f = ctx.f
+  const b = entry.build!
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return false
+  // The blocker may be newer than the terrain scan: rescan the chunks of the blocked routes now.
+  const chunks: Record<string, boolean> = {}
+  for (const rid of routes) {
+    for (const k of f.layout.routes[rid]?.tiles ?? []) {
+      const cx = math.floor(keyX(k) / 32)
+      const cy = math.floor(keyY(k) / 32)
+      const ck = `${cx},${cy}`
+      if (chunks[ck] || !ctx.surface.is_chunk_generated({ x: cx, y: cy })) continue
+      chunks[ck] = true
+      scanChunk(t, ctx.surface, cx, cy)
+    }
+  }
+  let all = tiers()
+  const maxUg = maxUndergroundNow(ctx)
+  if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
+  const region: Rect = { x: f.center.x - g.radius, y: f.center.y - g.radius, w: 2 * g.radius, h: 2 * g.radius }
+  const plan = planReroute(f.layout, claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, entryPolicy(entry), all[0], routes, region)
+  if (!plan.ok) {
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${plan.reason}`)
+    return false
+  }
+  f.layout = plan.layout
+  entry.job!.layout = plan.layout
+  // Build parts: the ripped routes (and their taps) are replaced by the new ones.
+  const gone: Record<string, boolean> = {}
+  for (const rid of b.parts!.routes) if (plan.layout.routes[rid] === undefined) gone[rid] = true
+  const kept = b.parts!.routes.filter((rid) => !gone[rid])
+  for (const rid of plan.routes) if (kept.indexOf(rid) < 0) kept.push(rid)
+  b.parts!.routes = kept
+  const reserved = ctx.faction.brain!.reserved
+  for (const k of partTiles(plan.layout, { modules: [], routes: plan.routes, poles: [] })) reserved[k] = true
+  // Graph edges: their physical routes.
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind !== "belt") continue
+    const physical: string[] = []
+    for (const rid of plan.layout.routeOrder) {
+      const r = plan.layout.routes[rid]
+      if (r.conn !== e.role) continue
+      if (r.tapOf !== undefined) physical.push(r.tapOf)
+      physical.push(rid)
+    }
+    if (physical.length > 0) e.physical = physical
+  }
+  // Old pieces first (picked up by the crew, items kept), then the new ghosts: a ghost can't go where a belt stands.
+  const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: b.priority })
+  g.rework = { clearJobs: d.clearJobs, add: plan.add }
+  b.ghosts = (b.ghosts ?? []).filter((gh) => gh.valid)
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} rerouted ${routes.join(", ")}: ${plan.remove.length} entities to pick up, ${plan.add.length} to build`)
+  rework(ctx, g, b)
+  return true
+}
+
+/** A reroute's second phase: once its pick-ups are done, its new ghosts and place jobs. Returns whether it is done. */
+function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boolean {
+  const w = g.rework!
+  for (const id of w.clearJobs) {
+    const j = getJob(ctx.faction.board, id)
+    if (j !== undefined && j.status !== "done" && j.status !== "failed") return false
+  }
+  const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority })
+  for (const gh of d.ghosts) b.ghosts!.push(gh)
+  for (const id of d.placeJobs) b.placeJobs.push(id)
+  if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${d.failed.length} rerouted ghosts could not be created: ${d.failed.slice(0, 4).join("; ")}`)
+  g.rework = undefined
+  b.phase = "place"
+  return true
+}
+
+/** Gives up a goal's location: deconstructs what it built, drops its parts and nodes; the design starts it again. */
+function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): void {
+  const f = ctx.f
+  const b = entry.build!
+  const r = abandonParts(ctx.surface, ctx.faction, f.layout, b.parts!, b.priority)
+  const reserved = ctx.faction.brain!.reserved
+  for (const k of r.tiles) delete reserved[k]
+  for (const id of b.parts!.modules) {
+    // Module margins were reserved with the module (adoptPlan).
+    const m = findModule(entry.job!.layout, id)
+    if (m !== undefined) for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) delete reserved[tkey(x, y)]
+  }
+  for (const n of g.nodes) removeNode(f.graph, n.id)
+  for (const e of g.edges) removeEdge(f.graph, `e:${e.role}`)
+  g.status = "failed"
+  g.reason = `relocating: ${what}`
+  removePlan(entry.id)
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) gives up its location: ${r.clearJobs.length} built entities to deconstruct, ${r.routes.length} routes dropped; the design plans it again elsewhere`)
 }
 
 function failureReasons(ctx: Ctx, ids: number[]): string {

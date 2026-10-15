@@ -13,7 +13,8 @@ import { stampModule } from "../modules/stamp"
 import { BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
-import { FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
+import { claimed, otherClaims } from "../world/claims"
+import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
 import { LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
@@ -140,18 +141,26 @@ export function removePlan(id: string): void {
 /**
  * The terrain as a plan of a faction sees it: tiles its burner bootstrap reserved (sites and their margins) count as
  * its own structures, except tiles the faction's planned base already uses (the base layout blocks those itself).
+ * Tiles another faction on the surface claimed (world/claims.ts) count as foreign structures.
  */
 export function factionView(entry: PlannerEntry, base: TerrainView): TerrainView {
-  const faction = entry.baseFaction !== undefined ? storage.factions[entry.baseFaction] : undefined
-  const reserved = faction?.brain?.reserved
-  if (reserved === undefined) return base
-  const layout = storage.factories?.[entry.baseFaction!]?.layout
+  return claimView(entry.baseFaction, entry.surface, base)
+}
+
+/** `factionView` for faction `name` on `surface`; with `ownReserved` false, only other factions' claims. */
+export function claimView(name: string | undefined, surface: string, base: TerrainView, ownReserved = true): TerrainView {
+  const faction = name !== undefined ? storage.factions[name] : undefined
+  const reserved = ownReserved ? faction?.brain?.reserved : undefined
+  const others = name !== undefined ? otherClaims(name, surface) : []
+  if (reserved === undefined && others.length === 0) return base
+  const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
   return {
     block: (x, y) => {
       const b = base.block(x, y)
       if (b !== FREE && b !== TREE && b !== ROCK) return b
       const k = tkey(x, y)
-      if (!reserved[k]) return b
+      if (others.length > 0 && claimed(others, k)) return FOREIGN
+      if (reserved === undefined || !reserved[k]) return b
       if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined)) return b
       return OWN
     },

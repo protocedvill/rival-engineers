@@ -113,7 +113,8 @@ function classify(t: TerrainState, e: LuaEntity): number | undefined {
   if (type === "tree") return TREE
   if (type === "simple-entity") return ROCK
   if (type === "cliff") return CLIFF
-  if (type === "entity-ghost") return e.force.name === t.force ? OWN : undefined
+  // Ghosts of other forces are their planned structures: never plan over them (M5a.2).
+  if (type === "entity-ghost") return e.force.name === t.force ? OWN : FOREIGN
   return e.force.name === t.force ? OWN : FOREIGN
 }
 

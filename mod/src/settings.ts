@@ -412,6 +412,15 @@ data.extend([
     order: "j-g",
   },
   {
+    type: "int-setting",
+    name: Settings.conflictMaxRepairs,
+    setting_type: "runtime-global",
+    default_value: 3,
+    minimum_value: 0,
+    maximum_value: 100,
+    order: "j-h",
+  },
+  {
     // The soak harness stops a run once every faction reached this milestone (telemetry done.json).
     type: "string-setting",
     name: Settings.soakDoneMilestone,

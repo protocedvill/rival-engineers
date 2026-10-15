@@ -97,6 +97,8 @@ export interface Config {
   factoryHandFeedLabs: boolean
   /** Job priority of the factory's builds (bootstrap: place 90, craft 50, gather 20). */
   factoryBuildPriority: number
+  /** Conflicts (M5a.2): reroutes or relocations per goal before its leftover ghosts are just retried. */
+  conflictMaxRepairs: number
   /** Telemetry writes done.json (the soak harness stops) once every faction reached this milestone. */
   soakDoneMilestone: string
   /** Curated mall built once science is automated (material supply for buildings); "" = none. */
@@ -163,6 +165,7 @@ export function getConfig(): Config {
     factoryResearchUnitTime: setting(Settings.factoryResearchUnitTime),
     factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
     factoryBuildPriority: setting(Settings.factoryBuildPriority),
+    conflictMaxRepairs: setting(Settings.conflictMaxRepairs),
     soakDoneMilestone: setting(Settings.soakDoneMilestone),
     factoryMall: setting(Settings.factoryMall),
     factoryMallUtilization: setting(Settings.factoryMallUtilization),
