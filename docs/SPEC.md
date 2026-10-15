@@ -67,6 +67,9 @@ Two layers, by analogy:
 | D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
 | D42 | Buffer depots on modules (2026-10-15, user) | Modules may carry a small **buffer**: an inserter into a chest at the end of a line (e.g. a furnace stack) that the crew treats as a depot to collect from. Not every module gets one; agents use judgement and list each module's choice in the milestone report for the user to verify. A buffer is **not** an extra demand in the factory graph or module rates (it fills up and stops). For throughput validation (D33) the buffer chest starts full or its slots are blocked (chest bar) so it takes nothing. |
 | D43 | Bootstrap depletion (2026-10-15, user; exception to D28) | Bootstrap mining sites that deplete (or are about to) are deconstructed and rebuilt on remaining ore, so runs don't die. D28's static-world assumption still holds for the planned factory. |
+| D44 | Spawn distance (2026-10-15, user decision on P17, changed) | Factions spawn as far out as the config says (`spawn-min-distance`), **default 450+ tiles**, which is beyond the chunks a new game queues around the origin, so starting points get their lakes from normal map generation. The lake repair from M5a.2 stays only as a fallback for configs that spawn inside the queued area. |
+| D45 | Ground claims (2026-10-15, user decision on P18) | P18 approved, **including the 1-tile margins** for other factions, provided it costs no noticeable performance (measure it). |
+| D46 | Ore fields (2026-10-15, user) | **Factions never share an ore field.** A patch (connected ore field) that another faction mines or has claimed is off limits for bootstrap sites, mining modules and growth; spawn placement must give each faction its own fields. |
 
 ## 3. v1 Definition of Done
 
@@ -630,13 +633,13 @@ M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-1
 
 M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-report.md` "M5a.2"):
 
-- **P17, starting-lake repair (proposed, extends D32):** a new game queues ~10 chunks around the origin for background
+- **P17, starting-lake repair (resolved → D44, changed):** a new game queues ~10 chunks around the origin for background
   generation before any script runs, so a faction starting point appended there gets its starting ores but not its
   lake. After generating a starting-area spawn, tiles the surface's own elevation noise makes water but that are land
   are repainted (water/deepwater, as map generation would), only when at least `spawn-lake-repair-min-tiles` (50)
   disagree. A starting-area spawn also needs water within `spawn-water-radius` (96), else the next spot is tried.
   Alternative: register starting points only beyond the queued area (spawns ~450+ tiles out instead of ~336).
-- **P18, ground claims (proposed):** a faction's reserved tiles (bootstrap sites + 1-tile margin, every adopted plan's
+- **P18, ground claims (approved → D45):** a faction's reserved tiles (bootstrap sites + 1-tile margin, every adopted plan's
   modules + 1-tile margin, routes, poles) are its claim; other factions' planners, bootstrap site placement and growth
   treat them, and other factions' ghosts, as foreign structures. First come, first served. A finished plan whose tiles
   another faction claimed meanwhile (or a foreign entity stands on) counts as a failed attempt. Open: whether margins
@@ -646,6 +649,8 @@ M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-repo
   entity is rerouted (old pieces the crew picks up first, then new ghosts); a blocked module or pole gives up the whole
   goal's location (built entities deconstructed, parts dropped from the layout and graph, the design plans it again).
   At most `conflict-max-repairs` (3) per goal. Refinement left for M6: relocate only the blocked module.
+
+Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never). P19 still proposed.
 
 Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
 
@@ -672,6 +677,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D46; §11 P17, P18 resolved.
 - v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.
 - v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
 - v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
