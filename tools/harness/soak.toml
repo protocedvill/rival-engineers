@@ -1,0 +1,17 @@
+# M3 acceptance soak (SPEC §7 T3, §8 M3): one faction with the default crew on five fixed seeds.
+# Every mod setting keeps its default (§5.7) except the telemetry outputs the harness reads.
+
+[run]
+name = "m3-one-faction"
+seeds = [11, 222, 3333, 44444, 555555]   # spread out: nearby seeds can share a starting-area layout
+game_hours = 2.0          # cap per seed; the run stops early once every faction is done
+stop_when_done = true
+
+[mapgen]
+enemy_bases = false       # D6: v1 maps have no biters
+
+[mod]                     # config overrides (camelCase keys of mod/src/config.ts), applied at map init
+factionCount = 1
+telemetryIntervalTicks = 3600     # 1 game-minute
+frameDumpIntervalTicks = 1800     # 30 game-seconds
+frameDumpRadius = 64

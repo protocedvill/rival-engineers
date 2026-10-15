@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Pinned to the stable release the mod targets (SPEC D12). Bump together with typed-factorio.
+  FACTORIO_VERSION: "2.0.77"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Typecheck (T0)
+        run: npm run typecheck
+      - name: Install Lua 5.2 (T1)
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends lua5.2
+      - name: Unit tests (T1)
+        run: npm run test:unit
+      - name: Build
+        run: npm run build
+
+      - uses: actions/cache@v6
+        id: factorio-cache
+        with:
+          path: .factorio-test/factorio
+          key: factorio-headless-${{ env.FACTORIO_VERSION }}
+      - name: Download Factorio headless
+        if: steps.factorio-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .factorio-test
+          curl -fsSL "https://factorio.com/get-download/${FACTORIO_VERSION}/headless/linux64" | tar -xJ -C .factorio-test
+
+      # factorio-test is vendored (MIT) so CI needs no mod-portal credentials: the parallel runner copies ci/mods/*.zip
+      # into each shard's data dir (.factorio-test/shards/N). One runner, 4 shards (4 vCPUs), balanced by
+      # tools/test-timings.json: cheaper than a job matrix, which would repeat npm ci, the build and the download.
+      - name: In-game tests (T2, 4 shards)
+        run: node tools/test-parallel.mjs --no-build --jobs 4
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-output
+          path: |
+            out/
+            .factorio-test/shards/*/factorio-current.log
+            .factorio-test/shards/*/script-output/

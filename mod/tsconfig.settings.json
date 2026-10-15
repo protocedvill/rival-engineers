@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["typed-factorio/settings"]
+  },
+  "include": ["src/settings.ts", "src/shared/**/*.ts"]
+}

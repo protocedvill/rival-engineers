@@ -1,0 +1,113 @@
+// Hand-entered vanilla 2.0.77 prototype facts for T1 tests (the game reads them from prototypes at runtime).
+// Values checked against base/prototypes (recipe.lua, entities.lua) and an in-game probe.
+
+import { EntityFacts, ProtoFacts, RecipeFacts } from "../src/modules/facts"
+
+function r(name: string, energy: number, ingredients: [string, number][], products: [string, number][], category = "crafting"): RecipeFacts {
+  return {
+    name,
+    energy,
+    category,
+    ingredients: ingredients.map(([n, a]) => ({ name: n, amount: a })),
+    products: products.map(([n, a]) => ({ name: n, amount: a })),
+  }
+}
+
+const RECIPES: RecipeFacts[] = [
+  r("iron-plate", 3.2, [["iron-ore", 1]], [["iron-plate", 1]], "smelting"),
+  r("copper-plate", 3.2, [["copper-ore", 1]], [["copper-plate", 1]], "smelting"),
+  r("stone-brick", 3.2, [["stone", 2]], [["stone-brick", 1]], "smelting"),
+  r("iron-gear-wheel", 0.5, [["iron-plate", 2]], [["iron-gear-wheel", 1]]),
+  r("copper-cable", 0.5, [["copper-plate", 1]], [["copper-cable", 2]]),
+  r("electronic-circuit", 0.5, [["iron-plate", 1], ["copper-cable", 3]], [["electronic-circuit", 1]]),
+  r("automation-science-pack", 5, [["copper-plate", 1], ["iron-gear-wheel", 1]], [["automation-science-pack", 1]]),
+  r("logistic-science-pack", 6, [["inserter", 1], ["transport-belt", 1]], [["logistic-science-pack", 1]]),
+  r("inserter", 0.5, [["electronic-circuit", 1], ["iron-gear-wheel", 1], ["iron-plate", 1]], [["inserter", 1]]),
+  r("transport-belt", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["transport-belt", 2]]),
+  r("assembling-machine-1", 0.5, [["electronic-circuit", 3], ["iron-gear-wheel", 5], ["iron-plate", 9]], [["assembling-machine-1", 1]]),
+  r("stone-furnace", 0.5, [["stone", 5]], [["stone-furnace", 1]]),
+  r("small-electric-pole", 0.5, [["wood", 1], ["copper-cable", 2]], [["small-electric-pole", 2]]),
+  r("pipe", 0.5, [["iron-plate", 1]], [["pipe", 1]]),
+  r("offshore-pump", 0.5, [["electronic-circuit", 2], ["pipe", 1], ["iron-gear-wheel", 1]], [["offshore-pump", 1]]),
+  r("boiler", 0.5, [["stone-furnace", 1], ["pipe", 4]], [["boiler", 1]]),
+  r("steam-engine", 0.5, [["iron-gear-wheel", 8], ["pipe", 5], ["iron-plate", 10]], [["steam-engine", 1]]),
+  r("lab", 2, [["electronic-circuit", 10], ["iron-gear-wheel", 10], ["transport-belt", 4]], [["lab", 1]]),
+  r("electric-mining-drill", 2, [["electronic-circuit", 3], ["iron-gear-wheel", 5], ["iron-plate", 10]], [["electric-mining-drill", 1]]),
+  r("burner-mining-drill", 2, [["iron-gear-wheel", 3], ["stone-furnace", 1], ["iron-plate", 3]], [["burner-mining-drill", 1]]),
+  r("fast-transport-belt", 0.5, [["iron-gear-wheel", 5], ["transport-belt", 1]], [["fast-transport-belt", 1]]),
+  r("express-transport-belt", 0.5, [["iron-gear-wheel", 10], ["fast-transport-belt", 1]], [["express-transport-belt", 1]]),
+  r("burner-inserter", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["burner-inserter", 1]]),
+]
+
+function e(f: EntityFacts): EntityFacts {
+  return f
+}
+
+const ENTITIES: EntityFacts[] = [
+  e({ name: "stone-furnace", type: "furnace", tileW: 2, tileH: 2, craftingSpeed: 1, craftingCategories: ["smelting"], energyPerTick: 1500, burner: true }),
+  e({ name: "assembling-machine-1", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.5, craftingCategories: ["crafting"], energyPerTick: 1250, electric: true }),
+  e({ name: "electric-mining-drill", type: "mining-drill", tileW: 3, tileH: 3, miningSpeed: 0.5, miningRadius: 2.49, dropVector: { x: 0, y: -1.85 }, energyPerTick: 1500, electric: true }),
+  e({ name: "burner-mining-drill", type: "mining-drill", tileW: 2, tileH: 2, miningSpeed: 0.25, miningRadius: 0.99, dropVector: { x: -0.5, y: -1.3 }, energyPerTick: 2500, burner: true }),
+  e({ name: "lab", type: "lab", tileW: 3, tileH: 3, researchSpeed: 1, energyPerTick: 1000, electric: true }),
+  e({ name: "small-electric-pole", type: "electric-pole", tileW: 1, tileH: 1, supplyDistance: 2.5, wireReach: 7.5 }),
+  e({ name: "inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.014, pickupVector: { x: 0, y: -1 }, dropVectorIns: { x: 0, y: 1.2 }, energyPerTick: 245, electric: true }),
+  e({ name: "long-handed-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.02, pickupVector: { x: 0, y: -2 }, dropVectorIns: { x: 0, y: 2.2 }, energyPerTick: 335, electric: true }),
+  e({ name: "burner-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.013, pickupVector: { x: 0, y: -1 }, dropVectorIns: { x: 0, y: 1.2 }, energyPerTick: 2400, burner: true }),
+  e({ name: "transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.03125 }),
+  e({ name: "underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.03125, maxUnderground: 5 }),
+  e({ name: "splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.03125 }),
+  e({ name: "fast-transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.0625 }),
+  e({ name: "fast-underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.0625, maxUnderground: 7 }),
+  e({ name: "fast-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.0625 }),
+  e({ name: "express-transport-belt", type: "transport-belt", tileW: 1, tileH: 1, beltSpeed: 0.09375 }),
+  e({ name: "express-underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.09375, maxUnderground: 9 }),
+  e({ name: "express-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.09375 }),
+  e({ name: "iron-chest", type: "container", tileW: 1, tileH: 1 }),
+  e({ name: "pipe", type: "pipe", tileW: 1, tileH: 1 }),
+  e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
+  e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
+  e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
+]
+
+const RESOURCES: Record<string, { time: number; product: string }> = {
+  "iron-ore": { time: 1, product: "iron-ore" },
+  "copper-ore": { time: 1, product: "copper-ore" },
+  coal: { time: 1, product: "coal" },
+  stone: { time: 1, product: "stone" },
+}
+
+const UNLOCKS: Record<string, string> = {
+  "assembling-machine-1": "automation",
+  "long-handed-inserter": "automation",
+  "electronic-circuit": "electronics",
+  "logistic-science-pack": "logistic-science-pack",
+  lab: "automation-science-pack",
+  "offshore-pump": "steam-power",
+  boiler: "steam-power",
+  "steam-engine": "steam-power",
+  pipe: "steam-power",
+  "small-electric-pole": "electronics",
+  "electric-mining-drill": "electronics",
+  "fast-transport-belt": "logistics-2",
+  "express-transport-belt": "logistics-3",
+}
+
+export const vanillaFacts: ProtoFacts = {
+  recipe: (name) => {
+    for (const x of RECIPES) if (x.name === name) return x
+    return undefined
+  },
+  entity: (name) => {
+    for (const x of ENTITIES) if (x.name === name) return x
+    return undefined
+  },
+  resourceMiningTime: (res) => RESOURCES[res]?.time,
+  resourceProduct: (res) => RESOURCES[res]?.product,
+  fuelValue: (item) => (item === "coal" ? 4e6 : item === "wood" ? 2e6 : 0),
+  unlockedBy: (recipe) => UNLOCKS[recipe],
+  recipeForItem: (item) => {
+    for (const x of RECIPES) if (x.name === item) return item
+    return undefined
+  },
+  itemToPlace: (entity) => entity,
+}

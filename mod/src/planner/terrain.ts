@@ -1,0 +1,221 @@
+// Terrain model at runtime (SPEC §5.3, §5.6): a per-faction tile occupancy view of a region, filled chunk by chunk under a
+// per-tick budget (no full-map scans per tick) and kept current by marking chunks dirty when entities are built, mined
+// or destroyed on them. Lives in `storage` (sparse per-chunk tables). `terrainView` exposes it as the pure TerrainView
+// the planner uses.
+
+import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
+import { CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+
+export interface ChunkScan {
+  /** Tile index (ly × 32 + lx) → obstacle class; absent = free. */
+  block: Record<number, number>
+  /** Tile index → resource index (TerrainState.resources), absent = none. */
+  ore: Record<number, number>
+  tick: number
+}
+
+export interface TerrainState {
+  id: string
+  surface: string
+  /** The faction's force: its entities are OWN, every other force's are FOREIGN. */
+  force: string
+  chunks: Record<number, ChunkScan>
+  /** Chunk keys waiting for a (re)scan, in order. */
+  queue: number[]
+  queued: Record<number, boolean>
+  resources: string[]
+  resourceIndex: Record<string, number>
+  /** Chunks scanned so far (telemetry). */
+  scans: number
+}
+
+declare global {
+  interface RivalEngineersStorage {
+    terrains?: Record<string, TerrainState>
+  }
+}
+
+const IGNORED: Record<string, boolean> = {
+  character: true,
+  "character-corpse": true,
+  corpse: true,
+  "item-entity": true,
+  fish: true,
+  "particle-source": true,
+  projectile: true,
+  sticker: true,
+  explosion: true,
+  "highlight-box": true,
+  "speech-bubble": true,
+  "deconstructible-tile-proxy": true,
+  "tile-ghost": true,
+  "item-request-proxy": true,
+  "smoke-with-trigger": true,
+  "fire": true,
+  "stream": true,
+  "beam": true,
+  "arrow": true,
+  "flying-text": true,
+}
+
+function terrains(): Record<string, TerrainState> {
+  storage.terrains ??= {}
+  return storage.terrains
+}
+
+export function getTerrain(id: string): TerrainState | undefined {
+  return terrains()[id]
+}
+
+export function newTerrain(id: string, surface: string, force: string): TerrainState {
+  const t: TerrainState = { id, surface, force, chunks: {}, queue: [], queued: {}, resources: [], resourceIndex: {}, scans: 0 }
+  terrains()[id] = t
+  return t
+}
+
+export function deleteTerrain(id: string): void {
+  delete terrains()[id]
+}
+
+function enqueue(t: TerrainState, cx: number, cy: number): void {
+  const k = tkey(cx, cy)
+  if (t.queued[k]) return
+  t.queued[k] = true
+  t.queue.push(k)
+}
+
+/** Queues every chunk overlapping `area` (world tiles) that is not scanned yet. */
+export function requestArea(t: TerrainState, area: Rect): void {
+  const cx1 = math.floor(area.x / 32)
+  const cy1 = math.floor(area.y / 32)
+  const cx2 = math.floor((area.x + area.w - 1) / 32)
+  const cy2 = math.floor((area.y + area.h - 1) / 32)
+  for (let cy = cy1; cy <= cy2; cy++) for (let cx = cx1; cx <= cx2; cx++) if (t.chunks[tkey(cx, cy)] === undefined) enqueue(t, cx, cy)
+}
+
+export function terrainReady(t: TerrainState): boolean {
+  return t.queue.length === 0
+}
+
+function resourceId(t: TerrainState, name: string): number {
+  let i = t.resourceIndex[name]
+  if (i === undefined) {
+    t.resources.push(name)
+    i = t.resources.length
+    t.resourceIndex[name] = i
+  }
+  return i
+}
+
+function classify(t: TerrainState, e: LuaEntity): number | undefined {
+  const type = e.type
+  if (IGNORED[type]) return undefined
+  if (type === "tree") return TREE
+  if (type === "simple-entity") return ROCK
+  if (type === "cliff") return CLIFF
+  if (type === "entity-ghost") return e.force.name === t.force ? OWN : undefined
+  return e.force.name === t.force ? OWN : FOREIGN
+}
+
+/** Scans one chunk (it must be generated). */
+export function scanChunk(t: TerrainState, surface: LuaSurface, cx: number, cy: number): void {
+  const x0 = cx * 32
+  const y0 = cy * 32
+  const area = { left_top: { x: x0, y: y0 }, right_bottom: { x: x0 + 32, y: y0 + 32 } }
+  const scan: ChunkScan = { block: {}, ore: {}, tick: game.tick }
+  const set = (x: number, y: number, b: number): void => {
+    const lx = x - x0
+    const ly = y - y0
+    if (lx < 0 || ly < 0 || lx >= 32 || ly >= 32) return
+    const i = ly * 32 + lx
+    const old = scan.block[i]
+    if (old === undefined || old < b) scan.block[i] = b
+  }
+  for (const tile of surface.find_tiles_filtered({ area, collision_mask: "water_tile" })) set(tile.position.x, tile.position.y, WATER)
+  for (const tile of surface.find_tiles_filtered({ area, name: "out-of-map" })) set(tile.position.x, tile.position.y, UNKNOWN)
+  for (const e of surface.find_entities_filtered({ area })) {
+    if (!e.valid) continue
+    if (e.type === "resource") {
+      const x = math.floor(e.position.x)
+      const y = math.floor(e.position.y)
+      if (x >= x0 && y >= y0 && x < x0 + 32 && y < y0 + 32) scan.ore[(y - y0) * 32 + (x - x0)] = resourceId(t, e.name)
+      continue
+    }
+    const b = classify(t, e)
+    if (b === undefined) continue
+    const box = e.bounding_box
+    const bx1 = math.floor(box.left_top.x + 0.01)
+    const by1 = math.floor(box.left_top.y + 0.01)
+    const bx2 = math.ceil(box.right_bottom.x - 0.01)
+    const by2 = math.ceil(box.right_bottom.y - 0.01)
+    for (let x = bx1; x < math.max(bx2, bx1 + 1); x++) for (let y = by1; y < math.max(by2, by1 + 1); y++) set(x, y, b)
+  }
+  t.chunks[tkey(cx, cy)] = scan
+  t.scans++
+}
+
+/**
+ * Scans up to `maxChunks` queued chunks. Chunks not generated yet are requested and retried later. Returns the
+ * number scanned.
+ */
+export function stepTerrain(t: TerrainState, maxChunks: number): number {
+  const surface = game.surfaces[t.surface]
+  if (surface === undefined) return 0
+  let scanned = 0
+  let tries = t.queue.length
+  while (scanned < maxChunks && t.queue.length > 0 && tries-- > 0) {
+    const k = t.queue.shift()!
+    const cx = math.floor(k / 2097152) - 1048576
+    const cy = (k % 2097152) - 1048576
+    if (!surface.is_chunk_generated({ x: cx, y: cy })) {
+      surface.request_to_generate_chunks({ x: cx * 32 + 16, y: cy * 32 + 16 }, 0)
+      t.queue.push(k)
+      continue
+    }
+    delete t.queued[k]
+    scanChunk(t, surface, cx, cy)
+    scanned++
+  }
+  return scanned
+}
+
+/** Marks the chunks under a position/box dirty in every terrain of that surface (rescanned under budget). */
+export function markDirty(surface: string, left: MapPosition, right: MapPosition): void {
+  for (const [, t] of pairs(terrains())) {
+    if (t.surface !== surface) continue
+    for (let cy = math.floor(left.y / 32); cy <= math.floor(right.y / 32); cy++) {
+      for (let cx = math.floor(left.x / 32); cx <= math.floor(right.x / 32); cx++) {
+        if (t.chunks[tkey(cx, cy)] !== undefined) enqueue(t, cx, cy)
+      }
+    }
+  }
+}
+
+export function onEntityChanged(entity: LuaEntity | undefined): void {
+  if (entity === undefined || !entity.valid || storage.terrains === undefined) return
+  const box = entity.bounding_box
+  markDirty(entity.surface.name, box.left_top, box.right_bottom)
+}
+
+/** The pure view the planner reads. Unscanned tiles are UNKNOWN. */
+export function terrainView(t: TerrainState): TerrainView {
+  const chunks = t.chunks
+  const resources = t.resources
+  return {
+    block: (x, y) => {
+      const cx = math.floor(x / 32)
+      const cy = math.floor(y / 32)
+      const c = chunks[tkey(cx, cy)]
+      if (c === undefined) return UNKNOWN
+      return c.block[(y - cy * 32) * 32 + (x - cx * 32)] ?? 0
+    },
+    ore: (x, y) => {
+      const cx = math.floor(x / 32)
+      const cy = math.floor(y / 32)
+      const c = chunks[tkey(cx, cy)]
+      if (c === undefined) return undefined
+      const i = c.ore[(y - cy * 32) * 32 + (x - cx * 32)]
+      return i !== undefined ? resources[i - 1] : undefined
+    },
+  }
+}
