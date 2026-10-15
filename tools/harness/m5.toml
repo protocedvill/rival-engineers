@@ -1,0 +1,20 @@
+# M5a acceptance soak (SPEC §8 M5): from a fresh start (burner bootstrap → first electricity → factory planner), one
+# faction with the default crew reaches automated red science feeding labs with research progressing. Every mod setting
+# keeps its default (§5.7) except the telemetry outputs and the milestone that ends a run.
+# Scorecard: python3 tools/harness/m5_scorecard.py out/soak/m5-red-science
+
+[run]
+name = "m5-red-science"
+seeds = [11, 222, 3333, 44444, 555555]
+game_hours = 3.0          # cap per seed; the run stops early once the faction has automated red science
+stop_when_done = true
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600     # 1 game-minute
+frameDumpIntervalTicks = 7200     # 2 game-minutes
+frameDumpRadius = 120
+soakDoneMilestone = "automated-red-science"

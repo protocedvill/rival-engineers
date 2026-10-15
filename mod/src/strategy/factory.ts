@@ -2,13 +2,15 @@ import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
-import { addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
+import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { GeneratorName } from "../modules/generators"
 import { ModuleDef } from "../modules/types"
-import { BuildParts, partTiles } from "../planner/build-list"
+import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
+import { planGrowth } from "../planner/grow"
+import { markDirty, terrainView } from "../planner/terrain"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { Rect, tkey, Vec } from "../planner/grid"
 import { findModule, LayoutState, newLayout } from "../planner/layout"
@@ -76,8 +78,9 @@ export interface FactoryGoal {
   /** Place jobs done so far (progress), and rounds of re-planning jobs for leftover ghosts. */
   placed: number
   rounds: number
-  /** Growth goals: the node and units. */
+  /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
+  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
 }
 
 export interface FactoryState {
@@ -190,10 +193,9 @@ export function onFactoryTick(): void {
     const faction = storage.factions[name]
     const brain = faction.brain
     if (brain === undefined || faction.paused) continue
-    // Same cadence as the bootstrap brain, one tick later (the brain just set nextThink).
-    if ((tick + 1) % 30 !== 0) continue
     config ??= getConfig()
-    if (!config.factoryEnabled) continue
+    // Same cadence as the bootstrap brain.
+    if (tick % config.brainIntervalTicks !== 0 || !config.factoryEnabled) continue
     let f = getFactory(name)
     if (f === undefined) {
       if (brain.milestones["first-electricity-materials"] === undefined) continue
@@ -396,9 +398,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       }
     }
     if (spec.kind === "grow") {
-      // M5a: growth of a built module is planned by expansion (see grow.ts in the report's interface notes); until
-      // then a short module is recorded and left as is.
-      ctx.waiting.push(`grow ${spec.growth?.role}: ${spec.growth?.have}/${spec.growth?.need}`)
+      if (startGrow(ctx, spec)) return
       continue
     }
     startGoal(ctx, spec)
@@ -423,6 +423,123 @@ function startGoal(ctx: Ctx, spec: GoalSpec): void {
   }
   f.goals.push(g)
   planGoal(ctx, g)
+}
+
+/**
+ * Expand-first (LayoutPolicy.expansion): grow a built module that falls short of its design rate by whole units of its
+ * `expand` axis. The moved entities and the belts of its rerouted ports are picked up, then the new entities built.
+ * When it can't grow (no room, at its cap), the shortfall stays visible as a waiting reason (D24: a new producer
+ * cluster is the remedy, M5b/M6).
+ */
+function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
+  const f = ctx.f
+  const gr = spec.growth!
+  const node = f.graph.nodes[gr.node]
+  if (gr.units < 1 || node === undefined || node.lifecycle !== "built") {
+    ctx.waiting.push(`${gr.role} short (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}): cannot expand`)
+    return false
+  }
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return false
+  const policy = policyFor(ctx.config)
+  const tier = tiers()[0]
+  const plan = planGrowth(f.layout, terrainView(t), prototypeFacts, policy, tier, gr.node, gr.units)
+  if (!plan.ok) {
+    ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
+    return false
+  }
+  const g: FactoryGoal = {
+    id: `g${f.nextGoal++}`,
+    kind: "grow",
+    status: "building",
+    nodes: [],
+    edges: [],
+    techs: [],
+    attempts: 1,
+    radius: 0,
+    createdTick: ctx.tick,
+    plannedTick: ctx.tick,
+    placed: 0,
+    rounds: 0,
+    growth: { node: gr.node, units: gr.units },
+  }
+  f.goals.push(g)
+  f.layout = plan.layout
+  const m = findModule(f.layout, gr.node)!
+  node.capacity = { inputs: m.canonical.rates.inputs, outputs: m.canonical.rates.outputs }
+  node.module = m.canonical.id
+  node.lifecycle = "building"
+  node.goal = g.id
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind === "belt" && plan.rerouted.indexOf(e.role) >= 0) e.physical = [`route:${e.role}`]
+  }
+  const clearJobs: number[] = []
+  for (const e of plan.remove) {
+    const found = ctx.surface.find_entities_filtered({ name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
+    if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
+  }
+  const reserved = ctx.faction.brain!.reserved
+  for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
+  for (const c of plan.rerouted) for (const k of f.layout.routes[`route:${c}`]?.tiles ?? []) reserved[k] = true
+  g.growBuild = { phase: "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [] }
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
+  return true
+}
+
+function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
+  const b = g.growBuild!
+  const board = ctx.faction.board
+  if (b.phase === "clear") {
+    for (const id of b.clearJobs) {
+      const j = getJob(board, id)
+      if (j !== undefined && j.status !== "done" && j.status !== "failed") return
+    }
+    for (const e of b.add) {
+      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force: ctx.faction.force }
+      if (e.ioType !== undefined) params.type = e.ioType
+      if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
+      const gh = ctx.surface.create_entity(params as never)
+      if (gh === undefined) continue
+      b.ghosts.push(gh)
+      markDirty(ctx.faction.surface, gh.bounding_box.left_top, gh.bounding_box.right_bottom)
+      const id = addPlaceJob(ctx.faction, gh, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+      if (id !== undefined) b.placeJobs.push(id)
+    }
+    b.phase = "place"
+    return
+  }
+  let done = 0
+  let open = false
+  for (const id of b.placeJobs) {
+    const j = getJob(board, id)
+    if (j?.status === "done") done++
+    else if (j !== undefined && j.status !== "failed") open = true
+  }
+  if (done > g.placed) {
+    ctx.faction.brain!.steps += done - g.placed
+    g.placed = done
+  }
+  if (open) return
+  const left = b.ghosts.filter((gh) => gh.valid)
+  if (left.length > 0) {
+    if (g.rounds++ >= MAX_BUILD_ROUNDS) {
+      g.status = "failed"
+      g.reason = `${left.length} ghosts left`
+      return
+    }
+    const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
+    replanGhosts(ctx, fake as never, left)
+    b.placeJobs = fake.placeJobs
+    return
+  }
+  b.phase = "done"
+  g.status = "done"
+  g.builtTick = ctx.tick
+  const node = ctx.f.graph.nodes[g.growth!.node]
+  if (node !== undefined) node.lifecycle = "built"
+  mark(ctx.faction, "grow-built")
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role} at tick ${ctx.tick}`)
 }
 
 function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undefined {
@@ -461,6 +578,7 @@ function updateGoals(ctx: Ctx): void {
   const f = ctx.f
   for (const g of f.goals) {
     if (g.status === "planning") updatePlanning(ctx, g)
+    else if (g.status === "building" && g.growBuild !== undefined) updateGrowing(ctx, g)
     else if (g.status === "building") updateBuilding(ctx, g)
   }
 }

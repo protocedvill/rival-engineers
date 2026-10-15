@@ -6,6 +6,7 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
+import { exportFactoryGraph, factoryReport, getFactory, startFactory } from "./strategy/factory"
 import { exportGraph, getPlannerEntry, startPlan, StartPlanOptions } from "./planner/runtime"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 
@@ -92,6 +93,16 @@ export function registerRemoteInterface(): void {
       const e = getPlannerEntry(id)
       return e !== undefined && exportGraph(e, file)
     },
+
+    // Strategy (M5).
+    /** The factory planner's state for a faction: goals, graph summary, design, research, waiting reasons. */
+    factory_report: (name: string) => factoryReport(name),
+    /** Hands a bootstrapped faction to the factory planner now (normally at the first-electricity milestone). */
+    start_factory: (name: string) => {
+      if (getFactory(name) === undefined) startFactory(mustFaction(name))
+    },
+    /** Writes both Factory Graph layers of a faction (physical layout + logical graph) to script-output/<file>. */
+    dump_factory_graph: (name: string, file: string) => exportFactoryGraph(name, file),
 
     // Config (SPEC §5.7): tests and the harness override settings here.
     get_config: () => getConfig(),

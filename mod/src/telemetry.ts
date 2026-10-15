@@ -1,6 +1,7 @@
 import { LuaEntityPrototype, LuaProfiler, LuaSurface, MapPosition } from "factorio:runtime"
 import { getConfig } from "./config"
 import { brainReport } from "./strategy/bootstrap"
+import { exportFactoryGraph, factoryReport } from "./strategy/factory"
 import { setAiProfiler } from "./profiling"
 
 // Telemetry (SPEC §5.6, §7 T3): JSON written through helpers.write_file (server-side only, no gameplay
@@ -66,6 +67,14 @@ export function dumpEntities(file: string, center: MapPosition, radius: number, 
   return out.length
 }
 
+function researchState(forceName: string) {
+  const force = game.forces[forceName]
+  if (force === undefined) return undefined
+  let researched = 0
+  for (const [, t] of pairs(force.technologies)) if (t.researched) researched++
+  return { current: force.current_research?.name, progress: force.research_progress, researched }
+}
+
 let profiler: LuaProfiler | undefined
 let profiledFrom = 0
 
@@ -93,7 +102,7 @@ function factionTelemetry() {
     }
     const depot: Record<string, number> = {}
     for (const chest of f.stockpiles) if (chest.valid) for (const e of chest.get_inventory(defines.inventory.chest)!.get_contents()) depot[e.name] = (depot[e.name] ?? 0) + e.count
-    out[name] = { depot, force: f.force, brain: brainReport(f), counters: board.counters, activeJobs: jobs, crew }
+    out[name] = { depot, force: f.force, brain: brainReport(f), factory: factoryReport(name), research: researchState(f.force), counters: board.counters, activeJobs: jobs, crew }
   }
   return out
 }
@@ -122,7 +131,10 @@ function dumpFrames(): void {
     const brain = f.brain
     if (!brain) continue
     const center = brain.hub ?? brain.base
-    dumpEntities(`rival-engineers/frames/${name}/frame-${string.format("%09d", game.tick)}.json`, center, config.frameDumpRadius, game.surfaces[f.surface], true)
+    const base = `rival-engineers/frames/${name}/frame-${string.format("%09d", game.tick)}`
+    dumpEntities(`${base}.json`, center, config.frameDumpRadius, game.surfaces[f.surface], true)
+    // The Factory Graph next to each frame (tools/render --frame-graphs overlays it).
+    exportFactoryGraph(name, `${base}.graph.json`)
   }
 }
 
@@ -132,11 +144,11 @@ export function onTelemetryTick(): void {
   if (config.telemetryIntervalTicks > 0 && tick % config.telemetryIntervalTicks === 0) {
     writeTelemetry()
     if (!storage.allDoneWritten && storage.factionOrder.length > 0) {
-      // The soak harness stops once every faction has gathered the first-electricity materials (M3).
+      // The soak harness stops once every faction has reached `soak-done-milestone` (M3: the first-electricity materials).
       let all = true
       for (const name of storage.factionOrder) {
         const brain = storage.factions[name].brain
-        if (!brain || brain.milestones["first-electricity-materials"] === undefined) all = false
+        if (!brain || brain.milestones[config.soakDoneMilestone] === undefined) all = false
       }
       if (all) {
         storage.allDoneWritten = true
