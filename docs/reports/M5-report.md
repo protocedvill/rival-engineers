@@ -589,7 +589,7 @@ T1): ~15 runs, ~8 min. (c) Soaks: M5 acceptance 5 seeds × 1 round (~25 min) and
 
 ## M5b: measurement, reconciler, graph overlay, near-ore smelting (2026-10-15)
 
-SPEC §5.8 (D26, D29), §8 M5, D35. Commits d270953, c798fcf, a52925f (final code).
+SPEC §5.8 (D26, D29), §8 M5, D35. Commits d270953, c798fcf, a52925f, adda91d (final code).
 
 ### Built
 
@@ -653,4 +653,100 @@ SPEC §5.8 (D26, D29), §8 M5, D35. Commits d270953, c798fcf, a52925f (final cod
   labs are starved and the root cause is the pack edge **at capacity**. (5) **End to end**: a belt is cut out of the
   built ore route; the edge is found broken, a **repair** goal re-places it, the crew (one member, belts in a chest)
   builds it and the smelter is **ok** again.
-- T1: reconciler (12), D35 near-ore placement (1). Full T2 **97/97** on a52925f (`npm test`, 372 s, 8 shards).
+- T1: reconciler (13), D35 near-ore placement (1).
+
+### Results
+
+| Check | Commit | Result |
+|---|---|---|
+| Full T2 (`npm test`, 372 s, 8 shards) | a52925f | **97/97** |
+| M5 acceptance (`m5.toml`, 5 seeds, -j 5, `out/soak/m5b-final2`) | a52925f | **5/5**, no stalls: 11: 34.1, 222: 47.1, 3333: 31.6, 44444: 42.3, 555555: 29.4 game-min |
+| Two factions (`m5-two-factions.toml`, 3 seeds, `out/soak/m5b-2f`) | a52925f | **3/3 seeds, 6/6 factions**, no stalls (11: 36.7 / 25.9, 222: 47.5 / 36.2, 3333: 31.0 / 44.1) |
+| T1 (10 files) and the 5 reconciler T2 tests | adda91d | pass |
+
+**adda91d** (the final code commit) changes only the reconciler's warm-up rule (below). At the user's request (in
+session, 2026-10-15) the full suite and the acceptance soak were **not** re-run on it, only T1 and the targeted
+reconciler T2 tests. The manager runs the two-faction soak and CI after hand-off (SPEC §9 v0.14).
+
+The acceptance minutes equal M5a.3's to the decimal: measurement only reads the world, and no remedy fired before
+`automated-red-science`, so the runs are the same deterministic games.
+
+### Reconciler in the soaks
+
+- **Acceptance runs** (stop at automated red science): 295–493 evaluations and 90–138 edge probes per seed. Most nodes
+  were still in their 5-min warm-up when the runs stopped (production was built 1–3 game-min before). Status changes:
+  2–4 to ok, 1 to starved (the labs, hand-fed, before production) and 0–2 to backed-up (seed 11's steam coal outpost
+  while the steam block grew). **No remedies fired.**
+- **Seed 11 to the mall built** (`m5-mall.toml`, 61 game-min, -j 1, on a52925f): 645 evaluations, 238 probes, no
+  remedies, no stalls. Measured belt flows match plan: iron ore 0.3/0.33/s, plates 0.4/0.33, copper 0.2/0.17,
+  red packs to the labs 0.2/0.17, steam coal 0.2/0.31 (that edge's both ports full: the boilers burn less than
+  planned at low load). **Finding, fixed in adda91d:** at the end every node read "unknown: not built". The steam block
+  was being grown (the mall raised the electric demand), and the warm-up rule treated a feeder under construction as
+  unbuilt, so every consumer of a growing steam block went blind. Since the steam block grows on every seed that builds
+  the mall, that is a real gap. A feeder now only needs to have been built once. T1 regression added. Not yet observed in
+  a soak (the user stopped that run).
+- So far the reconciler has **classified correctly and stayed quiet** on healthy factories. Its remedies are proven only
+  by the T2 tests (repair end to end, grow/upkeep paths in T1). M6's longer runs (green science, 30+30/min) are where
+  it should start acting.
+
+### CPU (D13)
+
+A/B on seed 11, `m5-mall.toml`, -j 1 (alone on the laptop), whole run to the mall (61 game-min): measurement and
+reconciler at their defaults **0.512 ms/tick** total AI; with sampling every 10 min and remedies off 0.557 ms/tick.
+The cost is below run-to-run noise (< 0.05 ms/tick). Per faction every 300 ticks: one status read per machine and
+inserter (~100–150 entities at the mall stage), inventory reads only for starved machines, and one probe sample
+(two `get_detailed_contents`) every 24 ticks. The -j 5 acceptance runs read 0.97–1.08 ms/tick vs 0.68–0.79 in M5a.3's
+round. Those numbers move with concurrency and machine state (the same minute measured 3.7 s and 15.8 s per 3,600
+ticks in two rounds), so they are not a cost measure.
+
+### Magic numbers for the user
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `measure-interval-ticks` | `settings.ts`, `strategy/factory.ts` | 300 (5 s) | Fine enough for 1-min windows; ~100 status reads per sample is negligible. | yes |
+| `measure-window-samples` | same | 12 (1 game-min) | Long enough to average crafting cycles (a red pack is 5 s, a gear row's output arrives in bursts), short enough to react within minutes. | yes |
+| `measure-probe-ticks` | `strategy/measure.ts` | 600 (10 s) | ±1 item is ±0.1/s; a 15-edge factory is re-probed every ~2.5 min. | yes |
+| `reconcile-remedies` | `strategy/factory.ts` | on | Off = classify and report only (for A/B or debugging). | yes |
+| `reconcile-warmup-ticks` | `strategy/reconcile.ts` | 18000 (5 min) | Belts fill and furnaces hoard fuel after a build (CLAUDE.md: up to 15–23 min for a thin fuel lane). A shorter warm-up mistook filling belts for undersized producers in the T2 runs. | yes |
+| `reconcile-confirm` | same | 3 evaluations (15 s) | Hysteresis: one odd window doesn't flip a status. | yes |
+| `reconcile-shortfall` | same | 0.25 | Below 75% of plan is a deficit; machines between cycles and compression gaps stay inside it. | yes |
+| `reconcile-cooldown-ticks` | same | 18000 (5 min) | A grow or repair must be built and warmed up before it is judged. | yes |
+| `reconcile-max-remedies` | same | 3 per root cause | Same bound as `conflict-max-repairs`: no endless grow/repair loops. | yes |
+| `RECONCILE_BAD_SHARE` | `strategy/factory.ts` | 0.5 | Half the machine time without power or fuel marks a node even on plan. | no |
+| `RECONCILE_MIN_ACTIVE` | same | 0.1 | Below 10% active the node is idle (labs between technologies); also the least share of a state that can explain a deficit. | no |
+| `RECONCILE_BUSY_SHARE` | same | 0.85 | A producer working 85%+ of the time runs flat out (an undersized producer or steam block). | no |
+| `RECONCILE_EDGE_FULL` | same | 0.9 | A belt measured at 90%+ of its nominal capacity is full (the probe read 15.00/s on a saturated yellow belt). | no |
+| `RECONCILE_PORT_FULL` | same | 0.5 | A port tile full in half the probe samples has items piling up. | no |
+| `RECONCILE_ARRIVED_SHARE` | same | 0.75 | Below 75% of the producer's output arriving, the belt is still filling: don't grow the producer. | no |
+| `FULL_TILE_ITEMS` | `strategy/measure.ts` | 7 of 8 | A full yellow tile holds 8; one gap allowed for compression. | no |
+| `PROBE_SAMPLE_FRACTION` | same | 0.75 of the tile crossing time | Every item is seen at least once (yellow: every 24 ticks). | no |
+| Overlay caps `MAX_NODES`, `MAX_EDGES` | `review/graph-overlay.ts` | 80, 120 | Bound the render objects per redraw. | no |
+| Test cadence | `test/reconciler.test.ts` | interval 60, window 10, probe 300, warm-up 0, confirm 2 | Test parameters, so each case runs in under a game-hour at speed 100. | test only |
+
+`TILE_ITEMS` (8 per tile) and the status classes come from the game (exempt).
+
+### Deviations and assumptions
+
+- Edge measured rates come from **probes** (P22), refreshed every ~2.5 min per edge, not every sample. A stale edge is
+  re-probed before any root cause depends on it.
+- Drill and lab rates are **estimated** from the working share. Research speed bonuses would undercount labs; the edge
+  probe into the labs is the real consumption.
+- The **power node** is judged by boilers (fuel, water) and load only: low output under low demand is not a deficit.
+- Repair re-places missing **belts and poles** only, never machines (D28 boundary; P21).
+- The overlay layer is on by default in the inspector (checkbox "Factory graph").
+
+### Questions for the user (non-blocking)
+
+1. P21: are these remedies the right set? Specifically, should an at-capacity belt (D24) trigger an automatic belt-tier
+   upgrade or a parallel route once researched, or stay design-time only?
+2. P21 / D28: re-placing missing route belts and poles is a small exception to "no rebuilding in v1". OK?
+3. Should the reconciler run before automated science at all? Right now it mostly sees the hand-fed labs as starved
+   (correctly, with "crew-supplied" as cause).
+
+### Wall-clock time (estimates)
+
+(a) Full `npm test` runs: 1 complete (~6 min), 1 stopped by request. (b) Targeted tests: ~8 T2 runs of the reconciler
+file (~1 min each) plus ~10 T1 runs, ~15 min. (c) Soaks: M5 acceptance 5 seeds × 3 complete rounds (~10 min each at
+-j 5), 1 killed, 1 stopped; two factions 3 seeds × 1 (~7 min); CPU A/B 2 × 1 seed at -j 1 (~8 min); about 55 min
+in total. (d) Everything else (reading, design, code, report, waiting on runs that died): ~3 h, an estimate.
+
