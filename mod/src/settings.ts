@@ -481,4 +481,13 @@ data.extend([
     maximum_value: 1,
     order: "d-g",
   },
+  {
+    type: "double-setting",
+    name: Settings.bootstrapDepletionMinutes,
+    setting_type: "runtime-global",
+    default_value: 10,
+    minimum_value: 0,
+    maximum_value: 600,
+    order: "h-z",
+  },
 ])

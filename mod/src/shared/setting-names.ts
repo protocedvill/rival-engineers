@@ -56,4 +56,5 @@ export const Settings = {
   tripMaxJobs: "rival-engineers-trip-max-jobs",
   tripRadius: "rival-engineers-trip-radius",
   tripInventoryFill: "rival-engineers-trip-inventory-fill",
+  bootstrapDepletionMinutes: "rival-engineers-bootstrap-depletion-minutes",
 } as const

@@ -113,6 +113,8 @@ export interface Config {
   tripRadius: number
   /** B3: a trip stops when its products would fill more than this fraction of the free inventory slots. */
   tripInventoryFill: number
+  /** D43 / B4: a bootstrap mining site with less than this many minutes of ore left is replaced on remaining ore. */
+  bootstrapDepletionMinutes: number
 }
 
 export type ConfigKey = keyof Config
@@ -179,6 +181,7 @@ export function getConfig(): Config {
     tripMaxJobs: setting(Settings.tripMaxJobs),
     tripRadius: setting(Settings.tripRadius),
     tripInventoryFill: setting(Settings.tripInventoryFill),
+    bootstrapDepletionMinutes: setting(Settings.bootstrapDepletionMinutes),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

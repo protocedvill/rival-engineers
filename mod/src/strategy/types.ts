@@ -35,14 +35,17 @@ export interface Site {
   parts: SitePart[]
   /** Tiles reserved for it (footprints plus a one-tile margin), as keys. */
   tiles: number[]
-  status: "planned" | "built" | "failed"
+  /** `retired`: replaced after its ore ran low (D43); its entities are picked up. */
+  status: "planned" | "built" | "failed" | "retired"
   createdTick: number
   builtTick?: number
+  /** D43: its ore is running out and a replacement goal is open. */
+  depleting?: boolean
 }
 
 export type Goal =
   /** Build one more site of this kind on this resource. */
-  | { kind: "site"; site: SiteKind; resource?: string; siteId?: number; done?: boolean; doneTick?: number }
+  | { kind: "site"; site: SiteKind; resource?: string; siteId?: number; done?: boolean; doneTick?: number; replaces?: number }
   /** Hold these items (crafted into the depot). */
   | { kind: "items"; items: Record<string, number>; label: string; done?: boolean; doneTick?: number }
 

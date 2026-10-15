@@ -1,4 +1,4 @@
-import { LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
+import { BoundingBox, LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
@@ -49,6 +49,9 @@ const PRIORITY = { fuel: 100, place: 90, transfer: 60, feed: 55, craft: 50, gath
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
 const EXPLORE_MAX = 3
+/** D43: a new mining site must hold this many times the depletion lead time of ore, or it would be replaced at once. */
+const SITE_MIN_LIFE = 2
+const PRIORITY_RETIRE = 60
 
 type CrewJob = Job<JobPayload>
 
@@ -224,6 +227,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     brain.badPatches = {}
   }
   updateSites(ctx)
+  checkDepletion(ctx)
   ctx.depot = pickDepot(ctx)
   countStock(ctx)
   advanceGoals(ctx)
@@ -323,7 +327,8 @@ function layout(catalog: Catalog, kind: SiteKind, c: MapPosition, direction: def
   return [drill, out]
 }
 
-function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): boolean {
+/** Whether a site part fits: free, unclaimed tiles, and for a drill every tile on `resource` and no other ore in reach. */
+function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>, resource: string): boolean {
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (let x = part.x1; x < part.x2; x++) {
     for (let y = part.y1; y < part.y2; y++) {
@@ -335,6 +340,8 @@ function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): bo
       if (keyActive(ctx, `res:${x},${y}`)) return false
     }
   }
+  // B6: a drill mines every resource in its mining area. A foreign ore would end up in the furnace or chest.
+  if (part.onOre && foreignOreIn(ctx, part.entity, part.position, resource)) return false
   return ctx.surface.can_place_entity({
     name: part.entity,
     position: part.position,
@@ -342,6 +349,37 @@ function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): bo
     force: ctx.faction.force,
     build_check_type: defines.build_check_type.manual,
   })
+}
+
+/** A drill's mining area (D43, B6): centred on the drill, `mining_drill_radius` each way. */
+function miningArea(drill: string, position: MapPosition): BoundingBox {
+  const r = prototypes.entity[drill].mining_drill_radius ?? 1
+  return { left_top: { x: position.x - r, y: position.y - r }, right_bottom: { x: position.x + r, y: position.y + r } }
+}
+
+/** Whether a resource other than `resource` lies in the drill's mining area. */
+function foreignOreIn(ctx: Ctx, drill: string, position: MapPosition, resource: string): boolean {
+  for (const e of ctx.surface.find_entities_filtered({ area: miningArea(drill, position), type: "resource" })) if (e.name !== resource) return true
+  return false
+}
+
+/** Ore of `resource` left in the drill's mining area. */
+function oreLeft(surface: LuaSurface, drill: string, position: MapPosition, resource: string): number {
+  let n = 0
+  for (const e of surface.find_entities_filtered({ area: miningArea(drill, position), name: resource })) n += e.amount
+  return n
+}
+
+/** Ore a drill mines per minute from `resource`. */
+function drillRate(drill: string, resource: string): number {
+  const speed = prototypes.entity[drill].mining_speed ?? 0.25
+  const time = prototypes.entity[resource].mineable_properties.mining_time || 1
+  return (speed * 60) / time
+}
+
+/** Minutes of ore a planned or built drill has left. */
+function drillMinutes(surface: LuaSurface, drill: string, position: MapPosition, resource: string): number {
+  return oreLeft(surface, drill, position, resource) / drillRate(drill, resource)
 }
 
 function directionsToward(from: MapPosition, to: MapPosition): defines.direction[] {
@@ -398,7 +436,10 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
         if (!parts) continue
         checks++
         let ok = true
-        for (const p of parts) if (!rectFree(ctx, p, set)) ok = false
+        for (const p of parts) if (!rectFree(ctx, p, set, patch.name)) ok = false
+        // D43: enough ore under every drill that the site is not replaced right away.
+        const minLife = SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes
+        for (const p of parts) if (ok && p.onOre && minLife > 0 && drillMinutes(ctx.surface, p.entity, p.position, patch.name) < minLife) ok = false
         if (ok) return parts
       }
     }
@@ -534,6 +575,36 @@ function failSite(ctx: Ctx, site: Site, why: string): void {
   log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) failed: ${why}`)
 }
 
+/**
+ * D43 / B4: a built mining site whose drill has less than `bootstrap-depletion-minutes` of ore left (or none) gets a
+ * replacement goal at the front of the goal list. The old site keeps running until the new one is built, then it is
+ * retired (picked up). A pair counts its poorer drill: the two feed each other.
+ */
+function checkDepletion(ctx: Ctx): void {
+  const brain = ctx.brain
+  const lead = ctx.config.bootstrapDepletionMinutes
+  for (const site of brain.sites) {
+    if (site.status !== "built" || site.depleting || site.resource === undefined || site.kind === "depot") continue
+    let minutes = math.huge
+    for (const part of site.parts) {
+      const e = part.built
+      if (e && e.valid && e.type === "mining-drill") minutes = math.min(minutes, drillMinutes(ctx.surface, e.name, e.position, site.resource))
+    }
+    if (minutes === math.huge || (minutes >= lead && minutes > 0)) continue
+    site.depleting = true
+    let first = 0
+    while (first < brain.goals.length && brain.goals[first].done) first++
+    brain.goals.splice(first, 0, { kind: "site", site: site.kind, resource: site.resource, replaces: site.id })
+    log(string.format("[rival-engineers] faction %s: site %d (%s %s) has %.1f min of ore left: planning a replacement", ctx.faction.name, site.id, site.kind, site.resource, minutes))
+  }
+}
+
+/** D43: the replacement is built; the old site stops being maintained and its entities are picked up. */
+function retireSite(ctx: Ctx, site: Site): void {
+  site.status = "retired"
+  log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) retired`)
+}
+
 function pickDepot(ctx: Ctx): LuaEntity | undefined {
   let best: LuaEntity | undefined
   let bestFree = -1
@@ -584,6 +655,8 @@ function advanceGoals(ctx: Ctx): void {
       let site = siteById(brain, goal.siteId)
       if (site && site.status === "built") {
         completeGoal(ctx, goal)
+        const old = siteById(brain, goal.replaces)
+        if (old !== undefined && old.status === "built") retireSite(ctx, old)
         active--
         continue
       }
@@ -749,6 +822,16 @@ function fuelCount(ctx: Ctx, entity: LuaEntity, minutes: number): number {
 function maintain(ctx: Ctx): void {
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
+    if (site.status === "retired") {
+      // D43: pick up what is left of a replaced site (re-added after a replan dropped the jobs).
+      for (const part of site.parts) {
+        const e = part.built
+        if (!e || !e.valid) continue
+        const key = `retire:${e.unit_number}`
+        if (!keyActive(ctx, key)) addKeyed(ctx, key, { kind: "clear", pos: e.position, priority: PRIORITY_RETIRE, payload: { kind: "clear", target: e } })
+      }
+      continue
+    }
     if (site.status === "failed") continue
     for (const part of site.parts) {
       const e = part.built
@@ -801,7 +884,7 @@ function maintain(ctx: Ctx): void {
 function furnacesFor(ctx: Ctx, ore: string): LuaEntity[] {
   const out: { e: LuaEntity; n: number }[] = []
   for (const site of ctx.brain.sites) {
-    if (site.kind !== "smelt" || site.status === "failed" || !site.resource) continue
+    if (site.kind !== "smelt" || site.status === "failed" || site.status === "retired" || !site.resource) continue
     if (prototypes.entity[site.resource].mineable_properties.products?.[0]?.name !== ore) continue
     for (const part of site.parts) {
       const e = part.built
@@ -833,7 +916,7 @@ function collectSources(ctx: Ctx, item: string | undefined): Source[] {
   const out: Source[] = mallSources(ctx.faction.name, item)
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
-    if (site.status === "failed") continue
+    if (site.status === "failed" || site.status === "retired") continue
     for (const part of site.parts) {
       const e = part.built
       if (!e || !e.valid) continue
