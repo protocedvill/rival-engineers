@@ -243,6 +243,23 @@ test("hysteresis: a known status changes only after `confirm` evaluations; warm-
   eq(young.status, "unknown", "warming up")
 })
 
+test("a feeder being grown (the steam block gaining boilers) keeps its consumers classified (M5b soak finding)", () => {
+  const g = newGraph()
+  const pw = node(g, "pw", "power", "electricity", 1e6, st({ working: 1 }), 5e5, { builtTick: 0 })
+  const a = node(g, "a", "module", "x", 1, st({ working: 1 }), 1)
+  addEdge(g, { id: "p", role: "p", kind: "power", item: "electricity", from: "pw", to: "a", plannedRate: 1e5, physical: [] })
+  pw.lifecycle = "building"
+  settle(g)
+  eq(a.status, "ok", "the consumer is still classified")
+  eq(pw.status, "unknown", "the growing node itself is not")
+  const b = node(g, "b", "module", "y", 1, st({ working: 1 }), 1)
+  const c = node(g, "c", "module", "z", 1, st({ working: 1 }), 1, { lifecycle: "building" })
+  c.builtTick = undefined
+  belt(g, "cb", "c", "b", "z", 1)
+  settle(g)
+  eq(b.status, "unknown", "a feeder never built yet: wait")
+})
+
 test("remedy limits: at most maxRemedies per root cause, cooldown between them", () => {
   const g = chain(st({ working: 0.97 }), 1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 1, from: 0, to: 0 })

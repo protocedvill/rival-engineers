@@ -97,7 +97,11 @@ function shares(n: LogicalNode): StateShares {
   return n.measured?.states ?? EMPTY
 }
 
-/** Ticks since the node and its direct feeders were all built; undefined while any of them is not built. */
+/**
+ * Ticks since the node and its direct feeders were all built; undefined while the node is not built (or being grown)
+ * or a feeder was never built. A feeder being grown (e.g. the steam block gaining boilers) keeps running: its
+ * consumers stay classified.
+ */
 function builtFor(g: LogicalGraph, n: LogicalNode, tick: number): number | undefined {
   if (n.lifecycle !== "built") return undefined
   let since = n.builtTick ?? n.createdTick
@@ -105,8 +109,8 @@ function builtFor(g: LogicalGraph, n: LogicalNode, tick: number): number | undef
     if (e.from === undefined) continue
     const p = g.nodes[e.from]
     if (p === undefined) continue
-    if (p.lifecycle !== "built") return undefined
-    since = math.max(since, p.builtTick ?? p.createdTick)
+    if (p.builtTick === undefined) return undefined
+    since = math.max(since, p.builtTick)
   }
   return tick - since
 }
