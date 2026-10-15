@@ -206,6 +206,21 @@ describe("character controller", () => {
     })
   })
 
+  test("hand-mines ore under a tree (the tree is mined first, as by a player)", () => {
+    // The refusal above is for built entities only: a tree whose box covers an ore tile (seed 555555's coal) must not
+    // make the tile unminable.
+    const lab = createLab(16)
+    orePatch(lab, 2, 0, 1, 1, 50)
+    const ore = lab.surface.find_entities_filtered({ type: "resource", position: at(lab, 2.5, 0.5) })[0]
+    lab.surface.create_entity({ name: "tree-01", position: at(lab, 2.7, 0.8) })
+    const character = spawnEngineer(lab)
+    const id = enqueue(createController(character), { kind: "mine", target: ore, count: 3 })
+    awaitAction(id, 1200, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      assert(itemCount(character, "iron-ore") >= 3, "ore mined")
+    })
+  })
+
   test("mines a big rock boxed in by another rock and buildings (seed 3333 neighbourhood)", () => {
     // The M5a seed-3333 stall: a big rock off the tile grid, a second rock north of it and burner sites east. Walking
     // to within the short reach of its centre failed ("no path": every end node next to the rock collides with it),

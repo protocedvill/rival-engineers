@@ -141,3 +141,7 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - **Without undergrounds (before `logistics`) a 7-flow production cluster next to fixed modules can be unroutable**:
   belts can't cross, rip-up cycles forever. After a production/mall goal fails all attempts without undergrounds, the
   factory makes their technology a prerequisite (`needUndergrounds`).
+- **Mining acts on whatever is selected at the mining position**: a tree's selection box over an ore tile makes the
+  crew mine the tree, a built belt on ore gets picked up. The controller mines from a corner of the target's box where
+  the target itself is selected, refuses built entities over ore, and mines trees/rocks first. After the selected
+  entity is mined away, a player-less character's `mining_state` stays idle: set `{mining: false}` once, then resume.

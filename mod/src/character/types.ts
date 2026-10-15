@@ -119,6 +119,9 @@ export interface ActionRecord {
   target?: LuaEntity
   item?: string
   baseline?: number
+  /** Mine: a tree or rock over the ore being mined first, and how many such were cleared (count as progress). */
+  obstacle?: LuaEntity
+  cleared?: number
   goalCount?: number
   lastProgressTick?: number
   lastProgressValue?: number
