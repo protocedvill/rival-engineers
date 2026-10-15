@@ -16,7 +16,7 @@ import { findModule, LayoutState, newLayout } from "../planner/layout"
 import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf } from "../planner/logical"
 import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
-import { entryPolicy, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
+import { entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
@@ -78,6 +78,8 @@ export interface FactoryGoal {
   placed: number
   rounds: number
   lastRound?: number
+  /** Clear jobs for trees/rocks found under leftover ghosts, by obstacle position. */
+  clearing?: Record<string, number>
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
@@ -103,6 +105,12 @@ export interface FactoryState {
   progressSteps: number
   progressTick: number
   lastUpkeep: number
+  /**
+   * A production or mall goal failed every attempt without undergrounds (routes blocking each other: without
+   * undergrounds belts can't cross): the technology that unlocks them becomes a prerequisite of those goals, researched
+   * with hand-fed packs like the other unblocking techs.
+   */
+  needUndergrounds?: string
 }
 
 declare global {
@@ -315,7 +323,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
   let built = 0
   for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
-  const key = `${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${f.needUndergrounds ?? ""}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -335,7 +343,15 @@ function designNow(ctx: Ctx): Design | undefined {
     missing: diff.missing.length,
     grow: diff.grow.length,
   }
-  ;(d as Design & { goals?: GoalSpec[] }).goals = goalsFrom(diff, researchedTechs(ctx.force))
+  const researched = researchedTechs(ctx.force)
+  const goals = goalsFrom(diff, researched)
+  const ugTech = f.needUndergrounds
+  if (ugTech !== undefined && !researched[ugTech]) {
+    if (d.techs.indexOf(ugTech) < 0) d.techs = [...d.techs, ugTech]
+    for (const spec of goals) if ((spec.kind === "production" || spec.kind === "mall") && spec.techs.indexOf(ugTech) < 0) spec.techs.push(ugTech)
+    f.design.techs = d.techs
+  }
+  ;(d as Design & { goals?: GoalSpec[] }).goals = goals
   designCache[ctx.faction.name] = { key, design: d }
   return d
 }
@@ -546,7 +562,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     g.rounds++
     g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
     const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
-    replanGhosts(ctx, fake as never, left)
+    replanGhosts(ctx, g, fake as never, left)
     b.placeJobs = fake.placeJobs
     return
   }
@@ -613,6 +629,7 @@ function updateGoals(ctx: Ctx): void {
 }
 
 function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
+  const f = ctx.f
   const entry = g.plan !== undefined ? getPlannerEntry(g.plan) : undefined
   if (entry === undefined) {
     g.status = "failed"
@@ -630,9 +647,23 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     g.reason = why.join("; ")
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
+    // With frame dumps on (soaks), keep the failed layout for tools/render (--graph over the nearest frame).
+    // The plan's input too (for a T1 replay: mod/unit/fixtures).
+    if (ctx.config.frameDumpIntervalTicks > 0) {
+      const name = `rival-engineers/failed-plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}`
+      exportGraph(entry, `${name}.graph.json`)
+      exportPlanInput(entry, `${name}.input.lua`)
+    }
     removePlan(entry.id)
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
       g.status = "failed"
+      // Planned without undergrounds and boxed in: research them before the next try (see needUndergrounds).
+      const ug = tiers()[0]?.underground
+      const tech = ug !== undefined ? prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(ug) ?? ug) : undefined
+      if ((g.kind === "production" || g.kind === "mall") && f.needUndergrounds === undefined && tech !== undefined && !ctx.force.technologies[tech]?.researched && entry.maxUnderground !== undefined) {
+        f.needUndergrounds = tech
+        log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} failed ${g.attempts} plans without undergrounds: ${tech} is now a prerequisite of production`)
+      }
       return
     }
     g.radius = math.floor(g.radius * 1.5)
@@ -752,7 +783,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     g.rounds++
     g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
-    replanGhosts(ctx, b, left)
+    replanGhosts(ctx, g, b, left)
     return
   }
   g.status = "done"
@@ -784,10 +815,27 @@ function failureReasons(ctx: Ctx, ids: number[]): string {
   return out.join("; ")
 }
 
-function replanGhosts(ctx: Ctx, b: NonNullable<ReturnType<typeof getPlannerEntry>>["build"], left: LuaEntity[]): void {
+function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof getPlannerEntry>>["build"], left: LuaEntity[]): void {
   const faction = ctx.faction
   b!.placeJobs = []
   for (const gh of left) {
+    // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
+    // blocks the placement for good: clear it again.
+    if (!gh.valid) continue
+    const box = gh.bounding_box
+    const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
+    for (const e of ctx.surface.find_entities_filtered({ area, type: ["tree", "simple-entity"] })) {
+      const k = `${e.position.x},${e.position.y}`
+      g.clearing ??= {}
+      const old = g.clearing[k]
+      const j = old !== undefined ? getJob(faction.board, old) : undefined
+      if (j !== undefined && j.status !== "done" && j.status !== "failed") continue
+      g.clearing[k] = addClearJob(faction, e, b!.priority)
+      log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: clearing ${e.name} at ${k} under a leftover ${gh.ghost_name} ghost${j !== undefined ? ` (last clear job ${j.status}: ${j.reason ?? "?"})` : ""}`)
+    }
+  }
+  for (const gh of left) {
+    if (!gh.valid) continue
     const key = gh.unit_number!
     const old = faction.ghostJobs[key]
     if (old !== undefined) {
@@ -1040,7 +1088,7 @@ function recover(ctx: Ctx): void {
     if (b === undefined) continue
     const left: LuaEntity[] = []
     for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
-    if (left.length > 0) replanGhosts(ctx, b, left)
+    if (left.length > 0) replanGhosts(ctx, g, b, left)
   }
   faction.brain!.replans++
 }

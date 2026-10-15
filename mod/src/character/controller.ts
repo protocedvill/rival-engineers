@@ -270,8 +270,26 @@ function primaryProduct(entity: LuaEntity): string | undefined {
 function mineTick(character: LuaEntity, target: LuaEntity): boolean {
   character.update_selected_entity(target.position)
   const selected = character.selected
-  // A player mining here would deconstruct the ghost on top of the ore; don't.
-  if (selected && selected.valid && selected !== target && selected.type === "entity-ghost") return false
+  // A player mining here would deconstruct the ghost on top of the ore; don't. A rock or tree partly under a ghost can
+  // still be mined from a point of its box the ghost doesn't cover (resources are one tile: no other point).
+  if (selected && selected.valid && selected !== target && selected.type === "entity-ghost") {
+    if (target.type === "resource") return false
+    const box = target.bounding_box
+    const corners = [
+      { x: box.left_top.x + 0.1, y: box.left_top.y + 0.1 },
+      { x: box.right_bottom.x - 0.1, y: box.left_top.y + 0.1 },
+      { x: box.left_top.x + 0.1, y: box.right_bottom.y - 0.1 },
+      { x: box.right_bottom.x - 0.1, y: box.right_bottom.y - 0.1 },
+    ]
+    for (const p of corners) {
+      character.update_selected_entity(p)
+      if (character.selected === target) {
+        character.mining_state = { mining: true, position: p }
+        return true
+      }
+    }
+    return false
+  }
   character.mining_state = { mining: true, position: target.position }
   return true
 }
