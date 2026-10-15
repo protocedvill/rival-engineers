@@ -21,6 +21,8 @@ PHASES = [
     ("production build", "production-planned", "production-built"),
     ("automation verified", "production-built", "automated-red-science"),
 ]
+PLAN_FAILED = re.compile(r"goal g\d+ plan failed \(attempt \d+\): (.*)")
+GHOSTS_LEFT = re.compile(r"(goal g\d+ \d+ ghosts left) \(round (\d+)\): (.*)")
 DURATION = re.compile(r"\[re-telemetry\] tick=(\d+) ticks=(\d+) ai=Duration: ([0-9.]+)ms")
 
 
@@ -38,7 +40,16 @@ def seed_result(seed_dir, milestone):
     ai = sum(ms for _, ms in intervals) / max(1, sum(n for n, _ in intervals)) if intervals else None
     per = sorted(ms / n for n, ms in intervals)
     p99 = per[min(len(per) - 1, int(0.99 * len(per)))] if per else None
-    out = {"seed": seed_dir.name, "tick": t.get("tick", 0), "ai_ms_per_tick": ai, "ai_ms_p99_interval": p99, "factions": {}}
+    failures = PLAN_FAILED.findall(log)
+    distinct = []
+    for msg in reversed(failures):
+        for part in msg.split("; "):
+            if part not in distinct:
+                distinct.append(part)
+    ghosts = GHOSTS_LEFT.findall(log)
+    diag = {"plan_failures": len(failures), "plan_failure_kinds": distinct[:4],
+            "ghosts_left": f"{ghosts[-1][0]} (round {ghosts[-1][1]}): {ghosts[-1][2][:400]}" if ghosts else None}
+    out = {"seed": seed_dir.name, "diag": diag, "tick": t.get("tick", 0), "ai_ms_per_tick": ai, "ai_ms_p99_interval": p99, "factions": {}}
     for name, f in (t.get("factions") or {}).items():
         brain = f.get("brain") or {}
         ms = brain.get("milestones") or {}
@@ -96,10 +107,23 @@ def main(argv):
         for name, f in r["factions"].items():
             lines.append(f"- {r['seed']}: " + ", ".join(f"{k} {v}" for k, v in f["milestones"].items()))
     lines += ["", "## Not passed / stalls", ""]
+    soak = {}
+    if (run / "scorecard.json").exists():
+        soak = {f"seed-{x['seed']}": x for x in json.loads((run / "scorecard.json").read_text()).get("results", [])}
     for r in results:
         for name, f in r["factions"].items():
             if not f["pass"] or f["stalls"]:
-                lines.append(f"- {r['seed']}: waiting {f['waiting']}; stalls {f['stall_reasons']}")
+                active = [f"{g.get('id')} {g.get('kind')} {g.get('status')}" for g in (f["goals"] or [])
+                          if isinstance(g, dict) and g.get("status") not in ("done", "failed")][-3:]
+                lines.append(f"- **{r['seed']}**: goals {active}; waiting {f['waiting']}; stalls {f['stall_reasons'][:2]}")
+                ff = (soak.get(r["seed"]) or {}).get("failed_fast")
+                if ff:
+                    lines.append(f"  - stopped early: {ff}")
+                d = r["diag"]
+                if d["plan_failures"]:
+                    lines.append(f"  - {d['plan_failures']} failed plan attempts; latest kinds: " + " | ".join(d["plan_failure_kinds"]))
+                if d["ghosts_left"]:
+                    lines.append(f"  - {d['ghosts_left']}")
     (run / "m5-scorecard.md").write_text("\n".join(lines) + "\n")
     (run / "m5-scorecard.json").write_text(json.dumps(results, indent=1))
     print("\n".join(lines))

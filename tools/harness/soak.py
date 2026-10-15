@@ -5,7 +5,9 @@ For every seed of every config it:
   1. creates a fresh map (`--create`, configurable map-gen; biters off by default) with the mod and a generated
      helper mod that applies the run's config overrides through the remote interface at map init;
   2. runs it with `--benchmark` (no rendering, as fast as the CPU allows) for up to `game_hours`, stopping early
-     once every faction has finished the bootstrap (the mod writes script-output/rival-engineers/done.json);
+     once every faction has reached the config's `soakDoneMilestone` (the mod writes
+     script-output/rival-engineers/done.json), or, with `run.fail_fast` rules, as soon as the log shows it is stuck
+     (stalls, plan failures in a row, leftover ghosts that never get placed);
   3. collects the mod's telemetry JSON, profiler lines and entity frames, and writes a JSON + markdown scorecard.
 
 Seeds (and configs) run concurrently, `--jobs` at a time (default: $SOAK_JOBS, else half the cores). Each run has its
@@ -18,6 +20,13 @@ Usage:
   python3 tools/harness/soak.py -c tools/harness/two-factions.toml
   python3 tools/harness/soak.py --seeds 3 --hours 0.5 --gif   # overrides
   python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/two-factions.toml -j 6
+  python3 tools/harness/soak.py -c tools/harness/m5.toml --seeds 3333 --snapshots 5 --name snap   # saves every 5 min
+  python3 tools/harness/soak.py -c tools/harness/m5.toml --seeds 3333 --name repro \
+      --from-save .factorio-test/soak/snap/seed-3333/data/saves/min-0025.zip           # resume one with the current build
+
+Snapshots (`--snapshots MIN`) run the seed as a headless server sped up by script (saves only work in multiplayer;
+`--benchmark` never saves) at about the same speed. A snapshot carries the mod's storage: resuming it with changed code
+works as long as the storage layout is compatible, and it only shows the fix's effect from that point on.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,7 +45,14 @@ FACTORIO = ROOT / ".factorio-test" / "factorio" / "bin" / "x64" / "factorio"
 READ_DATA = ROOT / ".factorio-test" / "factorio" / "data"
 SOAK_DIR = ROOT / ".factorio-test" / "soak"
 TICKS_PER_HOUR = 216000
-DONE_MILESTONE = "first-electricity-materials"
+DEFAULT_DONE_MILESTONE = "first-electricity-materials"  # the mod's soak-done-milestone default (M3)
+# Fail fast (run.fail_fast in a config): stop a seed as soon as its log shows it is stuck, instead of running to the cap.
+FAIL_FAST_KEYS = ("stalls", "consecutive_plan_failures", "ghost_rounds")
+STALL_LINE = re.compile(r"STALL at tick (\d+): (.*)")
+PLAN_FAILED = re.compile(r"goal (g\d+) plan failed")
+PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
+GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
+TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 
 
 def load_config(path, args):
@@ -53,9 +69,19 @@ def load_config(path, args):
     run.setdefault("seeds", [1, 2, 3, 4, 5])
     run.setdefault("game_hours", 2.0)
     run.setdefault("stop_when_done", True)
+    run.setdefault("fail_fast", {})
+    if args.no_fail_fast:
+        run["fail_fast"] = {}
+    if args.snapshots is not None:
+        run["snapshot_minutes"] = args.snapshots
+    run.setdefault("snapshot_minutes", 0)
     cfg.setdefault("mod", {})
     cfg.setdefault("mapgen", {})
     return cfg
+
+
+def done_milestone(cfg):
+    return cfg["mod"].get("soakDoneMilestone", DEFAULT_DONE_MILESTONE)
 
 
 def setup_dir(cfg, seed):
@@ -82,6 +108,15 @@ def setup_dir(cfg, seed):
         lua = json.dumps(value) if not isinstance(value, bool) else ("true" if value else "false")
         lines.append(f'  remote.call("rival-engineers", "set_config_override", "{key}", {lua})')
     lines.append("end)")
+    snap = int(cfg["run"].get("snapshot_minutes") or 0)
+    if snap > 0:
+        # Snapshot mode runs a headless server (saves only work in multiplayer) as fast as the CPU allows.
+        lines += ["script.on_event(defines.events.on_tick, function()",
+                  "  if game.speed < 1000 then game.speed = 1000 end",
+                  "end)",
+                  f"script.on_nth_tick({snap * 3600}, function(e)",
+                  '  game.server_save(string.format("min-%04d", math.floor(e.tick / 3600)))',
+                  "end)"]
     (helper / "control.lua").write_text("\n".join(lines) + "\n")
     mod_list = {"mods": [{"name": n, "enabled": e} for n, e in [
         ("base", True), ("elevated-rails", False), ("quality", False), ("space-age", False),
@@ -102,32 +137,95 @@ def map_gen_settings(cfg):
     return settings
 
 
-def run_seed(cfg, seed, out_dir):
+class FailFast:
+    """Watches a run's log as it grows and says why the run should stop early (None while it looks healthy)."""
+
+    def __init__(self, rules, log_file):
+        self.rules = {k: int(v) for k, v in rules.items() if k in FAIL_FAST_KEYS and v}
+        self.log_file = log_file
+        self.pos = 0
+        self.partial = ""
+        self.stalls = 0
+        self.plan_failures = 0
+        self.tick = 0
+
+    def poll(self):
+        if not self.log_file.exists():
+            return None
+        with open(self.log_file, errors="replace") as f:
+            f.seek(self.pos)
+            chunk = f.read()
+            self.pos = f.tell()
+        text = self.partial + chunk
+        lines = text.split("\n")
+        self.partial = lines.pop()
+        reason = None
+        for line in lines:
+            m = TICK_LINE.search(line)
+            if m:
+                self.tick = int(m.group(1))
+            if STALL_LINE.search(line):
+                self.stalls += 1
+                if self.rules.get("stalls") and self.stalls >= self.rules["stalls"]:
+                    reason = reason or f"{self.stalls} stalls: {STALL_LINE.search(line).group(2)}"
+            if PLAN_OK.search(line):
+                self.plan_failures = 0
+            elif PLAN_FAILED.search(line):
+                self.plan_failures += 1
+                n = self.rules.get("consecutive_plan_failures")
+                if n and self.plan_failures >= n:
+                    reason = reason or f"{self.plan_failures} plan failures in a row: {line.split('] ', 1)[-1][:300]}"
+            m = GHOST_ROUND.search(line)
+            if m and self.rules.get("ghost_rounds") and int(m.group(2)) >= self.rules["ghost_rounds"]:
+                reason = reason or f"leftover ghosts for {m.group(2)} rounds: {line.split('] ', 1)[-1][:300]}"
+        return reason
+
+
+def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     run = cfg["run"]
     run_dir = setup_dir(cfg, seed)
     data = run_dir / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
     script_out = data / "script-output" / "rival-engineers"
     shutil.rmtree(script_out, ignore_errors=True)
+    shutil.rmtree(data / "saves", ignore_errors=True)
+    (data / "saves").mkdir()
     save = run_dir / "map.zip"
-    mgs = run_dir / "map-gen-settings.json"
-    mgs.write_text(json.dumps(map_gen_settings(cfg)))
     conf = str(run_dir / "config.ini")
-    subprocess.run([str(FACTORIO), "-c", conf, "--create", str(save), "--map-gen-settings", str(mgs),
-                    "--map-gen-seed", str(seed)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    if from_save:
+        shutil.copy(from_save, save)
+    else:
+        mgs = run_dir / "map-gen-settings.json"
+        mgs.write_text(json.dumps(map_gen_settings(cfg)))
+        subprocess.run([str(FACTORIO), "-c", conf, "--create", str(save), "--map-gen-settings", str(mgs),
+                        "--map-gen-seed", str(seed)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     ticks = int(run["game_hours"] * TICKS_PER_HOUR)
+    snapshots = int(run.get("snapshot_minutes") or 0) > 0
+    if snapshots:
+        ss = json.loads((READ_DATA / "server-settings.example.json").read_text())
+        ss.update(visibility={"public": False, "lan": False}, require_user_verification=False, auto_pause=False,
+                  autosave_interval=100000, autosave_slots=1)
+        (run_dir / "server-settings.json").write_text(json.dumps(ss))
+        cmd = [str(FACTORIO), "-c", conf, "--start-server", str(save), "--server-settings",
+               str(run_dir / "server-settings.json"), "--port", str(port or 34200), "--bind", "127.0.0.1"]
+    else:
+        cmd = [str(FACTORIO), "-c", conf, "--benchmark", str(save), "--benchmark-ticks", str(ticks)]
     log_path = out_dir / "factorio-stdout.log"
+    watch = FailFast(run.get("fail_fast") or {}, data / "factorio-current.log")
     started = time.time()
     stopped_early = False
+    failed_fast = None
     with open(log_path, "w") as log:
-        proc = subprocess.Popen([str(FACTORIO), "-c", conf, "--benchmark", str(save), "--benchmark-ticks", str(ticks)],
-                                stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         while proc.poll() is None:
             time.sleep(1)
-            if run["stop_when_done"] and (script_out / "done.json").exists():
-                time.sleep(0.5)
+            failed_fast = watch.poll()
+            done = run["stop_when_done"] and (script_out / "done.json").exists()
+            capped = snapshots and watch.tick >= ticks
+            if done or failed_fast or capped:
+                time.sleep(0.5 if done else 0)
                 proc.kill()  # --benchmark ignores SIGTERM
-                stopped_early = True
+                stopped_early = bool(done or failed_fast)
                 try:
                     proc.wait(timeout=20)
                 except subprocess.TimeoutExpired:
@@ -138,18 +236,25 @@ def run_seed(cfg, seed, out_dir):
     if (script_out / "frames").exists():
         shutil.rmtree(out_dir / "frames", ignore_errors=True)
         shutil.copytree(script_out / "frames", out_dir / "frames")
+    for sub in ("graphs", "failed-plans"):
+        if (script_out / sub).exists():
+            shutil.rmtree(out_dir / sub, ignore_errors=True)
+            shutil.copytree(script_out / sub, out_dir / sub)
     telemetry = {}
     if (script_out / "telemetry.json").exists():
         telemetry = json.loads((script_out / "telemetry.json").read_text())
         (out_dir / "telemetry.json").write_text(json.dumps(telemetry, indent=1))
-    return summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early)
+    r = summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early, done_milestone(cfg))
+    r["failed_fast"] = failed_fast
+    r["saves"] = sorted(str(p) for p in (data / "saves").glob("min-*.zip")) if snapshots else []
+    return r
 
 
 DURATION = re.compile(r"\[re-telemetry\] tick=(\d+) ticks=(\d+) ai=Duration: ([0-9.]+)ms")
 BENCH = re.compile(r"Performed (\d+) updates in ([0-9.]+) ms")
 
 
-def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early):
+def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_ms=DEFAULT_DONE_MILESTONE):
     text = log_file.read_text(errors="replace")
     intervals = [(int(t), int(n), float(ms)) for t, n, ms in DURATION.findall(text) if int(n) > 0]
     per_tick = [ms / n for _, n, ms in intervals]
@@ -174,7 +279,7 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early):
             idle += st.get("ticks", 0) - st.get("busyTicks", 0)
             for k, v in (st.get("byKind") or {}).items():
                 by_kind[k] = by_kind.get(k, 0) + v
-        done_tick = milestones.get(DONE_MILESTONE)
+        done_tick = milestones.get(done_ms)
         permanent = [s for s in stalls if s.get("recoveredTick") is None and done_tick is None]
         factions[name] = {
             "done": done_tick is not None,
@@ -195,6 +300,7 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early):
     return {
         "seed": seed,
         "pass": ok,
+        "done_milestone": done_ms,
         "game_minutes": round(final_tick / 3600, 1),
         "stopped_early": stopped_early,
         "wall_seconds": round(wall, 1),
@@ -212,7 +318,7 @@ def markdown(cfg, results):
     run = cfg["run"]
     passed = sum(1 for r in results if r["pass"])
     lines = [f"# Soak scorecard: {run['name']}", "",
-             f"Seeds passed: **{passed}/{len(results)}** (every faction gathered the first-electricity materials, "
+             f"Seeds passed: **{passed}/{len(results)}** (every faction reached `{done_milestone(cfg)}`, "
              "no permanent stall). Game time in minutes.", "",
              "| Seed | Pass | Faction | Done at (min) | Stalls (recovered) | Replans | AI ms/tick avg / p99 | Wall ms/tick | Current goal at end |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -242,6 +348,9 @@ def markdown(cfg, results):
     for seed, name, s in stalls:
         rec = f"recovered at {s['recoveredTick'] / 3600:.1f} min" if s.get("recoveredTick") is not None else "NOT recovered"
         lines.append(f"- seed {seed} faction {name} at {s['tick'] / 3600:.1f} min ({rec}): {s['reason']}")
+    ff = [(r["seed"], r.get("failed_fast")) for r in results if r.get("failed_fast")]
+    if ff:
+        lines += ["", "## Stopped early (fail fast)", ""] + [f"- seed {s}: {why}" for s, why in ff]
     errs = [(r["seed"], e) for r in results for e in r["errors"]]
     if errs:
         lines += ["", "## Errors", ""] + [f"- seed {s}: `{e}`" for s, e in errs]
@@ -284,6 +393,11 @@ def main():
     parser.add_argument("-j", "--jobs", type=int, help="concurrent Factorio runs (default: $SOAK_JOBS, else half the cores)")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--gif", action="store_true", help="render a timelapse GIF per seed and faction")
+    parser.add_argument("--no-fail-fast", action="store_true", help="ignore the config's run.fail_fast rules")
+    parser.add_argument("--snapshots", type=int, metavar="MIN",
+                        help="save the game every MIN game-minutes (runs a headless server instead of --benchmark)")
+    parser.add_argument("--from-save", metavar="ZIP",
+                        help="continue from a snapshot save (one seed: the seed only names the output) with the current build")
     args = parser.parse_args()
     paths = args.config or [str(ROOT / "tools" / "harness" / "soak.toml")]
     if args.name and len(paths) > 1:
@@ -292,6 +406,8 @@ def main():
     names = [c["run"]["name"] for c in cfgs]
     if len(set(names)) != len(names):
         sys.exit(f"configs share a run name: {names}")
+    if args.from_save and len(cfgs) * len(cfgs[0]["run"]["seeds"]) != 1:
+        sys.exit("--from-save needs a single config and a single seed (--seeds N)")
     if not FACTORIO.exists():
         sys.exit(f"headless Factorio not found at {FACTORIO} (see README → Development)")
     if not args.no_build:
@@ -307,9 +423,12 @@ def main():
     started = time.time()
     print(f"{len(tasks)} run(s), {jobs} at a time", flush=True)
 
+    ports = {(c["run"]["name"], s): 34200 + i for i, (c, s) in enumerate(tasks)}
+
     def task(cfg, seed):
         print(f"{cfg['run']['name']} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
-        return run_seed(cfg, seed, out_dirs[cfg["run"]["name"]] / f"seed-{seed}")
+        return run_seed(cfg, seed, out_dirs[cfg["run"]["name"]] / f"seed-{seed}", ports[(cfg["run"]["name"], seed)],
+                        args.from_save and str(Path(args.from_save).resolve()))
 
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {pool.submit(task, cfg, seed): (cfg, seed) for cfg, seed in tasks}
@@ -326,6 +445,10 @@ def main():
             for fname, f in r["factions"].items():
                 lines.append(f"  faction {fname}: {'done at ' + str(f['done_minutes']) + ' min' if f['done'] else 'NOT done'}, "
                              f"stalls {len(f['stalls'])}, goal {f['current_goal']}, sites {f['sites']}")
+            if r.get("failed_fast"):
+                lines.append(f"  STOPPED (fail fast): {r['failed_fast']}")
+            if r.get("saves"):
+                lines.append(f"  snapshots: {r['saves'][0]} ... ({len(r['saves'])})")
             lines += [f"  error: {e}" for e in r["errors"]]
             print("\n".join(lines), flush=True)
             # The scorecard so far, in config seed order.
@@ -338,7 +461,7 @@ def main():
         if args.gif:
             render_gifs(out_dirs[name], ordered)
         passed = sum(1 for r in ordered if r["pass"])
-        print(f"{name}: {passed}/{len(ordered)} seeds passed. Scorecard: {out_dirs[name] / 'scorecard.md'}")
+        print(f"{name}: {passed}/{len(ordered)} seeds reached {done_milestone(cfg)}. Scorecard: {out_dirs[name] / 'scorecard.md'}")
     print(f"soak wall time {time.time() - started:.1f} s ({len(tasks)} run(s), {jobs} at a time)")
 
 

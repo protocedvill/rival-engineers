@@ -9,6 +9,11 @@ seeds = [11, 222, 3333, 44444, 555555]
 game_hours = 3.0          # cap per seed; the run stops early once the faction has automated red science
 stop_when_done = true
 
+[run.fail_fast]           # stop a stuck seed early (soak.py --no-fail-fast to run it to the cap)
+stalls = 2                        # second STALL line (§3 stall check: no progress for stall-ticks)
+consecutive_plan_failures = 8     # two goals' worth of failed plan attempts in a row
+ghost_rounds = 20                 # the same build's leftover ghosts unplaceable for 20 rounds (10 game-min)
+
 [mapgen]
 enemy_bases = false
 

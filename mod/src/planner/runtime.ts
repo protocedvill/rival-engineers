@@ -339,3 +339,46 @@ export function exportGraph(entry: PlannerEntry, file: string): boolean {
   helpers.write_file(file, helpers.table_to_json(g as never))
   return true
 }
+
+/**
+ * Writes what a plan job starts from (request, base layout, belt tiers, policy, and the terrain the plan sees over the
+ * request's region as character rows) to script-output/<file> as a Lua chunk, so a failed in-game plan can be replayed
+ * as a T1 test (mod/unit/fixtures, see plan-replay.test.ts). Regions wider than `maxSide` tiles are skipped.
+ */
+export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400): boolean {
+  const t = storage.terrains?.[entry.terrain]
+  const r = entry.request.region
+  if (t === undefined || r.w > maxSide || r.h > maxSide) return false
+  const view = factionView(entry, terrainView(t))
+  const blockChars = [".", "T", "R", "#", "X", "~", "C", "?"]
+  const oreChars: Record<string, string> = { "iron-ore": "i", "copper-ore": "c", coal: "k", stone: "s" }
+  const blocks: string[] = []
+  const ores: string[] = []
+  for (let y = r.y; y < r.y + r.h; y++) {
+    const b: string[] = []
+    const o: string[] = []
+    for (let x = r.x; x < r.x + r.w; x++) {
+      b.push(blockChars[view.block(x, y)] ?? "?")
+      const ore = view.ore(x, y)
+      o.push(ore === undefined ? "." : (oreChars[ore] ?? "o"))
+    }
+    blocks.push(b.join(""))
+    ores.push(o.join(""))
+  }
+  let all = tiers()
+  if (entry.maxUnderground !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, entry.maxUnderground!) }))
+  const data = {
+    id: entry.id,
+    tick: game.tick,
+    request: entry.request,
+    belt: entry.belt,
+    tiers: all,
+    base: entry.baseFaction !== undefined ? storage.factories?.[entry.baseFaction]?.layout : undefined,
+    policy: entryPolicy(entry),
+    origin: { x: r.x, y: r.y },
+    blocks,
+    ores,
+  }
+  helpers.write_file(file, serpent.dump(data))
+  return true
+}
