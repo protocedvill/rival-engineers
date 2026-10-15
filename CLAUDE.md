@@ -131,3 +131,13 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - Soak graph dumps go to `script-output/rival-engineers/graphs/<faction>/`, not `frames/`: soak.py renders every
   `frames/*/*.json` as an entity dump.
 
+- **Saves never happen under `--benchmark`** (`game.auto_save`/`server_save` are silently ignored). Snapshot runs use
+  `--start-server` with a script setting `game.speed = 1000` (about benchmark speed) and `game.server_save(name)`; the
+  write-data `saves/` dir must exist or `server_save` throws a filesystem error. `--benchmark <save>` resumes a save with
+  the current mod build (storage carries over; same mod version, so no `on_configuration_changed`).
+- **A big rock off the tile grid overlaps three tile rows** (box 1.9 tall at y = n.5): the terrain scan and
+  `obstaclesUnder` see it, but a walk to within `resource_reach_distance - 1.2` of its *centre* found no path (every
+  end node next to it collides). Walks to trees/rocks aim at their box plus that margin (`walk.ts`).
+- **Without undergrounds (before `logistics`) a 7-flow production cluster next to fixed modules can be unroutable**:
+  belts can't cross, rip-up cycles forever. After a production/mall goal fails all attempts without undergrounds, the
+  factory makes their technology a prerequisite (`needUndergrounds`).

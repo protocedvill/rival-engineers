@@ -65,6 +65,23 @@ Seeds and configs run concurrently, `-j` at a time (default `$SOAK_JOBS`, else h
 write-data directory `.factorio-test/soak/<name>/seed-N/`. Concurrent runs slow each other: compare wall and AI
 ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `scorecard.json`).
 
+**Debugging a failing soak seed (don't re-run 20-minute soaks per fix):**
+
+1. **Fail fast:** a config's `[run.fail_fast]` (on in `m5.toml`) stops a seed at its 2nd STALL, 8 failed plans in a
+   row, or 20 rounds of unplaceable leftover ghosts; the reason is in the scorecard. `m5_scorecard.py` prints each
+   failing seed's open goals, stall reasons, latest plan-failure kinds and leftover ghosts.
+2. **Snapshot, then resume:** `soak.py ... --seeds N --snapshots 5 --name snap` saves every 5 game-minutes
+   (a sped-up headless server: `--benchmark` can't save) to `.factorio-test/soak/snap/seed-N/data/saves/min-MMMM.zip`.
+   `soak.py ... --seeds N --name repro --from-save <that zip>` rebuilds and continues it with the current code: a
+   fix to a late failure is checked in 15–60 s instead of a full run (works while the storage layout stays compatible).
+3. **Failed plans as T1 tests:** with frame dumps on, every failed plan writes `failed-plans/<faction>/<goal>-aN-tT`
+   `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
+   Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the
+   plan in plain Lua in ~10 s (`npm run test:unit -- plan-replay`; `REPLAY_ROUTER="maxRipups=6"` and
+   `REPLAY_UNDERGROUND=4` try router variants).
+4. Engine-side bugs (walks, mining, placement) get a T2 test with the same neighbourhood (`npm test -- "name"`, ~20 s).
+5. Full acceptance last, more seeds than the bar (`--seeds 11,222,...,7,77,777`) so one round shows several bugs.
+
 In-game test logs (`[m1] ...` measurements) are printed only for failing tests. Read them from the shard's
 `.factorio-test/shards/N/factorio-current.log` (the summary names the shard of each failure; `out/test-results.json`
 lists every test's shard), or run the test alone (`npm test -- "name"`, one shard: `.factorio-test/shards/0/`).
