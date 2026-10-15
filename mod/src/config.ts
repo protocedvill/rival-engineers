@@ -115,6 +115,24 @@ export interface Config {
   tripInventoryFill: number
   /** D43 / B4: a bootstrap mining site with less than this many minutes of ore left is replaced on remaining ore. */
   bootstrapDepletionMinutes: number
+  /** D35: "compact-core" or "near-ore" smelting for the layout policy; "" = the policy's own choice. */
+  layoutSmelting: string
+  /** M5b measurement: node samples every this many ticks; the sliding window holds this many samples. */
+  measureIntervalTicks: number
+  measureWindowSamples: number
+  /** M5b measurement: ticks one edge flow probe runs. */
+  measureProbeTicks: number
+  /** M5b reconciler: act on root causes (off: classify and report only). */
+  reconcileRemedies: boolean
+  /** M5b reconciler: a node is classified only this long after it and its feeders were built. */
+  reconcileWarmupTicks: number
+  /** M5b reconciler: evaluations a new status must hold before a node's status changes. */
+  reconcileConfirm: number
+  /** M5b reconciler: output below planned x (1 - this) is a deficit. */
+  reconcileShortfall: number
+  /** M5b reconciler: ticks between two remedies for the same root cause, and remedies per root cause. */
+  reconcileCooldownTicks: number
+  reconcileMaxRemedies: number
 }
 
 export type ConfigKey = keyof Config
@@ -182,6 +200,16 @@ export function getConfig(): Config {
     tripRadius: setting(Settings.tripRadius),
     tripInventoryFill: setting(Settings.tripInventoryFill),
     bootstrapDepletionMinutes: setting(Settings.bootstrapDepletionMinutes),
+    layoutSmelting: setting(Settings.layoutSmelting),
+    measureIntervalTicks: setting(Settings.measureIntervalTicks),
+    measureWindowSamples: setting(Settings.measureWindowSamples),
+    measureProbeTicks: setting(Settings.measureProbeTicks),
+    reconcileRemedies: setting(Settings.reconcileRemedies),
+    reconcileWarmupTicks: setting(Settings.reconcileWarmupTicks),
+    reconcileConfirm: setting(Settings.reconcileConfirm),
+    reconcileShortfall: setting(Settings.reconcileShortfall),
+    reconcileCooldownTicks: setting(Settings.reconcileCooldownTicks),
+    reconcileMaxRemedies: setting(Settings.reconcileMaxRemedies),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

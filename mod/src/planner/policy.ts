@@ -68,6 +68,12 @@ export interface LayoutPolicy {
   obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number }
   /** D22: how one producer feeds several consumers. */
   topology: "point-to-point" | "splitter-tap"
+  /**
+   * D35: where smelters go. compact-core: with the rest of the factory (their ore outposts are placed after them, on
+   * the ore nearest them; ore is belted in). near-ore: the ore outpost first (on the ore nearest the cluster centre),
+   * the smelter next to it (plates are belted in). A/B-tested in M6.
+   */
+  smelting: "compact-core" | "near-ore"
   /** Never put a non-mining module on ore (routes over ore pay `router.oreTile`). */
   protectOre: boolean
   /** Mining modules: each drill's mining area must be at least this fraction ore of the module's resource. */
@@ -152,6 +158,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
   expansion: "expand-first",
   obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400 },
   topology: "point-to-point",
+  smelting: "compact-core",
   protectOre: true,
   minOreCoverage: 0.6,
   searchRadii: [24, 48, 96],
@@ -181,6 +188,7 @@ export interface PolicyOverrides {
   corridorPreferred?: number
   topology?: string
   utilization?: number
+  smelting?: string
 }
 
 /**
@@ -209,5 +217,6 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (p.corridor.preferred < p.corridor.min) p.corridor.preferred = p.corridor.min
   if (overrides.topology === "point-to-point" || overrides.topology === "splitter-tap") p.topology = overrides.topology
   if (overrides.utilization !== undefined && overrides.utilization > 0) p.utilization = overrides.utilization
+  if (overrides.smelting === "compact-core" || overrides.smelting === "near-ore") p.smelting = overrides.smelting
   return p
 }

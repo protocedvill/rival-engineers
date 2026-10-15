@@ -18,12 +18,46 @@ export type NodeLifecycle = "planned" | "building" | "built"
  */
 export type NodeStatus = "unknown" | "ok" | "starved" | "backed-up" | "unpowered" | "unfuelled"
 
+/** Shares of machine-samples in each state over a measurement window (0..1, summing to 1). */
+export interface StateShares {
+  working: number
+  /** Missing ingredients (or ore under a drill, water for a boiler). */
+  starved: number
+  /** Output full (a belt or machine downstream doesn't take it). */
+  blocked: number
+  /** No or low power. */
+  unpowered: number
+  /** A burner without fuel. */
+  unfuelled: number
+  /** Nothing to do that measurement can blame (no research in progress, no recipe, disabled, ...). */
+  idle: number
+}
+
 export interface Measured {
   tick: number
   /** Sampling window (ticks) the rates are averaged over. */
   window: number
   inputs: Rate[]
   outputs: Rate[]
+  /** Machines sampled (crafting machines, drills, labs, boilers and engines of the module; never chests, D42). */
+  machines?: number
+  states?: StateShares
+  /** Share of machine-samples starved of each item ("depleted": a drill with no ore left). */
+  missing?: Record<string, number>
+  /** Rates estimated from the working share and full-speed rates (drills, labs) rather than counted. */
+  estimated?: boolean
+  /** Power nodes: generated power / the node's full output (0..1). */
+  load?: number
+}
+
+/** The reconciler's root cause for a node that is not ok (D26). */
+export interface RootCause {
+  /** node: a graph node (the node itself or an upstream one); edge: a belt or power flow; external: outside the graph. */
+  kind: "node" | "edge" | "external" | "building" | "measuring" | "demand"
+  id?: string
+  /** What is wrong there ("unpowered", "undersized", "broken", "at-capacity", ...). */
+  what: string
+  why: string
 }
 
 export interface LogicalNode {
@@ -49,6 +83,9 @@ export interface LogicalNode {
   statusReason?: string
   /** M5b: measured rates. */
   measured?: Measured
+  /** M5b: when the status last changed, and the root cause of a status that is not ok. */
+  statusTick?: number
+  cause?: RootCause
   /** The build goal that created or last grew it. */
   goal?: string
   createdTick: number
@@ -75,6 +112,13 @@ export interface LogicalEdge {
   /** M5b: measured items/s (W) and when. */
   measuredRate?: number
   measuredTick?: number
+  /**
+   * M5b: share of probe samples where the belt tile at the producer's port (`from`) and at the consumer's port (`to`)
+   * was full: items piling up there.
+   */
+  measuredFull?: { from: number; to: number }
+  /** M5b: the usable capacity (items/s) of the edge's belt, for comparing the measured rate. */
+  capacityRate?: number
   /** Physical layer: route ids (belt edges) or pole line ids (power edges). */
   physical: string[]
   /** Belt tier the edge is built with (D24 upgrade-tier picks a faster one). */

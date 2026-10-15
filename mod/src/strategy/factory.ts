@@ -13,8 +13,8 @@ import { markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
-import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, removeEdge, removeNode } from "../planner/logical"
-import { abandonParts, applyDiff, checkBuild } from "../planner/conflicts"
+import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, rateIn, removeEdge, removeNode } from "../planner/logical"
+import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
@@ -23,6 +23,9 @@ import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
+import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
+import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
+import { checkBuild } from "../planner/conflicts"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -117,6 +120,9 @@ export interface FactoryState {
    * with hand-fed packs like the other unblocking techs.
    */
   needUndergrounds?: string
+  /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
+  meter?: MeterState
+  reconciler?: ReconcileState
 }
 
 declare global {
@@ -245,6 +251,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
+  measureAndReconcile(ctx)
   const d = designNow(ctx)
   advanceGoals(ctx, d)
   research(ctx, d)
@@ -576,8 +583,17 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   b.phase = "done"
   g.status = "done"
   g.builtTick = ctx.tick
-  const node = ctx.f.graph.nodes[g.growth!.node]
-  if (node !== undefined) node.lifecycle = "built"
+  if (g.growth === undefined) {
+    // A reconciler repair: its pieces are back.
+    mark(ctx.faction, `${g.kind}-built`)
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) done at tick ${ctx.tick} (${g.placed} placements)`)
+    return
+  }
+  const node = ctx.f.graph.nodes[g.growth.node]
+  if (node !== undefined) {
+    node.lifecycle = "built"
+    node.builtTick = ctx.tick
+  }
   mark(ctx.faction, "grow-built")
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role} at tick ${ctx.tick}`)
 }
@@ -1044,6 +1060,137 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Measurement and reconciler (M5b, SPEC §5.8 D26): measure.ts samples, reconcile.ts classifies and finds root causes,
+// here remedies become goals: grow an undersized producer (expand-first, like a design growth), repair a broken route
+// or pole line (its missing pieces re-placed), refuel a crew-fuelled burner (upkeep now).
+
+/** Fixed reconciler thresholds (docs/reports/M5-report.md "Magic numbers"); the rest are settings. */
+const RECONCILE_BAD_SHARE = 0.5
+const RECONCILE_MIN_ACTIVE = 0.1
+const RECONCILE_BUSY_SHARE = 0.85
+const RECONCILE_EDGE_FULL = 0.9
+const RECONCILE_PORT_FULL = 0.5
+
+export function reconcileParams(config: Config): ReconcileParams {
+  return {
+    warmupTicks: config.reconcileWarmupTicks,
+    confirm: config.reconcileConfirm,
+    shortfall: config.reconcileShortfall,
+    badShare: RECONCILE_BAD_SHARE,
+    minActive: RECONCILE_MIN_ACTIVE,
+    busyShare: RECONCILE_BUSY_SHARE,
+    edgeFull: RECONCILE_EDGE_FULL,
+    portFull: RECONCILE_PORT_FULL,
+    // An edge measurement is fresh for one node window.
+    probeMaxAge: config.measureIntervalTicks * config.measureWindowSamples,
+    maxRemedies: config.reconcileMaxRemedies,
+    cooldownTicks: config.reconcileCooldownTicks,
+  }
+}
+
+function isFuel(this: void, item: string): boolean {
+  return prototypeFacts.fuelValue(item) > 0
+}
+
+function measureAndReconcile(ctx: Ctx): void {
+  const f = ctx.f
+  f.meter ??= newMeter()
+  const meter = f.meter
+  if (ctx.tick - meter.lastSample >= ctx.config.measureIntervalTicks) {
+    meter.lastSample = ctx.tick
+    sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
+    f.reconciler ??= newReconcileState()
+    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel })
+    requestProbes(meter, r.probe)
+    if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)
+  }
+  if (meter.probe === undefined) startProbe(meter, f.graph, f.layout, ctx.surface, ctx.tick, ctx.config.measureProbeTicks)
+}
+
+/** Every tick: the running edge probes sample when due (cheap when none is due). */
+export function onFactoryMeterTick(): void {
+  const all = storage.factories
+  if (all === undefined) return
+  const tick = game.tick
+  for (const name of storage.factionOrder) {
+    const f = all[name]
+    if (f?.meter?.probe !== undefined) probeTick(f.meter, f.graph, tick)
+  }
+}
+
+/** For tests: one measurement + reconcile pass (and the goal updates remedies need) outside the brain's cadence. */
+export function reconcileNow(faction: FactionState, f: FactoryState, config: Config = getConfig()): void {
+  const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities), waiting: [] }
+  updateGoals(ctx)
+  f.meter ??= newMeter()
+  f.meter.lastSample = -math.huge
+  measureAndReconcile(ctx)
+  if (ctx.waiting.length > 0) f.waiting = ctx.waiting
+}
+
+function applyRemedy(ctx: Ctx, r: Remedy): void {
+  const f = ctx.f
+  const st = f.reconciler!
+  const say = (result: string): void => {
+    recordRemedy(st, r, ctx.tick, result)
+    log(`[rival-engineers] faction ${ctx.faction.name}: reconciler ${r.kind} ${r.node ?? r.edge}: ${r.why} -> ${result}`)
+  }
+  if (r.kind === "upkeep") {
+    f.lastUpkeep = -math.huge
+    upkeep(ctx)
+    f.lastUpkeep = ctx.tick
+    say("upkeep pass")
+    return
+  }
+  if (r.kind === "grow") {
+    // A plan in flight works on a copy of the layout and replaces it when adopted: grow after it.
+    if (planning(f) !== undefined || activeGoal(f, "grow") !== undefined) return
+    const n = f.graph.nodes[r.node!]
+    const m = n !== undefined ? findModule(f.layout, n.id) : undefined
+    if (n === undefined || m === undefined || m.canonical.expand === undefined) {
+      say("cannot grow: no expandable module")
+      return
+    }
+    const have = rateIn(n.capacity.outputs, n.item ?? "")
+    const before = f.goals.length
+    const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: have, have } })
+    say(ok && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by 1 unit` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    return
+  }
+  // Repair: re-place the missing pieces of the edge's route (belt) or pole lines (power).
+  const e = f.graph.edges[r.edge!]
+  if (e === undefined) return
+  const parts: BuildParts = { modules: [], routes: [], poles: [] }
+  if (e.kind === "power") {
+    for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
+  } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(rid)
+  const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
+  if (check.missing.length === 0) {
+    say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
+    return
+  }
+  const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+  const g: FactoryGoal = {
+    id: `g${f.nextGoal++}`,
+    kind: "repair",
+    status: "building",
+    nodes: [],
+    edges: [],
+    techs: [],
+    attempts: 1,
+    radius: 0,
+    createdTick: ctx.tick,
+    plannedTick: ctx.tick,
+    placed: 0,
+    rounds: 0,
+    reason: r.why,
+    growBuild: { phase: "place", clearJobs: [], add: [], ghosts: d.ghosts, placeJobs: d.placeJobs },
+  }
+  f.goals.push(g)
+  say(`goal ${g.id} re-places ${check.missing.length} entities${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Research and hand-fed labs
 
 function packsAutomated(f: FactoryState): Record<string, boolean> {
@@ -1328,7 +1475,22 @@ export function factoryReport(name: string) {
     research: f.research,
     waiting: f.waiting,
     verify: f.verify,
+    reconciler: reconcilerReport(f),
   }
+}
+
+/** M5b telemetry: statuses, root causes of nodes that are not ok, remedies so far, probes. */
+function reconcilerReport(f: FactoryState) {
+  const st = f.reconciler
+  if (st === undefined) return undefined
+  const causes: string[] = []
+  for (const id of f.graph.nodeOrder) {
+    const n = f.graph.nodes[id]
+    if (n.cause !== undefined) causes.push(`${n.id} ${n.role} ${n.status}: ${n.cause.kind}${n.cause.id !== undefined ? ` ${n.cause.id}` : ""} ${n.cause.what} (${n.cause.why})`)
+  }
+  const remedies: Record<string, number> = {}
+  for (const [, r] of pairs(st.remedies)) remedies[r.kind] = (remedies[r.kind] ?? 0) + r.count
+  return { evaluations: st.evaluations, statuses: statusCounts(f.graph), changes: st.changes, causes, remedies, log: st.log, probes: f.meter?.probes ?? 0 }
 }
 
 /** Both graph layers for tools/render and the soak report (D29): the physical layer of the faction's layout plus the logical graph. */

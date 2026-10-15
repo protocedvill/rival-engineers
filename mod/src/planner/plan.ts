@@ -75,6 +75,8 @@ export interface PlanJob {
   baseModules: Record<string, boolean>
   baseRoutes: Record<string, boolean>
   order: string[]
+  /** The order was adapted to the policy (D35 near-ore smelting) at the first placement step. */
+  ordered?: boolean
   placeIdx: number
   placement?: PlacementSearch
   /** Request id → placed module id (an expanded module answers for the request). */
@@ -130,6 +132,46 @@ function placementOrder(req: PlanRequest): string[] {
     done[best] = true
   }
   return order
+}
+
+/** A smelter: a module (not site-anchored) whose main recipe is a smelting recipe. */
+function isSmelter(def: ModuleDef, facts: ProtoFacts): boolean {
+  return def.site === undefined && def.recipe !== undefined && facts.recipe(def.recipe)?.category === "smelting"
+}
+
+/** Connections into smelter `id` from mining outposts carrying one of its recipe's ingredients (its ore). */
+function oreFeeds(req: PlanRequest, id: string, facts: ProtoFacts): ConnectionRequest[] {
+  const def = req.modules.filter((m) => m.id === id)[0]?.def
+  const r = def?.recipe !== undefined ? facts.recipe(def.recipe) : undefined
+  if (r === undefined) return []
+  const out: ConnectionRequest[] = []
+  for (const c of req.connections) {
+    if (c.to.module !== id || c.from === undefined) continue
+    const src = req.modules.filter((m) => m.id === c.from!.module)[0]
+    const port = src?.def.ports.filter((p) => p.id === c.from!.port)[0]
+    if (src?.def.site === "resource-patch" && port?.item !== undefined && r.ingredients.some((i) => i.name === port.item)) out.push(c)
+  }
+  return out
+}
+
+/** D35 near-ore: each smelter's ore outposts move right before it, so the smelter is placed next to its ore. */
+function nearOreOrder(req: PlanRequest, order: string[], facts: ProtoFacts): string[] {
+  const out: string[] = []
+  const done: Record<string, boolean> = {}
+  for (const id of order) {
+    if (done[id]) continue
+    const def = req.modules.filter((m) => m.id === id)[0].def
+    if (isSmelter(def, facts)) {
+      for (const c of oreFeeds(req, id, facts)) {
+        if (done[c.from!.module]) continue
+        out.push(c.from!.module)
+        done[c.from!.module] = true
+      }
+    }
+    out.push(id)
+    done[id] = true
+  }
+  return out
 }
 
 /** A copy of a layout that a plan job may change without touching the original (tables copied, defs shared). */
@@ -383,6 +425,10 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     startRouting(job)
     return 0
   }
+  if (!job.ordered) {
+    job.ordered = true
+    if (policy.smelting === "near-ore") job.order = nearOreOrder(job.request, job.order, facts)
+  }
   const id = job.order[job.placeIdx]
   const mreq = moduleRequest(job, id)
   if (job.placement === undefined) {
@@ -403,6 +449,13 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     // A mining outpost looks for ore nearest the module it feeds.
     let center = job.request.center
     if (mreq.def.site === "resource-patch") for (const [, t] of pairs(targets)) center = { x: (t as Vec).x, y: (t as Vec).y }
+    // D35 near-ore: a smelter clusters around its (already placed) ore outpost's port instead of the cluster centre.
+    if (policy.smelting === "near-ore" && isSmelter(mreq.def, facts)) {
+      for (const c of oreFeeds(job.request, id, facts)) {
+        const t = targets[c.to.port]
+        if (t !== undefined) center = { x: t.x, y: t.y }
+      }
+    }
     job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region })
   }
   const s = job.placement

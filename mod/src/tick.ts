@@ -5,7 +5,7 @@ import { onPlannerTick } from "./planner/runtime"
 import * as profiling from "./profiling"
 import { onReviewTick } from "./review/index"
 import { onBrainTick } from "./strategy/bootstrap"
-import { onFactoryTick } from "./strategy/factory"
+import { onFactoryMeterTick, onFactoryTick } from "./strategy/factory"
 import { onTelemetryTick } from "./telemetry"
 
 // The one on_tick handler: faction brains (strategy) first, then layout planning jobs (budgeted), then crew members (they react to actions that
@@ -17,6 +17,7 @@ export function onTick(): void {
   if (p) p.tick.reset()
   onBrainTick()
   onFactoryTick()
+  onFactoryMeterTick()
   onPlannerTick()
   onCrewTick()
   onControllerTick()

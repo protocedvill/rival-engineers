@@ -553,7 +553,8 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
   return { missing, grow, missingEdges }
 }
 
-export type GoalKind = "power" | "labs" | "production" | "mall" | "grow"
+/** Goal kinds; "repair" comes from the reconciler (M5b): missing pieces of a route or pole line re-placed. */
+export type GoalKind = "power" | "labs" | "production" | "mall" | "grow" | "repair"
 
 export interface GoalSpec {
   kind: GoalKind
@@ -587,7 +588,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
-  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5 }
+  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5, repair: 6 }
   for (const e of diff.missingEdges) {
     const a = goalOf[e.from]
     const b = goalOf[e.to]

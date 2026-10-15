@@ -80,6 +80,7 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     corridorPreferred: c.layoutCorridorPreferred,
     topology: c.layoutTopology,
     utilization: c.beltUtilization,
+    smelting: c.layoutSmelting,
   })
 }
 
