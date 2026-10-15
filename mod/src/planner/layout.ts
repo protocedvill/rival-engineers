@@ -144,6 +144,13 @@ export function portOutside(m: PlacedModule, p: Port): Vec {
   return { x: m.origin.x + math.floor(o.x), y: m.origin.y + math.floor(o.y) }
 }
 
+/** The tile beyond a port's outside tile, straight out from the module. */
+export function portApproach(m: PlacedModule, p: Port): Vec {
+  const o = portOutside(m, p)
+  const t = portTile(m, p)
+  return { x: 2 * o.x - t.x, y: 2 * o.y - t.y }
+}
+
 function isBelt(type: string | undefined): boolean {
   return type === "transport-belt" || type === "underground-belt" || type === "splitter"
 }
@@ -218,6 +225,10 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(m, p)
     state.reserved[tkey(o.x, o.y)] = portTag(m.id, p.id)
+    // The approach tile beyond it too (P5 lane): later routes must not box in a port, built or not yet connected.
+    const a = portApproach(m, p)
+    const ka = tkey(a.x, a.y)
+    if (state.occ[ka] === undefined && state.reserved[ka] === undefined) state.reserved[ka] = portTag(m.id, p.id)
   }
   const r = m.rect
   for (let x = r.x - corridor; x < r.x + r.w + corridor; x++) {
@@ -242,6 +253,9 @@ export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
     const o = portOutside(m, p)
     const k = tkey(o.x, o.y)
     if (state.reserved[k] === portTag(m.id, p.id)) delete state.reserved[k]
+    const a = portApproach(m, p)
+    const ka = tkey(a.x, a.y)
+    if (state.reserved[ka] === portTag(m.id, p.id)) delete state.reserved[ka]
   }
 }
 

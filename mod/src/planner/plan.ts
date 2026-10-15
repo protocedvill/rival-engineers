@@ -97,21 +97,24 @@ function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
   return req.connections.filter((c) => c.from?.module === id || c.to.module === id)
 }
 
-/** Site modules first, then repeatedly the one with the most connections to modules already ordered. */
+/**
+ * Shore sites first (water is rare), then repeatedly the module with the most connections to modules already ordered,
+ * mining outposts last: each is placed on the ore nearest to the module it feeds (short ore belts).
+ */
 function placementOrder(req: PlanRequest): string[] {
   const order: string[] = []
   const done: Record<string, boolean> = {}
   for (const m of req.modules) {
-    if (m.def.site !== undefined) {
+    if (m.def.site === "shore") {
       order.push(m.id)
       done[m.id] = true
     }
   }
-  for (;;) {
+  for (const pass of [false, true]) for (;;) {
     let best: string | undefined
     let bestLinks = -1
     for (const m of req.modules) {
-      if (done[m.id]) continue
+      if (done[m.id] || (m.def.site === "resource-patch") !== pass) continue
       let links = 0
       for (const c of connectionsOf(req, m.id)) {
         const other = c.from?.module === m.id ? c.to.module : c.from?.module
@@ -396,7 +399,11 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         }
       }
     }
-    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region })
+    const targets = targetsFor(job, id)
+    // A mining outpost looks for ore nearest the module it feeds.
+    let center = job.request.center
+    if (mreq.def.site === "resource-patch") for (const [, t] of pairs(targets)) center = { x: (t as Vec).x, y: (t as Vec).y }
+    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region })
   }
   const s = job.placement
   const used = stepPlacement(s, job.layout, terrain, policy, budget)

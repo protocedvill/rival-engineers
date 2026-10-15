@@ -102,7 +102,15 @@ function factionTelemetry() {
     }
     const depot: Record<string, number> = {}
     for (const chest of f.stockpiles) if (chest.valid) for (const e of chest.get_inventory(defines.inventory.chest)!.get_contents()) depot[e.name] = (depot[e.name] ?? 0) + e.count
-    out[name] = { depot, force: f.force, brain: brainReport(f), factory: factoryReport(name), research: researchState(f.force), counters: board.counters, activeJobs: jobs, crew }
+    // A sample of what the board waits on (stall diagnosis).
+    const open: unknown[] = []
+    for (const id of board.active) {
+      const j = board.jobs[id]
+      if (j.status !== "open" || open.length >= 12) continue
+      const p = j.payload as { item?: string; recipe?: string }
+      open.push({ id, kind: j.payload.kind, item: p.item ?? p.recipe, materials: j.materials, attempts: j.attempts, retryAt: j.retryAt, reason: j.reason, pos: j.pos })
+    }
+    out[name] = { openJobs: open, depot, force: f.force, brain: brainReport(f), factory: factoryReport(name), research: researchState(f.force), counters: board.counters, activeJobs: jobs, crew }
   }
   return out
 }

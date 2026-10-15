@@ -563,6 +563,12 @@ function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undef
   return nodeByRole(f.graph, role)?.id
 }
 
+function failedBefore(f: FactoryState, kind: GoalKind): number {
+  let n = 0
+  for (const g of f.goals) if (g.kind === kind && g.status === "failed") n++
+  return n
+}
+
 function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
   g.attempts++
@@ -577,7 +583,13 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   }
   const r = g.radius
   const region: Rect = { x: f.center.x - r, y: f.center.y - r, w: 2 * r, h: 2 * r }
-  const request: PlanRequest = { modules, connections, center: f.center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
+  // retry is not the same plan again: the hub, then 24 tiles off it in turn (deterministic).
+  const tries = g.attempts - 1 + MAX_PLAN_ATTEMPTS * failedBefore(f, g.kind)
+  const offsets = [[0, 0], [24, 0], [0, 24], [-24, 0], [0, -24], [24, 24], [-24, -24], [24, -24], [-24, 24]]
+  const off = offsets[tries % offsets.length]
+  const center = { x: f.center.x + off[0], y: f.center.y + off[1] }
+  const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
   if (getPlannerEntry(id) !== undefined) removePlan(id)
   // Undergrounds only once they can be crafted (`logistics`).
@@ -609,7 +621,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if (entry.phase === "scan" || entry.phase === "plan") return
   if (entry.phase === "failed") {
     const why: string[] = []
-    for (const [k, v] of pairs(entry.job?.failures ?? {})) why.push(`${k}: ${v}`)
+    const roles: Record<string, string> = {}
+    for (const n of g.nodes) roles[n.id] = n.role
+    for (const [k, v] of pairs(entry.job?.failures ?? {})) {
+      const m = string.match(k as string, "^module:(.*)$")[0]
+      why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
+    }
     g.reason = why.join("; ")
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
     removePlan(entry.id)
