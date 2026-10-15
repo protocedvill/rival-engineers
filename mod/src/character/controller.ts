@@ -266,39 +266,85 @@ function primaryProduct(entity: LuaEntity): string | undefined {
   return first?.type === "item" ? first.name : undefined
 }
 
+/** Points per side of the grid scanned over an entity's selection box for a spot where it is the one selected. */
+const SELECT_GRID = 5
+
 /**
- * Starts or continues mining `target`. Mining acts on whatever is selected at the mining position, so when something
- * else covers the target's centre, mine from a point of its box where the target itself is selected. False if there is
- * none and the other entity must not be mined: a ghost (a player would deconstruct it) or, over ore, a built entity
- * (a player would pick it up: seed 77 lost two belts of an ore route to a stale hand-mining job).
+ * A point where the character selects `entity` (mining acts on whatever is selected at the mining position), or
+ * undefined. Tries `cached`, the centre, then a grid over the selection box, nearest to the character first. In a
+ * dense forest the next tree's tall selection box covers a tree's centre and its whole collision box (B1). On success
+ * the character's selection is left on `entity`.
  */
-function mineTick(character: LuaEntity, target: LuaEntity, action?: ActionRecord): boolean {
-  character.update_selected_entity(target.position)
-  const selected = character.selected
-  if (!selected || !selected.valid || selected === target) {
-    character.mining_state = { mining: true, position: target.position }
-    return true
+function selectPoint(character: LuaEntity, entity: LuaEntity, cached?: MapPosition): MapPosition | undefined {
+  if (cached !== undefined) {
+    character.update_selected_entity(cached)
+    if (character.selected === entity) return cached
   }
-  const box = target.bounding_box
-  const corners = [
-    { x: box.left_top.x + 0.1, y: box.left_top.y + 0.1 },
-    { x: box.right_bottom.x - 0.1, y: box.left_top.y + 0.1 },
-    { x: box.left_top.x + 0.1, y: box.right_bottom.y - 0.1 },
-    { x: box.right_bottom.x - 0.1, y: box.right_bottom.y - 0.1 },
-  ]
-  for (const p of corners) {
-    character.update_selected_entity(p)
-    if (character.selected === target) {
-      character.mining_state = { mining: true, position: p }
-      return true
+  character.update_selected_entity(entity.position)
+  if (character.selected === entity) return entity.position
+  const box = entity.selection_box
+  const x0 = box.left_top.x + 0.05
+  const y0 = box.left_top.y + 0.05
+  const w = box.right_bottom.x - 0.05 - x0
+  const h = box.right_bottom.y - 0.05 - y0
+  const points: { p: MapPosition; d: number; i: number }[] = []
+  for (let i = 0; i < SELECT_GRID; i++) {
+    for (let j = 0; j < SELECT_GRID; j++) {
+      const p = { x: x0 + (w * i) / (SELECT_GRID - 1), y: y0 + (h * j) / (SELECT_GRID - 1) }
+      points.push({ p, d: distance(character.position, p), i: points.length })
     }
   }
-  if (selected.type === "entity-ghost") return false
-  if (target.type === "resource" && selected.force.name !== "neutral" && selected.type !== "character") return false
-  // A tree or rock over the target (or a character in the way): mined first, as by a player.
-  if (action !== undefined && (selected.type === "tree" || selected.type === "simple-entity")) action.obstacle = selected
-  character.mining_state = { mining: true, position: target.position }
-  return true
+  points.sort((a, b) => (a.d !== b.d ? a.d - b.d : a.i - b.i))
+  for (const c of points) {
+    character.update_selected_entity(c.p)
+    if (character.selected === entity) return c.p
+  }
+  return undefined
+}
+
+/** How deep a chain of trees/rocks covering each other is followed (tree over tree over the target). */
+const MAX_COVER_DEPTH = 3
+
+type MineStep = "mining" | "refused" | { approach: LuaEntity }
+
+/**
+ * Starts or continues mining `target`. Mining acts on whatever is selected at the mining position, so mine from a
+ * point of the target's selection box where the target itself is selected. If there is none, the entity covering it
+ * decides: a ghost (a player would deconstruct it) or, over ore, a built entity (a player would pick it up: seed 77
+ * lost two belts of an ore route to a stale hand-mining job) refuse the mining; a tree or rock is mined first, as by a
+ * player, after walking into its reach if needed (B1: in dense forests the covering tree was often out of reach and
+ * the action stalled).
+ */
+function mineTick(character: LuaEntity, target: LuaEntity, action?: ActionRecord): MineStep {
+  let want = target
+  for (let depth = 0; depth <= MAX_COVER_DEPTH; depth++) {
+    const p = selectPoint(character, want, want === target ? action?.minePoint : undefined)
+    if (p !== undefined) {
+      if (want !== target && !character.can_reach_entity(want)) return { approach: want }
+      if (want === target && action !== undefined) action.minePoint = p
+      if (want !== target && action !== undefined) action.obstacle = want
+      character.mining_state = { mining: true, position: p }
+      return "mining"
+    }
+    character.update_selected_entity(want.position)
+    const selected = character.selected
+    if (!selected || !selected.valid) {
+      character.mining_state = { mining: true, position: want.position }
+      return "mining"
+    }
+    if (selected.type === "entity-ghost") return "refused"
+    if (selected.type === "character") {
+      // Someone stands in the way: wait (the stall check bounds it).
+      character.mining_state = { mining: false }
+      return "mining"
+    }
+    if (selected.type !== "tree" && selected.type !== "simple-entity") {
+      // A built entity covers the whole target: mining would pick it up. Only the faction's own pick-ups may do that.
+      if (target.type === "resource" || selected.force.name !== "neutral") return "refused"
+    }
+    want = selected
+  }
+  return "refused"
 }
 
 function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "mine" }>, config: Config, tick: number): StepResult {
@@ -321,10 +367,19 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
   action.stats.items = gained
   if (action.goalCount !== undefined && gained >= action.goalCount) return "done"
   if (!target.valid) return "done" // depleted or mined away
-  const reach: ReachGoal = target.type === "resource" ? { kind: "resource", entity: target } : { kind: "entity", entity: target }
+  if (action.obstacle !== undefined && !action.obstacle.valid) {
+    // The character's mining stays on the mined-away obstacle: restart it so it picks the target up next tick.
+    action.obstacle = undefined
+    action.cleared = (action.cleared ?? 0) + 1
+    character.mining_state = { mining: false }
+    return "running"
+  }
+  // While a covering tree or rock out of reach is in the way, walk to it instead of the target.
+  const goal = action.obstacle !== undefined && action.obstacleFar ? action.obstacle : target
+  const reach: ReachGoal = goal.type === "resource" ? { kind: "resource", entity: goal } : { kind: "entity", entity: goal }
 
   if (action.phase === "approach") {
-    const result = approach(character, action, reach, target.position, config, tick)
+    const result = approach(character, action, reach, goal.position, config, tick)
     if (result !== "done") return result
     startWork(action, tick)
   }
@@ -332,18 +387,20 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
     action.phase = "approach"
     return "running"
   }
+  action.obstacleFar = undefined
   if (action.item && !character.get_main_inventory()!.can_insert({ name: action.item, count: 1 })) {
     return fail("inventory-full", action.item)
   }
-  if (action.obstacle !== undefined && !action.obstacle.valid) {
-    // The character's mining stays on the mined-away obstacle: restart it so it picks the ore up next tick.
-    action.obstacle = undefined
-    action.cleared = (action.cleared ?? 0) + 1
-    character.mining_state = { mining: false }
-    return "running"
-  }
   if (stalled(action, gained + (action.cleared ?? 0) + character.character_mining_progress, config, tick)) return fail("stalled", "mining made no progress")
-  if (!mineTick(character, target, action)) return fail("not-minable", "a ghost or another entity covers the target")
+  const step = mineTick(character, target, action)
+  if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
+  if (step !== "mining") {
+    action.obstacle = step.approach
+    action.obstacleFar = true
+    character.mining_state = { mining: false }
+    action.phase = "approach"
+    action.walk = undefined
+  }
   return "running"
 }
 
@@ -522,7 +579,15 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
     return "running"
   }
   if (action.item && !character.can_insert({ name: action.item, count: 1 })) return fail("inventory-full", action.item)
-  if (stalled(action, character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
-  if (!mineTick(character, entity)) return fail("not-minable", "a ghost covers the target")
+  if (action.obstacle !== undefined && !action.obstacle.valid) {
+    action.obstacle = undefined
+    action.cleared = (action.cleared ?? 0) + 1
+    character.mining_state = { mining: false }
+    return "running"
+  }
+  if (stalled(action, (action.cleared ?? 0) + character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
+  const step = mineTick(character, entity, action)
+  if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
+  if (step !== "mining") return fail("unreachable", `${step.approach.name} in front of it is out of reach`)
   return "running"
 }

@@ -122,6 +122,10 @@ export interface ActionRecord {
   /** Mine: a tree or rock over the ore being mined first, and how many such were cleared (count as progress). */
   obstacle?: LuaEntity
   cleared?: number
+  /** Mine: the obstacle is out of reach, so the action walks to it first. */
+  obstacleFar?: boolean
+  /** Mine / pick up: the last point where the target was the selected entity. */
+  minePoint?: MapPosition
   goalCount?: number
   lastProgressTick?: number
   lastProgressValue?: number
