@@ -405,6 +405,9 @@ Default to configurable (D18). Settings live in three places:
   on rings from `spawn-min-distance` becomes a map-gen starting point (D32); otherwise generated regions are
   searched for a spot with iron, copper, coal and stone within `spawn-resource-radius`, 96), `fixed-offsets`
   (`spawn-fixed-offsets`), `scenario-defined` (only the `spawn_faction` remote). `random-ring` is not implemented.
+  With a starting area, a spawn also needs water within `spawn-water-radius` (96), and a starting lake the engine
+  generated before the point existed is repainted from the elevation noise (`spawn-lake-repair`,
+  `spawn-lake-repair-min-tiles` 50; P17).
   Each crew member gets the freeplay starter items (read from the `freeplay` remote interface when present, else
   the freeplay defaults); factions start with no research.
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
@@ -625,6 +628,25 @@ M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-1
   other unblocking techs. Alternative: always research it before the first production plan (shorter, simpler routes
   on every seed, at about 3–5 game-minutes of extra hand-crafting and research).
 
+M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-report.md` "M5a.2"):
+
+- **P17, starting-lake repair (proposed, extends D32):** a new game queues ~10 chunks around the origin for background
+  generation before any script runs, so a faction starting point appended there gets its starting ores but not its
+  lake. After generating a starting-area spawn, tiles the surface's own elevation noise makes water but that are land
+  are repainted (water/deepwater, as map generation would), only when at least `spawn-lake-repair-min-tiles` (50)
+  disagree. A starting-area spawn also needs water within `spawn-water-radius` (96), else the next spot is tried.
+  Alternative: register starting points only beyond the queued area (spawns ~450+ tiles out instead of ~336).
+- **P18, ground claims (proposed):** a faction's reserved tiles (bootstrap sites + 1-tile margin, every adopted plan's
+  modules + 1-tile margin, routes, poles) are its claim; other factions' planners, bootstrap site placement and growth
+  treat them, and other factions' ghosts, as foreign structures. First come, first served. A finished plan whose tiles
+  another faction claimed meanwhile (or a foreign entity stands on) counts as a failed attempt. Open: whether margins
+  should count for other factions (they cost space where two factions share an ore field).
+- **P19, conflict repair (proposed, a first piece of the M5b reconciler / M6 multi-faction):** before a build's retry
+  round and before it counts as built, its parts are checked against the world. A route blocked by another force's
+  entity is rerouted (old pieces the crew picks up first, then new ghosts); a blocked module or pole gives up the whole
+  goal's location (built entities deconstructed, parts dropped from the layout and graph, the design plans it again).
+  At most `conflict-max-repairs` (3) per goal. Refinement left for M6: relocate only the blocked module.
+
 Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
 
 Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
@@ -650,6 +672,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.
 - v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
 - v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
   mall plate value + coverage); ModuleDef schema additions in §5.4 (chest-out, anchor, upkeep, mirrorable, insertAt,

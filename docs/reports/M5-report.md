@@ -352,3 +352,116 @@ P15 port approach tiles reserved · P16 undergrounds researched when a productio
    build time at this stage.
 2. P10: is hand-crafting the ~35 packs that unblock assemblers and electric drills acceptable as "player-like", or should
    the faction build an early burner-fed hand-assembly line instead? (Players do hand-craft the first packs.)
+
+## M5a.2: starting water and faction conflicts (2026-10-15)
+
+Three items from the user: water at spawned starting areas, two factions sharing one water source, and D40.
+
+### 1. Water at spawned starting areas: implemented
+
+**Cause.** `starting_lake_positions` (the noise variable behind the starting lake) is derived from
+`map_gen_settings.starting_points`, so appending a faction's spawn there (D32) should give it a lake. It does in T2 and
+in soaks (every faction had water 18–64 tiles away, seeds 11–555555). It doesn't in the sandbox scenario (the user's
+review): no water within 200 tiles of either faction in the user's autosave, so both factions went to the origin lake.
+A new game **queues ~10 chunks around the origin before `on_init`** and computes their tiles on worker threads
+(`[chunks] on_init: 400 chunks, 196 generated, max pending radius 10`). Those chunks aren't "generated" yet, so the spawn
+finder treats spots at ~336 tiles as fresh. Their tiles were computed before the starting point existed: no lake. The
+starting ores still appear because resources are placed at a later chunk stage. Proof: `calculate_tile_properties` on
+the same spots predicts a lake 36–64 tiles away (elevation < 0) where the generated tiles have none. Soaks don't show
+it because `--create` saves the map before the benchmark run spawns the factions.
+
+**Fix (`world/spawn.ts`, P17 proposed).** After a starting-area spawn is generated, tiles within `spawn-water-radius`
+where the surface's own elevation noise is below 0 but the tile is land become `water`/`deepwater`, as vanilla would
+place them (tile autoplace `water_base(0,100)` / `water_base(-2,200)`). This happens only when at least
+`spawn-lake-repair-min-tiles` disagree: a correctly generated area differs in 2–10 shore tiles out of 36,864, so soak
+maps are unchanged (acceptance times match), while stale lakes are 200–2,400 tiles. Trees, rocks and ore in the new
+water are removed (`set_tiles`), as map generation would never put them there. A starting-area spawn now also needs
+water within `spawn-water-radius`, else the next ring spot is tried. The repair is deterministic: it uses only noise
+and tile state.
+
+**Evidence.** The sandbox scenario run headless 5 times (`--start-server-load-scenario`, the same flow as the review):
+10/10 factions have water within 64 tiles, and the repair fired 6 times (208–2,330 tiles). Before the fix: 2 of 6
+factions had water. T2 (`test/world_test`): a lake whose tiles were generated before its starting point is repainted
+(2,148 tiles vs 2,160 for correct generation); two factions spawned next to chunks queued at game start both have water.
+
+### 2. Two factions sharing one water source: a real problem; barebones claims + repair built
+
+**Reproduction.**
+- (a) The user's review autosave, resumed with the old build: in that save each faction already had its own water. The
+  shared case came from an earlier run, and both factions reached automated red science (`review3`).
+- (b) `tools/harness/shared-water.toml`: two factions at ±70 tiles around the origin, so both use the origin's lake
+  (the user's picture: steam blocks on one lake, coal trunks side by side). Pre-fix code: **0/5**.
+  - Seeds 3333 and 11: faction 1's **bootstrap** put a self-feeding coal drill pair on tiles faction 2 had planned for
+    its power outpost. Faction 2's ghosts were "cannot-place" for 20 rounds, and fail-fast stopped the seed. Bootstrap
+    sites ignored other factions' plans, and the planner ignored other factions' ghosts (`terrain.ts` classified them
+    as free).
+  - Seeds 44444 and 555555: faction 2's research stalled (1 boiler, power built on the shared lake).
+  - Seed 222: 8 plan failures in a row (routing boxed in).
+  - A ghost removed by another force's build counted as "done", so a goal could be marked built with a missing piece.
+
+**Built (P18, P19 proposed).**
+- **Claims** (`world/claims.ts`): another faction's `brain.reserved` tiles and its ghosts are FOREIGN in a faction's
+  planner view (`claimView`), in bootstrap site placement (`rectFree`, depot search) and in growth. A finished plan
+  whose new parts lie on claimed or foreign ground is a failed attempt, re-planned in the same region (`contested`).
+- **Conflict repair** (`planner/conflicts.ts`, `planner/reroute.ts`, `strategy/factory.ts`): a goal's parts are checked
+  against the world before every leftover-ghost round and before the goal counts as built.
+  - Blocked route: rerouted around the blocker. The crew first picks up the old pieces the new route doesn't reuse
+    (clear jobs, items kept), then builds the new ghosts.
+  - Blocked module or pole: the goal gives up its location. Built entities are deconstructed, its parts leave the
+    layout and its nodes the graph, and the design plans it again elsewhere.
+  - Repairs wait while another goal of the faction is planning, since that plan replaces the layout when adopted.
+  - At most `conflict-max-repairs` (3) per goal, then the old retry rounds.
+- T2 (`test/conflicts_test`, 4 tests): claims and foreign ghosts are FOREIGN; bootstrap sites stay off another
+  faction's claim (fails with the check disabled); a blocked route is rerouted, connects end to end
+  (`followRoute`), and leaves no old pieces; a blocked module is dropped with clear jobs for all its built entities.
+
+**After.** `shared-water` on the fixed code: no blocked ghosts, stalls or runtime conflicts any more, and one contested
+plan was caught and re-planned (555555). It is still **0/5**, now because one faction's production plan finds "no
+feasible position" for a coal or copper outpost 8 times in a row. At ±70 tiles both factions share one starting area,
+and the second faction's hub ends up inside the first one's base (seed 44444: hub (19,-29), 3,521 claimed tiles in its
+region; the only coal patch is covered by the other faction's drills and their claimed margins). This is resource
+contention from a deliberately extreme setup, not the user's case: with D32 the factions are ~670 tiles apart. Their
+only shared resource was the lake, which part 1 removes.
+- The reroute plans a fresh A* path, so in the T2 case it rebuilt all 60 pieces: the router doesn't prefer reusing old
+  belts. The items come back; a reuse bonus is an M6 refinement.
+
+**2-faction runs on the final code** (`m5-two-factions.toml`, defaults, D13: 2 factions × 2 crew): see "Results".
+
+### 3. D40: already a setting
+
+The bootstrap's drill counts are the runtime setting `bootstrap-sites` (default `iron-ore=8,coal=4,stone=2,copper-ore=4`).
+Each smelting site is one drill plus one furnace (a burner drill's 0.25 ore/s fits a stone furnace's 0.3125/s), and coal
+counts drills in self-feeding pairs. The first-electricity kit counts are `first-electricity-items`. Nothing to change.
+The bootstrap's other tuning constants (`SITE_WINDOW`, fuel minutes, `PAIR_KEEP`...) predate this rule and are not
+counts of drills or furnaces. They could become settings too if the user wants.
+
+### Results (final code)
+
+- T2: **84/84** (`npm test`, 359.6 s, 8 shards) on 2cd630d (2093c1d only adds `CLAUDE.md`).
+- M5 acceptance on **2093c1d** (`out/soak/m5a2-accept`): **5/5**, no stalls. Game-min to automated red science
+  (before this work in brackets): 11: 27.0 (27.2), 222: 31.4 (29.9), 3333: 43.7 (43.7), 44444: 30.9 (32.2),
+  555555: 40.7 (40.7).
+- 2 factions (`out/soak/m5a2-2f`, 5 seeds): **5/5 seeds, 10/10 factions** reached automated red science, no stalls (faction 1 / faction 2, game-min: 11: 26.1 / 38.7, 222: 31.4 / 42.2, 3333: 45.2 / 40.4, 44444: 30.9 / 31.1, 555555: 40.8 / 43.0). AI 1.41–1.64 ms/tick at -j 5 (inflated by concurrency; D13 target 2).
+- Before the fixes (`w2f-base`, same config, 5 seeds): 5/5, both factions done (29.9–45.2 min), AI ~1.38 ms/tick at -j 5.
+
+### Magic numbers for the user
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `spawn-water-radius` | `settings.ts`, `world/spawn.ts` | 96 tiles | Same as `spawn-resource-radius`. Observed starting lakes start 18–64 tiles from the spawn. | yes |
+| `spawn-lake-repair-min-tiles` | `settings.ts`, `world/spawn.ts` | 50 tiles | Correct generation disagrees with the noise in 2–10 tiles, stale lakes in 200–2,400; 50 sits between them. | yes |
+| `spawn-lake-repair` | `settings.ts` | on | Off only to reproduce the bug. | yes |
+| `conflict-max-repairs` | `settings.ts`, `strategy/factory.ts` | 3 per goal | Guess: enough for a reroute plus a relocation, without endless deconstruct/rebuild cycles. | yes |
+| Shared-water offsets | `tools/harness/shared-water.toml` | `70,10;-70,10` | Test setup to force both factions onto the origin lake. | harness config |
+| Claim margins | `world/claims.ts` (via `brain.reserved`) | 1 tile around sites and modules | Existing reservation margins, reused as claims. Open question below. | no (existing) |
+
+The water/deepwater thresholds (0, -2) and the tile probabilities come from game data (exempt).
+
+### Questions for the user (non-blocking)
+
+1. P17: repaint the starting lake (implemented), or move spawns beyond the area a new game queues (~450+ tiles
+   out instead of ~336)?
+2. P18: should another faction's **margins** (1 tile around its sites and modules) count as claimed? They cost space
+   where factions share an ore field; dropping them only helps factions that spawn close together.
+3. Should factions ever share an ore field (spawns closer than the default 300 tiles), or should `spawn-min-distance`
+   guarantee separate resources?
