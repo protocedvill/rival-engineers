@@ -72,6 +72,7 @@ Two layers, by analogy:
 | D46 | Ore fields (2026-10-15, user) | **Factions never share an ore field.** A patch (connected ore field) that another faction mines or has claimed is off limits for bootstrap sites, mining modules and growth; spawn placement must give each faction its own fields. |
 | D47 | Conflict repair (2026-10-15, user decision on P19) | P19 approved as built: blocked routes are rerouted, a blocked module or pole moves its whole goal, at most `conflict-max-repairs` (3) per goal. **M6:** relocate only the blocked module (and its routes) instead of the whole goal. |
 | D48 | Growth by belts, upgrades, soft claims (2026-10-15, user direction; later stage) | (1) Plan raw-material modules in **whole belts of I/O** (e.g. 48 stone furnaces fill one yellow belt; ratios as in https://factoriocheatsheet.com/#material-processing): an expandable module (`ModuleDef.expand`) has a full size of N belts. (2) Early on, build only **part** of a module for current needs, and **finish it** later when demand grows. (3) Prefer **in-place upgrades** of existing modules when more is needed (stone → steel furnaces, yellow → red belts, other same-footprint replacements) before building new ones; this extends D24's `upgrade-tier`. (4) **Soft claims:** when an expandable module is placed, the area it can grow into gets a placement/routing cost for anything else (a weight, not a hard block). Schedule: soft claims with the planner work (backlog B9); partial-then-finish and in-place upgrades after M5 (M6 where in v1 scope; steel furnaces need steel, so post-v1 per D20). |
+| D49 | Reconciler remedies (2026-10-15, user decision on P21) | P21 approved, including the D28 exception: the crew re-place missing **belts and poles** (never machines). **Belt capacity** (D24 tier upgrade / parallel route) is decided **only in planning**, and only when adding a consumer or producer would take an edge above its limit (D25); the reconciler never upgrades a belt at runtime. |
 
 ## 3. v1 Definition of Done
 
@@ -678,7 +679,7 @@ M5a.3 proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.m
 
 M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5b"):
 
-- **P21, reconciler remedies (proposed):** the reconciler acts on three root causes only: an **undersized producer**
+- **P21, reconciler remedies (approved → D49):** the reconciler acts on three root causes only: an **undersized producer**
   (it runs flat out, everything it makes arrives, its consumer still starves) grows by one `expand` unit; a **broken
   route or pole line** (items pile up at the producer and don't arrive; a consumer without power while the steam block
   has spare capacity) gets its missing pieces re-placed by the crew (a `repair` goal); a **crew-fuelled burner** without
@@ -690,6 +691,8 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
 - **P22, edge flow probes (proposed, extends D26):** a belt edge's measured rate is the flow arriving at the consumer's
   port, counted from belt items' unique ids on that tile (one edge probed at a time per faction, 10 s each), not derived
   from machine counters; node rates come from `products_finished` (crafting machines) or the working share (drills, labs).
+
+Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
 
 Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
 
