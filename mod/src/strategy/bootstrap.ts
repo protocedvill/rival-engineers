@@ -933,6 +933,20 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   let rawPer = 0
   for (const r in one.raw) rawPer += one.raw[r]
   const chunk = math.max(1, math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)))
+  // Craft jobs only for what the stock covers now: a job is claimed only with all its materials, so one big job on a
+  // scarce raw item (30 wood for small poles) would wait forever. The rest stays demand (gathering goes on).
+  let affordable = math.huge
+  for (const r in one.raw) affordable = math.min(affordable, math.floor(math.max(0, ctx.stock[r] ?? 0) / one.raw[r]))
+  const later = crafts - math.min(crafts, affordable)
+  if (later > 0) {
+    crafts -= later
+    const rest = expandRecipe(ctx.force, recipe, later)
+    const names: string[] = []
+    for (const r in rest.raw) names.push(r)
+    names.sort()
+    for (const r of names) addDemand(ctx, r, rest.raw[r])
+    addPending(ctx, item, later * per)
+  }
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n

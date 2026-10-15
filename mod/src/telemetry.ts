@@ -106,7 +106,7 @@ function factionTelemetry() {
     const open: unknown[] = []
     for (const id of board.active) {
       const j = board.jobs[id]
-      if (j.status !== "open" || open.length >= 12) continue
+      if (j.status !== "open" || open.length >= 12 || (j.payload.kind === "place" && open.length >= 6)) continue
       const p = j.payload as { item?: string; recipe?: string }
       open.push({ id, kind: j.payload.kind, item: p.item ?? p.recipe, materials: j.materials, attempts: j.attempts, retryAt: j.retryAt, reason: j.reason, pos: j.pos })
     }

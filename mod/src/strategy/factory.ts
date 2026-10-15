@@ -77,6 +77,7 @@ export interface FactoryGoal {
   /** Place jobs done so far (progress), and rounds of re-planning jobs for leftover ghosts. */
   placed: number
   rounds: number
+  lastRound?: number
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
@@ -118,7 +119,8 @@ const FUEL_TOP_MINUTES = 8
 const LAB_LOW = 2
 const LAB_FEED = 5
 const MAX_PLAN_ATTEMPTS = 4
-const MAX_BUILD_ROUNDS = 30
+/** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
+const BUILD_ROUND_TICKS = 1800
 
 // ---------------------------------------------------------------------------------------------------------
 // Setup
@@ -539,11 +541,10 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   if (open) return
   const left = b.ghosts.filter((gh) => gh.valid)
   if (left.length > 0) {
-    if (g.rounds++ >= MAX_BUILD_ROUNDS) {
-      g.status = "failed"
-      g.reason = `${left.length} ghosts left`
-      return
-    }
+    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+    g.lastRound = ctx.tick
+    g.rounds++
+    g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
     const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
     replanGhosts(ctx, fake as never, left)
     b.placeJobs = fake.placeJobs
@@ -745,12 +746,12 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   const left: LuaEntity[] = []
   for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
   if (left.length > 0) {
-    if (g.rounds >= MAX_BUILD_ROUNDS) {
-      g.status = "failed"
-      g.reason = `${left.length} ghosts left after ${g.rounds} rounds`
-      return
-    }
+    // Never give up on a build (its nodes are in the graph): retry the leftovers every BUILD_ROUND_TICKS, saying why.
+    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+    g.lastRound = ctx.tick
     g.rounds++
+    g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
     replanGhosts(ctx, b, left)
     return
   }
@@ -767,6 +768,20 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   ctx.faction.brain!.steps++
   mark(ctx.faction, `${g.kind}-built`)
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) built at tick ${ctx.tick} (${g.placed} placements, ${g.rounds} extra rounds)`)
+}
+
+function failureReasons(ctx: Ctx, ids: number[]): string {
+  const count: Record<string, number> = {}
+  for (const id of ids) {
+    const j = getJob(ctx.faction.board, id)
+    if (j === undefined || j.status !== "failed") continue
+    const p = j.payload as { item?: string }
+    const k = `${p.item ?? j.kind} at ${math.floor(j.pos.x)},${math.floor(j.pos.y)}: ${j.reason ?? "?"}`
+    count[k] = (count[k] ?? 0) + 1
+  }
+  const out: string[] = []
+  for (const [k, n] of pairs(count)) if (out.length < 4) out.push(`${k as string} ×${n}`)
+  return out.join("; ")
 }
 
 function replanGhosts(ctx: Ctx, b: NonNullable<ReturnType<typeof getPlannerEntry>>["build"], left: LuaEntity[]): void {
