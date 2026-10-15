@@ -415,6 +415,10 @@ Default to configurable (D18). Settings live in three places:
   `spawn-lake-repair-min-tiles` 50; P17).
   Each crew member gets the freeplay starter items (read from the `freeplay` remote interface when present, else
   the freeplay defaults); factions start with no research.
+- **Measurement and reconciler (M5b, §5.8):** `measure-interval-ticks` (300), `measure-window-samples` (12: a 1-min
+  window), `measure-probe-ticks` (600), `reconcile-remedies` (on), `reconcile-warmup-ticks` (18000), `reconcile-confirm`
+  (3), `reconcile-shortfall` (0.25), `reconcile-cooldown-ticks` (18000), `reconcile-max-remedies` (3). **D35:**
+  `layout-smelting` (`compact-core` | `near-ore`; empty = the policy's choice, `compact-core` in `early-compact`).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -596,6 +600,18 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
   it under "Assumptions" in the report and keep going. Stop and wait only for decisions that are hard to
   reverse or that change §2 or §3.
 - Never weaken an acceptance test to make it pass. Changing an acceptance threshold is a spec change.
+- **Finishing a task (user, 2026-10-15).** The working agent runs the full test suite and the single-faction
+  acceptance soak on its final code commit, checks the work-count gate (below), writes its report, pushes and
+  hands off. The **manager** then starts the next agent and, in parallel, does the final validation: GitHub CI on
+  the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
+  agent's work (or a resumed agent if it is small). Wall-clock numbers from runs that overlap are not
+  performance evidence.
+- **Performance gates (user, 2026-10-15).** (1) **Work counts** (planner work units, path requests, entity scans,
+  jobs, candidates scored, per tick and per run) are deterministic per seed and act as a **soft gate** in every
+  validation: a rise beyond a tolerance is flagged in the report, not a hard failure. (2) **Benchmarks** measure AI
+  time as a percentage of the update time of a fixed reference vanilla save, benchmarked in the same session, to
+  confirm whether a flagged regression is real. The manager runs them when there is time, on an idle machine.
+  Absolute ms/tick is informational only.
 - Never use the user's `~/.factorio` directory, saves or blueprint file in place. Copy inputs into
   `/tools/modules/input/` first (ignored by git if it contains personal data).
 
@@ -660,6 +676,21 @@ M5a.3 proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.m
   chest) and its placement cost includes that extra belt length; pure spots win otherwise. Not built: no seed in
   the M5 acceptance set needed a mixed spot.
 
+M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5b"):
+
+- **P21, reconciler remedies (proposed):** the reconciler acts on three root causes only: an **undersized producer**
+  (it runs flat out, everything it makes arrives, its consumer still starves) grows by one `expand` unit; a **broken
+  route or pole line** (items pile up at the producer and don't arrive; a consumer without power while the steam block
+  has spare capacity) gets its missing pieces re-placed by the crew (a `repair` goal); a **crew-fuelled burner** without
+  fuel gets an upkeep pass at once. Belts at their capacity, modules whose own inserters limit intake, depleted ore (D28)
+  and low demand are classified and reported but not remedied (D24 remedies stay design-time). Each root cause gets at
+  most `reconcile-max-remedies` (3) remedies, `reconcile-cooldown-ticks` (5 game-min) apart, and only after a warm-up of
+  `reconcile-warmup-ticks` (5 game-min) since the node and its feeders were built. Re-placing missing route pieces
+  touches D28 (no rebuilding destroyed modules in v1): it is limited to belts and poles, never machines.
+- **P22, edge flow probes (proposed, extends D26):** a belt edge's measured rate is the flow arriving at the consumer's
+  port, counted from belt items' unique ids on that tile (one edge probed at a time per faction, 10 s each), not derived
+  from machine counters; node rates come from `products_finished` (crafting machines) or the working share (drills, labs).
+
 Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
 
 Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
@@ -687,6 +718,9 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).
+- v0.14 (2026-10-15, M5b): §11 P21–P22 proposed (reconciler remedies, edge flow probes); §5.7 measurement, reconciler
+  and `layout-smelting` (D35) settings.
 - v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D47; §11 P17–P19 resolved.
 - v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.
 - v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
