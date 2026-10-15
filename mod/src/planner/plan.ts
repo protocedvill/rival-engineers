@@ -5,11 +5,12 @@
 // is looked up by id each step. Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
-import { BeltTier } from "./capacity"
+import { BeltTier, tierByBelt } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, stepPlacement, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
+import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
 import { ModuleDef } from "../modules/types"
 
@@ -32,6 +33,8 @@ export interface ConnectionRequest {
   to: PortRef
   /** Planned rate (items/s); default: what the ports' rates allow. */
   rate?: number
+  /** Belt tier for this connection (D24 upgrade-tier); default: the job's tier. */
+  belt?: string
 }
 
 export interface PlanRequest {
@@ -41,6 +44,8 @@ export interface PlanRequest {
   center: Vec
   /** The scanned region the layout must stay in. */
   region: Rect
+  /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
+  poles?: string
 }
 
 export interface PlanStats {
@@ -60,8 +65,15 @@ export interface PlanStats {
 export interface PlanJob {
   request: PlanRequest
   tier: BeltTier
+  /** Tiers by belt name for per-connection tiers. */
+  tiers?: BeltTier[]
   layout: LayoutState
-  phase: "place" | "route" | "done" | "failed"
+  phase: "place" | "route" | "poles" | "done" | "failed"
+  /** The pole network phase (request.poles). */
+  poleJob?: PoleJob
+  /** Ids of what existed in the base layout before this job (to tell new parts from old). */
+  baseModules: Record<string, boolean>
+  baseRoutes: Record<string, boolean>
   order: string[]
   placeIdx: number
   placement?: PlacementSearch
@@ -117,11 +129,56 @@ function placementOrder(req: PlanRequest): string[] {
   return order
 }
 
-export function newPlanJob(request: PlanRequest, tier: BeltTier): PlanJob {
+/** A copy of a layout that a plan job may change without touching the original (tables copied, defs shared). */
+export function cloneLayout(l: LayoutState): LayoutState {
+  const copy = <T>(r: Record<number, T>): Record<number, T> => {
+    const o: Record<number, T> = {}
+    for (const [k, v] of pairs(r)) o[k as number] = v as T
+    return o
+  }
+  const spans: Record<string, LayoutState["spans"][string]> = {}
+  for (const [k, list] of pairs(l.spans)) spans[k as string] = [...(list as LayoutState["spans"][string])]
+  const routes: Record<string, Route> = {}
+  for (const [k, r] of pairs(l.routes)) routes[k as string] = { ...(r as Route) }
+  return {
+    modules: l.modules.map((m) => ({ ...m })),
+    occ: copy(l.occ),
+    reserved: copy(l.reserved),
+    routeOcc: copy(l.routeOcc),
+    corridor: copy(l.corridor),
+    spans,
+    routes,
+    routeOrder: [...l.routeOrder],
+    poles: l.poles !== undefined ? l.poles.map((p) => ({ ...p })) : undefined,
+    poleLines: l.poleLines !== undefined ? l.poleLines.map((x) => ({ ...x, poles: [...x.poles] })) : undefined,
+  }
+}
+
+/**
+ * A plan job. With `base`, it plans on top of an existing layout (the faction's base so far): a copy of it, where
+ * existing modules never move and existing routes are never ripped up; connections may use existing modules' ports.
+ */
+export function newPlanJob(request: PlanRequest, tier: BeltTier, base?: LayoutState, tiers?: BeltTier[]): PlanJob {
+  const layout = base !== undefined ? cloneLayout(base) : newLayout()
+  const baseModules: Record<string, boolean> = {}
+  const baseRoutes: Record<string, boolean> = {}
+  const replaced: Record<string, number> = {}
+  for (const m of layout.modules) {
+    m.fixed = true
+    baseModules[m.id] = true
+    replaced[m.id] = math.huge
+  }
+  for (const id of layout.routeOrder) {
+    layout.routes[id].fixed = true
+    baseRoutes[id] = true
+  }
   return {
     request,
     tier,
-    layout: newLayout(),
+    tiers,
+    baseModules,
+    baseRoutes,
+    layout,
     phase: "place",
     order: placementOrder(request),
     placeIdx: 0,
@@ -131,7 +188,7 @@ export function newPlanJob(request: PlanRequest, tier: BeltTier): PlanJob {
     failures: {},
     expanded: {},
     replaceQueue: [],
-    replaced: {},
+    replaced,
     avoid: {},
     stats: { steps: 0, work: 0, placeWork: 0, routeWork: 0, expansions: 0, searches: 0, ripups: 0, replacements: 0, maxStepWork: 0 },
   }
@@ -213,7 +270,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     item: tp.item ?? "",
     to,
     goal: { x: goalTile.x, y: goalTile.y, dir: dirIndex(tp.dir), side: tp.side },
-    tier: job.tier,
+    tier: (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier,
     own,
     avoid,
   }
@@ -374,7 +431,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (id === undefined) {
       let failed = false
       for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
-      job.phase = failed ? "failed" : "done"
+      job.phase = failed ? "failed" : job.request.poles !== undefined ? "poles" : "done"
       return 0
     }
     const c = connection(job, id)
@@ -454,13 +511,29 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   return used
 }
 
+/** The pole network phase: joins every consumer module to a generator module. Unreachable modules are failures. */
+function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  job.poleJob ??= newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
+  const before = job.poleJob.work
+  if (stepPoles(job.poleJob, job.layout, terrain, facts, policy, budget)) {
+    let failed = false
+    for (const [owner, why] of pairs(job.poleJob.failures)) {
+      job.failures[`power:${owner}`] = why as string
+      failed = true
+    }
+    job.phase = failed ? "failed" : "done"
+  }
+  return job.poleJob.work - before
+}
+
 /** Advances the job by about `budget` work units. Returns true when it has finished (done or failed). */
 export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): boolean {
   let used = 0
-  while (used < budget && (job.phase === "place" || job.phase === "route")) {
+  while (used < budget && (job.phase === "place" || job.phase === "route" || job.phase === "poles")) {
     const before = used
     if (job.phase === "place") used += placeStep(job, terrain, facts, policy, budget - used)
-    else used += routeStep(job, terrain, facts, policy, budget - used)
+    else if (job.phase === "route") used += routeStep(job, terrain, facts, policy, budget - used)
+    else used += poleStep(job, terrain, facts, policy, budget - used)
     if (used === before) used += 0.01
   }
   job.stats.steps++

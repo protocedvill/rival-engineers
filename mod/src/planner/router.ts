@@ -138,8 +138,9 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   if (r !== undefined && !req.own[r]) return -1
   const w = policy.router
   let extra = 0
-  if (state.routeOcc[k] !== undefined) {
-    if (!rip) return -1
+  const occupant = state.routeOcc[k]
+  if (occupant !== undefined) {
+    if (!rip || state.routes[occupant]?.fixed) return -1
     extra += w.rip
   }
   const b = terrain.block(x, y)
@@ -338,6 +339,9 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
       let extra = 0
       if (conflicts.length > 0) {
         if (!s.rip) continue
+        let fixed = false
+        for (const r of conflicts) if (state.routes[r]?.fixed) fixed = true
+        if (fixed) continue
         extra = w.rip
       }
       push(cur, ex + DX[d], ey + DY[d], d, g + w.underground + c + ce + extra, k)

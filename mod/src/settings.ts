@@ -324,4 +324,75 @@ data.extend([
     maximum_value: 64,
     order: "i-g",
   },
+  // M5: the strategy layer after the burner bootstrap (SPEC §5.5, §5.8).
+  {
+    type: "bool-setting",
+    name: Settings.factoryEnabled,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "j-a",
+  },
+  {
+    // Staged targets (D27), science packs per minute the labs consume: "item=n,...;item=n,..." (one stage per ";").
+    type: "string-setting",
+    name: Settings.factoryTargets,
+    setting_type: "runtime-global",
+    default_value: "automation-science-pack=10",
+    allow_blank: false,
+    order: "j-b",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryRegionRadius,
+    setting_type: "runtime-global",
+    default_value: 112,
+    minimum_value: 32,
+    maximum_value: 512,
+    order: "j-c",
+  },
+  {
+    // Entities the factory designs with (config defaults; recipes, rates and sizes come from prototypes).
+    type: "string-setting",
+    name: Settings.factoryEntities,
+    setting_type: "runtime-global",
+    default_value: "assembler=assembling-machine-1,electric-drill=electric-mining-drill,lab=lab,boiler=boiler,engine=steam-engine,pole=small-electric-pole",
+    allow_blank: false,
+    order: "j-d",
+  },
+  {
+    // Seconds per research unit the lab count is sized for; 0 = the mean over the research goal's pack technologies.
+    type: "int-setting",
+    name: Settings.factoryResearchUnitTime,
+    setting_type: "runtime-global",
+    default_value: 0,
+    minimum_value: 0,
+    maximum_value: 600,
+    order: "j-e",
+  },
+  {
+    // Until science is automated, the crew hand-craft packs and put them into the labs.
+    type: "bool-setting",
+    name: Settings.factoryHandFeedLabs,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "j-f",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryBuildPriority,
+    setting_type: "runtime-global",
+    default_value: 90,
+    minimum_value: 0,
+    maximum_value: 1000,
+    order: "j-g",
+  },
+  {
+    // The soak harness stops a run once every faction reached this milestone (telemetry done.json).
+    type: "string-setting",
+    name: Settings.soakDoneMilestone,
+    setting_type: "runtime-global",
+    default_value: "first-electricity-materials",
+    allow_blank: false,
+    order: "k-a",
+  },
 ])

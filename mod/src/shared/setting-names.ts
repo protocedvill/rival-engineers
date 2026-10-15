@@ -38,4 +38,12 @@ export const Settings = {
   beltUtilization: "rival-engineers-belt-utilization",
   plannerWorkPerTick: "rival-engineers-planner-work-per-tick",
   terrainChunksPerTick: "rival-engineers-terrain-chunks-per-tick",
+  factoryEnabled: "rival-engineers-factory-enabled",
+  factoryTargets: "rival-engineers-factory-targets",
+  factoryRegionRadius: "rival-engineers-factory-region-radius",
+  factoryEntities: "rival-engineers-factory-entities",
+  factoryResearchUnitTime: "rival-engineers-factory-research-unit-time",
+  factoryHandFeedLabs: "rival-engineers-factory-hand-feed-labs",
+  factoryBuildPriority: "rival-engineers-factory-build-priority",
+  soakDoneMilestone: "rival-engineers-soak-done-milestone",
 } as const

@@ -74,6 +74,8 @@ export interface Route {
   blocker?: RouteStep
   /** Times ripped up. */
   ripped: number
+  /** Built already (part of the faction's base): never ripped up. */
+  fixed?: boolean
 }
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */

@@ -77,6 +77,22 @@ export interface Config {
   plannerWorkPerTick: number
   /** Terrain model budget: chunks scanned per tick. */
   terrainChunksPerTick: number
+  /** M5 strategy layer: takes over from the burner bootstrap once the first-electricity materials are gathered. */
+  factoryEnabled: boolean
+  /** Staged targets (D27): packs per minute the labs consume, "item=n,...;item=n,..." (stages separated by ";"). */
+  factoryTargets: string
+  /** The base region (around the hub) plans place modules in; grown when a plan fails. */
+  factoryRegionRadius: number
+  /** Entities the factory designs with, "role=entity,...": assembler, electric-drill, lab, boiler, engine, pole. */
+  factoryEntities: string
+  /** Seconds per research unit the labs are sized for (0: the mean over the research goal's pack technologies). */
+  factoryResearchUnitTime: number
+  /** Hand-craft science packs into the labs until science is automated. */
+  factoryHandFeedLabs: boolean
+  /** Job priority of the factory's builds (bootstrap: place 90, craft 50, gather 20). */
+  factoryBuildPriority: number
+  /** Telemetry writes done.json (the soak harness stops) once every faction reached this milestone. */
+  soakDoneMilestone: string
 }
 
 export type ConfigKey = keyof Config
@@ -125,6 +141,14 @@ export function getConfig(): Config {
     beltUtilization: setting(Settings.beltUtilization),
     plannerWorkPerTick: setting(Settings.plannerWorkPerTick),
     terrainChunksPerTick: setting(Settings.terrainChunksPerTick),
+    factoryEnabled: setting(Settings.factoryEnabled),
+    factoryTargets: setting(Settings.factoryTargets),
+    factoryRegionRadius: setting(Settings.factoryRegionRadius),
+    factoryEntities: setting(Settings.factoryEntities),
+    factoryResearchUnitTime: setting(Settings.factoryResearchUnitTime),
+    factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
+    factoryBuildPriority: setting(Settings.factoryBuildPriority),
+    soakDoneMilestone: setting(Settings.soakDoneMilestone),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>
