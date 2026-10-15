@@ -59,6 +59,12 @@ Two layers, by analogy:
 | D33 | Module validation (2026-10-14, user decision on M4a proposals P1 and P3) | Modules are fed **exactly 1.0× their declared input rates** throughout (no over-feeding, no priming) and measured only once they reach a **steady state** (detected automatically, with a generous cap on the warm-up; the detection rule is an implementation parameter, §7). A module that never stabilises is reported as a finding, not papered over. Each output must then reach **≥ 90% of declared**. **Malls** (outputs into chests) are judged on the **plate value of all products together (≥ 90% of declared)** plus a **product-coverage run** (chests capped at one slot, every product appears). Decided by the user via the manager; P1 accepted as proposed, P3 changed from "1.1× after a 3× primed warm-up" to this rule. |
 | D34 | M4b proposals (2026-10-14, user decision via manager) | **Approved: P4** LayoutPolicy fields (`topology`, `protectOre`, `minOreCoverage`, `searchRadii`, `utilization`, `overflow { order, maxParallel }`, `headroom`, router/placement weights; `mod/src/planner/policy.ts`); **P5** every belt port keeps 2 free tiles straight out; **P6** module footprints never cover needed ore (mining modules excepted) but belts may cross ore at a policy cost; **P7** `planner-work-per-tick` default 100 (≈1 ms/tick while planning); **P8** optional `Port.lanes` (1 \| 2, default 2) for edge capacity. |
 | D35 | Smelter placement (2026-10-14, user decision via manager) | "Smelting near its ore patch" vs "compact core" is a **LayoutPolicy option**, not a fixed rule. Both are implemented, and **M6 soak runs A/B them** to pick the early-game default. The M4 real-terrain bar (lab 5 modules + steam block, 5/5 seeds) is accepted. |
+| D36 | Undergrounds (2026-10-15, user decision on P16, changed) | Research `logistics` (hand-fed packs, like the other unblocking techs) **before** a production/mall plan only when a route using underground belts would be **at least 50 tiles shorter** in total than the best plan without them (setting, default 50). Otherwise it waits for the normal research order. A plan that has no routing at all without undergrounds counts as infinitely longer, so the seed-222 case still researches it first. |
+| D37 | Stage 1 target (2026-10-15, user decision) | P11 approved: default `factory-targets` = 10 red/min, labs sized for the research goal's mean unit time. M6 adds the 30 + 30 stage. |
+| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. |
+| D39 | Crew pace (2026-10-15, user) | No artificial "think time" slowdown: the crews are already slower than a human because they work inefficiently. Efficiency improvements (batching, crafting while walking) are wanted, not throttling. |
+| D40 | Bootstrap sizing (2026-10-15, user) | Bootstrap drill/furnace counts are **settings**, with the current values as defaults. |
+| D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
 
 ## 3. v1 Definition of Done
 
@@ -590,15 +596,15 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-M5a proposals (all **proposed**, not decided; details and evidence in `docs/reports/M5-report.md`):
+M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-15; details and evidence in `docs/reports/M5-report.md`):
 
 - **P9, crafting triggers for the crew (proposed):** the engine does not fire `craft-item` research triggers for a
   player-less character's hand-crafting (pinned by a T2 engine test), so `automation-science-pack` (craft a lab) never
   completes. The controller emulates the trigger for crew crafts, as it already emulates the build action (§5.1).
-- **P10, research before automated science (proposed):** until a pack is automated, the crew hand-craft it and put it
+- **P10, research before automated science (resolved → D38, changed):** until a pack is automated, the crew hand-craft it and put it
   into the labs, but only for technologies that unblock a goal (`automation`, `electric-mining-drill`); the rest of the
   D30 set waits for automated packs (`factory-hand-feed-labs`).
-- **P11, stage 1 target and lab sizing (proposed):** default `factory-targets` = 10 red/min; labs sized for the mean
+- **P11, stage 1 target and lab sizing (approved → D37):** default `factory-targets` = 10 red/min; labs sized for the mean
   unit time of the research goal's pack technologies (4 labs). M6 adds the 30 + 30 stage.
 - **P12, build order of goals (proposed):** power (steam block + its burner-drill coal outpost) → labs → production
   (gated on the research it needs) → mall → growth; one goal planned at a time on top of the faction's layout, any
@@ -611,11 +617,13 @@ M5a proposals (all **proposed**, not decided; details and evidence in `docs/repo
   red producer made ≥ 10 packs (`automated-red-science`).
 - **P15, port approach tiles (proposed, extends D34/P5):** the tile beyond each belt port's outside tile stays reserved
   for that port's route after placement, so later plans cannot box in an unconnected port of a built module.
-- **P16, undergrounds when boxed in (proposed, extends P10):** when a production or mall goal fails every plan attempt
+- **P16, undergrounds when boxed in (resolved → D36, changed):** when a production or mall goal fails every plan attempt
   without undergrounds (belts can't cross; seed 222 rip-up cycled for 2 game-hours), the technology that unlocks the
   underground belt (`logistics`) becomes a prerequisite of those goals and is researched with hand-fed packs like the
   other unblocking techs. Alternative: always research it before the first production plan (shorter, simpler routes
   on every seed, at about 3–5 game-minutes of extra hand-crafting and research).
+
+Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
 
 Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
 
@@ -640,6 +648,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
 - v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
   mall plate value + coverage); ModuleDef schema additions in §5.4 (chest-out, anchor, upkeep, mirrorable, insertAt,
   Rate.kind, modules carry their own poles); §11 P1–P3 resolved.
