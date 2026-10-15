@@ -16,19 +16,32 @@ mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
-npm test                 # build + in-game tests (T2) on headless Factorio
-npm test -- "pattern"    # filter tests by Lua pattern
-npm test -- "validation fast"   # module validation lab without the slow modules (~1 min)
-npm test -- "routing lab"       # M4b: 5 modules placed, routed and run in a lab (~10 s)
+npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (~2.5 min, serial ~11)
+npm test -- "pattern"    # filter tests by Lua pattern (several patterns: any of them)
+npm test -- -j 4 "pattern"      # shard count (default: half the cores, at most one shard per unit; or $TEST_JOBS)
+npm test -- --plan              # print the shard plan without running
+npm test -- "validation fast"   # module validation lab without the slow modules
+npm test -- "routing lab"       # M4b: 5 modules placed, routed and run in a lab (~20 s)
 npm test -- "real terrain"      # M4b: the module set on 5 generated maps (~10 s; filters are Lua patterns: no "|", escape "-" as "%-")
+npm run test:serial      # build + one `factorio-test run` in .factorio-test/data (debugging; takes the same filters)
 ```
+
+`npm test` (`tools/test-parallel.mjs`) runs one `factorio-test run` per shard, each with its own write-data directory
+`.factorio-test/shards/N/` (vendored mods copied from `ci/mods/`). A test file is one unit; `tools/test-shards.json`
+splits files whose tests are independent (each module validation test; the M4b routing tests, keeping the
+real-terrain seeds together). Units are packed by duration from `out/test-timings.json` (updated by every run,
+seeded from `tools/test-timings.json`; refresh that with `npm test -- --save-timings` when the suite changes a lot).
+Tests the plan didn't know (new tests in a split file) run in a short second pass. Output: one summary,
+`out/test-results.json` (merged), and per shard `out/shards/shard-N.log`; a failure prints its shard's log and
+Factorio log paths.
 
 Curated modules (SPEC §5.4): edit a spec in `tools/modules/curated/`, then
 `python3 -I tools/modules/curate.py show SPEC` (character grid, to place ports) and
 `python3 -I tools/modules/curate.py build tools/modules/curated/*.json` (writes `data/modules/<id>.json`, a render
 dump in `data/modules/render/` and `ATTRIBUTION.md`).
 
-Rendering entity dumps (written by the `dump_entities` remote call to `.factorio-test/data/script-output/`):
+Rendering entity dumps (written by the `dump_entities` remote call to `script-output/` in the write-data directory:
+`.factorio-test/shards/N/script-output/` after `npm test`, `.factorio-test/data/script-output/` after `test:serial`):
 
 ```bash
 python3 tools/render/render.py DUMP.json -o out/frame.png
@@ -43,11 +56,18 @@ Soak runs (T3, SPEC §7) on fresh maps, headless at max speed, with a scorecard 
 npm run soak                                              # tools/harness/soak.toml: M3 acceptance, 5 seeds
 python3 tools/harness/soak.py -c tools/harness/two-factions.toml --gif
 python3 tools/harness/soak.py --seeds 11 --hours 0.5 --name dev   # quick one-off
+python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/no-starting-area.toml   # several configs
+python3 tools/harness/soak.py -j 1                        # one at a time (for performance numbers)
 # → out/soak/<name>/scorecard.md, scorecard.json, seed-N/{telemetry.json,frames/,factorio-current.log}
 ```
 
-In-game test logs (`[m1] ...` measurements) are printed only for failing tests. Read them from
-`.factorio-test/data/factorio-current.log`.
+Seeds and configs run concurrently, `-j` at a time (default `$SOAK_JOBS`, else half the cores), each in its own
+write-data directory `.factorio-test/soak/<name>/seed-N/`. Concurrent runs slow each other: compare wall and AI
+ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `scorecard.json`).
+
+In-game test logs (`[m1] ...` measurements) are printed only for failing tests. Read them from the shard's
+`.factorio-test/shards/N/factorio-current.log` (the summary names the shard of each failure; `out/test-results.json`
+lists every test's shard), or run the test alone (`npm test -- "name"`, one shard: `.factorio-test/shards/0/`).
 
 Layout: `mod/src` holds the TypeScript sources (`control.ts` runtime, `settings.ts` settings stage,
 `character/` the Character Controller, `jobs/` factions, the Job Board (`board.ts`, pure) and the crew runtime,
