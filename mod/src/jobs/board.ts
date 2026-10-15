@@ -473,3 +473,55 @@ export function missingMaterials(jobs: Job<unknown>[], held: Record<string, numb
   }
   return out
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Trip batching (B3): mining work whose products go back to the depot is chained into one trip.
+
+export interface TripOptions<P> {
+  /** Most jobs in one trip, the anchor included. */
+  maxJobs: number
+  /** Every job of the trip lies within this distance of the anchor. */
+  radius: number
+  /** Which other ready jobs may join the trip (same kind of work, materials in hand...). */
+  accept: JobFilter<P>
+  /** Inventory slots a job's products take (fractions add up: 4 wood are 0.04 of a 100-stack slot). */
+  load: (this: void, job: Job<P>) => number
+  /** Slots the trip may fill. The anchor always goes, whatever its load. */
+  capacity: number
+}
+
+/**
+ * The anchor plus nearby ready jobs to do in one trip, in visiting order: each next job is the nearest remaining
+ * candidate to the previous one (ties by id). Stops at `maxJobs` or when the next job's load would exceed `capacity`.
+ */
+export function planTrip<P>(board: Board<P>, anchor: Job<P>, tick: number, options: TripOptions<P>): number[] {
+  const trip = [anchor.id]
+  let used = options.load(anchor)
+  const candidates: Job<P>[] = []
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (job.id === anchor.id || !isReady(board, job, tick) || !options.accept(job)) continue
+    if (distance(job.pos, anchor.pos) > options.radius) continue
+    candidates.push(job)
+  }
+  let last = anchor.pos
+  while (trip.length < options.maxJobs && candidates.length > 0) {
+    let bestIndex = 0
+    let bestD = math.huge
+    for (let i = 0; i < candidates.length; i++) {
+      const d = distance(last, candidates[i].pos)
+      if (d < bestD - 1e-9 || (math.abs(d - bestD) <= 1e-9 && candidates[i].id < candidates[bestIndex].id)) {
+        bestD = d
+        bestIndex = i
+      }
+    }
+    const next = candidates[bestIndex]
+    const load = options.load(next)
+    if (used + load > options.capacity) break
+    used += load
+    trip.push(next.id)
+    last = next.pos
+    candidates.splice(bestIndex, 1)
+  }
+  return trip
+}

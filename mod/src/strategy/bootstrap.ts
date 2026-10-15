@@ -194,6 +194,8 @@ interface Ctx {
   /** Ore on its way into furnaces (hand-mined, fed from the depot), by ore. */
   oreInbound: Record<string, number>
   gathers: number
+  /** Active gathers from trees (wood), counted apart: they are batched into trips (B3). */
+  woodGathers: number
   depot?: LuaEntity
   waiting: string[]
 }
@@ -212,6 +214,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     order: [],
     oreInbound: {},
     gathers: 0,
+    woodGathers: 0,
     depot: undefined,
     waiting: [],
   }
@@ -704,7 +707,8 @@ function scanJobs(ctx: Ctx): void {
       case "gather":
         if (p.deliverTo && p.deliverTo.valid && p.deliverTo.type === "furnace") ctx.oreInbound[p.item] = (ctx.oreInbound[p.item] ?? 0) + p.count
         else addPending(ctx, p.item, p.count)
-        ctx.gathers++
+        if (p.target.valid && p.target.type === "tree") ctx.woodGathers++
+        else ctx.gathers++
         break
       case "transfer":
         addPending(ctx, p.item, p.count)
@@ -1033,7 +1037,9 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
     return
   }
   const near = into?.position ?? ctx.brain.hub ?? ctx.brain.base
-  while (short > 0 && ctx.gathers < cap) {
+  // Wood: enough tree jobs for every member's trip (B3); ore gathers feed furnaces one job per member.
+  const woodCap = cap * ctx.config.tripMaxJobs
+  while (short > 0 && (isWood ? ctx.woodGathers < woodCap : ctx.gathers < cap)) {
     let target: LuaEntity | undefined
     let count: number
     let key: string
@@ -1061,7 +1067,8 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
       priority: PRIORITY.gather,
       payload: { kind: "gather", item, count, target, deliverTo: into },
     })
-    ctx.gathers++
+    if (isWood) ctx.woodGathers++
+    else ctx.gathers++
     short -= count
     if (into && into.type === "furnace") ctx.oreInbound[item] = (ctx.oreInbound[item] ?? 0) + count
     else addPending(ctx, item, count)

@@ -1,7 +1,10 @@
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { cancel, createController, destroyController, enqueue, getAction } from "../character/controller"
 import { distance } from "../character/steering"
-import { clearConfigOverrides, getConfig } from "../config"
+import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
+import { addJob } from "../jobs/board"
+import { addClearJob, addStockpile, createFaction, destroyFaction } from "../jobs/faction"
+import { FactionState } from "../jobs/types"
 import { at, createLab, Lab } from "./lab"
 
 // B1 mining arena (T2): a character mines every tree and rock prototype from every direction, off the tile grid, in
@@ -424,5 +427,125 @@ describe("mining arena (B1)", () => {
       cells.push(newCell(surface, add(best, 0, 12), targets))
     }
     runArena("real forest", cells, (s) => assert(s.ok === s.total, `${s.total - s.ok} of ${s.total} not mined`))
+  })
+})
+
+interface CrewRun {
+  faction: FactionState
+  jobs: number[]
+  done: number
+  failed: number
+  releases: number
+  ticks: number
+  deposits: number
+  trips: number
+}
+
+/** A crew of one clears (and cuts wood from) the densest forest window of a seed, through the Job Board. */
+function startCrewRun(tag: string, seed: number): CrewRun {
+  const surface = realSurface(`arena-crew-${tag}-${seed}`, seed)
+  surface.request_to_generate_chunks({ x: 0, y: 0 }, 6)
+  surface.force_generate_chunk_requests()
+  let best: MapPosition = { x: 0, y: 0 }
+  let bestN = -1
+  for (let x = -160; x < 160; x += 24) {
+    for (let y = -160; y < 160; y += 24) {
+      const n = surface.count_entities_filtered({ area: [[x, y], [x + 24, y + 24]], type: "tree" })
+      if (n > bestN) {
+        bestN = n
+        best = { x: x + 12, y: y + 12 }
+      }
+    }
+  }
+  const faction = createFaction(`arena-${tag}-${seed}`, { surface: surface.name, position: add(best, 0, 22), crew: 1 })
+  faction.depositBetweenJobs = true
+  const depotAt = surface.find_non_colliding_position("wooden-chest", add(best, 2, 22), 8, 1)!
+  const depot = surface.create_entity({ name: "wooden-chest", position: depotAt, force: faction.force })!
+  addStockpile(faction, depot)
+  const found = surface.find_entities_filtered({ position: best, radius: 10, type: ["tree", "simple-entity"] })
+  const jobs: number[] = []
+  for (let n = 0; n < found.length && jobs.length < 40; n++) {
+    const e = found[n]
+    if (!e.minable) continue
+    const p = firstProduct(e)
+    if (n % 3 === 0 && e.type === "tree" && p) {
+      const job = addJob(faction.board, { kind: "gather", pos: e.position, payload: { kind: "gather", item: p.item, count: p.amount, target: e, deliverTo: depot } }, game.tick)
+      jobs.push(job.id)
+    } else jobs.push(addClearJob(faction, e))
+  }
+  return { faction, jobs, done: 0, failed: 0, releases: 0, ticks: 0, deposits: 0, trips: 0 }
+}
+
+/** True once every job of the run is done or failed (fills in the counts). */
+function crewRunFinished(run: CrewRun, started: number): boolean {
+  let open = 0
+  run.done = 0
+  run.failed = 0
+  for (const id of run.jobs) {
+    const job = run.faction.board.jobs[id]
+    if (job.status === "done") run.done++
+    else if (job.status === "failed") run.failed++
+    else open++
+  }
+  const member = storage.crew[run.faction.crew[0]]
+  run.releases = member.stats.jobsReleased
+  run.deposits = member.stats.deposits ?? 0
+  run.trips = member.stats.trips ?? 0
+  run.ticks = game.tick - started
+  // Finished when no job is open and the crew member emptied its pockets.
+  return open === 0 && member.actions.length === 0
+}
+
+function logCrewRun(label: string, run: CrewRun): void {
+  log(
+    string.format(
+      "[arena] crew %s: %d/%d jobs done, %d failed, %d releases, %d depot deposits, %d trips, %.1f game-s",
+      label,
+      run.done,
+      run.jobs.length,
+      run.failed,
+      run.releases,
+      run.deposits,
+      run.trips,
+      run.ticks / 60,
+    ),
+  )
+}
+
+describe("mining arena: crew (B1, B3)", () => {
+  before_each(() => {
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
+    clearConfigOverrides()
+  })
+
+  test("a crew member clears a real forest: every job done, one depot trip per batch", () => {
+    async(60 * 60 * 30)
+    const seed = 123
+    // The same forest twice (two surfaces with one seed): a depot round trip per job, then trips.
+    let phase: "single" | "trips" = "single"
+    setConfigOverride("tripMaxJobs", 1)
+    let run = startCrewRun("single", seed)
+    let started = game.tick
+    let single: CrewRun | undefined
+    on_tick(() => {
+      if ((game.tick - started) % 60 !== 0 || !crewRunFinished(run, started)) return
+      logCrewRun(phase === "single" ? "one job per trip" : "trip batching", run)
+      if (phase === "single") {
+        single = run
+        destroyFaction(run.faction.name)
+        clearConfigOverrides()
+        phase = "trips"
+        run = startCrewRun("trips", seed)
+        started = game.tick
+        return
+      }
+      const s = single!
+      assert(s.done === s.jobs.length, `one job per trip: ${s.jobs.length - s.done} of ${s.jobs.length} jobs not done`)
+      assert(run.done === run.jobs.length, `trips: ${run.jobs.length - run.done} of ${run.jobs.length} jobs not done`)
+      const bound = math.ceil(run.jobs.length / getConfig().tripMaxJobs) + 1
+      assert(run.deposits <= bound, `trips: ${run.deposits} depot deposits for ${run.jobs.length} jobs (bound ${bound})`)
+      assert(run.ticks < s.ticks, `trips took ${run.ticks} ticks, one job per trip ${s.ticks}`)
+      done()
+    })
   })
 })

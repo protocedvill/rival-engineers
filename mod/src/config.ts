@@ -107,6 +107,12 @@ export interface Config {
   factoryMallUtilization: number
   /** Sandbox scenario (live review): keep biters. Off: no enemy bases, peaceful. */
   sandboxEnemies: boolean
+  /** B3: most clear / wood-gather jobs one crew member chains into one trip before returning to the depot (1 = no batching). */
+  tripMaxJobs: number
+  /** B3: every job of a trip lies within this many tiles of its first job. */
+  tripRadius: number
+  /** B3: a trip stops when its products would fill more than this fraction of the free inventory slots. */
+  tripInventoryFill: number
 }
 
 export type ConfigKey = keyof Config
@@ -170,6 +176,9 @@ export function getConfig(): Config {
     factoryMall: setting(Settings.factoryMall),
     factoryMallUtilization: setting(Settings.factoryMallUtilization),
     sandboxEnemies: setting(Settings.sandboxEnemies),
+    tripMaxJobs: setting(Settings.tripMaxJobs),
+    tripRadius: setting(Settings.tripRadius),
+    tripInventoryFill: setting(Settings.tripInventoryFill),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

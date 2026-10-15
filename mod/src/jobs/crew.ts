@@ -14,6 +14,7 @@ import {
   Job,
   missingMaterials,
   planBatch,
+  planTrip,
   Pos,
   Rect,
   release,
@@ -359,7 +360,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const held = heldItems(character)
   const avail = availableItems(faction, held)
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if (faction.brain && deposit(faction, member, held, tick)) return
+  if ((faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job) || !hasMaterials(job, avail)) return false
     if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
@@ -389,6 +390,18 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     jobs = []
     for (const id of batch.jobs) jobs.push(board.jobs[id])
     spot = batch.spot
+  } else if (isTripJob(faction, anchor)) {
+    // B3: chain nearby clears and wood gathers into one trip instead of a depot round trip per job.
+    const inv = character.get_main_inventory()!
+    const trip = planTrip(board, anchor, tick, {
+      maxJobs: config.tripMaxJobs,
+      radius: config.tripRadius,
+      accept: (job) => accept(job) && isTripJob(faction, job),
+      load: tripLoad,
+      capacity: inv.count_empty_stacks() * config.tripInventoryFill,
+    })
+    jobs = []
+    for (const id of trip) jobs.push(board.jobs[id])
   }
   jobs = fitMaterials(jobs, avail)
   const ids: number[] = []
@@ -403,7 +416,57 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     member.spot = spot
     member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }) })
   }
-  for (const job of jobs) enqueueWork(faction, member, job)
+  if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
+  else for (const job of jobs) enqueueWork(faction, member, job)
+}
+
+/**
+ * Trip jobs (B3): mining whose products go back to the depot. Clears (trees, rocks, the faction's own entities to
+ * pick up) and gathers from trees or rocks delivered to a stockpile (wood). Ore gathers feed furnaces one by one.
+ */
+function isTripJob(faction: FactionState, job: CrewJob): boolean {
+  const p = job.payload
+  if (p.kind === "clear") return p.target.valid
+  if (p.kind !== "gather" || !p.target.valid || p.target.type === "resource") return false
+  return p.deliverTo === undefined || faction.stockpiles.indexOf(p.deliverTo) >= 0
+}
+
+/** Inventory slots a trip job's products take (fractions of a stack add up). */
+function tripLoad(this: void, job: CrewJob): number {
+  const p = job.payload
+  if (p.kind !== "clear" && p.kind !== "gather") return 0
+  if (!p.target.valid) return 0
+  let slots = 0
+  for (const product of p.target.prototype.mineable_properties.products ?? []) {
+    if (product.type !== "item") continue
+    const amount = product.amount ?? product.amount_max ?? 1
+    slots += amount / prototypes.item[product.name].stack_size
+  }
+  return slots
+}
+
+/** A trip: every mining action in order, then one delivery per depot for the gathers (the brain deposits the rest). */
+function enqueueTrip(faction: FactionState, member: CrewMember, jobs: CrewJob[]): void {
+  const deliveries: { to: LuaEntity; item: string; count: number; job: number }[] = []
+  for (const job of jobs) {
+    const p = job.payload
+    if (p.kind === "gather") {
+      member.actions.push({ action: enqueue(member.controller, { kind: "mine", target: p.target, count: p.count }), job: job.id })
+      if (p.deliverTo === undefined) continue
+      let d: { to: LuaEntity; item: string; count: number; job: number } | undefined
+      for (const other of deliveries) if (other.to === p.deliverTo && other.item === p.item) d = other
+      if (d === undefined) deliveries.push({ to: p.deliverTo, item: p.item, count: p.count, job: job.id })
+      else {
+        d.count += p.count
+        d.job = job.id
+      }
+    } else enqueueWork(faction, member, job)
+  }
+  // The delivery belongs to the last gather to that depot: earlier gathers finish when their mining does.
+  for (const d of deliveries) {
+    member.actions.push({ action: enqueue(member.controller, { kind: "insert", entity: d.to, item: d.item, count: d.count, allowPartial: true }), job: d.job })
+  }
+  member.stats.trips = (member.stats.trips ?? 0) + 1
 }
 
 /** Item types a crew member keeps on itself instead of depositing (its own weapons and armour). */

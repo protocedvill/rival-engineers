@@ -53,4 +53,7 @@ export const Settings = {
   factoryMall: "rival-engineers-factory-mall",
   factoryMallUtilization: "rival-engineers-factory-mall-utilization",
   sandboxEnemies: "rival-engineers-sandbox-enemies",
+  tripMaxJobs: "rival-engineers-trip-max-jobs",
+  tripRadius: "rival-engineers-trip-radius",
+  tripInventoryFill: "rival-engineers-trip-inventory-fill",
 } as const
