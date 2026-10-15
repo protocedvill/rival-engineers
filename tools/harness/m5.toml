@@ -8,6 +8,7 @@ name = "m5-red-science"
 seeds = [11, 222, 3333, 44444, 555555]
 game_hours = 3.0          # cap per seed; the run stops early once the faction has automated red science
 stop_when_done = true
+work_baseline = "tools/harness/baselines/m5-work.json"   # SPEC §9 work-count soft gate (workcounts.py)
 
 [run.fail_fast]           # stop a stuck seed early (soak.py --no-fail-fast to run it to the cap)
 stalls = 2                        # second STALL line (§3 stall check: no progress for stall-ticks)

@@ -14,6 +14,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import workcounts  # noqa: E402
+
 PHASES = [
     ("bootstrap", None, "first-electricity-materials"),
     ("power + labs", "first-electricity-materials", "labs-built"),
@@ -89,6 +92,7 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
     ap.add_argument("--milestone", default="automated-red-science")
+    ap.add_argument("--work-baseline", help="work-count baseline (default: the config's [run] work_baseline)")
     args = ap.parse_args(argv)
     run = Path(args.run)
     results = []
@@ -143,6 +147,8 @@ def main(argv):
                     lines.append(f"  - {d['plan_failures']} failed plan attempts; latest kinds: " + " | ".join(d["plan_failure_kinds"]))
                 if d["ghosts_left"]:
                     lines.append(f"  - {d['ghosts_left']}")
+    work_lines, _ = workcounts.section(run, args.work_baseline)
+    lines += [""] + work_lines
     (run / "m5-scorecard.md").write_text("\n".join(lines) + "\n")
     (run / "m5-scorecard.json").write_text(json.dumps(results, indent=1))
     print("\n".join(lines))

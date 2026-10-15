@@ -19,6 +19,7 @@ import { LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
+import { countWork, findEntities } from "../work"
 
 export interface BuildState {
   phase: "clear" | "place" | "done"
@@ -197,7 +198,15 @@ export function stepEntry(entry: PlannerEntry): void {
     entry.planTicks++
     // Rescans of dirty chunks keep running under budget while planning.
     stepTerrain(t, c.terrainChunksPerTick)
-    if (stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), c.plannerWorkPerTick)) entry.phase = entry.job!.phase === "done" ? "done" : "failed"
+    const st = entry.job!.stats
+    const w0 = st.work
+    const c0 = st.candidates ?? 0
+    const e0 = st.expansions
+    const finished = stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), c.plannerWorkPerTick)
+    countWork("plannerWork", st.work - w0)
+    countWork("placementCandidates", (st.candidates ?? 0) - c0)
+    countWork("routerExpansions", st.expansions - e0)
+    if (finished) entry.phase = entry.job!.phase === "done" ? "done" : "failed"
     return
   }
   if (entry.build !== undefined && entry.build.phase !== "done") stepBuild(entry)
@@ -222,7 +231,7 @@ export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?:
   for (const k of parts !== undefined ? partTiles(layout, parts) : layoutTiles(layout)) {
     const x = keyX(k)
     const y = keyY(k)
-    for (const e of surface.find_entities_filtered({ area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: ["tree", "simple-entity"] })) {
+    for (const e of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: ["tree", "simple-entity"] })) {
       const key = `${e.name}@${e.position.x},${e.position.y}`
       if (seen[key]) continue
       seen[key] = true

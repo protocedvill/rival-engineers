@@ -26,6 +26,7 @@ import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
 import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
+import { countWork, findEntities } from "../work"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -523,7 +524,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   const clearJobs: number[] = []
   for (const e of plan.remove) {
-    const found = ctx.surface.find_entities_filtered({ name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
+    const found = findEntities(ctx.surface, { name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
     if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
   }
   const reserved = ctx.faction.brain!.reserved
@@ -786,6 +787,8 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
     claimModuleFields(ctx, m)
   }
+  // With frame dumps on (soaks), every adopted plan's input too: plan-replay fixtures for planner changes (D36 / B2).
+  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
   const fuel = ctx.faction.brain!.catalog.fuel
   startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts })
   g.status = "building"
@@ -806,7 +809,7 @@ function claimModuleFields(ctx: Ctx, m: PlacedModule): void {
   brain.oreFields ??= {}
   for (const a of areas) {
     const area = { left_top: { x: m.origin.x + a.x, y: m.origin.y + a.y }, right_bottom: { x: m.origin.x + a.x + a.w, y: m.origin.y + a.y + a.h } }
-    for (const e of ctx.surface.find_entities_filtered({ name: resource, area })) {
+    for (const e of findEntities(ctx.surface, { name: resource, area })) {
       claimOreField(ctx.surface, brain.oreFields, resource, math.floor(e.position.x), math.floor(e.position.y))
     }
   }
@@ -1034,7 +1037,7 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
     if (!gh.valid) continue
     const box = gh.bounding_box
     const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
-    for (const e of ctx.surface.find_entities_filtered({ area, type: ["tree", "simple-entity"] })) {
+    for (const e of findEntities(ctx.surface, { area, type: ["tree", "simple-entity"] })) {
       const k = `${e.position.x},${e.position.y}`
       g.clearing ??= {}
       const old = g.clearing[k]
@@ -1103,6 +1106,7 @@ function measureAndReconcile(ctx: Ctx): void {
     sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
     f.reconciler ??= newReconcileState()
     const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel })
+    countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
     requestProbes(meter, r.probe)
     if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)
   }
@@ -1244,7 +1248,7 @@ function research(ctx: Ctx, d: Design | undefined): void {
 function labEntities(ctx: Ctx, node: LogicalNode): LuaEntity[] {
   const m = findModule(ctx.f.layout, node.id)
   if (m === undefined) return []
-  return ctx.surface.find_entities_filtered({ type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
+  return findEntities(ctx.surface, { type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
 function keyActive(ctx: Ctx, key: string): boolean {
@@ -1308,7 +1312,7 @@ function upkeep(ctx: Ctx): void {
     const m = findModule(f.layout, id)
     const names = m?.canonical.upkeep?.fuel.map((x) => x.name) ?? []
     if (m === undefined || names.length === 0) continue
-    const found = ctx.surface.find_entities_filtered({ name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
+    const found = findEntities(ctx.surface, { name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
     for (const e of found) {
       const inv = e.get_fuel_inventory()
       if (inv === undefined) continue
@@ -1330,7 +1334,7 @@ function upkeep(ctx: Ctx): void {
 function moduleEntities(ctx: Ctx, node: LogicalNode, type: string): LuaEntity[] {
   const m = findModule(ctx.f.layout, node.id)
   if (m === undefined) return []
-  return ctx.surface.find_entities_filtered({ type, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
+  return findEntities(ctx.surface, { type, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
 /** Research units done: progress of the current technology plus whole technologies finished since the last look. */
@@ -1452,7 +1456,7 @@ export function mallSources(factionName: string, item: string | undefined): { en
     if (m === undefined) continue
     for (const p of m.def.ports) {
       if (p.kind !== "chest-out" || (item !== undefined && p.item !== item)) continue
-      const chest = surface.find_entities_filtered({ type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
+      const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
       if (chest === undefined) continue
       for (const c of chest.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: chest, item: c.name, amount: c.count })
     }

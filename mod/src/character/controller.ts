@@ -4,6 +4,7 @@ import { Config, getConfig } from "../config"
 import { distance } from "./steering"
 import { ActionRecord, ActionSpec, ActionStatus, ControllerState, FailureReason, ReachGoal } from "./types"
 import { newWalk, reachSatisfied, stepWalk, StepResult, stopWalking } from "./walk"
+import { findEntities } from "../work"
 
 // Character Controller (SPEC §5.1): one per character body. Each controller runs a queue of actions;
 // each action is a resumable state machine stepped once per tick from on_tick, under a per-tick budget.
@@ -351,7 +352,7 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
   if (action.phase === "start") {
     let target = spec.target
     if (!target && spec.position) {
-      const found = character.surface.find_entities_filtered({ position: spec.position, type: "resource", limit: 1 })
+      const found = findEntities(character.surface, { position: spec.position, type: "resource", limit: 1 })
       target = found[0]
     }
     if (!target || !target.valid) return fail("target-invalid")

@@ -14,6 +14,7 @@ import { tkey, Vec } from "./grid"
 import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
 import { removePoleLines } from "./power"
 import { markDirty } from "./terrain"
+import { findEntities } from "../work"
 
 export interface PartConflict {
   kind: "route" | "module" | "pole"
@@ -45,11 +46,11 @@ export function specTiles(e: EntitySpec): number[] {
 }
 
 function ownBuilt(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
-  return surface.find_entities_filtered({ name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+  return findEntities(surface, { name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
 }
 
 function ownGhost(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
-  return surface.find_entities_filtered({ ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+  return findEntities(surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
 }
 
 function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {

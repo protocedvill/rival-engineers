@@ -3,6 +3,7 @@ import { getConfig } from "./config"
 import { brainReport } from "./strategy/bootstrap"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory"
 import { setAiProfiler } from "./profiling"
+import { workReport } from "./work"
 
 // Telemetry (SPEC §5.6, §7 T3): JSON written through helpers.write_file (server-side only, no gameplay
 // effect) for the soak harness, plus entity frame dumps for tools/render. Off unless the intervals are set.
@@ -119,7 +120,7 @@ export function writeTelemetry(): void {
   const tick = game.tick
   helpers.write_file(
     "rival-engineers/telemetry.json",
-    helpers.table_to_json({ tick, factions: factionTelemetry() }),
+    helpers.table_to_json({ tick, factions: factionTelemetry(), work: workReport() }),
     false,
   )
   // AI time (crew + controllers + brains) since the last write. Profiler values can only be logged.

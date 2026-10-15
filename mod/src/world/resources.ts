@@ -1,4 +1,5 @@
 import { LuaSurface, MapPosition } from "factorio:runtime"
+import { findEntities } from "../work"
 
 // World knowledge (SPEC §5.5, M3): crew don't chart. A faction learns about resources by generating the
 // chunks around its base, as a player walking around would, and scanning the generated entities. Patches are
@@ -56,7 +57,7 @@ export function scanPatches(surface: LuaSurface, center: MapPosition, radius: nu
     left_top: { x: center.x - radius, y: center.y - radius },
     right_bottom: { x: center.x + radius, y: center.y + radius },
   }
-  const entities = surface.find_entities_filtered({ area, type: "resource", name: names })
+  const entities = findEntities(surface, { area, type: "resource", name: names })
   const byName: Record<string, { x: number; y: number; amount: number }[]> = {}
   const nameOrder: string[] = []
   for (const e of entities) {

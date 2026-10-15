@@ -6,6 +6,7 @@ name = "m5-two-factions"
 seeds = [11, 222, 3333]
 game_hours = 3.0
 stop_when_done = true
+work_baseline = "tools/harness/baselines/m5-two-factions-work.json"   # SPEC §9 work-count soft gate
 
 [run.fail_fast]
 stalls = 2

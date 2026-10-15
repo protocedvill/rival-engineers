@@ -62,6 +62,8 @@ export interface PlacementSearch {
   ri: number
   best?: { score: number; ti: number; ox: number; oy: number; coverage: number; clear: number }
   work: number
+  /** Candidates scored (work counters, SPEC §9). */
+  candidates: number
   reason?: string
   result?: PlacedModule
 }
@@ -116,6 +118,7 @@ export function newPlacement(req: PlacementRequest): PlacementSearch {
     refine: [],
     ri: -1,
     work: 0,
+    candidates: 0,
   }
 }
 
@@ -359,6 +362,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       } else {
         const c = s.refine[s.ri]
         const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy)
+        s.candidates = (s.candidates ?? 0) + 1
         if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
         s.ri++
         used++
@@ -419,6 +423,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
     const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
     const e = evaluate(s, policy, td, ox, oy)
+    s.candidates = (s.candidates ?? 0) + 1
     if (e !== undefined) {
       if (s.best === undefined || e.score < s.best.score - 1e-9) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
       if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)

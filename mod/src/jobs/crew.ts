@@ -24,6 +24,7 @@ import {
 } from "./board"
 import { factionSurface } from "./faction"
 import { CrewMember, FactionState, JobPayload } from "./types"
+import { countWork, findEntities } from "../work"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
@@ -176,6 +177,7 @@ function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, acti
     delete faction.ghostJobs[job.payload.ghostKey]
   }
   complete(faction.board, job.id, member.id, tick)
+  countWork("jobsProcessed")
   removeClaim(member, job.id)
   if (job.kind !== "haul") member.stats.jobsDone++
   // A finished craft is a plan step for the strategy layer's stall detection.
@@ -205,7 +207,7 @@ export function resetMember(faction: FactionState, member: CrewMember, tick: num
 
 function charactersIn(faction: FactionState, rect: Rect | undefined): boolean {
   if (!rect) return false
-  const found = factionSurface(faction).find_entities_filtered({
+  const found = findEntities(factionSurface(faction), {
     type: "character",
     area: [
       [rect.x1, rect.y1],

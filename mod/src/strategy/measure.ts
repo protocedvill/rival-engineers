@@ -3,6 +3,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { Rate } from "../modules/types"
 import { findModule, findPort, LayoutState, portTile } from "../planner/layout"
 import { LogicalEdge, LogicalGraph, LogicalNode, rateIn, StateShares } from "../planner/logical"
+import { findEntities } from "../work"
 
 // Measurement (SPEC §5.8, D26): measured rates and machine states per Factory Graph node, measured flow per belt edge.
 // Per-faction flow statistics are too coarse, so everything is sampled per module:
@@ -182,7 +183,7 @@ function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n
   if (m === undefined) return { machines: [], packs: [], inserters: [] }
   const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
   const machines: Machine[] = []
-  for (const e of surface.find_entities_filtered({ area, force, type: MACHINE_TYPES })) {
+  for (const e of findEntities(surface, { area, force, type: MACHINE_TYPES })) {
     const kind = kindOf(e.type)
     if (kind === undefined) continue
     let recipe: string | undefined
@@ -191,7 +192,7 @@ function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n
   }
   const packs: string[] = []
   for (const p of m.def.ports) if (p.kind === "belt-in" && p.item !== undefined) packs.push(p.item)
-  const inserters = surface.find_entities_filtered({ area, force, type: "inserter" })
+  const inserters = findEntities(surface, { area, force, type: "inserter" })
   return { machines, packs, inserters }
 }
 
@@ -357,7 +358,7 @@ export function sampleNodes(meter: MeterState, graph: LogicalGraph, layout: Layo
 // Edges
 
 function beltAt(surface: LuaSurface, x: number, y: number): LuaEntity | undefined {
-  return surface.find_entities_filtered({ position: { x: x + 0.5, y: y + 0.5 }, type: BELT_TYPES, limit: 1 })[0]
+  return findEntities(surface, { position: { x: x + 0.5, y: y + 0.5 }, type: BELT_TYPES, limit: 1 })[0]
 }
 
 function portBelt(surface: LuaSurface, layout: LayoutState, module: string | undefined, port: string | undefined): LuaEntity | undefined {

@@ -10,6 +10,7 @@ import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { mallSources } from "./factory"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
+import { countEntities, findEntities } from "../work"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -359,14 +360,14 @@ function miningArea(drill: string, position: MapPosition): BoundingBox {
 
 /** Whether a resource other than `resource` lies in the drill's mining area. */
 function foreignOreIn(ctx: Ctx, drill: string, position: MapPosition, resource: string): boolean {
-  for (const e of ctx.surface.find_entities_filtered({ area: miningArea(drill, position), type: "resource" })) if (e.name !== resource) return true
+  for (const e of findEntities(ctx.surface, { area: miningArea(drill, position), type: "resource" })) if (e.name !== resource) return true
   return false
 }
 
 /** Ore of `resource` left in the drill's mining area. */
 function oreLeft(surface: LuaSurface, drill: string, position: MapPosition, resource: string): number {
   let n = 0
-  for (const e of surface.find_entities_filtered({ area: miningArea(drill, position), name: resource })) n += e.amount
+  for (const e of findEntities(surface, { area: miningArea(drill, position), name: resource })) n += e.amount
   return n
 }
 
@@ -405,7 +406,7 @@ function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { se
   const set: Record<number, boolean> = {}
   const tiles: MapPosition[] = []
   if (x1 >= x2 || y1 >= y2) return { set, tiles }
-  for (const e of ctx.surface.find_entities_filtered({ name: patch.name, area: [[x1, y1], [x2, y2]] })) {
+  for (const e of findEntities(ctx.surface, { name: patch.name, area: [[x1, y1], [x2, y2]] })) {
     const tx = math.floor(e.position.x)
     const ty = math.floor(e.position.y)
     set[tkey(tx, ty)] = true
@@ -464,9 +465,9 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
           for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
         }
         if (!ok) continue
-        if (ctx.surface.count_entities_filtered({ type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue
+        if (countEntities(ctx.surface, { type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue
         // Free ground around it (no trees, rocks or water within a tile).
-        if (ctx.surface.count_entities_filtered({ area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
+        if (countEntities(ctx.surface, { area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
         if (!ctx.surface.can_place_entity({ name: part.entity, position: part.position, force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) continue
         if (!ctx.surface.can_place_entity({ name: "character", position: { x: part.position.x + 1.5, y: part.position.y } })) continue
         return part
@@ -1068,7 +1069,7 @@ function freeTree(ctx: Ctx, near: MapPosition): LuaEntity | undefined {
 }
 
 function nearestFreeTree(ctx: Ctx, near: MapPosition, radius: number): LuaEntity | undefined {
-  const trees = ctx.surface.find_entities_filtered({ type: "tree", position: near, radius })
+  const trees = findEntities(ctx.surface, { type: "tree", position: near, radius })
   let best: LuaEntity | undefined
   let bestD = 0
   for (const t of trees) {
@@ -1090,7 +1091,7 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
   const p = { x: math.min(math.max(near.x, patch.x1), patch.x2), y: math.min(math.max(near.y, patch.y1), patch.y2) }
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (const radius of [10, 24, 64]) {
-    const found = ctx.surface.find_entities_filtered({ name, position: p, radius })
+    const found = findEntities(ctx.surface, { name, position: p, radius })
     let best: LuaEntity | undefined
     let bestD = 0
     for (const e of found) {
@@ -1305,7 +1306,7 @@ export function replan(ctx: Ctx): void {
       for (const part of site.parts) {
         if (part.built && part.built.valid) continue
         part.job = undefined
-        const ghost = ctx.surface.find_entities_filtered({ type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+        const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
         if (ghost) {
           const job = addJob(
             faction.board,
@@ -1326,7 +1327,7 @@ export function replan(ctx: Ctx): void {
     }
     site.status = "failed"
     for (const part of site.parts) {
-      const ghost = ctx.surface.find_entities_filtered({ type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+      const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
       if (ghost) ghost.destroy()
     }
     for (const k of site.tiles) delete brain.reserved[k]

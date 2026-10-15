@@ -1,10 +1,12 @@
 import { LuaEntity, MapPosition, OnScriptPathRequestFinishedEvent } from "factorio:runtime"
+import { countWork } from "../work"
 
 // Async pathfinding for character bodies. Results arrive via on_script_path_request_finished
 // and are kept in storage so they survive save/load and are visible to every peer.
 /** Requests a path that ends within `radius` of `goal`. */
 export function requestCharacterPath(character: LuaEntity, goal: MapPosition, radius = 1): number {
   const proto = character.prototype
+  countWork("pathRequests")
   const id = character.surface.request_path({
     bounding_box: proto.collision_box,
     collision_mask: proto.collision_mask,

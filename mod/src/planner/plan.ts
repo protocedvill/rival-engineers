@@ -54,6 +54,8 @@ export interface PlanStats {
   work: number
   placeWork: number
   routeWork: number
+  /** Placement candidates scored (work counters). */
+  candidates: number
   expansions: number
   searches: number
   ripups: number
@@ -235,7 +237,7 @@ export function newPlanJob(request: PlanRequest, tier: BeltTier, base?: LayoutSt
     replaceQueue: [],
     replaced,
     avoid: {},
-    stats: { steps: 0, work: 0, placeWork: 0, routeWork: 0, expansions: 0, searches: 0, ripups: 0, replacements: 0, maxStepWork: 0 },
+    stats: { steps: 0, work: 0, placeWork: 0, routeWork: 0, candidates: 0, expansions: 0, searches: 0, ripups: 0, replacements: 0, maxStepWork: 0 },
   }
 }
 
@@ -374,8 +376,10 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: job.avoid[id] })
   }
   const s = job.placement
+  const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
   job.stats.placeWork += used
+  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
     if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
     else job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
@@ -459,8 +463,10 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region })
   }
   const s = job.placement
+  const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
   job.stats.placeWork += used
+  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined

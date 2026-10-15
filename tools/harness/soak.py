@@ -40,6 +40,9 @@ import time
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import workcounts  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 FACTORIO = ROOT / ".factorio-test" / "factorio" / "bin" / "x64" / "factorio"
 READ_DATA = ROOT / ".factorio-test" / "factorio" / "data"
@@ -241,7 +244,7 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     if (script_out / "frames").exists():
         shutil.rmtree(out_dir / "frames", ignore_errors=True)
         shutil.copytree(script_out / "frames", out_dir / "frames")
-    for sub in ("graphs", "failed-plans"):
+    for sub in ("graphs", "failed-plans", "plans"):
         if (script_out / sub).exists():
             shutil.rmtree(out_dir / sub, ignore_errors=True)
             shutil.copytree(script_out / sub, out_dir / sub)
@@ -316,6 +319,7 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_
         "ai_ms_per_tick_max_interval": round(max(per_tick), 4) if per_tick else None,
         "errors": errors,
         "factions": factions,
+        "work": telemetry.get("work"),
     }
 
 
@@ -467,6 +471,10 @@ def main():
         ordered = [results[name][s] for s in cfg["run"]["seeds"]]
         if args.gif:
             render_gifs(out_dirs[name], ordered)
+        work_lines, flags = workcounts.section(out_dirs[name])
+        with open(out_dirs[name] / "scorecard.md", "a") as f:
+            f.write("\n" + "\n".join(work_lines) + "\n")
+        print(f"{name}: work counts: {flags} flagged against the baseline (see scorecard.md)")
         passed = sum(1 for r in ordered if r["pass"])
         print(f"{name}: {passed}/{len(ordered)} seeds reached {done_milestone(cfg)}. Scorecard: {out_dirs[name] / 'scorecard.md'}")
     print(f"soak wall time {time.time() - started:.1f} s ({len(tasks)} run(s), {jobs} at a time)")

@@ -3,6 +3,7 @@ import { Config } from "../config"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "./pathing"
 import { directionTowards, distance, newProgressTracker, nextWaypointIndex, pathLength, updateProgress } from "./steering"
 import { ActionStats, FailureReason, ReachGoal, WalkState } from "./types"
+import { findEntities } from "../work"
 
 // Walking as a resumable state machine: request a path, wait for the async result, then steer along
 // the waypoints by setting walking_state every tick. Stuck → re-path, with bounded retries.
@@ -32,7 +33,7 @@ function escapeSpot(character: LuaEntity, attempt: number): MapPosition | undefi
       // The tile under it must be free too, so the pathfinder can start there.
       const tile = { x: math.floor(p.x) + 0.5, y: math.floor(p.y) + 0.5 }
       let blocked = false
-      for (const e of character.surface.find_entities_filtered({ area: [[tile.x - 0.5, tile.y - 0.5], [tile.x + 0.5, tile.y + 0.5]], collision_mask: "player" })) {
+      for (const e of findEntities(character.surface, { area: [[tile.x - 0.5, tile.y - 0.5], [tile.x + 0.5, tile.y + 0.5]], collision_mask: "player" })) {
         if (e !== character && e.type !== "character") blocked = true
       }
       if (blocked) continue

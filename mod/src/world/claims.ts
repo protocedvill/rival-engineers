@@ -1,5 +1,6 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { keyX, keyY, tkey } from "../planner/grid"
+import { findEntities } from "../work"
 
 // Ground claims between factions (M5a.2). A faction's `brain.reserved` tiles are its claim on the ground: bootstrap
 // sites and their margins, and every adopted plan's tiles (modules with a 1-tile margin, routes, poles), built or not.
@@ -46,7 +47,7 @@ const FIELD_RADIUS = 160
  */
 export function claimOreField(surface: LuaSurface, fields: Record<number, boolean>, name: string, x: number, y: number): number {
   if (fields[tkey(x, y)]) return 0
-  const found = surface.find_entities_filtered({ name, area: [[x - FIELD_RADIUS, y - FIELD_RADIUS], [x + FIELD_RADIUS, y + FIELD_RADIUS]] })
+  const found = findEntities(surface, { name, area: [[x - FIELD_RADIUS, y - FIELD_RADIUS], [x + FIELD_RADIUS, y + FIELD_RADIUS]] })
   const present: Record<number, boolean> = {}
   for (const e of found) present[tkey(math.floor(e.position.x), math.floor(e.position.y))] = true
   if (!present[tkey(x, y)]) return 0
@@ -109,7 +110,7 @@ export function foreignEntitiesOn(surface: LuaSurface, force: string, keys: numb
     y2 = math.max(y2, y + 1)
   }
   const out: LuaEntity[] = []
-  for (const e of surface.find_entities_filtered({ area: { left_top: { x: x1, y: y1 }, right_bottom: { x: x2, y: y2 } } })) {
+  for (const e of findEntities(surface, { area: { left_top: { x: x1, y: y1 }, right_bottom: { x: x2, y: y2 } } })) {
     if (!e.valid || NOT_STRUCTURES[e.type]) continue
     const f = e.force.name
     if (f === force || f === "neutral") continue
