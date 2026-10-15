@@ -38,4 +38,5 @@ export const Settings = {
   beltUtilization: "rival-engineers-belt-utilization",
   plannerWorkPerTick: "rival-engineers-planner-work-per-tick",
   terrainChunksPerTick: "rival-engineers-terrain-chunks-per-tick",
+  sandboxEnemies: "rival-engineers-sandbox-enemies",
 } as const

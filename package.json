@@ -8,7 +8,8 @@
     "test:unit": "node tools/run-unit-tests.mjs",
     "test": "node tools/test-parallel.mjs",
     "test:serial": "npm run build && factorio-test run",
-    "soak": "python3 tools/harness/soak.py"
+    "soak": "python3 tools/harness/soak.py",
+    "review": "node tools/review/review.mjs"
   },
   "devDependencies": {
     "factorio-test": "3.1.0",

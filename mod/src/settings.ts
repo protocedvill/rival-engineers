@@ -324,4 +324,11 @@ data.extend([
     maximum_value: 64,
     order: "i-g",
   },
+  {
+    type: "bool-setting",
+    name: Settings.sandboxEnemies,
+    setting_type: "runtime-global",
+    default_value: false,
+    order: "y-a",
+  },
 ])
