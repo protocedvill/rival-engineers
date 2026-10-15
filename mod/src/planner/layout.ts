@@ -3,7 +3,7 @@
 // Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
-import { portOutsideTile, Transform } from "../modules/geometry"
+import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
@@ -107,6 +107,11 @@ export interface LayoutState {
   routeOcc: Record<number, string>
   /** Reserved routing corridors around modules (routes prefer them; other modules stay out of `corridor.min`). */
   corridor: Record<number, boolean>
+  /**
+   * B9 soft claims (D48 (4)): tiles an expandable module (`ModuleDef.expand`) can still grow into, up to its unit cap →
+   * that module's id. Placement and routing pay a cost there (policy weights), nothing blocks.
+   */
+  soft?: Record<number, string>
   /** Underground spans per line ("h<y>" or "v<x>"). */
   spans: Record<string, UgSpan[]>
   routes: Record<string, Route>
@@ -230,6 +235,17 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     const ka = tkey(a.x, a.y)
     if (state.occ[ka] === undefined && state.reserved[ka] === undefined) state.reserved[ka] = portTag(m.id, p.id)
   }
+  // B9: the area it can still grow into (soft claim).
+  const g = growthArea(m)
+  if (g !== undefined) {
+    state.soft ??= {}
+    for (let x = g.x; x < g.x + g.w; x++) {
+      for (let y = g.y; y < g.y + g.h; y++) {
+        const k = tkey(x, y)
+        if (state.soft[k] === undefined && state.occ[k] === undefined) state.soft[k] = m.id
+      }
+    }
+  }
   const r = m.rect
   for (let x = r.x - corridor; x < r.x + r.w + corridor; x++) {
     for (let y = r.y - corridor; y < r.y + r.h + corridor; y++) {
@@ -239,10 +255,34 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
   }
 }
 
+/**
+ * B9: the world rect an expandable module would add if it grew by every unit it still may (`expand.maxUnits`), on the
+ * side `tryExpand` would grow it (the end that moves fewer entities, as `expandMoves` decides); undefined if it can't.
+ */
+export function growthArea(m: PlacedModule): Rect | undefined {
+  const c = m.canonical
+  const spec = c.expand
+  if (spec === undefined || spec.maxUnits <= 0) return undefined
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const len = spec.maxUnits * size
+  let head = 0
+  let tail = 0
+  for (const e of c.entities) if ((spec.axis === "x" ? e.x : e.y) >= spec.insertAt) tail++
+  else head++
+  const W = c.footprint.w
+  const H = c.footprint.h
+  // Canonical strip beyond the end that grows: the head side (before 0) when the head moves, else past the far end.
+  const headMoves = head < tail
+  const strip: Rect = spec.axis === "x" ? { x: headMoves ? -len : W, y: 0, w: len, h: H } : { x: 0, y: headMoves ? -len : H, w: W, h: len }
+  const r = transformRect(strip, W, H, m.transform)
+  return { x: m.origin.x + r.x, y: m.origin.y + r.y, w: r.w, h: r.h }
+}
+
 /** Removes a module's tiles (before re-marking it grown). Routes are untouched. */
 export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts): void {
   const tag = `m:${m.id}`
   const xtag = `x:${m.id}`
+  if (state.soft !== undefined) for (const [k, owner] of pairs(state.soft)) if (owner === m.id) delete state.soft[k as number]
   for (const k of moduleTiles(m)) if (state.occ[k] === tag) delete state.occ[k]
   for (const t of interactionTiles(m.def, facts)) {
     const k = tkey(m.origin.x + t.x, m.origin.y + t.y)

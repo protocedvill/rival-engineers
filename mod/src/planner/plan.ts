@@ -193,6 +193,7 @@ export function cloneLayout(l: LayoutState): LayoutState {
     reserved: copy(l.reserved),
     routeOcc: copy(l.routeOcc),
     corridor: copy(l.corridor),
+    soft: l.soft !== undefined ? copy(l.soft) : undefined,
     spans,
     routes,
     routeOrder: [...l.routeOrder],

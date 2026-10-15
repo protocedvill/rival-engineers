@@ -1,0 +1,223 @@
+// T1 tests for the M5c planner batch: B7 belt bundling, B9 soft claims, D36 undergrounds and B2 splitters (the
+// "research logistics first when it saves N tiles" comparisons).
+
+import { smelterColumn } from "../src/modules/generators"
+import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
+import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
+import { beltTiers } from "../src/planner/capacity"
+import { asciiTerrain, keyX, keyY, rectContains, TerrainView, tkey } from "../src/planner/grid"
+import { checkLayout, commitModule, findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { placeNow, tryExpand } from "../src/planner/placement"
+import { ConnectionRequest, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
+import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
+import { eq, ok, run, test } from "./harness"
+import { vanillaFacts as F } from "./vanilla-facts"
+
+const TIERS = beltTiers(F)
+const YELLOW = TIERS[0]
+
+function policy(router: Partial<LayoutPolicy["router"]> = {}, placement: Partial<LayoutPolicy["placement"]> = {}, rest: Partial<LayoutPolicy> = {}): LayoutPolicy {
+  const p = selectPolicy("early-compact", {})
+  return { ...p, ...rest, router: { ...p.router, ...router }, placement: { ...p.placement, ...placement } }
+}
+
+function box(id: string, w: number, h: number, ports: Port[]): ModuleDef {
+  return { id, source: "generated", footprint: { w, h }, entities: [], ports, recipes: [], machines: [], rates: { inputs: [], outputs: [] }, requiresTech: [], rotatable: true, mirrorable: true }
+}
+function source(id: string, dir: number, item = "iron-plate"): ModuleDef {
+  return box(id, 1, 1, [{ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: dir as 0, item }])
+}
+function sink(id: string, dir: number, item = "iron-plate"): ModuleDef {
+  return box(id, 1, 1, [{ id: "in", kind: "belt-in", pos: { x: 0.5, y: 0.5 }, dir: dir as 0, item }])
+}
+function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY, corridor = 0): PlacedModule {
+  const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
+  const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  commitModule(state, m, F, corridor)
+  return m
+}
+function conn(id: string, from: string | undefined, to: string): ConnectionRequest {
+  return { id, from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: "in" } }
+}
+function request(modules: ModuleDef[], connections: ConnectionRequest[], w: number, h: number): PlanRequest {
+  return { modules: modules.map((def) => ({ id: def.id, def })), connections, center: { x: math.floor(w / 2), y: math.floor(h / 2) }, region: { x: 0, y: 0, w, h } }
+}
+function field(w: number, h: number): string[] {
+  const rows: string[] = []
+  for (let y = 0; y < h; y++) rows.push(string.rep(".", w))
+  return rows
+}
+function maxUg(this: void, name: string): number {
+  return name === "underground-belt" ? 5 : 7
+}
+function noProblems(state: LayoutState, terrain: TerrainView, what: string): void {
+  const c = checkLayout(state, terrain, maxUg)
+  if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
+}
+
+/** Tiles of route `id` next to (4-neighbour) a tile of another route. */
+function bundled(state: LayoutState, id: string): number {
+  let n = 0
+  for (const k of state.routes[id].tiles) {
+    const x = keyX(k)
+    const y = keyY(k)
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const o = state.routeOcc[tkey(x + dx, y + dy)]
+      if (o !== undefined && o !== id) {
+        n++
+        break
+      }
+    }
+  }
+  return n
+}
+
+// --- B7: belt bundling ----------------------------------------------------------------------------------------
+
+/** Two flows from the west edge to the south-east: many equally short paths each. */
+function bundleCase(pol: LayoutPolicy): LayoutState {
+  const terrain = asciiTerrain(field(60, 50))
+  const state = newLayout()
+  const a1 = source("a1", EAST)
+  const a2 = source("a2", EAST)
+  const b1 = sink("b1", SOUTH)
+  const b2 = sink("b2", SOUTH)
+  place(state, a1, 2, 4)
+  place(state, a2, 2, 2)
+  place(state, b1, 40, 40)
+  place(state, b2, 42, 40)
+  const job = runJob(newRoutingJob(request([a1, a2, b1, b2], [conn("r1", "a1", "b1"), conn("r2", "a2", "b2")], 60, 50), YELLOW, state, ["r1", "r2"]), terrain, F, pol)
+  eq(job.phase, "done", "routed")
+  noProblems(state, terrain, "bundle case")
+  return state
+}
+
+test("B7: routes next to another route's belts bundle (bundleFactor), at about the same length", () => {
+  const off = bundleCase(policy({ bundleFactor: 1 }))
+  const on = bundleCase(policy({ bundleFactor: EARLY_BUNDLE }))
+  const offB = bundled(off, "route:r2")
+  const onB = bundled(on, "route:r2")
+  const offLen = off.routes["route:r1"].length + off.routes["route:r2"].length
+  const onLen = on.routes["route:r1"].length + on.routes["route:r2"].length
+  print(string.format("    [b7] second route's tiles next to the first: off %d of %d, on %d of %d; total length off %d, on %d", offB, off.routes["route:r2"].length, onB, on.routes["route:r2"].length, offLen, onLen))
+  ok(onB > offB, `more bundled tiles with the bonus (${onB} vs ${offB})`)
+  ok(onB >= on.routes["route:r2"].length / 2, "at least half of the second route runs along the first")
+  ok(onLen <= offLen + 4, `bundling costs at most a few tiles (${onLen} vs ${offLen})`)
+  eq(EARLY_BUNDLE, 0.9, "early-compact bundleFactor")
+})
+
+const EARLY_BUNDLE = selectPolicy("early-compact", {}).router.bundleFactor
+
+test("B7: the bonus never opens a port's reserved outside or approach tiles (P5, P15)", () => {
+  // A sink whose input lane (outside + approach tile) lies right along the first route: the second route bundles
+  // but must not take the reserved tiles.
+  const terrain = asciiTerrain(field(50, 30))
+  const state = newLayout()
+  const a1 = source("a1", EAST)
+  const a2 = source("a2", EAST)
+  const b1 = sink("b1", EAST)
+  const b2 = sink("b2", EAST)
+  const c = sink("c", NORTH)
+  place(state, a1, 2, 10)
+  place(state, a2, 2, 12)
+  place(state, b1, 40, 10)
+  place(state, b2, 40, 12)
+  // c's in-port faces north: its outside tile (20, 12) and approach tile (20, 13) are reserved, between the routes.
+  place(state, c, 20, 11)
+  const job = runJob(newRoutingJob(request([a1, a2, b1, b2, c], [conn("r1", "a1", "b1"), conn("r2", "a2", "b2")], 50, 30), YELLOW, state, ["r1", "r2"]), terrain, F, policy({ bundleFactor: 0.5 }))
+  eq(job.phase, "done", "routed")
+  noProblems(state, terrain, "reserved")
+  for (const id of ["route:r1", "route:r2"]) for (const k of state.routes[id].tiles) ok(state.reserved[k] === undefined || state.reserved[k] === `p:b1.in` || state.reserved[k] === `p:b2.in` || state.reserved[k] === `p:a1.out` || state.reserved[k] === `p:a2.out`, `${id} keeps off c's reserved tiles (${keyX(k)},${keyY(k)})`)
+})
+
+// --- B9: soft claims ------------------------------------------------------------------------------------------
+
+test("B9: an expandable module's soft claim is exactly where tryExpand grows it, for every transform", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const units = def.expand!.maxUnits
+  ok(units >= 2, `room to grow (${units} units)`)
+  for (const t of [{ rot: 0, mirror: false }, { rot: 1, mirror: false }, { rot: 2, mirror: true }, { rot: 3, mirror: false }]) {
+    const terrain = asciiTerrain(field(120, 120))
+    const state = newLayout()
+    const m = place(state, { ...def, id: "s" }, 50, 50, t, 2)
+    const area = growthArea(m)!
+    ok(area !== undefined, "has a growth area")
+    let soft = 0
+    for (const [, owner] of pairs(state.soft ?? {})) if (owner === "s") soft++
+    eq(soft, area.w * area.h, `soft tiles = growth area (rot ${t.rot})`)
+    const before = { ...m.rect }
+    const r = tryExpand(state, terrain, F, policy(), "s", units)
+    ok(r.ok, `grows by ${units} (${r.reason})`)
+    const grown = findModule(state, "s")!.rect
+    for (let x = grown.x; x < grown.x + grown.w; x++) {
+      for (let y = grown.y; y < grown.y + grown.h; y++) {
+        if (rectContains(before, x, y)) continue
+        ok(rectContains(area, x, y), `grown tile ${x},${y} was in the soft claim (rot ${t.rot})`)
+      }
+    }
+    eq(grown.w * grown.h - before.w * before.h, area.w * area.h, "grown by exactly the claim")
+    eq(growthArea(findModule(state, "s")!), undefined, "at its cap: no claim left")
+    let left = 0
+    for (const [, owner] of pairs(state.soft ?? {})) if (owner === "s") left++
+    eq(left, 0, "claim released when grown to the cap")
+  }
+})
+
+test("B9: placement keeps off another module's growth area (a cost, not a block)", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const terrain = asciiTerrain(field(120, 120))
+  const state = newLayout()
+  const m = place(state, { ...def, id: "s" }, 50, 30, IDENTITY, 2)
+  const area = growthArea(m)!
+  // A small module whose cluster centre is in the middle of the growth area.
+  const other = box("o", 4, 4, [])
+  const center = { x: area.x + math.floor(area.w / 2), y: area.y + math.floor(area.h / 2) }
+  const req = { id: "o", def: other, targets: {}, center, region: { x: 0, y: 0, w: 120, h: 120 } }
+  const overlaps = (r: { x: number; y: number; w: number; h: number }): boolean => r.x < area.x + area.w && area.x < r.x + r.w && r.y < area.y + area.h && area.y < r.y + r.h
+  const without = placeNow(req, state, terrain, policy({}, { softClaim: 0 }))
+  eq(without.phase, "done", "placed without the weight")
+  ok(overlaps(without.result!.rect), "without the weight it sits in the growth area")
+  const withW = placeNow(req, state, terrain, policy())
+  eq(withW.phase, "done", "placed with the weight")
+  ok(!overlaps(withW.result!.rect), `with the weight it keeps off (${withW.result!.rect.x},${withW.result!.rect.y})`)
+  // A wall of cliffs everywhere but the growth area: the claim does not block.
+  const rows = field(120, 120)
+  for (let y = 0; y < 120; y++) {
+    let r = ""
+    for (let x = 0; x < 120; x++) r += rectContains(area, x, y) || rectContains(m.rect, x, y) ? "." : "C"
+    rows[y] = r
+  }
+  const forced = placeNow({ ...req, region: { x: 0, y: 0, w: 120, h: 120 } }, state, asciiTerrain(rows), policy())
+  eq(forced.phase, "done", "still placeable inside the claim when nothing else is free")
+})
+
+test("B9: routes detour around a growth area when the detour is short", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const terrain = asciiTerrain(field(80, 80))
+  const build = (soft: number): LayoutState => {
+    const state = newLayout()
+    const m = place(state, { ...def, id: "s" }, 30, 10, IDENTITY, 2)
+    const area = growthArea(m)!
+    // A flow straight across the growth area, west to east.
+    const y = area.y + area.h - 2
+    const a = source("a", EAST)
+    const b = sink("b", EAST)
+    place(state, a, area.x - 6, y)
+    place(state, b, area.x + area.w + 6, y)
+    const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 80), YELLOW, state), terrain, F, policy({ softClaim: soft }))
+    eq(job.phase, "done", "routed")
+    return state
+  }
+  const inside = (state: LayoutState): number => {
+    let n = 0
+    for (const k of state.routes["route:c"].tiles) if (state.soft?.[k] !== undefined) n++
+    return n
+  }
+  const off = build(0)
+  const on = build(2)
+  print(string.format("    [b9] route tiles in the growth area: weight 0 → %d, weight 2 → %d", inside(off), inside(on)))
+  ok(inside(off) > 0, "without the weight the route crosses the growth area")
+  ok(inside(on) < inside(off), "with the weight it crosses fewer claimed tiles")
+})
+
+run("planner-batch")

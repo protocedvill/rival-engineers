@@ -68,7 +68,7 @@ export interface PlacementSearch {
   result?: PlacedModule
 }
 
-const LAYERS = ["hard", "ore", "clear", "water", "mods", "res"]
+const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft"]
 
 function transformsOf(def: ModuleDef): Transform[] {
   const out: Transform[] = []
@@ -193,6 +193,8 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const aWater = s.sat.water
   const aMods = s.sat.mods
   const aRes = s.sat.res
+  const aSoft = s.sat.soft
+  const softTiles = state.soft
   const occ = state.occ
   const reserved = state.reserved
   const routeOcc = state.routeOcc
@@ -202,6 +204,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   let water = 0
   let mods = 0
   let res = 0
+  let soft = 0
   const base = (s.row + 1) * W
   const prev = base - W
   aHard[base] = 0
@@ -210,6 +213,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   aWater[base] = 0
   aMods[base] = 0
   aRes[base] = 0
+  aSoft[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
@@ -225,6 +229,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     else if (b === ROCK) clear += clearRock
     else if (b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
+    if (softTiles !== undefined && softTiles[k] !== undefined) soft++
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard
@@ -233,6 +238,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     aWater[j] = aWater[p] + water
     aMods[j] = aMods[p] + mods
     aRes[j] = aRes[p] + res
+    aSoft[j] = aSoft[p] + soft
   }
   s.row++
 }
@@ -245,6 +251,8 @@ function sum(s: PlacementSearch, layer: string, r: Rect): number | undefined {
   const y2 = y1 + r.h
   if (x1 < 0 || y1 < 0 || x2 > s.ww || y2 > s.wh) return undefined
   const a = s.sat[layer]
+  // A search saved before the layer existed (old storage) has no table for it.
+  if (a === undefined) return 0
   const W = s.ww + 1
   return a[y2 * W + x2] - a[y1 * W + x2] - a[y2 * W + x1] + a[y1 * W + x1]
 }
@@ -305,6 +313,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     adjacent,
     exactGap: adjacent - inner,
     coverage,
+    softClaim: sum(s, "soft", rect) ?? 0,
   }
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
 }

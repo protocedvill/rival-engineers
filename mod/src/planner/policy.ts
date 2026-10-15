@@ -36,6 +36,13 @@ export interface RouterWeights {
   margin: number
   /** Undergrounds may pass under module footprints. */
   underModules: boolean
+  /**
+   * B7: cost factor of a tile next to another route's belt (< 1: routes bundle). Multiplies with `corridorFactor`.
+   * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
+   */
+  bundleFactor?: number
+  /** B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim). */
+  softClaim?: number
 }
 
 export interface PlacementWeights {
@@ -53,6 +60,8 @@ export interface PlacementWeights {
   exactGap: number
   /** Mining modules: penalty per missing fraction of ore coverage. */
   coverage: number
+  /** B9 (D48 (4)): per footprint tile in another module's soft claim (the area it can still grow into). */
+  softClaim?: number
 }
 
 export interface LayoutPolicy {
@@ -103,6 +112,8 @@ export interface CandidateFeatures {
   exactGap: number
   /** Mining modules: ore coverage of the mining areas (0..1). */
   coverage: number
+  /** Footprint tiles in other modules' soft claims (B9). */
+  softClaim?: number
 }
 
 export type PackingScorer = (this: void, f: CandidateFeatures, policy: LayoutPolicy) => number
@@ -144,7 +155,8 @@ registerPacking("compact-cluster", (f, p) => {
     w.clear * f.clearCost -
     w.adjacent * f.adjacent -
     w.exactGap * f.exactGap +
-    w.coverage * (1 - f.coverage)
+    w.coverage * (1 - f.coverage) +
+    (w.softClaim ?? 0) * (f.softClaim ?? 0)
   )
 })
 
@@ -177,8 +189,10 @@ export const EARLY_COMPACT: LayoutPolicy = {
     maxRipups: 3,
     margin: 24,
     underModules: false,
+    bundleFactor: 0.9,
+    softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.5 },
 }
 registerPolicy(EARLY_COMPACT)
 

@@ -153,7 +153,29 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   } else if (b !== FREE) return -1
   if (terrain.ore(x, y) !== undefined) extra += w.oreTile
   if (req.avoid?.[k]) extra += w.rip
-  return (state.corridor[k] ? w.corridorFactor : 1) + extra
+  // B9: another module's room to grow (a route there would block its expansion).
+  const soft = w.softClaim ?? 0
+  if (soft > 0 && state.soft?.[k] !== undefined) extra += soft
+  let f = state.corridor[k] ? w.corridorFactor : 1
+  // B7: next to another route's belt, routes bundle.
+  const bf = w.bundleFactor ?? 1
+  if (bf < 1 && nextToRoute(state, x, y, req.id)) f *= bf
+  return f + extra
+}
+
+/** Whether a 4-neighbour of the tile holds a belt of another route (existing or planned). */
+function nextToRoute(state: LayoutState, x: number, y: number, self: string): boolean {
+  for (let d = 0; d < 4; d++) {
+    const o = state.routeOcc[tkey(x + DX[d], y + DY[d])]
+    if (o !== undefined && o !== self) return true
+  }
+  return false
+}
+
+/** The cheapest a route tile can cost (the A* heuristic per tile must not exceed it). */
+export function minTileCost(policy: LayoutPolicy): number {
+  const w = policy.router
+  return w.corridorFactor * math.min(1, w.bundleFactor ?? 1)
 }
 
 /** Whether an underground may pass under a tile (anything but module footprints, unless allowed, and unknown land). */
@@ -238,7 +260,7 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
     hf: [],
     taps: {},
     goalS: 0,
-    hMin: math.min(w.corridorFactor, (w.underground + 2 * w.corridorFactor) / (maxK + 1)),
+    hMin: math.min(minTileCost(policy), (w.underground + 2 * minTileCost(policy)) / (maxK + 1)),
     expansions: 0,
     status: "running",
   }
