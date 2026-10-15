@@ -112,6 +112,62 @@ All runtime-free code is covered by T1 (`mod/unit`). New files: `strategy/solver
 - **Tools:** `tools/harness/m5_scorecard.py` (M5 pass rule, phase breakdown), `render.py --graph-dir` (per-frame
   graph overlay in timelapses, poles, node lifecycle).
 
+## Acceptance re-run after the economy change (2026-10-15, final commit 18ca1fd)
+
+Commit 4ebf208 (craft chunks sized to the stock) changed the bootstrap economy after the acceptance run below, and a
+manager re-run on it scored **3/5** (222 and 3333 failed). Root causes, all fixed with regression tests:
+
+- **Seed 222: production unroutable without undergrounds.** Before `logistics` the router has no undergrounds, so belts
+  can't cross; the 7-flow cluster next to the fixed labs rip-up cycled on every attempt and every retried goal (69
+  failed plans, AI 2.5 ms/tick of thrash). The economy change only moved the bootstrap's sites. Fix: after a production
+  or mall goal fails all attempts without undergrounds, their technology becomes a prerequisite and is researched with
+  hand-fed packs (**P16, proposed**). Seed 222 then plans in one attempt with 0 rip-ups (+~3 game-min of research).
+  T1 replay of the captured plan: `mod/unit/plan-replay.test.ts`.
+- **Seed 3333: a big rock under an outpost.** A 2×2 rock off the tile grid: walks to within the short reach of its
+  *centre* found no path (every end node next to it collides), its clear job failed, the build stamped ghosts over it
+  and waited for good. Fix: walks to trees/rocks aim at their box plus the margin; leftover-ghost rounds also re-clear
+  trees/rocks under the ghosts; rocks partly under a ghost are mined from a corner. T2 test with the same neighbourhood.
+- **Seed 77 (extra seed): hand-mining picked up an ore belt.** A mine job planned before the ore route was built ran
+  after it; mining acts on whatever is selected, so it picked up two belts and the iron smelters starved. Fix: no
+  mining of ore under a built entity (trees over ore are mined first, as by a player; mining restarts after an obstacle
+  is cleared). Also found: `stampModule` lost the index of a failed entity (push(nil) in Lua), so stamping failures went
+  unreported; now indexed and logged. T2 tests for both mining cases.
+
+| Seed | Pass | Automated red science (game-min) | Bootstrap | Power + labs | Research to unblock | Production build | Automation verified | Stalls |
+|---|---|---|---|---|---|---|---|---|
+| 11 | ✅ | **27.2** | 7.0 | 3.7 | 3.7 | 10.8 | 2.0 | 0 |
+| 222 | ✅ | **29.9** | 6.6 | 4.4 | 10.3 (incl. `logistics`) | 6.6 | 1.9 | 0 |
+| 3333 | ✅ | **43.7** | 8.8 | 10.5 | 7.4 | 15.6 | 1.4 | 0 |
+| 44444 | ✅ | **32.2** | 7.4 | 9.0 | 4.3 | 9.8 | 1.8 | 0 |
+| 555555 | ✅ | **40.7** | 9.4 | 6.2 | 10.7 | 12.5 | 2.0 | 0 |
+
+**5/5** on commit 18ca1fd (`out/soak/m5-final3`, `-j 5`). An earlier round with 5 extra seeds (7, 77, 777, 7777,
+77777) passed 9/10 before the seed-77 fix (seed 7777 slow: power + labs 37.9 min); seed 77 passes from its snapshot
+after the fix (29.9 min); the extra seeds were not re-run on the final commit. M3 soak on the final commit: **5/5**,
+first-electricity materials at 6.6–9.4 game-min. Wall times of these runs are inflated: the laptop ran on battery
+(≈1 GHz) for most of the session.
+
+## Test workflow (fast debug loop)
+
+The previous loop was "fix, run a full soak (~17 wall-min for a stuck seed), find the next bug". Now (README →
+Development):
+
+1. **Fail fast** (`[run.fail_fast]` in `m5.toml`): a seed stops at its 2nd stall, 8 failed plans in a row or 20 rounds
+   of unplaceable leftover ghosts. Seed 222 stopped after 303 s instead of running 1008 s; a 3333-type build stall stops
+   after 10 game-min of leftovers instead of 2 game-hours. The soak's own summary now scores the config's
+   `soakDoneMilestone` (it scored M3's for M5 runs and said "5/5"); `m5_scorecard.py` prints each failing seed's open
+   goals, stall reasons, latest plan-failure kinds and leftover ghosts.
+2. **Snapshots** (`--snapshots 5`: a sped-up headless server, since `--benchmark` never saves) and **resume**
+   (`--from-save`, with the current build). Fix checks from the last checkpoint: 3333's 16 s (vs ~8 min to reach the
+   stall), 222's 2.5 min, 77's 2 min. `--helper-lua` injects debug probes (`tools/harness/probes/status.lua` logs every
+   machine's status and contents; a 20 s probe run found 77's starved smelters and the missing belts).
+3. **Failed plans as T1 tests**: each failed plan dumps its graph (render over the nearest frame) and its input
+   (request, base layout, terrain) as Lua; `plan-replay.test.ts` replays it in plain Lua in ~10 s, with env overrides
+   for router experiments. Seed 222's failure reproduced exactly; four router variants were ruled out in a minute.
+4. **More seeds per round**: one 10-seed round found the seed-77 bug. Concurrency: at `-j 10` each instance ran at
+   ~6.4 ms/tick vs ~2.1 at `-j 5` (each Factorio uses several threads), so `-j 10` had ~30% less throughput than
+   `-j 5`; keep `-j 5` (battery caveat above).
+
 ## Acceptance (SPEC §8 M5, M5a part)
 
 **T3 soak** (`python3 tools/harness/soak.py -c tools/harness/m5.toml -j 5`, then `m5_scorecard.py`): one faction, default
@@ -266,7 +322,7 @@ figures come from 5 concurrent games plus another agent's soaks on the same lapt
 P9 crafting triggers emulated for the crew · P10 hand-fed research only for unblocking technologies · P11 stage 1 target
 10 red/min and lab sizing · P12 goal order (power → labs → production → mall → growth; one plan at a time) · P13 material
 supply (bootstrap economy, then the mall at 25% as the first collect source) · P14 the `automated-red-science` check ·
-P15 port approach tiles reserved.
+P15 port approach tiles reserved · P16 undergrounds researched when a production plan is boxed in (re-run, above).
 
 ## Interfaces for M5b
 
