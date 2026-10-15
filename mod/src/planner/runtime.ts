@@ -237,7 +237,7 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
   for (const m of layout.modules) {
     if (!mods[m.id]) continue
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
-    for (let i = 0; i < placed.length; i++) {
+    for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
       else entities.push(e)
@@ -258,7 +258,7 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
   const failed: string[] = []
   for (const m of layout.modules) {
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
-    for (let i = 0; i < placed.length; i++) {
+    for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
       else entities.push(e)
@@ -299,6 +299,7 @@ export function stepBuild(entry: PlannerEntry): void {
     const surface = game.surfaces[entry.surface]
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
+    if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
     b.ghosts = r.entities
     for (const g of r.entities) {
       const id = addPlaceJob(faction, g, { fuel: b.fuel, priority: b.priority })

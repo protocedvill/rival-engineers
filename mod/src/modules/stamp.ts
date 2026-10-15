@@ -30,11 +30,13 @@ function createParams(e: ModuleEntity, origin: MapPosition, force: LuaForce | st
 
 /** Creates every entity of `def`; returns them in `def.entities` order (undefined where creation failed). */
 export function stampModule(surface: LuaSurface, force: LuaForce | string, def: ModuleDef, origin: MapPosition, opts: StampOptions = {}): (LuaEntity | undefined)[] {
+  // Indexed like def.entities, with holes where creation failed (push(undefined) is a no-op in Lua and would shift
+  // every later entity onto the wrong spec). Iterate it with def.entities.length, not out.length.
   const out: (LuaEntity | undefined)[] = []
-  for (const e of def.entities) {
-    const params = createParams(e, origin, force, opts.ghost === true)
+  for (let i = 0; i < def.entities.length; i++) {
+    const params = createParams(def.entities[i], origin, force, opts.ghost === true)
     if (opts.raiseBuilt) (params as unknown as Record<string, unknown>).raise_built = true
-    out.push(surface.create_entity(params))
+    out[i] = surface.create_entity(params)
   }
   return out
 }

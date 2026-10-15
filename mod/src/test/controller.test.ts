@@ -190,6 +190,22 @@ describe("character controller", () => {
     })
   })
 
+  test("won't hand-mine ore under a built belt (mining there would pick the belt up)", () => {
+    // Seed 77: a mine job planned before the ore route was built ran after it, picked up two of its belts, and the
+    // smelters it fed starved for good.
+    const lab = createLab(16)
+    orePatch(lab, 2, 0, 1, 1, 50)
+    const ore = lab.surface.find_entities_filtered({ type: "resource", position: at(lab, 2.5, 0.5) })[0]
+    const belt = lab.surface.create_entity({ name: "transport-belt", position: at(lab, 2.5, 0.5), force: "player" })!
+    const character = spawnEngineer(lab)
+    const id = enqueue(createController(character), { kind: "mine", target: ore, count: 3 })
+    awaitAction(id, 600, (a) => {
+      assert(a.status === "failed" && a.reason === "not-minable", describeAction(a))
+      assert(belt.valid, "the belt is still there")
+      assert(itemCount(character, "transport-belt") === 0, "no belt picked up")
+    })
+  })
+
   test("mines a big rock boxed in by another rock and buildings (seed 3333 neighbourhood)", () => {
     // The M5a seed-3333 stall: a big rock off the tile grid, a second rock north of it and burner sites east. Walking
     // to within the short reach of its centre failed ("no path": every end node next to the rock collides with it),

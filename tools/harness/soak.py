@@ -75,6 +75,8 @@ def load_config(path, args):
     if args.snapshots is not None:
         run["snapshot_minutes"] = args.snapshots
     run.setdefault("snapshot_minutes", 0)
+    if args.helper_lua:
+        run["helper_lua"] = str(Path(args.helper_lua).resolve())
     cfg.setdefault("mod", {})
     cfg.setdefault("mapgen", {})
     return cfg
@@ -108,6 +110,9 @@ def setup_dir(cfg, seed):
         lua = json.dumps(value) if not isinstance(value, bool) else ("true" if value else "false")
         lines.append(f'  remote.call("rival-engineers", "set_config_override", "{key}", {lua})')
     lines.append("end)")
+    if cfg["run"].get("helper_lua"):
+        # Debug probes (--helper-lua): extra Lua in the helper mod, e.g. an on_nth_tick that logs entity states.
+        lines.append(Path(cfg["run"]["helper_lua"]).read_text())
     snap = int(cfg["run"].get("snapshot_minutes") or 0)
     if snap > 0:
         # Snapshot mode runs a headless server (saves only work in multiplayer) as fast as the CPU allows.
@@ -396,6 +401,8 @@ def main():
     parser.add_argument("--no-fail-fast", action="store_true", help="ignore the config's run.fail_fast rules")
     parser.add_argument("--snapshots", type=int, metavar="MIN",
                         help="save the game every MIN game-minutes (runs a headless server instead of --benchmark)")
+    parser.add_argument("--helper-lua", metavar="LUA",
+                        help="append this Lua to the generated helper mod's control.lua (debug probes; see README)")
     parser.add_argument("--from-save", metavar="ZIP",
                         help="continue from a snapshot save (one seed: the seed only names the output) with the current build")
     args = parser.parse_args()

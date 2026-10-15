@@ -147,11 +147,12 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   }
 
   const placed = stampModule(surface, force, def, origin)
-  for (let i = 0; i < placed.length; i++) {
-    if (placed[i] === undefined) problems.push(`could not place ${def.entities[i].name} at ${def.entities[i].x},${def.entities[i].y}`)
-  }
   const entities: LuaEntity[] = []
-  for (const e of placed) if (e !== undefined) entities.push(e)
+  for (let i = 0; i < def.entities.length; i++) {
+    const e = placed[i]
+    if (e === undefined) problems.push(`could not place ${def.entities[i].name} at ${def.entities[i].x},${def.entities[i].y}`)
+    else entities.push(e)
+  }
 
   // Feeders and sinks just outside the belt ports.
   const taken: Record<string, boolean> = {}

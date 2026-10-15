@@ -611,6 +611,11 @@ M5a proposals (all **proposed**, not decided; details and evidence in `docs/repo
   red producer made ≥ 10 packs (`automated-red-science`).
 - **P15, port approach tiles (proposed, extends D34/P5):** the tile beyond each belt port's outside tile stays reserved
   for that port's route after placement, so later plans cannot box in an unconnected port of a built module.
+- **P16, undergrounds when boxed in (proposed, extends P10):** when a production or mall goal fails every plan attempt
+  without undergrounds (belts can't cross; seed 222 rip-up cycled for 2 game-hours), the technology that unlocks the
+  underground belt (`logistics`) becomes a prerequisite of those goals and is researched with hand-fed packs like the
+  other unblocking techs. Alternative: always research it before the first production plan (shorter, simpler routes
+  on every seed, at about 3–5 game-minutes of extra hand-crafting and research).
 
 Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
 

@@ -272,8 +272,10 @@ function mineTick(character: LuaEntity, target: LuaEntity): boolean {
   const selected = character.selected
   // A player mining here would deconstruct the ghost on top of the ore; don't. A rock or tree partly under a ghost can
   // still be mined from a point of its box the ghost doesn't cover (resources are one tile: no other point).
+  // Likewise a built entity on top of the ore (a belt the crew placed after the mine job was planned): mining here
+  // would pick it up (seed 77 lost two belts of an ore route that way and its smelters starved).
+  if (target.type === "resource" && selected && selected.valid && selected !== target && selected.type !== "character" && selected.type !== "item-entity") return false
   if (selected && selected.valid && selected !== target && selected.type === "entity-ghost") {
-    if (target.type === "resource") return false
     const box = target.bounding_box
     const corners = [
       { x: box.left_top.x + 0.1, y: box.left_top.y + 0.1 },
@@ -329,7 +331,7 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
     return fail("inventory-full", action.item)
   }
   if (stalled(action, gained + character.character_mining_progress, config, tick)) return fail("stalled", "mining made no progress")
-  if (!mineTick(character, target)) return fail("not-minable", "a ghost covers the target")
+  if (!mineTick(character, target)) return fail("not-minable", "a ghost or another entity covers the target")
   return "running"
 }
 
