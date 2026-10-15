@@ -25,7 +25,10 @@ import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../plann
 import { LayoutPolicy } from "../planner/policy"
 import { solveNow, SolveResult } from "./solver"
 
-export type MakeModule = (this: void, generator: GeneratorName, params: Record<string, unknown>) => ModuleDef
+/** A module kind: a generator, or "curated" (params.id names the curated module). */
+export type ModuleKind = GeneratorName | "curated"
+
+export type MakeModule = (this: void, generator: ModuleKind, params: Record<string, unknown>) => ModuleDef
 
 export interface DesignContext {
   facts: ProtoFacts
@@ -59,6 +62,11 @@ export interface DesignTarget {
   /** Science pack consumed by the labs, packs/s. */
   item: string
   perSecond: number
+  /**
+   * A mall (material supply for buildings) as a second sink: a curated module whose `chest-out` ports the crew empties,
+   * planned at `utilization` of its full-speed inputs (it only runs while its chests have room).
+   */
+  mall?: { id: string; utilization: number }
 }
 
 export interface DesignPort {
@@ -71,7 +79,7 @@ export interface DesignPort {
 export interface DesignNode {
   role: string
   kind: NodeKind
-  generator: GeneratorName
+  generator: ModuleKind
   params: Record<string, unknown>
   def: ModuleDef
   /** Main product and its planned rate (packs/s for labs, W for power). */
@@ -352,6 +360,12 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === target.item) port = p.id
   w.nodes[0].inputs.push({ port: port ?? `in-${target.item}`, item: target.item, rate })
   w.demands.push({ item: target.item, rate, to: labRole, toPort: port ?? `in-${target.item}` })
+  if (target.mall !== undefined && cluster === 1) {
+    const def = ctx.make("curated", { id: target.mall.id })
+    const inputs = inputPorts(def, target.mall.utilization)
+    w.nodes.push({ role: "mall", kind: "sink", generator: "curated", params: { id: target.mall.id }, def, item: "mall", need: target.mall.utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs), cluster })
+    for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
+  }
   for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
   for (const d of w.demands) if (d.item !== ctx.fuel) w.errors.push(`unplanned demand for ${d.item}`)
   return w
@@ -539,7 +553,7 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
   return { missing, grow, missingEdges }
 }
 
-export type GoalKind = "power" | "labs" | "production" | "grow"
+export type GoalKind = "power" | "labs" | "production" | "mall" | "grow"
 
 export interface GoalSpec {
   kind: GoalKind
@@ -567,13 +581,13 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
     return gs
   }
   for (const n of diff.missing) {
-    const kind: GoalKind = n.kind === "labs" ? "labs" : isPowerRole(n.role) ? "power" : "production"
+    const kind: GoalKind = n.kind === "labs" ? "labs" : isPowerRole(n.role) ? "power" : n.role === "mall" || string.match(n.role, ">mall$")[0] !== undefined ? "mall" : "production"
     const gs = get(kind)
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
-  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, grow: 4 }
+  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5 }
   for (const e of diff.missingEdges) {
     const a = goalOf[e.from]
     const b = goalOf[e.to]
@@ -581,7 +595,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
     if (a !== undefined && b !== undefined && rank[b.kind] > rank[a.kind]) gs = b
     gs.edges.push(e)
   }
-  for (const k of ["power", "labs", "production"] as GoalKind[]) if (byKind[k] !== undefined) goals.push(byKind[k])
+  for (const k of ["power", "labs", "production", "mall"] as GoalKind[]) if (byKind[k] !== undefined) goals.push(byKind[k])
   for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
   for (const gs of goals) gs.techs.sort()
   return goals

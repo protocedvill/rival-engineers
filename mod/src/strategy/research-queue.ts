@@ -73,8 +73,11 @@ export interface ResearchPick {
   reason: string
 }
 
-/** The next technology to research: unblocking `wanted` first, then the research goal. */
-export function pickResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>): ResearchPick | undefined {
+/**
+ * The next technology to research: unblocking `wanted` first (with `packs`, hand-fed ones included), then the research
+ * goal (with `goalPacks`: automated packs only, so the crew don't hand-craft packs for research nothing waits on).
+ */
+export function pickResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs): ResearchPick | undefined {
   const sorted = [...wanted].sort()
   for (const w of sorted) {
     const need: string[] = []
@@ -83,15 +86,15 @@ export function pickResearch(force: LuaForce, wanted: string[], packs: Record<st
     const pick = cheapest(ready)
     if (pick !== undefined) return { tech: pick, reason: `unblocks ${w}` }
   }
-  const ready = researchGoal().filter((n) => researchable(force, n, packs))
+  const ready = researchGoal().filter((n) => researchable(force, n, goalPacks))
   const pick = cheapest(ready)
   return pick !== undefined ? { tech: pick, reason: "research goal" } : undefined
 }
 
 /** Starts the picked research if the force has none running. Returns what was started. */
-export function startResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>): ResearchPick | undefined {
+export function startResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs): ResearchPick | undefined {
   if (force.current_research !== undefined) return undefined
-  const pick = pickResearch(force, wanted, packs)
+  const pick = pickResearch(force, wanted, packs, goalPacks)
   if (pick === undefined) return undefined
   return force.add_research(pick.tech) ? pick : undefined
 }

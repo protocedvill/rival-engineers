@@ -7,6 +7,7 @@ import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
+import { mallSources } from "./factory"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
@@ -819,7 +820,8 @@ interface Source {
 
 /** Machines holding `item` (or anything collectable, if undefined) the crew may take from. */
 function collectSources(ctx: Ctx, item: string | undefined): Source[] {
-  const out: Source[] = []
+  // The factory's mall (M5) supplies buildings: its output chests come first.
+  const out: Source[] = mallSources(ctx.faction.name, item)
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
     if (site.status === "failed") continue

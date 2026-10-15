@@ -4,9 +4,8 @@ import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
 import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
-import { generatedModule } from "../modules/library"
+import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { GeneratorName } from "../modules/generators"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
 import { planGrowth } from "../planner/grow"
@@ -19,7 +18,7 @@ import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
 import { entryPolicy, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
 import { newTerrain } from "../planner/terrain"
-import { Design, design, DesignContext, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
+import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
@@ -50,7 +49,7 @@ export interface GoalNode {
   /** Graph node id = module instance id. */
   id: string
   kind: DesignNode["kind"]
-  generator: GeneratorName
+  generator: ModuleKind
   params: Record<string, unknown>
   item: string
   need: number
@@ -258,7 +257,8 @@ function researchedTechs(force: LuaForce): Record<string, boolean> {
   return out
 }
 
-function makeModule(this: void, gen: GeneratorName, params: Record<string, unknown>): ModuleDef {
+function makeModule(this: void, gen: ModuleKind, params: Record<string, unknown>): ModuleDef {
+  if (gen === "curated") return curatedModule(params.id as string)
   return generatedModule(gen, params)
 }
 
@@ -313,10 +313,13 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
   let built = 0
   for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
-  const key = `${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
-  const d = design(designContext(ctx), { item: target.item, perSecond: target.perMinute / 60 })
+  // The mall joins the design once science is automated (the crew hand-craft buildings until then).
+  const mallId = ctx.config.factoryMall
+  const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
+  const d = design(designContext(ctx), { item: target.item, perSecond: target.perMinute / 60, mall })
   const diff = diffDesign(d, f.graph, (node) => findModule(f.layout, node)?.canonical)
   f.design = {
     stage: f.stage,
@@ -395,9 +398,10 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       ctx.waiting.push("labs wait for power")
       continue
     }
-    if (spec.kind === "production" || spec.kind === "grow") {
+    if (spec.kind === "production" || spec.kind === "grow" || spec.kind === "mall") {
       const blocked: string[] = []
-      for (const k of ["power", "labs"] as GoalKind[]) if (activeGoal(f, k) !== undefined) blocked.push(k)
+      const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : ["power", "labs", "production"]
+      for (const k of before) if (activeGoal(f, k) !== undefined) blocked.push(k)
       if (blocked.length > 0) {
         ctx.waiting.push(`${spec.kind} waits for ${blocked.join(", ")}`)
         continue
@@ -805,7 +809,7 @@ function research(ctx: Ctx, d: Design | undefined): void {
   if (cur !== undefined) return
   if (labsBuilt(f).length === 0) return
   const wanted = d?.techs ?? []
-  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx))
+  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx), packsAutomated(f))
   if (pick !== undefined) {
     f.research.current = pick.tech
     f.research.reason = pick.reason
@@ -839,7 +843,8 @@ function handFeed(ctx: Ctx): void {
   const f = ctx.f
   const cur = ctx.force.current_research
   const automated = packsAutomated(f)
-  const on = ctx.config.factoryHandFeedLabs && cur !== undefined
+  // Hand-feeding serves research that unblocks the factory's goals (the research goal waits for automated packs).
+  const on = ctx.config.factoryHandFeedLabs && cur !== undefined && (f.research.reason ?? "").startsWith("unblocks")
   for (const node of labsBuilt(f)) {
     for (const lab of labEntities(ctx, node)) {
       const inv = lab.get_inventory(defines.inventory.lab_input)
@@ -1006,6 +1011,30 @@ function recover(ctx: Ctx): void {
     if (left.length > 0) replanGhosts(ctx, b, left)
   }
   faction.brain!.replans++
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Material supply: the mall's output chests are a source for the bootstrap economy (H4 collect before hand-craft).
+
+/** Built mall chests holding `item` (or anything, if undefined), with amounts. */
+export function mallSources(factionName: string, item: string | undefined): { entity: LuaEntity; item: string; amount: number }[] {
+  const out: { entity: LuaEntity; item: string; amount: number }[] = []
+  const f = getFactory(factionName)
+  if (f === undefined) return out
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph, "sink")) {
+    if (n.lifecycle !== "built") continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    for (const p of m.def.ports) {
+      if (p.kind !== "chest-out" || (item !== undefined && p.item !== item)) continue
+      const chest = surface.find_entities_filtered({ type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
+      if (chest === undefined) continue
+      for (const c of chest.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: chest, item: c.name, amount: c.count })
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------------------------------------

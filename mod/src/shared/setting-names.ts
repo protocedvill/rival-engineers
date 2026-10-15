@@ -46,5 +46,7 @@ export const Settings = {
   factoryHandFeedLabs: "rival-engineers-factory-hand-feed-labs",
   factoryBuildPriority: "rival-engineers-factory-build-priority",
   soakDoneMilestone: "rival-engineers-soak-done-milestone",
+  factoryMall: "rival-engineers-factory-mall",
+  factoryMallUtilization: "rival-engineers-factory-mall-utilization",
   sandboxEnemies: "rival-engineers-sandbox-enemies",
 } as const

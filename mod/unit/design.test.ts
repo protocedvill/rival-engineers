@@ -15,7 +15,7 @@ const RED = "automation-science-pack"
 function ctx(changes: Partial<DesignContext> = {}, policy: Partial<LayoutPolicy> = {}): DesignContext {
   return {
     facts: F,
-    make: (gen: GeneratorName, params: Record<string, unknown>) => generate(F, gen, params),
+    make: (gen, params) => generate(F, gen as GeneratorName, params),
     researched: {},
     enabled: { "iron-plate": true, "copper-plate": true, "iron-gear-wheel": true, "transport-belt": true },
     plannable: { electronics: true, automation: true },

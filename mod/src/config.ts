@@ -93,6 +93,10 @@ export interface Config {
   factoryBuildPriority: number
   /** Telemetry writes done.json (the soak harness stops) once every faction reached this milestone. */
   soakDoneMilestone: string
+  /** Curated mall built once science is automated (material supply for buildings); "" = none. */
+  factoryMall: string
+  /** The mall's input flows are planned at this fraction of its full-speed rates. */
+  factoryMallUtilization: number
   /** Sandbox scenario (live review): keep biters. Off: no enemy bases, peaceful. */
   sandboxEnemies: boolean
 }
@@ -151,6 +155,8 @@ export function getConfig(): Config {
     factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
     factoryBuildPriority: setting(Settings.factoryBuildPriority),
     soakDoneMilestone: setting(Settings.soakDoneMilestone),
+    factoryMall: setting(Settings.factoryMall),
+    factoryMallUtilization: setting(Settings.factoryMallUtilization),
     sandboxEnemies: setting(Settings.sandboxEnemies),
   }
   const target = config as unknown as Record<string, unknown>

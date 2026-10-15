@@ -396,6 +396,24 @@ data.extend([
     order: "k-a",
   },
   {
+    // The mall built once science is automated (a curated module id; empty = none): it supplies buildings.
+    type: "string-setting",
+    name: Settings.factoryMall,
+    setting_type: "runtime-global",
+    default_value: "mall-polse",
+    allow_blank: true,
+    order: "j-h",
+  },
+  {
+    type: "double-setting",
+    name: Settings.factoryMallUtilization,
+    setting_type: "runtime-global",
+    default_value: 0.25,
+    minimum_value: 0.01,
+    maximum_value: 1,
+    order: "j-i",
+  },
+  {
     type: "bool-setting",
     name: Settings.sandboxEnemies,
     setting_type: "runtime-global",
