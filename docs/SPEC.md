@@ -590,7 +590,27 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-None open.
+M5a proposals (all **proposed**, not decided; details and evidence in `docs/reports/M5-report.md`):
+
+- **P9, crafting triggers for the crew (proposed):** the engine does not fire `craft-item` research triggers for a
+  player-less character's hand-crafting (pinned by a T2 engine test), so `automation-science-pack` (craft a lab) never
+  completes. The controller emulates the trigger for crew crafts, as it already emulates the build action (§5.1).
+- **P10, research before automated science (proposed):** until a pack is automated, the crew hand-craft it and put it
+  into the labs, but only for technologies that unblock a goal (`automation`, `electric-mining-drill`); the rest of the
+  D30 set waits for automated packs (`factory-hand-feed-labs`).
+- **P11, stage 1 target and lab sizing (proposed):** default `factory-targets` = 10 red/min; labs sized for the mean
+  unit time of the research goal's pack technologies (4 labs). M6 adds the 30 + 30 stage.
+- **P12, build order of goals (proposed):** power (steam block + its burner-drill coal outpost) → labs → production
+  (gated on the research it needs) → mall → growth; one goal planned at a time on top of the faction's layout, any
+  number building.
+- **P13, material supply (proposed):** the bootstrap economy keeps supplying every build (hand-craft, collect,
+  hand-mine); once science is automated, the curated mall joins the design at `factory-mall-utilization` (0.25) and
+  its output chests become the first collect source.
+- **P14, M5 acceptance milestone (proposed):** "automated red science feeding labs with research progressing" =
+  after hand-feeding stops, the labs complete more research units than the hand-fed packs left in them (+5), and the
+  red producer made ≥ 10 packs (`automated-red-science`).
+- **P15, port approach tiles (proposed, extends D34/P5):** the tile beyond each belt port's outside tile stays reserved
+  for that port's route after placement, so later plans cannot box in an unconnected port of a built module.
 
 Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
 

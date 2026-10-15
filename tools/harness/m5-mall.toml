@@ -1,0 +1,18 @@
+# M5a extended run: past automated red science until the mall (material supply for buildings) is built.
+# One seed at a time (-j 1) so its AI ms/tick is comparable.
+
+[run]
+name = "m5-mall"
+seeds = [11]
+game_hours = 2.5
+stop_when_done = true
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 3600
+frameDumpRadius = 120
+soakDoneMilestone = "mall-built"
