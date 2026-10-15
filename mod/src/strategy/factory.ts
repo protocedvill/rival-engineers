@@ -111,6 +111,8 @@ declare global {
   }
 }
 
+const designCache: Record<string, { key: string; design: Design }> = {}
+
 const UPKEEP_INTERVAL = 300
 const FUEL_LOW_MINUTES = 2
 const FUEL_TOP_MINUTES = 8
@@ -305,6 +307,15 @@ function designNow(ctx: Ctx): Design | undefined {
   const stage = stages[math.min(f.stage, stages.length - 1)]
   if (stage === undefined || stage.length === 0) return undefined
   const target = stage[0]
+  // The design is a pure function of the target, the force's tech and the graph: recompute it only when they change
+  // (a session cache: rebuilt after load, same result, so it is deterministic).
+  let researchedCount = 0
+  for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
+  let built = 0
+  for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
+  const key = `${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const cached = designCache[ctx.faction.name]
+  if (cached !== undefined && cached.key === key) return cached.design
   const d = design(designContext(ctx), { item: target.item, perSecond: target.perMinute / 60 })
   const diff = diffDesign(d, f.graph, (node) => findModule(f.layout, node)?.canonical)
   f.design = {
@@ -320,6 +331,7 @@ function designNow(ctx: Ctx): Design | undefined {
     grow: diff.grow.length,
   }
   ;(d as Design & { goals?: GoalSpec[] }).goals = goalsFrom(diff, researchedTechs(ctx.force))
+  designCache[ctx.faction.name] = { key, design: d }
   return d
 }
 

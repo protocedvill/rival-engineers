@@ -250,9 +250,10 @@ function sameSource(job: PlanJob, c: ConnectionRequest): string[] {
   const out: string[] = []
   if (c.from === undefined) return out
   for (const id of job.layout.routeOrder) {
+    // Routes of the base layout belong to earlier requests: compare the route's own source.
     const r = job.layout.routes[id]
-    const other = connection(job, r.conn)
-    if (other.from !== undefined && other.from.module === c.from.module && other.from.port === c.from.port) out.push(id)
+    const from = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
+    if (from !== undefined && from.module === c.from.module && from.port === c.from.port) out.push(id)
   }
   return out
 }
