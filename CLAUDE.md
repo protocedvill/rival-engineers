@@ -159,3 +159,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   (x, y), not its centre (2–10 shore tiles differ in a 192² area).
 - Starting a headless game from a scenario: `--start-server-load-scenario rival-engineers/sandbox --server-settings S`
   with `auto_pause: false`, and keep stdin open (`sleep N | factorio ...`) or it exits on EOF.
+- **Trees' selection boxes are tall and overlap in forests**: the tree south of a target covers its centre and its
+  whole collision box, so `update_selected_entity(tree.position)` often selects a neighbour that is out of mining
+  reach, and mining makes no progress. Mine from a point of the target's *selection box* where it is the selected
+  entity (`controller.ts` `selectPoint`); the mining arena (`test/mining-arena.test.ts`) pins it.
+- Several `update_selected_entity` calls in one tick leave the selection on the **last** point: re-select the
+  wanted point right before setting `mining_state`.
+

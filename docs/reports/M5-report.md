@@ -465,3 +465,124 @@ The water/deepwater thresholds (0, -2) and the tile probabilities come from game
    where factions share an ore field; dropping them only helps factions that spawn close together.
 3. Should factions ever share an ore field (spawns closer than the default 300 tiles), or should `spawn-min-distance`
    guarantee separate resources?
+
+## M5a.3: crew mining, trip batching, depletion, mixed ore (2026-10-15)
+
+Backlog B1, B3, B4, B6 (from the user's live-run reviews) and B8 (D44–D46, added by the manager mid-task).
+
+### B1: tree and rock mining (d9e024a)
+
+**Mining arena** (`test/mining-arena.test.ts`, T2, ~10 s per group): a character mines every Nauvis tree and rock
+prototype (16 trees, 3 rocks) from 8 directions at off-grid positions, dense random clusters of mixed trees and rocks,
+trees over iron ore (hand-mine the ore under them, then clear them), trees and rocks in the gaps of furnace rows,
+drill pairs, belts and chests, and the densest 24×24 window of two real generated forests. A target counts only when
+the action succeeded **and** the target is gone (or the gathered count arrived). Half the trees run as clear jobs
+(mine until gone), half as wood gathers (mine until the yield arrived), like the bootstrap's jobs.
+
+| Group | Before | After | Mean / p90 ticks after |
+|---|---|---|---|
+| prototypes × 8 directions | 184/184 | 184/184 | 129 / 272 |
+| dense clusters | 96/126 attempted (76%) | 132/132 | 90 / 99 |
+| trees over ore | 51/52 | 57/57 | 192 / 421 |
+| next to buildings | 32/32 | 32/32 | 116 / 261 |
+| real forest (2 seeds, 40 each) | 71/80 (89%) | 80/80 | 74 / 79 |
+| crew through the Job Board, real forest, trips | 38/40 jobs, 4 releases, 108 s | 40/40, 0 releases, 61 s | |
+
+Every failure was `stalled` after `action-stall-ticks` (20 s) of no progress. **Cause:** trees' selection boxes are
+tall; in a forest the tree south of the target covers its centre and its whole collision box. The controller selected
+at the centre and the collision-box corners, found only the neighbour, made it the "obstacle" and mined at the
+target's position: the neighbour was out of mining reach, so nothing happened. The corner scan also left the selection
+on the last corner's entity. Approaching from one side (the old single-job crew runs came from the depot, south)
+hides it; trips inside a forest approach from every side, which matches the user's "odd angle" description. The
+user's 70% likely also counts the 20 s of standing before each release.
+**Fix:** `selectPoint` scans a 5×5 grid over the target's *selection box* (nearest to the character first) for a point
+where the target itself is selected and mines there (cached per action). If none exists, the covering tree or rock is
+mined first, after walking into its reach if needed (chains up to 3 deep); a ghost, or a built entity over ore, still
+refuses. The arena is the regression test with a 100% bar per group.
+
+### B3: trip batching (d4a3acc)
+
+`planTrip` (board, pure, T1-tested): the anchor job plus the nearest ready trip jobs (clears, and gathers from trees or
+rocks delivered to a depot) within `trip-radius` of it, chained nearest-neighbour, up to `trip-max-jobs`, while their
+products fit in `trip-inventory-fill` of the free slots. Gathers in a trip deliver once at the end; brain factions
+deposit the rest as before. The bootstrap now opens up to crew × `trip-max-jobs` wood jobs (ore gathers still one per
+member, since they feed furnaces). **Crew arena** (same 40-job real forest, one crew member, depot 22 tiles away):
+one job per trip took 27 depot deposits and 228 game-s; with trips 2 deposits and **61 game-s** (3.7× faster).
+In the soak, seed 11's crew did 2 trips and 9 deposits in the bootstrap.
+
+### B4: depleting bootstrap sites (D43, fa77b4d)
+
+Each think, a built mining site's drills are checked: ore left in each drill's mining area ÷ its rate. Under
+`bootstrap-depletion-minutes` (10) the site gets a replacement goal at the front of the goal list; the old site keeps
+running until the replacement is built, then it is **retired**: no more fuel, feeding or collecting, and clear jobs
+pick up its entities (re-added after a replan). A new site must hold `SITE_MIN_LIFE` (2) × the lead time of ore, so
+poor edge tiles don't get a site that is replaced at once. T2 (`burner bootstrap` "a depleting mining site is
+replaced..."): a stone site's ore is drained to 12; a replacement is built on rich tiles and the old drill and chest
+are picked up. **It matters in practice:** every M5 acceptance seed replaced 2–4 iron/stone sites before reaching
+automated red science (seed 555555: four iron smelt sites, the first at ~20 game-min).
+
+### B6: mixed-ore drills (minimum fix, f9daf1a; bootstrap part in fa77b4d)
+
+- Mining module placement rejects a candidate when any drill mining area holds ore other than the module's resource
+  (summed-area `ore` vs `res` layers, O(1) per candidate); growth (`tryExpand`) rejects grown drill areas that reach a
+  foreign ore. T1 regression (`planner` "mining outpost on a mixed patch"): iron with copper specks except a pure
+  corner lands on the corner; it failed before the fix (copper at 18,24); an all-mixed patch finds no spot.
+- Bootstrap burner drills check their prototype mining area too (for 2×2 burner drills it equals the footprint, which
+  already had to be all one ore, so this only guards other drills).
+- The full version (mixed spots allowed with sorting belts, priced by belt length) is **P20, proposed**: no acceptance
+  seed needed it.
+
+### B8: D44–D46 (f9daf1a)
+
+- **D44:** `spawn-min-distance` default 450 (was 300). No test or soak config assumed 300 (they read the setting);
+  `shared-water.toml` keeps its deliberate fixed offsets (±70, one shared field) as a stress config. The lake repair
+  already only fires when ≥ 50 tiles disagree, so it is the fallback: it did not fire in this round's soaks.
+- **D45:** margins were already part of claims since M5a.2 (`brain.reserved` holds them). Cost: claim lookups are
+  hash lookups, independent of the claim size; 2-faction AI time at -j 5 is 1.49–1.69 ms/tick vs 1.41–1.64 in M5a.2
+  and ~1.38 before claims existed (concurrency-inflated, D13 target 2). No noticeable cost.
+- **D46:** a faction claims the whole ore field under each bootstrap drill and mining module (`claimOreField`: flood
+  over tiles of that ore, joined within 2 tiles, up to 160 tiles from the seed tile). Other factions see those tiles as
+  foreign ground and their ore as `claimed:<ore>` (so a drill area reaching it is refused like a foreign ore); their
+  bootstrap sites, mining modules, growth and hand-mining stay off it. Spawn scoring ignores patches nearer to another
+  faction's base than to the candidate spot. T2 (`faction conflicts` "factions never share an ore field"): a field of
+  two clumps is claimed whole, the other faction's planner sees it as claimed ore and its coal pair goes to the
+  separate field.
+
+### Results (final code f9daf1a; docs-only commits after it)
+
+- T2: **92/92** (`npm test`, 416 s, 8 shards) on f9daf1a. T1: 9/9 files.
+- M5 acceptance on f9daf1a (`out/soak/m5a3-r1`): **5/5**, no stalls. Game-min: 11: 34.1, 222: 47.1, 3333: 31.6,
+  44444: 42.3, 555555: 29.4. Not comparable with M5a.2's times: the 450-tile spawns put every faction on a different
+  map spot (two seeds got faster, three slower).
+- 2 factions on f9daf1a (`out/soak/m5a3-2f`, 5 seeds): **5/5 seeds, 10/10 factions**, no stalls (faction 1 / 2:
+  11: 36.7 / 25.9, 222: 47.5 / 36.2, 3333: 31.0 / 44.1, 44444: 40.9 / 44.6, 555555: 29.0 / 43.8). AI 1.49–1.69 ms/tick
+  at -j 5.
+
+### Magic numbers for the user
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `SELECT_GRID` | `character/controller.ts` | 5 points per side | A 5×5 scan of a tree's selection box always found a free point in the arena; at most 25 selection probes, only when the cached point stops working. | no |
+| `MAX_COVER_DEPTH` | `character/controller.ts` | 3 | Tree over tree over target; deeper chains never appeared in the arena. | no |
+| `trip-max-jobs` | `settings.ts`, `jobs/crew.ts`, `strategy/bootstrap.ts` | 20 jobs | ~40 s of tree mining per trip; a 40-tree forest took 2 trips. Also sets the bootstrap's wood jobs (crew × 20). | yes |
+| `trip-radius` | `settings.ts`, `jobs/board.ts` | 16 tiles | About a module site plus its margin; keeps a trip local. | yes |
+| `trip-inventory-fill` | `settings.ts`, `jobs/crew.ts` | 0.8 of free slots | Leaves room for what a trip picks up besides its products; trees (0.04 slot) never hit it, huge rocks (~1 slot) might. | yes |
+| `bootstrap-depletion-minutes` | `settings.ts`, `strategy/bootstrap.ts` | 10 min | Enough to craft and build a replacement drill + furnace with the bootstrap economy (sites were replaced 0.3–50 s after the flag in the soaks). | yes |
+| `SITE_MIN_LIFE` | `strategy/bootstrap.ts` | 2 × the lead time (20 min of ore) | A new site on poor edge tiles would be replaced right away. | no |
+| `PRIORITY_RETIRE` | `strategy/bootstrap.ts` | 60 | Same as collecting output (transfer), below placement and fuel. | no |
+| `FIELD_JOIN` | `world/claims.ts` | 2 tiles | Same join distance as the resource scan's patches. | no |
+| `FIELD_RADIUS` | `world/claims.ts` | 160 tiles | Bounds the flood of one field claim; starting fields are well under 100 tiles across. | no |
+| `spawn-min-distance` | `settings.ts` | 450 tiles | User decision D44. | yes (existing) |
+| Arena `TARGET_TIMEOUT`, `CONCURRENT` | `test/mining-arena.test.ts` | 1800 ticks, 12 cells | Test parameters: a target takes 74–430 ticks; 12 concurrent walks keep the pathfinder queue realistic. | test only |
+
+### Questions for the user (non-blocking)
+
+1. P20: build the sorting variant for mixed-ore spots, or keep refusing them?
+2. Should ore gathers to the depot (hand-mined stone or coal) also batch into trips? Today only trees, rocks and
+   pick-ups do, since ore gathers usually feed furnaces one at a time.
+
+### Wall-clock time (estimates)
+
+(a) Full `npm test` runs: 1 × ~7 min. (b) Targeted tests (arena groups, controller, bootstrap, conflicts, job board,
+T1): ~15 runs, ~8 min. (c) Soaks: M5 acceptance 5 seeds × 1 round (~25 min) and 2 factions 5 seeds × 1 round
+(~35 min) at -j 5. (d) Everything else (reading, design, code, report): ~1.5 h.

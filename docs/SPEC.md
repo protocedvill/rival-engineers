@@ -651,6 +651,14 @@ M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-repo
   goal's location (built entities deconstructed, parts dropped from the layout and graph, the design plans it again).
   At most `conflict-max-repairs` (3) per goal. Refinement left for M6: relocate only the blocked module.
 
+M5a.3 proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5a.3"):
+
+- **P20, mixed-ore drill spots (proposed, B6):** today a drill whose mining area holds a second ore is never placed
+  (mining modules, growth and bootstrap drills; the minimum fix). Proposal for later: allow a mixed spot when the
+  module gets a sorting stage (filter inserters or a splitter filter off the line into a belt to a consumer or a
+  chest) and its placement cost includes that extra belt length; pure spots win otherwise. Not built: no seed in
+  the M5 acceptance set needed a mixed spot.
+
 Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
 
 Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
