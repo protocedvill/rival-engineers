@@ -74,6 +74,7 @@ Two layers, by analogy:
 | D48 | Growth by belts, upgrades, soft claims (2026-10-15, user direction; later stage) | (1) Plan raw-material modules in **whole belts of I/O** (e.g. 48 stone furnaces fill one yellow belt; ratios as in https://factoriocheatsheet.com/#material-processing): an expandable module (`ModuleDef.expand`) has a full size of N belts. (2) Early on, build only **part** of a module for current needs, and **finish it** later when demand grows. (3) Prefer **in-place upgrades** of existing modules when more is needed (stone → steel furnaces, yellow → red belts, other same-footprint replacements) before building new ones; this extends D24's `upgrade-tier`. (4) **Soft claims:** when an expandable module is placed, the area it can grow into gets a placement/routing cost for anything else (a weight, not a hard block). Schedule: soft claims with the planner work (backlog B9); partial-then-finish and in-place upgrades after M5 (M6 where in v1 scope; steel furnaces need steel, so post-v1 per D20). |
 | D49 | Reconciler remedies (2026-10-15, user decision on P21) | P21 approved, including the D28 exception: the crew re-place missing **belts and poles** (never machines). **Belt capacity** (D24 tier upgrade / parallel route) is decided **only in planning**, and only when adding a consumer or producer would take an edge above its limit (D25); the reconciler never upgrades a belt at runtime. The reconciler **runs from the start**, but nodes supplied by the crew by design (hand-fed labs before automated science) are expected: neither reported as problems nor remedied. |
 | D50 | Planner weights as settings (2026-10-16, user decisions via the manager) | (1) The placement soft-claim weight (B9, D48 (4)) is a setting, **default 0.5** (`planner-placement-soft-claim`); the planner must work at 0.5. (2) Also settings, current values as defaults: the least comparison work `planner-compare-min-work` (5,000), router `planner-router-bundle-factor` (0.9) and router `planner-router-soft-claim` (0.5). The work-count tolerance (15%) and the reference-base size stay tooling, not settings. (3) P23 approved: the D36 / B2 comparison reroutes the same placement. (4) The splitter comparison (B2) gets an enable setting `logistics-splitter-compare`, **default off**; the code stays. |
+| D51 | Buffers, D36 per attempt, bootstrap on production patches (2026-10-16, user decisions via the manager) | (1) P25 changed: module buffer depots hold **2 slots** (`module-buffer-slots` default 2) and go on **smelter columns, circuit blocks and gear rows** (change their layouts as needed). (2) P29 approved: a plan that fails to route without undergrounds but routes the same placement with them defers to `logistics` at once. (3) Bootstrap mining sites **may be placed on a production outpost's ore patch**, as long as they can be deconstructed when something more important needs that ground (as D43 does for depleted sites). P26 (temporary factories on by default?) is pending: the user is checking it in game. |
 
 ## 3. v1 Definition of Done
 
@@ -705,7 +706,7 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
 
 M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5d"):
 
-- **P25, which modules get a buffer (proposed, D42 / B5):** only **smelter columns**: an inserter in the column's head
+- **P25, which modules get a buffer (changed by the user → D51, 2026-10-16: 2 slots; smelter columns, circuit blocks and gear rows):** only **smelter columns**: an inserter in the column's head
   takes plates off the west output belt into an iron chest the crew collects from (before hand-mining or hand-crafting),
   limited to `module-buffer-slots` (1 slot = 100 plates) so it fills up and stops. Not mining outposts (the crew needs
   ore only to hand-feed bootstrap furnaces), not the red line (its packs go to the labs by belt), not the circuit block,
@@ -726,7 +727,7 @@ M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
 - **P28, soft claims and partners (proposed, D50):** at placement, a module ignores the soft claims of the modules it
   connects to (their ports sit at their growing end, and growth reroutes the connection anyway). With it, 0.5 plans both
   replays that failed in M5c.
-- **P29, D36 per attempt (proposed):** a production or mall plan that fails to route without undergrounds routes the same
+- **P29, D36 per attempt (approved → D51, 2026-10-16):** a production or mall plan that fails to route without undergrounds routes the same
   placement with them; if that works, it counts as infinitely shorter and the goal defers to the technology at once
   (instead of after four failed attempts; the four-attempt rule stays as a fallback).
 
@@ -779,6 +780,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.19 (2026-10-16, user decisions via the manager): D51 (buffers 2 slots on smelter columns, circuit blocks and gear rows; P29 approved; bootstrap sites allowed on production patches, deconstructible); P26 pending the user's in-game check.
 - v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
   crafting, soft claims and partners, D36 per attempt); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
   node status implemented.
