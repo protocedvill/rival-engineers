@@ -44,7 +44,7 @@ export interface ModuleEntity {
   buffer?: boolean
 }
 
-export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power" | "chest-out"
+export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power" | "chest-out" | "chest-in"
 
 /**
  * Where the outside world attaches (SPEC §5.4, single-item per D23).
@@ -55,6 +55,7 @@ export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power"
  *   `pos + dirVector(dir)` (just outside the footprint); the router starts a belt there.
  * - `power`: `pos` is a small electric pole inside the module that the planner's pole network connects to.
  * - `chest-out`: `pos` is a chest the crew empties (malls). No belt.
+ * - `chest-in`: `pos` is a chest the crew fills with `item` (D38 temporary factories). No belt.
  * - `pipe-in`/`pipe-out`: reserved for fluid modules (none in v1: the steam block fuses its pump).
  */
 export interface Port {

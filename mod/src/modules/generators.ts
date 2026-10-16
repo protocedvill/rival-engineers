@@ -717,9 +717,61 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Chest cell (D38 temporary bootstrap factory)
+
+export interface ChestCellParams extends CommonParams {
+  recipe: string
+  machine?: string
+  chest?: string
+}
+
+/**
+ * D38: a temporary factory the crew feeds by hand: input chest → inserter → assembler → inserter → output chest, in a
+ * row (width 7, height 3), two small poles on the north edge. The crew fills the input chest (`chest-in` ports, one per
+ * ingredient, same chest) and empties the output chest (`chest-out`). No belts: it needs no routing, only power.
+ */
+export function chestCell(facts: ProtoFacts, p: ChestCellParams): ModuleDef {
+  const machine = p.machine ?? "assembling-machine-1"
+  const chest = p.chest ?? "iron-chest"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  const recipe = solidRecipe(facts, p.recipe)
+  const product = mainProduct(recipe)
+  L.add(chest, 0.5, 1.5)
+  // Inserters face west: they pick from the west and drop east.
+  L.ins(1.5, 1.5, WEST)
+  L.add(machine, 3.5, 1.5, undefined, { recipe: p.recipe })
+  L.ins(5.5, 1.5, WEST)
+  L.add(chest, 6.5, 1.5)
+  const electric = facts.entity(L.inserter)?.electric === true || facts.entity(machine)?.electric === true
+  if (electric) {
+    L.poleAt(1.5, 0.5)
+    L.poleAt(5.5, 0.5)
+  }
+  const ports: Port[] = []
+  for (const ing of recipe.ingredients) ports.push({ id: `in-${ing.name}`, kind: "chest-in", pos: { x: 0.5, y: 1.5 }, dir: WEST, item: ing.name })
+  ports.push({ id: `chest-${product.name}`, kind: "chest-out", pos: { x: 6.5, y: 1.5 }, dir: EAST, item: product.name })
+  if (electric) ports.push({ id: "power", kind: "power", pos: { x: 1.5, y: 0.5 }, dir: NORTH })
+  const draft: ModuleDraft = {
+    id: `chest-cell/${p.recipe}/${machine}/${chest}/${L.inserter}`,
+    source: "generated",
+    generator: "chest-cell",
+    provenance: "generator chest-cell (Rival Engineers)",
+    description: `temporary ${machine} making ${p.recipe} from a chest the crew fills (D38)`,
+    footprint: { w: 7, h: 3 },
+    entities: L.entities,
+    ports,
+    recipe: p.recipe,
+    rotatable: true,
+    mirrorable: true,
+    params: { recipe: p.recipe, machine, chest, inserter: L.inserter },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Registry
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -731,7 +783,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "red-line") return redLine(facts, P)
   if (name === "circuit-block") return circuitBlock(facts, P)
   if (name === "lab-array") return labArray(facts, P)
+  if (name === "chest-cell") return chestCell(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell"]

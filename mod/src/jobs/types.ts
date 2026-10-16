@@ -73,6 +73,8 @@ export interface CrewStats {
   /** Busy ticks by the payload kind of the job being worked (telemetry). */
   byKind?: Record<string, number>
   deposits?: number
+  /** D38: craft jobs queued in the background of another batch. */
+  backgroundCrafts?: number
   /** Mining trips of more than one job (B3). */
   trips?: number
 }

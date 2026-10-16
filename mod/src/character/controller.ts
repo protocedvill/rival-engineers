@@ -152,6 +152,9 @@ function finish(ctrl: ControllerState, action: ActionRecord, status: ActionStatu
     stopCharacter(ctrl.character)
     // Crafting runs one action at a time, so every craft still queued was started by this action.
     if (action.spec.kind === "craft" && status !== "succeeded") cancelQueuedCrafts(ctrl.character)
+  } else if (action.spec.kind === "craft" && action.spec.mode === "await" && status !== "succeeded" && ctrl.character.valid) {
+    // D38: a background craft's wait cancelled before it ran: its crafts are still queued; give the ingredients back.
+    cancelQueuedCrafts(ctrl.character)
   }
   action.status = status
   action.reason = reason
@@ -424,6 +427,7 @@ function instantCraft(character: LuaEntity, recipeName: string, count: number): 
 }
 
 function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "craft" }>, config: Config, tick: number): StepResult {
+  if (spec.mode === "await") return stepCraftAwait(character, action, spec, config, tick)
   if (action.phase === "start") {
     const recipe = prototypes.recipe[spec.recipe]
     if (!recipe) return fail("unknown-recipe", spec.recipe)
@@ -443,6 +447,8 @@ function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<Act
     }
     const started = character.begin_crafting({ recipe: spec.recipe, count: spec.count, silent: true })
     if (started < spec.count) return fail("missing-ingredients", `started ${started} of ${spec.count}`)
+    // D38: queued; the crafts run while the character walks and works (an "await" action collects them).
+    if (spec.mode === "start") return "done"
     startWork(action, tick)
   }
   const gained = itemCount(character, action.item!) - action.baseline!
@@ -457,6 +463,27 @@ function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<Act
   let queued = 0
   for (const q of character.crafting_queue ?? []) queued += q.count
   if (stalled(action, gained * 1000 - queued + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
+  return "running"
+}
+
+/** D38: waits until the crafting queue (started by "start" crafts) is empty; fires the emulated craft triggers. */
+function stepCraftAwait(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "craft" }>, config: Config, tick: number): StepResult {
+  if (action.phase === "start") {
+    const recipe = prototypes.recipe[spec.recipe]
+    const product = recipe?.main_product ?? recipe?.products[0]
+    if (!recipe || !product || product.type !== "item") return fail("unknown-recipe", spec.recipe)
+    action.item = product.name
+    action.goalCount = productAmount(product) * spec.count
+    startWork(action, tick)
+  }
+  if (character.crafting_queue_size === 0) {
+    action.stats.items = action.goalCount!
+    onHandCrafted(character.force as LuaForce, action.item!, action.goalCount!)
+    return "done"
+  }
+  let queued = 0
+  for (const q of character.crafting_queue ?? []) queued += q.count
+  if (stalled(action, -queued + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
   return "running"
 }
 

@@ -117,7 +117,7 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
   const beltOutItems: Record<string, boolean> = {}
   for (const p of ports) {
     if (p.item === undefined) continue
-    if (p.kind === "belt-in" || p.kind === "pipe-in") inPortItems[p.item] = true
+    if (p.kind === "belt-in" || p.kind === "pipe-in" || p.kind === "chest-in") inPortItems[p.item] = true
     if (p.kind === "belt-out" || p.kind === "pipe-out" || p.kind === "chest-out") outPortItems[p.item] = true
     if (p.kind === "belt-out" || p.kind === "pipe-out") beltOutItems[p.item] = true
   }

@@ -360,7 +360,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const pos = character.position
   dropDeadJobs(faction, tick)
   const held = heldItems(character)
-  const avail = availableItems(faction, held)
+  let avail = availableItems(faction, held)
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
   if ((faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
   const accept = (job: CrewJob): boolean => {
@@ -368,9 +368,23 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
     return true
   }
-  const anchor = selectJob(board, pos, tick, accept)
+  let anchor = selectJob(board, pos, tick, accept)
   if (!anchor) return
   member.stats.plans++
+  // D38 opportunistic crafting: a craft job is queued and runs while the member does other work, like a player who
+  // queues crafts and walks on. A craft anchor takes the next other work along; other work takes open crafts along
+  // when the member visits the depot anyway (it hauls materials there).
+  const background = faction.brain !== undefined || faction.depositBetweenJobs === true ? config.crewBackgroundCrafts : 0
+  const crafts: CrewJob[] = []
+  if (background > 0 && anchor.kind === "craft") {
+    const rest = withoutMaterials(avail, anchor.materials)
+    const work = selectJob(board, pos, tick, (job) => job.kind !== "craft" && !isSelfJob(job) && hasMaterials(job, rest) && accept(job))
+    if (work !== undefined) {
+      crafts.push(anchor)
+      anchor = work
+      avail = rest
+    }
+  }
 
   let jobs: CrewJob[] = [anchor]
   let spot: Pos | undefined
@@ -406,20 +420,59 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     for (const id of trip) jobs.push(board.jobs[id])
   }
   jobs = fitMaterials(jobs, avail)
+  if (background > crafts.length && anchor.kind !== "craft" && missingMaterials(jobs, held).length > 0) {
+    let rest = avail
+    for (const job of jobs) rest = withoutMaterials(rest, job.materials)
+    while (crafts.length < background) {
+      const left = rest
+      const c = selectJob(board, pos, tick, (job) => job.kind === "craft" && crafts.indexOf(job) < 0 && hasMaterials(job, left) && accept(job))
+      if (c === undefined) break
+      crafts.push(c)
+      rest = withoutMaterials(rest, c.materials)
+    }
+  }
   const ids: number[] = []
   for (const job of jobs) ids.push(job.id)
+  for (const job of crafts) ids.push(job.id)
   if (!claim(board, ids, member.id, tick)) return
   member.claims = ids
   member.stats.batches++
 
-  const missing = missingMaterials(jobs, held)
+  const missing = missingMaterials([...jobs, ...crafts], held)
   if (missing.length > 0) haul(faction, member, missing, tick)
+  for (const c of crafts) startCraft(member, c)
   if (spot && distance(pos, spot) > 0.5) {
     member.spot = spot
     member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }) })
   }
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
   else for (const job of jobs) enqueueWork(faction, member, job)
+  for (const c of crafts) finishCraft(member, c)
+}
+
+function withoutMaterials(avail: Record<string, number>, materials: ItemCount[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const item in avail) out[item] = avail[item]
+  for (const m of materials) out[m.item] = (out[m.item] ?? 0) - m.count
+  return out
+}
+
+/** D38: queue a craft job's crafts (they run in the background of the batch). */
+function startCraft(member: CrewMember, job: CrewJob): void {
+  const p = job.payload
+  if (p.kind !== "craft") return
+  member.actions.push({ action: enqueue(member.controller, { kind: "craft", recipe: p.recipe, count: p.count, mode: "start" }), job: job.id })
+  member.stats.backgroundCrafts = (member.stats.backgroundCrafts ?? 0) + 1
+}
+
+/** D38: after the batch, wait for the background crafts (usually done by then) and deliver them. */
+function finishCraft(member: CrewMember, job: CrewJob): void {
+  const p = job.payload
+  if (p.kind !== "craft") return
+  member.actions.push({ action: enqueue(member.controller, { kind: "craft", recipe: p.recipe, count: p.count, mode: "await" }), job: job.id })
+  if (p.deliverTo && p.item) {
+    member.actions.push({ action: enqueue(member.controller, { kind: "insert", entity: p.deliverTo, item: p.item, count: p.count * craftYield(p.recipe, p.item), allowPartial: true }), job: job.id })
+  }
 }
 
 /**

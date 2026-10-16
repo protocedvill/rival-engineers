@@ -156,6 +156,12 @@ export interface Config {
   moduleBuffer: string
   /** D42 / B5: usable slots of a buffer chest (the rest are barred). */
   moduleBufferSlots: number
+  /** D38: temporary chest-fed assembler cells per product (item=count, empty = none). */
+  bootstrapFactories: string
+  /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */
+  bootstrapFactoryWaitSeconds: number
+  /** D38: craft jobs a member queues in the background of a batch (0 = craft standing). */
+  crewBackgroundCrafts: number
 }
 
 export type ConfigKey = keyof Config
@@ -243,6 +249,9 @@ export function getConfig(): Config {
     logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
     moduleBuffer: setting(Settings.moduleBuffer),
     moduleBufferSlots: setting(Settings.moduleBufferSlots),
+    bootstrapFactories: setting(Settings.bootstrapFactories),
+    bootstrapFactoryWaitSeconds: setting(Settings.bootstrapFactoryWaitSeconds),
+    crewBackgroundCrafts: setting(Settings.crewBackgroundCrafts),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

@@ -1,5 +1,5 @@
 import { expandModule, expandMoves, expandTail } from "../src/modules/build"
-import { assemblerRow, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -151,6 +151,20 @@ test("D42 / B5: a smelter column's buffer depot: an inserter off the west output
   eq(burner.entities.filter((e) => e.buffer === true).length, 0, "no buffer with burner inserters (it would need fuel)")
 })
 
+test("D38: a chest cell (temporary factory): chest → inserter → assembler → inserter → chest, rates of one assembler", () => {
+  const gear = chestCell(F, { recipe: "iron-gear-wheel" })
+  eq(gear.footprint.w * 10 + gear.footprint.h, 73, "7 × 3")
+  // The assembler could make 1 gear/s; one yellow inserter brings ~0.84 plates/s, so ~0.42 gears/s.
+  ok(out(gear, "iron-gear-wheel") > 0.4 && out(gear, "iron-gear-wheel") < 0.5, `inserter-limited gears ${out(gear, "iron-gear-wheel")}/s`)
+  near(inp(gear, "iron-plate"), 2 * out(gear, "iron-gear-wheel"), 1e-9, "2 plates per gear")
+  const red = chestCell(F, { recipe: "automation-science-pack" })
+  near(out(red, "automation-science-pack"), 0.1, 1e-9, "0.1 red/s")
+  const ins = red.ports.filter((p) => p.kind === "chest-in").map((p) => p.item!).sort()
+  eq(ins.join(","), "copper-plate,iron-gear-wheel", "one chest-in port per ingredient")
+  eq(red.ports.filter((p) => p.kind === "chest-out")[0].item, "automation-science-pack", "chest-out: the product")
+  eq(red.expand, undefined, "not expandable (temporary)")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
@@ -172,6 +186,9 @@ function allGenerated(): ModuleDef[] {
     circuitBlock(F, { units: 2 }),
     labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
     labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"] }),
+    chestCell(F, { recipe: "iron-gear-wheel" }),
+    chestCell(F, { recipe: "transport-belt" }),
+    chestCell(F, { recipe: "automation-science-pack" }),
   ]
 }
 
