@@ -129,6 +129,8 @@ export interface FactoryState {
   taps?: Record<string, string[]>
   /** D36 / B2 comparisons so far (telemetry): goal, attempt, decision and one line per alternative. */
   compares?: { goal: string; tick: number; research: boolean; why: string[] }[]
+  /** D38: temporary factory cells built so far per product (never rebuilt once retired), and retired cells. */
+  temp?: { built: Record<string, number>; retired: number }
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -262,6 +264,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   updateGoals(ctx)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
+  tempFactories(ctx)
   advanceGoals(ctx, d)
   research(ctx, d)
   handFeed(ctx)
@@ -719,7 +722,8 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if (entry.phase === "scan" || entry.phase === "plan") return
   // Planned against a terrain scan: another faction (or a player) may have claimed or built on its ground since.
   const contest = entry.phase === "done" ? contested(ctx, entry) : undefined
-  if (entry.phase === "done" && contest === undefined && deferForLogistics(ctx, g, entry)) return
+  // D36: a finished plan, or one that failed to route without undergrounds but routes with them (infinitely shorter).
+  if ((entry.phase === "done" || entry.phase === "failed") && contest === undefined && deferForLogistics(ctx, g, entry)) return
   if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
     const roles: Record<string, string> = {}
@@ -1396,6 +1400,137 @@ function handFeed(ctx: Ctx): void {
       }
     }
   }
+}
+
+
+// ---------------------------------------------------------------------------------------------------------
+// D38: temporary factories. Once assemblers can be built and the steam block stands, the faction builds small
+// chest-fed assembler cells (generator chest-cell) for the products in `bootstrap-factories` (gears, belts, red packs
+// while the labs are hand-fed). The crew fills their input chests and empties their output chests through the bootstrap
+// economy (bootstrap.ts `produce`: collect, then feed the cell, then hand-craft what the cell can't make in time). A
+// cell is deconstructed once the real factory covers its product: the mall's chest for buildings and intermediates,
+// automated science for packs. Its small poles stay (later pole lines may run through them).
+
+const TEMP_PREFIX = "temp:"
+/** A temp goal that failed this many plans is not tried again. */
+const TEMP_MAX_FAILED = 2
+
+export function isTempRole(role: string): boolean {
+  return string.sub(role, 1, TEMP_PREFIX.length) === TEMP_PREFIX
+}
+
+function parseCounts(value: string): { item: string; count: number }[] {
+  const out: { item: string; count: number }[] = []
+  for (const [item, n] of string.gmatch(value, "([^=,%s]+)%s*=%s*(%d+)")) out.push({ item, count: tonumber(n)! })
+  return out
+}
+
+/** Whether the real factory makes `item` now: a built mall chest of it, or (packs) automated science. */
+function tempCovered(f: FactoryState, item: string): boolean {
+  if (packsAutomated(f)[item]) return true
+  for (const n of nodesOf(f.graph, "sink")) {
+    if (n.lifecycle !== "built" || isTempRole(n.role)) continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    for (const p of m.def.ports) if (p.kind === "chest-out" && p.item === item) return true
+  }
+  return false
+}
+
+function tempFactories(ctx: Ctx): void {
+  const f = ctx.f
+  const want = parseCounts(ctx.config.bootstrapFactories)
+  if (want.length === 0) return
+  f.temp ??= { built: {}, retired: 0 }
+  // Retire the cells whose product the real factory covers now.
+  for (const n of nodesOf(f.graph, "sink")) if (isTempRole(n.role) && n.lifecycle === "built" && tempCovered(f, n.item!)) retireTemp(ctx, n)
+  if (planning(f) !== undefined || activeGoal(f, "temp") !== undefined) return
+  if (!built(f, "power")) return
+  let failed = 0
+  for (const g of f.goals) if (g.kind === "temp" && g.status === "failed") failed++
+  if (failed >= TEMP_MAX_FAILED) return
+  const machine = ctx.entities.assembler ?? "assembling-machine-1"
+  const machineRecipe = ctx.force.recipes[prototypeFacts.recipeForItem(machine) ?? machine]
+  if (machineRecipe === undefined || !machineRecipe.enabled) return
+  const chest = ctx.entities.chest ?? "iron-chest"
+  const nodes: DesignNode[] = []
+  for (const w of want) {
+    if (tempCovered(f, w.item)) continue
+    const recipe = prototypeFacts.recipeForItem(w.item)
+    if (recipe === undefined || !ctx.force.recipes[recipe]?.enabled) continue
+    for (let k = (f.temp.built[w.item] ?? 0) + 1; k <= w.count; k++) {
+      const params = { recipe, machine, chest }
+      const def = makeModule("chest-cell", params)
+      const cap = rateIn(def.rates.outputs, w.item)
+      const inputs = def.rates.inputs.filter((r) => r.item !== "electricity").map((r) => ({ item: r.item, rate: r.perSecond, port: `in-${r.item}` }))
+      nodes.push({ role: `${TEMP_PREFIX}${w.item}#${k}`, kind: "sink", generator: "chest-cell", params, def, item: w.item, need: cap, capacity: cap, inputs: inputs as never, powerW: rateIn(def.rates.inputs, "electricity"), cluster: 1 })
+    }
+  }
+  if (nodes.length === 0) return
+  for (const n of nodes) {
+    const item = n.item
+    f.temp.built[item] = (f.temp.built[item] ?? 0) + 1
+  }
+  log(`[rival-engineers] faction ${ctx.faction.name}: D38 temporary factories: ${nodes.map((n) => n.role).join(", ")}`)
+  startGoal(ctx, { kind: "temp", nodes, edges: [], techs: [] })
+}
+
+/** Deconstructs a temporary cell (its small poles stay) and drops its node; its layout footprint stays reserved. */
+function retireTemp(ctx: Ctx, n: LogicalNode): void {
+  const f = ctx.f
+  const m = findModule(f.layout, n.id)
+  let jobs = 0
+  if (m !== undefined) {
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    for (const e of findEntities(ctx.surface, { area, force: ctx.faction.force })) {
+      if (e.type === "electric-pole" || e.type === "entity-ghost") continue
+      addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority)
+      jobs++
+    }
+    for (const gh of findEntities(ctx.surface, { area, force: ctx.faction.force, type: "entity-ghost" })) gh.destroy()
+  }
+  removeNode(f.graph, n.id)
+  f.temp!.retired++
+  mark(ctx.faction, "temp-retired")
+  log(`[rival-engineers] faction ${ctx.faction.name}: D38 temporary factory ${n.role} retired (the factory covers ${n.item}): ${jobs} entities to deconstruct`)
+}
+
+/** A built temporary cell of `item`: its input and output chests and the assembler, for the economy (bootstrap.ts). */
+export interface TempCell {
+  node: string
+  recipe: string
+  input: LuaEntity
+  output: LuaEntity
+  machine?: LuaEntity
+  /** Products per second at full speed. */
+  rate: number
+}
+
+export function tempCells(factionName: string, item: string): TempCell[] {
+  const out: TempCell[] = []
+  const f = getFactory(factionName)
+  if (f === undefined) return out
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph, "sink")) {
+    if (!isTempRole(n.role) || n.item !== item || n.lifecycle !== "built" || n.recipe === undefined) continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    let inPos: Vec | undefined
+    let outPos: Vec | undefined
+    for (const p of m.def.ports) {
+      if (p.kind === "chest-in") inPos = p.pos
+      if (p.kind === "chest-out") outPos = p.pos
+    }
+    if (inPos === undefined || outPos === undefined) continue
+    const input = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + inPos.x, y: m.origin.y + inPos.y }, limit: 1 })[0]
+    const output = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + outPos.x, y: m.origin.y + outPos.y }, limit: 1 })[0]
+    if (input === undefined || output === undefined) continue
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    const machine = findEntities(surface, { type: "assembling-machine", force: faction.force, area, limit: 1 })[0]
+    out.push({ node: n.id, recipe: n.recipe, input, output, machine, rate: rateIn(n.capacity.outputs, item) })
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------------------------------------

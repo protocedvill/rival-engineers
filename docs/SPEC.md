@@ -424,6 +424,11 @@ Default to configurable (D18). Settings live in three places:
 - **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
   `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
   the plan's own routing work).
+- **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
+  `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+- **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
+  `module-buffer-slots` (1), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
+  = none), `bootstrap-factory-wait-seconds` (60), `crew-background-crafts` (1; 0 = craft standing).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -486,7 +491,9 @@ can be tuned with evidence.
 every few game-seconds (configurable) from machine output counters (`products_finished` deltas), inserter
 and belt sampling at ports, and input/output buffer fullness. Per-faction flow statistics are too coarse;
 we need per-module numbers. The reconciler classifies each node: *ok*, *starved* (input shortfall,
-traced upstream to the root cause), *backed up* (output blocked), *unpowered* or *unfuelled*. It then
+traced upstream to the root cause), *backed up* (output blocked), *unpowered* or *unfuelled*. A node short only of what the crew
+supplies by design (hand-fed labs before their pack is automated) is *expected* (D49): neutral, no root cause, no
+remedy. It then
 emits replanning goals for the root cause, not the symptom.
 
 **Horizon (D27): staged targets with headroom.** Plan and build for the current stage target (e.g.
@@ -696,6 +703,30 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
   port, counted from belt items' unique ids on that tile (one edge probed at a time per faction, 10 s each), not derived
   from machine counters; node rates come from `products_finished` (crafting machines) or the working share (drills, labs).
 
+M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5d"):
+
+- **P25, which modules get a buffer (proposed, D42 / B5):** only **smelter columns**: an inserter in the column's head
+  takes plates off the west output belt into an iron chest the crew collects from (before hand-mining or hand-crafting),
+  limited to `module-buffer-slots` (1 slot = 100 plates) so it fills up and stops. Not mining outposts (the crew needs
+  ore only to hand-feed bootstrap furnaces), not the red line (its packs go to the labs by belt), not the circuit block,
+  gear rows or the mall (no free tile on the output belt's side without changing their layouts; the mall already outputs
+  to chests), not the steam block or labs. The buffer competes with the column's consumer until it is full (at 1 slot a
+  few minutes of half the west row's output). Later: fill it only from surplus with a priority splitter once `logistics`
+  is researched.
+- **P26, temporary factories (proposed, D38):** a "chest cell" (chest → inserter → assembler → inserter → chest, two
+  small poles, 7×3) per product of `bootstrap-factories` (gears, belts, red packs), planned as a goal of its own once the
+  steam block is built and assemblers are enabled, joined to the power network by the pole planner. The crew fills the
+  input chest and empties the output chest through the bootstrap economy: collect first, then feed the cell (it waits
+  for at most `bootstrap-factory-wait-seconds` of the cell's output), then hand-craft the rest. A cell is deconstructed
+  (its small poles stay, as later pole lines may run through them) once the mall's chest makes its product, or for packs
+  once the pack is automated; it is never rebuilt.
+- **P27, opportunistic crafting (proposed, D38):** a crew member that hauls materials at the depot for a batch also
+  claims up to `crew-background-crafts` open craft jobs, queues them, does the batch and only then waits for the queue
+  (usually empty by then) and delivers the products; a craft job picked first takes the next other work along.
+- **P28, soft claims and partners (proposed, D50):** at placement, a module ignores the soft claims of the modules it
+  connects to (their ports sit at their growing end, and growth reroutes the connection anyway). With it, 0.5 plans both
+  replays that failed in M5c.
+
 M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5c"):
 
 - **P23, how D36 / B2 compare (approved → D50, 2026-10-16):** a production or mall plan made without undergrounds / splitters (their
@@ -745,6 +776,9 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.18 (2026-10-16, M5d): §11 P25–P28 proposed (buffers on smelter columns, temporary factories, opportunistic
+  crafting, soft claims and partners); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
+  node status implemented.
 - v0.17 (2026-10-16, user decisions via the manager): D50 (planner weights as settings, placement soft claim 0.5, splitter
   comparison off by default); §11 P23 approved, P24 decided.
 - v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).

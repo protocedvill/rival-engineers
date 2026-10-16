@@ -81,6 +81,8 @@ export interface CompareResult {
   /** Splitters: producers dropped (request ids). */
   dropped?: string[]
   reason?: string
+  /** D36: the plan itself failed to route (no plan without undergrounds): a routed alternative saves infinitely much. */
+  baseFailed?: boolean
 }
 
 export interface PlanStats {
@@ -134,6 +136,8 @@ export interface PlanJob {
   stats: PlanStats
   /** D36 / B2 comparison (request.compare): alternatives still to route, the running one, and the results. */
   compare?: { queue: CompareResult["kind"][]; current?: { kind: CompareResult["kind"]; job: PlanJob; cap: number; base: number; merged?: Record<string, string[]>; dropped?: string[] }; results: CompareResult[] }
+  /** D36: routing failed; the underground comparison still runs (the infinite case), then the plan fails. */
+  routingFailed?: boolean
 }
 
 function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
@@ -548,7 +552,10 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (id === undefined) {
       let failed = false
       for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
-      job.phase = failed ? "failed" : job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
+      // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
+      if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
+      else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
+      if (failed) job.routingFailed = true
       return 0
     }
     const c = connection(job, id)
@@ -774,14 +781,14 @@ function compareStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   if (job.compare === undefined) {
     const queue: CompareResult["kind"][] = []
     if (opts.undergrounds !== undefined) queue.push("undergrounds")
-    if (opts.splitters !== undefined && opts.splitters.items.length > 0) queue.push("splitters")
+    if (opts.splitters !== undefined && opts.splitters.items.length > 0 && job.routingFailed !== true) queue.push("splitters")
     job.compare = { queue, results: [] }
   }
   const cmp = job.compare
   if (cmp.current === undefined) {
     const kind = cmp.queue.shift()
     if (kind === undefined) {
-      job.phase = job.request.poles !== undefined ? "poles" : "done"
+      job.phase = job.routingFailed === true ? "failed" : job.request.poles !== undefined ? "poles" : "done"
       return 0
     }
     const base = newRouteLength(job.layout, job.baseRoutes)
@@ -815,6 +822,10 @@ function compareStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     r.status = "done"
     r.alt = newRouteLength(cur.job.layout, job.baseRoutes)
     r.saving = r.base - r.alt
+    if (job.routingFailed === true) {
+      r.baseFailed = true
+      r.saving = math.huge
+    }
   } else if (cur.job.phase === "failed") {
     r.status = "failed"
     const why: string[] = []
@@ -846,7 +857,8 @@ export function logisticsFirst(results: CompareResult[], minUnderground: number,
   for (const r of results) {
     const min = r.kind === "undergrounds" ? minUnderground : minSplitter
     const hit = r.status === "done" && min > 0 && r.saving !== undefined && r.saving >= min
-    d.why.push(`${r.kind}: ${r.status}${r.status === "done" ? ` ${r.base} → ${r.alt} tiles (saves ${r.saving}, threshold ${min})` : r.reason !== undefined ? ` (${r.reason})` : ""}, work ${math.floor(r.work)}${hit ? ": research first" : ""}`)
+    const done = r.baseFailed === true ? ` (no plan without them) → ${r.alt} tiles` : ` ${r.base} → ${r.alt} tiles (saves ${r.saving}, threshold ${min})`
+    d.why.push(`${r.kind}: ${r.status}${r.status === "done" ? done : r.reason !== undefined ? ` (${r.reason})` : ""}, work ${math.floor(r.work)}${hit ? ": research first" : ""}`)
     if (!hit) continue
     if (r.kind === "undergrounds") d.undergrounds = true
     else {

@@ -84,6 +84,23 @@ function replay(name: string, opts: ReplayOptions = {}): void {
 // without a single rip-up.
 replay("seed222-production", { undergrounds: true })
 
+// D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
+// the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
+test("replay seed222-production without undergrounds: routing fails, the underground alternative routes (infinitely shorter)", () => {
+  const fx = load("seed222-production")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  ok(tier.maxUnderground <= 1, "captured without undergrounds")
+  fx.request.compare = { undergrounds: { tiers: beltTiers(F) }, workFactor: 2, minWork: 5000 }
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "failed", `the plan fails without undergrounds (${job.phase})`)
+  const results: CompareResult[] = job.compare?.results ?? []
+  const d = logisticsFirst(results, 50, 50)
+  print(`  seed222 without undergrounds: ${d.why.join("; ")}`)
+  ok(results.length === 1 && results[0].kind === "undergrounds" && results[0].status === "done" && results[0].baseFailed === true, "the underground alternative routes")
+  ok(d.undergrounds, "research undergrounds first")
+})
+
 /**
  * An adopted plan's capture (soaks dump every adopted plan's input to plans/): soaks before 2026-10-16 wrote it after
  * the plan's own layout became the base, so take the plan's modules, routes and pole lines out of the base again.

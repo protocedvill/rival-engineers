@@ -8,7 +8,7 @@ import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { mallSources } from "./factory"
+import { mallSources, tempCells } from "./factory"
 import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
@@ -992,6 +992,9 @@ function produce(ctx: Ctx, item: string, short: number): void {
     short -= collect(ctx, src.entity, src.item, src.amount)
   }
   if (short <= 0) return
+  // 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  short = feedTempCells(ctx, item, short)
+  if (short <= 0) return
   // 2. Hand-craft.
   const hr = handRecipe(ctx.force, item)
   if (hr) {
@@ -1019,6 +1022,61 @@ function produce(ctx: Ctx, item: string, short: number): void {
   }
   // 4. Hand-mine a resource or cut trees.
   gather(ctx, item, short, ctx.depot)
+}
+
+/**
+ * D38: temporary factory cells making `item` (strategy/factory.ts): what their input chests and machines hold will
+ * come out; the economy waits for at most `bootstrap-factory-wait-seconds` of a cell's output and feeds it (a fuel-style
+ * insert job per ingredient into its input chest) up to that. Returns what is still short (hand-crafted).
+ */
+function feedTempCells(ctx: Ctx, item: string, short: number): number {
+  const cells = tempCells(ctx.faction.name, item)
+  if (cells.length === 0) return short
+  const wait = ctx.config.bootstrapFactoryWaitSeconds
+  for (const cell of cells) {
+    if (short <= 0) break
+    const m = cell.machine
+    // A cell without power makes nothing: don't wait for it.
+    if (m === undefined || !m.valid || m.status === defines.entity_status.no_power || m.to_be_deconstructed()) continue
+    const recipe = prototypes.recipe[cell.recipe]
+    const per = craftYield(cell.recipe, item)
+    const cap = math.max(per, math.floor(cell.rate * wait))
+    const inv = m.get_inventory(defines.inventory.crafter_input)
+    const have: Record<string, number> = {}
+    let queued = math.huge
+    for (const ing of recipe.ingredients) {
+      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
+      let n = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      if (keyActive(ctx, key)) {
+        const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]]
+        if (job.payload.kind === "fuel") n += job.payload.count
+      }
+      have[ing.name] = n
+      queued = math.min(queued, math.floor(n / ing.amount))
+    }
+    if (queued === math.huge) continue
+    const coming = math.min(queued * per, cap)
+    short -= coming
+    if (short <= 0) break
+    const room = math.floor((cap - queued * per) / per)
+    if (room < 1) continue
+    const n = math.min(math.ceil(short / per), room)
+    for (const ing of recipe.ingredients) {
+      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
+      const add = (queued + n) * ing.amount - have[ing.name]
+      if (add <= 0 || keyActive(ctx, key)) continue
+      addKeyed(ctx, key, {
+        kind: "fuel",
+        pos: cell.input.position,
+        materials: [{ item: ing.name, count: add }],
+        priority: PRIORITY.feed,
+        payload: { kind: "fuel", item: ing.name, count: add, target: cell.input, partial: true },
+      })
+      addDemand(ctx, ing.name, add)
+    }
+    short -= n * per
+  }
+  return short
 }
 
 function craft(ctx: Ctx, item: string, recipeName: string, short: number): void {
