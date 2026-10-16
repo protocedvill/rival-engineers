@@ -6,6 +6,8 @@
 // (strategy/factory.ts) turns remedies into goals.
 //
 // Robustness (no oscillation):
+// - D49: the reconciler runs from the start (as soon as the factory graph exists); nodes the crew supplies by design
+//   (hand-fed labs before their pack is automated) are "expected": neutral, no root cause, no remedy;
 // - only built nodes past a warm-up are classified; a node's status changes only after the new raw status held for
 //   `confirm` evaluations in a row (hysteresis);
 // - a remedy acts on a root cause at most `maxRemedies` times, `cooldownTicks` apart; only confirmed statuses lead to
@@ -80,6 +82,11 @@ export interface ReconcileInput {
   params: ReconcileParams
   /** Items that are fuel: an unfuelled node is traced along its fuel edges. */
   isFuel: (this: void, item: string) => boolean
+  /**
+   * D49: whether the crew supplies `item` to node `n` by design (hand-fed labs before the pack is automated). A node
+   * short only of such items is "expected": not reported as a problem and never remedied.
+   */
+  crewSupplied?: (this: void, n: LogicalNode, item: string) => boolean
 }
 
 export interface ReconcileResult {
@@ -155,6 +162,21 @@ export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStat
   // A state below minActive is noise (a machine between two crafts), not a cause.
   if (best === "ok" || bestShare < p.minActive) return { status: "ok", why: `${rate}, below plan while working` }
   return { status: best, why: `${rate}, ${best} ${pct(bestShare)}` }
+}
+
+/**
+ * D49: a starved node short only of items the crew supplies by design is "expected" (hand-fed labs before automated
+ * science). The items it lacks come from measurement; when it can't tell, every planned input counts.
+ */
+export function expectedShortage(n: LogicalNode, raw: { status: NodeStatus; why: string }, crewSupplied: ReconcileInput["crewSupplied"]): { status: NodeStatus; why: string } {
+  if (crewSupplied === undefined || raw.status !== "starved") return raw
+  const items: string[] = []
+  for (const [k, v] of pairs(n.measured?.missing ?? {})) if ((v as number) > 0) items.push(k as string)
+  if (items.length === 0) for (const r of n.planned.inputs) items.push(r.item)
+  if (items.length === 0) return raw
+  items.sort()
+  for (const item of items) if (!crewSupplied(n, item)) return raw
+  return { status: "expected", why: `crew-supplied by design: ${items.join(", ")} (${raw.why})` }
 }
 
 /** What a belt edge's last flow probe says (see `trace`). */
@@ -319,7 +341,7 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       }
       continue
     }
-    const raw = classify(n, p)
+    const raw = expectedShortage(n, classify(n, p), input.crewSupplied)
     if (raw.status === n.status) {
       delete st.pending[id]
       n.statusReason = raw.why
@@ -339,7 +361,7 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
   const t: TraceCtx = { g, input, remedies: [], probe: [], seen: {} }
   for (const id of g.nodeOrder) {
     const n = g.nodes[id]
-    if (n.status === "unknown" || n.status === "ok") {
+    if (n.status === "unknown" || n.status === "ok" || n.status === "expected") {
       n.cause = undefined
       continue
     }

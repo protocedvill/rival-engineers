@@ -11,6 +11,8 @@ import { OverlayContext, registerOverlayLayer } from "./overlay"
 const STATUS_COLOR: Record<NodeStatus, Color> = {
   unknown: { r: 0.6, g: 0.6, b: 0.6 },
   ok: { r: 0.2, g: 0.9, b: 0.2 },
+  // D49: crew-supplied by design (hand-fed labs): neutral, not a problem colour.
+  expected: { r: 0.85, g: 0.85, b: 0.85 },
   starved: { r: 1, g: 0.75, b: 0.1 },
   "backed-up": { r: 0.3, g: 0.55, b: 1 },
   unpowered: { r: 0.85, g: 0.3, b: 1 },

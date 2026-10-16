@@ -14,9 +14,10 @@ export type NodeLifecycle = "planned" | "building" | "built"
 
 /**
  * Reconciler classification (D26), filled by M5b: ok, starved (input shortfall, traced upstream), backed-up (output
- * blocked), unpowered, unfuelled. "unknown" until measured.
+ * blocked), unpowered, unfuelled. "unknown" until measured. "expected" (D49): short only of what the crew supplies by
+ * design (hand-fed labs before their pack is automated): not a problem, no root cause, no remedy.
  */
-export type NodeStatus = "unknown" | "ok" | "starved" | "backed-up" | "unpowered" | "unfuelled"
+export type NodeStatus = "unknown" | "ok" | "expected" | "starved" | "backed-up" | "unpowered" | "unfuelled"
 
 /** Shares of machine-samples in each state over a measurement window (0..1, summing to 1). */
 export interface StateShares {

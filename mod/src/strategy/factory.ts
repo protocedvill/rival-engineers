@@ -1202,7 +1202,10 @@ function measureAndReconcile(ctx: Ctx): void {
     meter.lastSample = ctx.tick
     sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
     f.reconciler ??= newReconcileState()
-    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel })
+    const automated = packsAutomated(f)
+    // D49: labs are hand-fed by the crew until their pack is automated (a built producer belts it in).
+    const crewSupplied = (n: LogicalNode, item: string): boolean => n.kind === "labs" && !automated[item]
+    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied })
     countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
     requestProbes(meter, r.probe)
     if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)

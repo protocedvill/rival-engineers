@@ -279,6 +279,44 @@ test("remedy limits: at most maxRemedies per root cause, cooldown between them",
   ok(s.log.length === 2, "logged")
 })
 
+test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {
+  const automated: Record<string, boolean> = {}
+  const crewSupplied = (n: LogicalNode, item: string): boolean => n.kind === "labs" && !automated[item]
+  const g = newGraph()
+  // Labs starved of red packs, nothing in the graph makes them yet (the crew hand-feeds them).
+  const labs = node(g, "labs", "labs", "research-unit", 0.2, st({ working: 0.3, starved: 0.7 }), 0.06, {
+    planned: { inputs: [{ item: "automation-science-pack", perSecond: 0.2 }], outputs: [{ item: "research-unit", perSecond: 0.2 }] },
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "research-unit", perSecond: 0.06 }], machines: 4, states: st({ working: 0.3, starved: 0.7 }), missing: { "automation-science-pack": 0.7 } },
+  })
+  // An unrelated starved node next to it: still reported, traced and remedied.
+  const ch = chain(st({ working: 0.97 }), 1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.95 }), 1)
+  for (const id of ch.nodeOrder) addNode(g, ch.nodes[id])
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 1, from: 0, to: 0 })
+  const s = newReconcileState()
+  const r = reconcile(g, s, { tick: TICK, params: P, isFuel, crewSupplied })
+  eq(labs.status, "expected", "hand-fed labs are expected")
+  eq(labs.cause, undefined, "no root cause")
+  eq(g.nodes.smelt.status, "starved", "the smelter is still checked from the start")
+  eq(r.remedies.length, 1, "one remedy, for the outpost")
+  eq(r.remedies[0].node, "mine", "grow the outpost")
+  // Without the predicate (M5b behaviour) the labs were starved with an external cause.
+  const g2 = newGraph()
+  const labs2 = node(g2, "labs", "labs", "research-unit", 0.2, st({ working: 0.3, starved: 0.7 }), 0.06, { measured: labs.measured })
+  reconcile(g2, newReconcileState(), { tick: TICK, params: P, isFuel })
+  eq(labs2.status, "starved", "without crew supply the labs starve")
+  eq(labs2.cause!.kind, "external", "crew-supplied cause")
+  // Once the pack is automated, a starved lab is a problem again (after hysteresis).
+  automated["automation-science-pack"] = true
+  for (let i = 0; i < P.confirm; i++) reconcile(g, s, { tick: TICK, params: P, isFuel, crewSupplied })
+  eq(labs.status, "starved", "automated pack: starved again")
+  // Labs short of an automated pack and a hand-fed one: not expected (the automated one is a problem).
+  automated["automation-science-pack"] = false
+  labs.measured!.missing = { "automation-science-pack": 0.3, "logistic-science-pack": 0.4 }
+  automated["logistic-science-pack"] = true
+  for (let i = 0; i < P.confirm; i++) reconcile(g, s, { tick: TICK, params: P, isFuel, crewSupplied })
+  eq(labs.status, "starved", "a mixed shortage is still starved")
+})
+
 test("a stale edge asks for a probe instead of acting", () => {
   const g = chain(st({ working: 0.97 }), 1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2)
