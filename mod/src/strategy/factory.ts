@@ -28,6 +28,7 @@ import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRe
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
+import { evictSites } from "./evict"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -624,6 +625,17 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
     if (e.kind === "belt" && plan.rerouted.indexOf(e.role) >= 0) e.physical = [`route:${e.role}`]
   }
   const clearJobs: number[] = []
+  const taken: Record<number, boolean> = {}
+  for (const e of plan.add) {
+    const p = prototypes.entity[e.name]
+    const sideways = e.dir === defines.direction.east || e.dir === defines.direction.west
+    const w = p !== undefined ? (sideways ? p.tile_height : p.tile_width) : 1
+    const h = p !== undefined ? (sideways ? p.tile_width : p.tile_height) : 1
+    const x1 = math.floor(e.x - w / 2 + 0.01)
+    const y1 = math.floor(e.y - h / 2 + 0.01)
+    for (let x = x1; x < x1 + w; x++) for (let y = y1; y < y1 + h; y++) taken[tkey(x, y)] = true
+  }
+  for (const e of evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (grow ${gr.role})`)) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   for (const e of plan.remove) {
     const found = findEntities(ctx.surface, { name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
     if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
@@ -971,6 +983,10 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     addEdge(f.graph, { id: `e:${e.role}`, role: e.role, kind: "belt", item: e.item, from, fromPort: e.fromPort, to, toPort: e.toPort, plannedRate: e.rate, headroomRate: e.headroomRate, physical, belt: e.belt, overflow: e.decision.action !== "none" ? e.decision.action : undefined })
   }
   powerEdges(f)
+  // B15 / D51: bootstrap mining sites on the plan's ground make way (picked up first, rebuilt elsewhere).
+  const taken: Record<number, boolean> = {}
+  for (const k of partTiles(job.layout, parts)) taken[k] = true
+  const evicted = evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (${g.kind})`)
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
   const reserved = ctx.faction.brain!.reserved
   for (const k of partTiles(job.layout, parts)) reserved[k] = true
@@ -980,7 +996,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     claimModuleFields(ctx, m)
   }
   const fuel = ctx.faction.brain!.catalog.fuel
-  startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts })
+  startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
   g.status = "building"
   g.plannedTick = ctx.tick
   const s = job.stats

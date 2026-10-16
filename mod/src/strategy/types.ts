@@ -76,6 +76,8 @@ export interface Catalog {
 
 export interface BrainState {
   base: MapPosition
+  /** B15: bootstrap sites evicted by the factory's plans so far. */
+  evicted?: number
   /** Hub the depot sits at (between the chosen patches). */
   hub?: MapPosition
   catalog: Catalog

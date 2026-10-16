@@ -329,6 +329,18 @@ function layout(catalog: Catalog, kind: SiteKind, c: MapPosition, direction: def
   return [drill, out]
 }
 
+/** The table-lookup part of `rectFree`: own reservations, ore under a drill, active hand-mining. */
+function rectCheap(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): boolean {
+  for (let x = part.x1; x < part.x2; x++) {
+    for (let y = part.y1; y < part.y2; y++) {
+      if (ctx.brain.reserved[tkey(x, y)]) return false
+      if (part.onOre && !ore[tkey(x, y)]) return false
+      if (keyActive(ctx, `res:${x},${y}`)) return false
+    }
+  }
+  return true
+}
+
 /** Whether a site part fits: free, unclaimed tiles, and for a drill every tile on `resource` and no other ore in reach. */
 function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>, resource: string): boolean {
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
@@ -399,19 +411,19 @@ function directionsToward(from: MapPosition, to: MapPosition): defines.direction
   return out
 }
 
-function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { set: Record<number, boolean>; tiles: MapPosition[] } {
+function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { set: Record<number, boolean>; tiles: { x: number; y: number; amount: number }[] } {
   const x1 = math.max(patch.x1, near.x - half)
   const y1 = math.max(patch.y1, near.y - half)
   const x2 = math.min(patch.x2, near.x + half)
   const y2 = math.min(patch.y2, near.y + half)
   const set: Record<number, boolean> = {}
-  const tiles: MapPosition[] = []
+  const tiles: { x: number; y: number; amount: number }[] = []
   if (x1 >= x2 || y1 >= y2) return { set, tiles }
   for (const e of findEntities(ctx.surface, { name: patch.name, area: [[x1, y1], [x2, y2]] })) {
     const tx = math.floor(e.position.x)
     const ty = math.floor(e.position.y)
     set[tkey(tx, ty)] = true
-    tiles.push({ x: tx, y: ty })
+    tiles.push({ x: tx, y: ty, amount: e.amount })
   }
   return { set, tiles }
 }
@@ -428,17 +440,25 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
       return da !== db ? da - db : a.x !== b.x ? a.x - b.x : a.y - b.y
     })
     let checks = 0
+    const w = prototypes.entity[ctx.brain.catalog.drill].tile_width
+    // B15: a tile far below its share of the ore a drill needs for SITE_MIN_LIFE is worked out: skip it unscanned.
+    const r = prototypes.entity[ctx.brain.catalog.drill].mining_drill_radius ?? 1
+    const share = (SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes * drillRate(ctx.brain.catalog.drill, patch.name)) / math.max(1, (2 * r) * (2 * r))
     for (const t of tiles) {
       if (checks > 600) break
+      if (t.amount < share / 4) continue
       // The drill's top-left tile is t, so its centre is t + (w/2, h/2).
-      const w = prototypes.entity[ctx.brain.catalog.drill].tile_width
       const c = { x: t.x + w / 2, y: t.y + w / 2 }
       for (const d of directionsToward(c, hub)) {
         const parts = layout(ctx.brain.catalog, kind, c, d)
         if (!parts) continue
-        checks++
+        // B15: only spots that pass the table lookups count toward the cap (the entity scans are what costs). Near
+        // the hub a patch is often all reserved by the factory's modules or worked out: those must not use it up.
         let ok = true
-        for (const p of parts) if (!rectFree(ctx, p, set, patch.name)) ok = false
+        for (const p of parts) if (!rectCheap(ctx, p, set)) ok = false
+        if (!ok) continue
+        checks++
+        for (const p of parts) if (ok && !rectFree(ctx, p, set, patch.name)) ok = false
         // D43: enough ore under every drill that the site is not replaced right away.
         const minLife = SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes
         for (const p of parts) if (ok && p.onOre && minLife > 0 && drillMinutes(ctx.surface, p.entity, p.position, patch.name) < minLife) ok = false

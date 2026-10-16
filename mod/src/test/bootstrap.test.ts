@@ -8,6 +8,9 @@ import { startBootstrap } from "../strategy/bootstrap"
 import { bestPatch, positionDistance, scanPatches } from "../world/resources"
 import { requiredResources } from "../world/spawn"
 import { at, createLab, Lab } from "./lab"
+import { evictSites } from "../strategy/evict"
+import { claimView } from "../planner/runtime"
+import { FREE, tkey, TREE } from "../planner/grid"
 
 // M3 (SPEC §8): the burner bootstrap's pieces. The full bootstrap runs in the T3 soak (tools/harness), not here.
 // Debug parity toggles stay off.
@@ -216,6 +219,65 @@ describe("burner bootstrap", () => {
       log(`[m3] depleting site ${first.id} replaced by ${replacement!.id} and picked up at tick ${game.tick}`)
       drained = []
       return true
+    })
+  })
+
+  test("B15: a patch the factory reserved near the hub still gets a site on its far ore", () => {
+    const lab = createLab(40)
+    ore(lab, "stone", 2, -16, 36, 12)
+    setConfigOverride("bootstrapSites", "stone=1")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "far", { "burner-mining-drill": 2, "wooden-chest": 2, wood: 4, coal: 30 })
+    const brain = faction.brain!
+    // The factory's modules (and their margins) cover the 28 columns nearest the hub: ~1,300 candidate spots there.
+    const o = at(lab, 0, 0)
+    for (let x = 2; x < 30; x++) for (let y = -16; y < -4; y++) brain.reserved[tkey(math.floor(o.x) + x, math.floor(o.y) + y)] = true
+    until(20000, () => {
+      for (const s of brain.sites) {
+        if (s.kind !== "chest" || s.status !== "built") continue
+        const d = s.parts[0].built!
+        assert(d.position.x - o.x >= 29, `site on free ore (x ${d.position.x - o.x})`)
+        log(`[m6] B15 far site built at x ${d.position.x - o.x} at tick ${game.tick}`)
+        return true
+      }
+      return false
+    })
+  })
+
+  test("B15: the factory's plans see bootstrap mining sites as clearable and evict them; the site is rebuilt elsewhere", () => {
+    const lab = createLab(40)
+    ore(lab, "stone", 6, -12, 16, 8)
+    setConfigOverride("bootstrapSites", "stone=1")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "evict", { "burner-mining-drill": 2, "wooden-chest": 2, wood: 4, coal: 30 })
+    const brain = faction.brain!
+    let first: Site | undefined
+    until(40000, () => {
+      if (first === undefined) {
+        for (const s of brain.sites) if (s.kind === "chest" && s.status === "built") first = s
+        if (first === undefined) return false
+        const drill = first.parts[0].built!
+        const k = tkey(math.floor(drill.position.x), math.floor(drill.position.y))
+        const view = claimView(faction.name, faction.surface, { block: () => FREE, ore: () => undefined })
+        assert(view.block(math.floor(drill.position.x), math.floor(drill.position.y)) === TREE, "a site tile is clearable ground for plans")
+        const out = evictSites(faction, lab.surface, { [k]: true }, "a test plan")
+        assert(out.length === 2 && first.status === "retired", `evicted: ${out.length} entities, status ${first.status}`)
+        assert(brain.reserved[k] === undefined, "its tiles are released")
+        // The planned module would be built there: keep the bootstrap off it.
+        for (const e of out) {
+          const box = e.bounding_box
+          for (let x = math.floor(box.left_top.x); x < math.ceil(box.right_bottom.x); x++) for (let y = math.floor(box.left_top.y); y < math.ceil(box.right_bottom.y); y++) brain.reserved[tkey(x, y)] = true
+        }
+        return false
+      }
+      for (const part of first.parts) if (part.built !== undefined && part.built.valid) return false
+      for (const s of brain.sites) {
+        if (s.kind === "chest" && s.status === "built" && s.id !== first.id) {
+          log(`[m6] B15 evicted site ${first.id} picked up, replacement ${s.id} built at tick ${game.tick}`)
+          return true
+        }
+      }
+      return false
     })
   })
 })

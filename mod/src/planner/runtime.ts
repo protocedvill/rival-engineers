@@ -4,6 +4,7 @@
 // ghost is selected), then ghosts on the faction's force with place (and fuel) jobs, so the crew build it physically.
 // The Factory Graph of a plan is exported to JSON for tools/render (D29).
 
+import { evictableTiles } from "../strategy/evict"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { getConfig } from "../config"
 import { getJob } from "../jobs/board"
@@ -163,10 +164,16 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   const reserved = ownReserved ? faction?.brain?.reserved : undefined
   const others = name !== undefined ? otherClaims(name, surface) : []
   const fields = name !== undefined ? otherOreFields(name, surface) : []
-  if (reserved === undefined && others.length === 0) return base
+  // B15 / D51: the faction's own bootstrap mining sites are clearable ground (evicted when a plan takes it).
+  const evictable = evictableTiles(faction?.brain)
+  if (reserved === undefined && others.length === 0 && evictable === undefined) return base
   const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
   return {
     block: (x, y) => {
+      if (evictable !== undefined && evictable[tkey(x, y)] && (layout === undefined || (layout.occ[tkey(x, y)] === undefined && layout.routeOcc[tkey(x, y)] === undefined))) {
+        const raw = base.block(x, y)
+        if (raw === FREE || raw === TREE || raw === ROCK || raw === OWN) return TREE
+      }
       const b = base.block(x, y)
       if (b !== FREE && b !== TREE && b !== ROCK) return b
       const k = tkey(x, y)
@@ -311,13 +318,15 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
  * Turns a finished plan into Job Board work for its faction: clear jobs now, ghosts and place jobs once the clearing
  * is done (`stepBuild`).
  */
-export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts } = {}): BuildState {
+export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts; clear?: LuaEntity[] } = {}): BuildState {
   if (entry.phase !== "done" || entry.job === undefined) error(`plan ${entry.id} is not done`)
   const faction = getFaction(entry.faction ?? "")
   if (faction === undefined) error(`plan ${entry.id} has no faction`)
   const surface = game.surfaces[entry.surface]
   const clearJobs: number[] = []
   for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) clearJobs.push(addClearJob(faction, e, opts.priority))
+  // B15: entities of evicted bootstrap sites under the plan.
+  for (const e of opts.clear ?? []) if (e.valid) clearJobs.push(addClearJob(faction, e, opts.priority))
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
   return entry.build
 }
