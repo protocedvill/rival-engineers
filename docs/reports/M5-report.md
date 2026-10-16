@@ -893,3 +893,199 @@ variants) ~25 min, 3 T2 runs of the D36 test ~1 min, ~6 reference-base generatio
 seeds × 3 rounds at -j 5 (baseline ~14 min, development ~9 min, final ~9 min; the baseline overlapped the manager's
 validation soak) and 1 seed × 1 at -j 1 (~2 min plus 2 reference benches). (d) Everything else (reading, design, code,
 report): ~3.5 h, an estimate; a usage-limit pause is not counted.
+
+
+## M5d: bootstrap factories, buffers, B11 (2026-10-16)
+
+Backlog B11, B5, B12 and the D38 item (P10 as changed by the user). Commits 5124fc4 (B11), 74315d1 (D50 / B12, B5),
+a34b480 (D38 opportunistic crafting, chest cells), 2e6e9d2 (D38 temporary factories, D36 per attempt), d1d2f84 (cell
+clearance, surplus feeding), 98f9b39 (final code: B11 predicate fix). Docs and the work baseline only after that.
+
+### B11 / D49: crew-supplied nodes are "expected" (5124fc4)
+
+- The reconciler already ran from the start (as soon as the factory graph exists, at the planner takeover). New node
+  status **`expected`**: a starved node short only of items the crew supplies by design. `ReconcileInput.crewSupplied`
+  says which; the strategy layer passes "a labs node and a pack no built node belts in" (a first version used
+  `packsAutomated`, which only counts module nodes: the T2 test whose labs are fed by a `source` node then read
+  "expected"; fixed and covered by that test). Measured
+  `missing` items decide; when measurement can't tell, every planned input counts. An expected node gets no root cause
+  and no remedy, and is light grey in the overlay. A mixed shortage (an automated pack and a hand-fed one) stays
+  starved; once the pack is automated a starved lab is a problem again (after the usual hysteresis).
+- Everything else is classified as before. T1 `reconcile.test.ts` (14 tests): hand-fed labs expected with no cause or
+  remedy while an unrelated starved smelter is still traced and its outpost grown; without the predicate (M5b) the labs
+  were starved with an external cause; the automated and mixed cases.
+- Soaks: the acceptance seeds show 1–2 changes to `expected` (the labs while hand-fed) and no starved labs.
+
+### B12 / D50: planner weights as settings (74315d1)
+
+User decisions of 2026-10-16 (via the manager), recorded as D50; P23 approved, P24 decided.
+
+- New settings (`planner/policy.ts` `PolicyOverrides`, applied by `entryPolicy`): `planner-placement-soft-claim` **0.5**
+  (was 0.1 in the policy), `planner-router-soft-claim` 0.5, `planner-router-bundle-factor` 0.9, `planner-compare-min-work`
+  5,000 (was `COMPARE_MIN_WORK`), `logistics-splitter-compare` **off** (the B2 comparison code stays).
+- **Making 0.5 work (P28, proposed):** at 0.5 both no-underground plan replays failed (rip-ups exhausted). A module's
+  soft claim sits at its growing end, which is where its ports are, so it pushed the module's own suppliers and
+  consumers away and boxed in the routes between them. Now a placement ignores the soft claims of the modules it
+  connects to (`PlacementRequest.softExempt`, filled by `plan.ts` `partnersOf`); unrelated modules still keep off. Growth
+  reroutes a module's connections anyway. With it both replays plan at 0.5: seed 3333 the same 345 tiles as at 0.1;
+  seed 11 places the same modules except one coal outpost 2 tiles over and routes 392 tiles instead of 336 (rip-up
+  order; the no-underground cluster is chaotic). Its splitter alternative then saves 88 tiles, so that replay's
+  expectation changed (splitters ≥ 50; the comparison is off by default now). T1: a partner may sit in the claim, a
+  stranger keeps off.
+
+### B5 / D42: buffer depots (74315d1)
+
+**Choices for the user to verify (P25, proposed):**
+
+| Module | Buffer? | Why |
+|---|---|---|
+| Smelter column (iron, copper, stone brick) | **yes** | Plates are what the crew crafts everything from; the bootstrap furnaces were its only plate source. An inserter in the column's head (gap row) takes plates off the west output belt into an iron chest east of it, powered by the first unit's pole; growth inserts units at the tail, so the buffer never moves. |
+| Mining outpost | no | The crew needs ore only to hand-feed bootstrap furnaces, and burner outposts have no power for an inserter. |
+| Red line, lab array | no | Packs go to the labs by belt; hand-feeding stops once the line exists. |
+| Circuit block, assembler rows (gears, belts, cable) | no | No free tile beside the output belt without changing their layouts (row 1 holds the output inserters, row 2 the machines). Candidates if the user wants them (circuits for crafting). |
+| Steam block | no | Nothing to buffer. |
+| Mall | no | Already outputs to chests the crew empties. |
+
+- `ModuleEntity.buffer` marks the chest; the smelter-column generator adds it when the design passes `buffer`
+  (`module-buffer`, default `iron-chest`; empty = no buffers; burner-inserter columns never get one). Rates are
+  unchanged (the buffer is not a demand: measurement never samples chests, rates count machines only).
+- **Slots:** the chest fills only `module-buffer-slots` (1 = 100 plates) and stops. A ghost does not carry a chest's
+  bar, so buffer ghosts are registered by position (`modules/buffers.ts`, `storage.buffers`) and the bar is set when the
+  crew builds the chest (`script_raised_revive`).
+- **Throughput validation (D33):** `stampModule` bars every slot of a buffer chest; the validation lab checks it and
+  validates `smelter copper 4 buffer` (passes).
+- **Crew depot:** `bufferSources` lists built buffer chests; the bootstrap economy collects from them after the mall's
+  chests and before machines, hand-crafting and hand-mining.
+- **Cost:** until it is full, the buffer competes with the column's consumer for the west row's plates (a few minutes at
+  1 slot on a 4-furnace column). A buffer that fills only from surplus needs a priority splitter (after `logistics`);
+  proposed for later.
+- Tests: T1 module test (one inserter facing the west belt, one chest at (2.5, 1.5), same rates, units unchanged, no
+  buffer with burner inserters; all generated modules powered, including the buffer inserter); T2 `buffers.test.ts`
+  (a revived buffer ghost is barred to the setting and listed as a collect source; validation stamps bar every slot; a
+  1-slot buffer fed by an inserter stops at 100).
+
+### D38: bootstrap factories and opportunistic crafting (a34b480, 2e6e9d2, d1d2f84)
+
+D38's wording: temporary chest-fed factories for gears, belts, packs (while labs are hand-fed), deconstructed once the
+mall covers their product; opportunistic hand-crafting while walking or waiting; hand-crafted packs before
+`automation`. Readings chosen (P26, P27, proposed):
+
+- **Temporary factories** (`strategy/factory.ts` `tempFactories`, generator `chest-cell`): once the steam block is built
+  and the assembler recipe is enabled (`automation`), one goal `temp` plans a chest cell per product of
+  `bootstrap-factories` (default gear 1, belt 1, red pack 1): input chest → inserter → assembler 1 → inserter → output
+  chest, 7 × 3, two small poles, ports `chest-in` (one per ingredient) and `chest-out`. Planned like any goal (placement
+  on the faction's layout, pole network), but 6 tiles clear of every existing module (`TEMP_CLEARANCE`; on seed 11 the
+  first version put a cell next to the labs' pack port and production became unroutable). Graph nodes are sinks with
+  role `temp:<item>#k`; the design ignores them.
+- **Feeding** (`bootstrap.ts` `feedTempCells`): when the economy is short of a cell's product it collects the cell's
+  output chest (it is a `chest-out` like the mall's), counts what the cell holds and what the crew is bringing it (up to
+  `bootstrap-factory-wait-seconds` = 60 s of the cell's output) as on its way, and tops the cell up from the depot's
+  **surplus** (ingredients in stock beyond the active jobs' needs). The rest is hand-crafted. A first version also
+  created demand for the ingredients and waited on chains of cells (belts on gears on plates); feeding from surplus
+  replaced it.
+- **Retirement:** a gear or belt cell is deconstructed (clear jobs, items back to the depot) once a built mall has a
+  chest for its product; the pack cell once the pack is automated. Its small poles stay (later pole lines may run
+  through them) and its footprint stays in the layout. Cells are never rebuilt.
+- **Opportunistic crafting** (`jobs/crew.ts`, `character/controller.ts` craft modes `start` / `await`): a crew member
+  that hauls materials at the depot for a batch also claims up to `crew-background-crafts` (1) open craft jobs, queues
+  them there, does its batch (walks, places, mines) and then waits for the queue, usually already empty, and delivers
+  the products. A craft job selected first takes the next other work along; with no other work it is crafted standing,
+  as before. Cancelling the wait cancels the queued crafts (ingredients back). The emulated craft triggers fire when
+  the queue empties.
+- Packs before `automation` are hand-crafted as before (no cell can exist without assemblers).
+- **D36 per attempt (2e6e9d2):** a production plan that fails to route without undergrounds now routes the same
+  placement with them; if that works it counts as infinitely shorter (D36's infinite case) and `logistics` is
+  researched at once, instead of after four failed attempts (seed 555555 with cells spent 6 game-min on them). T1
+  replay of the seed-222 capture.
+- Tests: T1 chest cell (rates, ports, power); T2 `jobs.test.ts` "D38 background" (40 gears + 16 chests: 1,400 ticks in
+  the background vs 1,634 standing), T2 `temp-factory.test.ts` (a gear cell fed from the depot makes 25 of 30 gears,
+  the rest hand-crafted).
+
+### Results
+
+| Check | Commit | Result |
+|---|---|---|
+| Full T2 (`npm test`, 8 shards, 624 s wall, ran next to the soak) | 98f9b39 | **103/103** (d1d2f84: 102/103, the B11 predicate bug fixed in 98f9b39) |
+| T1 (11 files) | 98f9b39 | pass |
+| M5 acceptance (`m5.toml`, 5 seeds, -j 5, `out/soak/m5d-final`) | 98f9b39 | **5/5**, no stalls |
+
+Acceptance minutes per seed (game minutes to automated red science):
+
+| Seed | M5c (07e4ee4) | M5d (98f9b39) | Δ |
+|---|---|---|---|
+| 11 | 34.6 | 32.9 | −1.7 |
+| 222 | 41.7 | 41.8 | +0.1 |
+| 3333 | 32.4 | 36.4 | +4.0 |
+| 44444 | 40.9 | 37.9 | −3.0 |
+| 555555 | 28.7 | 31.8 | +3.1 |
+| mean | 35.7 | 36.2 | +0.5 |
+
+- All five seeds now research `logistics` before production (M5c: four). Each plans production once without
+  undergrounds, fails to route, and its underground alternative routes at once (D36 per attempt), so the goal defers
+  after one attempt. The temporary cells (3 assemblers and their chests, inserters and poles to build) and the
+  placement soft claim at 0.5 make the core more crowded at that point.
+- Every seed built its three cells 1–2 game-min after `automation`; the pack cell was retired when red science was
+  automated. The gear and belt cells stay until the mall (after the acceptance milestone).
+- Reconciler: labs read `expected` while hand-fed (1 change on 3 seeds); no starved labs, no remedies.
+- **A/B on seeds 7 and 777 (not acceptance seeds; `tools/harness/m5-nod38.toml`):** without temporary factories and
+  background crafting 46.0 / 45.1 min; background crafting alone 40.1 / 39.5 (it shortened every phase that crafts);
+  both (the default, before surplus feeding) 50.7 / 58.3. Seed 777's production build took 32.5 min with the cells in
+  every variant: its bootstrap iron sites depleted during the build and no free iron was left (the log shows
+  exploration to 320 tiles), a resource finding rather than a feeding one (surplus feeding left it unchanged to the
+  decimal). Background crafting is the clear gain; the cells cost crew time (crafting 3 assemblers, feed and collect
+  trips) for little output before the mall exists. See the questions.
+
+**Work counts** (vs `m5-work.json` from 209b69a; tolerance +15%): all seeds together planner work +14%, placement
+candidates +11%, router expansions +15% (flagged), reconciler evaluations +26% (flagged); per seed 3333 and 555555 3–4×
+planner work. Causes, all understood: (1) every seed plans production once without undergrounds and that plan fails
+after its full rip-up budget (the expensive part: 3333 and 555555 had planned it successfully before), plus its
+underground alternative (10k–38k); (2) the temp goal (~24k per seed); (3) the reconciler evaluates the cell nodes and
+runs are a little longer. The baseline is updated to `m5d-final` (98f9b39).
+
+### Magic numbers for the user
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `planner-placement-soft-claim` | `settings.ts`, `planner/policy.ts` | 0.5 | User decision D50. | yes (new) |
+| `planner-router-soft-claim` | same | 0.5 | D50: current value kept. | yes (new) |
+| `planner-router-bundle-factor` | same | 0.9 | D50: current value kept. | yes (new) |
+| `planner-compare-min-work` | `settings.ts`, `strategy/factory.ts` | 5,000 | D50: was `COMPARE_MIN_WORK`. | yes (new) |
+| `logistics-splitter-compare` | same | off | D50. | yes (new) |
+| Partner exemption from soft claims | `planner/plan.ts` `partnersOf` | (rule, no number) | P28: makes 0.5 plan. | no |
+| `module-buffer` | `settings.ts`, `strategy/design.ts` | `iron-chest` | 32 slots, 8 plates, no wood trips; empty turns buffers off. | yes (new) |
+| `module-buffer-slots` | `modules/buffers.ts` | 1 (100 plates) | Small, so it fills in minutes and steals little from the line. | yes (new) |
+| `bootstrap-factories` | `strategy/factory.ts` | `iron-gear-wheel=1,transport-belt=1,automation-science-pack=1` | The products D38 names, one cell each. | yes (new) |
+| `bootstrap-factory-wait-seconds` | `strategy/bootstrap.ts` | 60 | About a minute of a cell's output is worth waiting for; more is hand-crafted. | yes (new) |
+| `crew-background-crafts` | `jobs/crew.ts` | 1 | One queued craft per batch; the batch then waits for it, so more would hold the crew. | yes (new) |
+| `TEMP_CLEARANCE` | `strategy/factory.ts` | 6 tiles | Keeps cells off the core's unconnected ports (seed 11). | no |
+| `TEMP_MAX_FAILED` | same | 2 | A temp goal that failed twice is dropped (cells are optional). | no |
+| Cell chest | `factory-entities` key `chest` | `iron-chest` (when absent) | Same as the buffer chest. | via `factory-entities` |
+| Test thresholds | `test/jobs.test.ts`, `test/temp-factory.test.ts`, `test/buffers.test.ts` | ≥ 200 ticks saved, ≥ 15 of 30 gears, 90 pre-filled | Test parameters. | test only |
+
+### Deviations and assumptions
+
+- B11: "runs from the start" is read as "from the planner takeover" (there is no factory graph before it); that was
+  already the case.
+- D38 readings are P26 / P27 (proposed). Packs are the red-pack cell; green packs are out of the stage-1 target.
+- D36 per attempt (P29 below, proposed): the infinite case now triggers on the first attempt that fails to route
+  without undergrounds when the same placement routes with them; the four-attempt rule stays as a fallback.
+- Buffer depots only on smelter columns (P25).
+
+### Questions for the user (non-blocking)
+
+1. P25: buffers on smelter columns only, 1 slot of an iron chest? Should gear rows or circuit blocks get one too (their
+   layouts would change)?
+2. P26: on the A/B seeds the cells cost more crew time than they saved before the mall exists, while background
+   crafting gained 6 min. Keep the cells on by default, limit them to packs, or start them only once the crew is idle?
+3. P29: OK to defer to `logistics` after the first failed no-underground attempt when the same placement routes with
+   undergrounds?
+4. Seed 777 (outside the acceptance set) ran out of bootstrap iron during the production build: should bootstrap sites
+   be allowed on the production outpost's patch when nothing else is in reach (D46 is about other factions only)?
+
+### Wall-clock time (estimates)
+
+(a) Full `npm test`: 2 runs (~11 min each; the second ran next to the final soak). (b) Targeted: ~25 T1 runs (replays,
+weight sweeps) ~15 min, ~12 targeted T2 runs (buffers, D38, reconciler) ~6 min. (c) Soaks: 5 seeds × 1 (dev1, ~14 min),
+2 × 1 (~6 min), 8 × 1 at -j 8 (~19 min), 4 × 1 (~12 min), A/B 3 configs × 2 seeds (~3 × 9 min), 5 × 1 (~12 min),
+final 5 × 1 (~10.5 min): about 100 min. (d) Everything else (reading, design, code, report): ~2.5 h, an estimate; a
+usage-limit pause is not counted.

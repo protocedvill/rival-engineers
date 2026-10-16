@@ -726,6 +726,9 @@ M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
 - **P28, soft claims and partners (proposed, D50):** at placement, a module ignores the soft claims of the modules it
   connects to (their ports sit at their growing end, and growth reroutes the connection anyway). With it, 0.5 plans both
   replays that failed in M5c.
+- **P29, D36 per attempt (proposed):** a production or mall plan that fails to route without undergrounds routes the same
+  placement with them; if that works, it counts as infinitely shorter and the goal defers to the technology at once
+  (instead of after four failed attempts; the four-attempt rule stays as a fallback).
 
 M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5c"):
 
@@ -776,8 +779,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
-- v0.18 (2026-10-16, M5d): §11 P25–P28 proposed (buffers on smelter columns, temporary factories, opportunistic
-  crafting, soft claims and partners); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
+- v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
+  crafting, soft claims and partners, D36 per attempt); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
   node status implemented.
 - v0.17 (2026-10-16, user decisions via the manager): D50 (planner weights as settings, placement soft claim 0.5, splitter
   comparison off by default); §11 P23 approved, P24 decided.
