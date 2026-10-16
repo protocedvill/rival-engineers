@@ -4,7 +4,7 @@ import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
 import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
-import { curatedIds, curatedModule, generatedModule } from "../modules/library"
+import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
@@ -22,13 +22,15 @@ import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, 
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec, isPowerRole } from "./design"
-import { maxUnitTime, meanUnitTime, researchGoal, startResearch } from "./research-queue"
+import { researchGoal, startResearch } from "./research-queue"
 import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
 import { evictSites } from "./evict"
+import { curatedProducers, GROW_MAX_FAILS, labUnitTime, parseStages, powerCap, researchDone, sampleScience, sharedFuel } from "./stage"
+export { parseStages } from "./stage"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -160,8 +162,6 @@ const FUEL_TOP_MINUTES = 8
 const LAB_LOW = 2
 const LAB_FEED = 5
 const MAX_PLAN_ATTEMPTS = 4
-/** A grow whose expansion failed this many times no longer holds its stage (M6). */
-const GROW_MAX_FAILS = 3
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
 const TEMP_CLEARANCE = 6
 /** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
@@ -174,17 +174,6 @@ function parsePairs(value: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of string.gmatch(value, "([^=,;%s]+)%s*=%s*([^,;%s]+)")) out[k] = v
   return out
-}
-
-/** Stages of `factory-targets`: per stage, item → packs per minute. */
-export function parseStages(value: string): { item: string; perMinute: number }[][] {
-  const stages: { item: string; perMinute: number }[][] = []
-  for (const [part] of string.gmatch(value, "[^;]+")) {
-    const stage: { item: string; perMinute: number }[] = []
-    for (const [item, n] of string.gmatch(part, "([^=,%s]+)%s*=%s*([%d%.]+)")) stage.push({ item, perMinute: tonumber(n)! })
-    if (stage.length > 0) stages.push(stage)
-  }
-  return stages
 }
 
 export function getFactory(name: string): FactoryState | undefined {
@@ -287,7 +276,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     upkeep(ctx)
   }
   milestones(ctx)
-  science(ctx)
+  sampleScience(ctx, packsAutomated(f), (name) => mark(faction, name))
   f.waiting = ctx.waiting
   checkStall(ctx)
 }
@@ -310,67 +299,6 @@ function researchedTechs(force: LuaForce): Record<string, boolean> {
 function makeModule(this: void, gen: ModuleKind, params: Record<string, unknown>): ModuleDef {
   if (gen === "curated") return curatedModule(params.id as string)
   return generatedModule(gen, params)
-}
-
-/**
- * Seconds per research unit the labs of `stage` are sized for: `factory-research-unit-time` when set, else the stage's
- * entry of `factory-lab-sizing` ("mean" / "max" over the research goal's pack technologies, or seconds; the last entry
- * repeats).
- */
-export function labUnitTime(config: Config, stage: number): number {
-  if (config.factoryResearchUnitTime > 0) return config.factoryResearchUnitTime
-  const parts: string[] = []
-  for (const [p] of string.gmatch(config.factoryLabSizing, "[^;%s]+")) parts.push(p)
-  const v = parts[math.min(stage, parts.length - 1)] ?? "mean"
-  if (v === "max") return maxUnitTime()
-  const n = tonumber(v)
-  return n !== undefined && n > 0 ? n : meanUnitTime()
-}
-
-/**
- * M6: from stage `factory-shared-fuel` on (1-based; 0 = never) and once splitters can be built, new fuel consumers share
- * one fuel producer per cluster; consumers that have their own keep it.
- */
-function sharedFuel(ctx: { faction: FactionState; force: LuaForce; config: Config }, stage: number): { keep: Record<string, boolean> } | undefined {
-  const from = ctx.config.factorySharedFuel
-  if (from <= 0 || stage + 1 < from || !splittersEnabled(ctx.force)) return undefined
-  const f = getFactory(ctx.faction.name)
-  const fuel = ctx.faction.brain!.catalog.fuel
-  // Consumers fed fuel already (their own producer or an earlier shared one) keep it: a new group never taps a built
-  // route.
-  const keep: Record<string, boolean> = {}
-  if (f !== undefined) {
-    for (const id of f.graph.edgeOrder) {
-      const e = f.graph.edges[id]
-      if (e.kind === "belt" && e.item === fuel && f.graph.nodes[e.to] !== undefined) keep[f.graph.nodes[e.to].role] = true
-    }
-  }
-  return { keep }
-}
-
-/** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */
-function powerCap(ctx: { faction: FactionState }): number | undefined {
-  const f = getFactory(ctx.faction.name)
-  if (f === undefined || (f.growFails?.["power"] ?? 0) < GROW_MAX_FAILS) return undefined
-  const n = nodeByRole(f.graph, "power")
-  return n !== undefined ? rateIn(n.capacity.outputs, "electricity") : undefined
-}
-
-function splittersEnabled(force: LuaForce): boolean {
-  const sp = tiers()[0]?.splitter
-  const r = sp !== undefined ? (prototypeFacts.recipeForItem(sp) ?? sp) : undefined
-  return r !== undefined && force.recipes[r]?.enabled === true
-}
-
-/** Curated modules by the item they make (their recipe's product on a belt-out port): the design's fallback (M6 green). */
-function curatedProducers(): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const id of curatedIds()) {
-    const def = curatedModule(id)
-    if (def.recipe === undefined) continue
-    for (const p of def.ports) if (p.kind === "belt-out" && p.item !== undefined && out[p.item] === undefined) out[p.item] = id
-  }
-  return out
 }
 
 export function designContext(ctx: { faction: FactionState; force: LuaForce; config: Config; entities: Record<string, string> }, stage = 0): DesignContext {
@@ -406,8 +334,8 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     policy: policyFor(ctx.config),
     taps: getFactory(ctx.faction.name)?.taps,
     curated: curatedProducers(),
-    sharedFuel: sharedFuel(ctx, stage),
-    powerCap: powerCap(ctx),
+    sharedFuel: sharedFuel(ctx, getFactory(ctx.faction.name), stage),
+    powerCap: powerCap(getFactory(ctx.faction.name)),
   }
 }
 
@@ -1781,65 +1709,6 @@ function milestones(ctx: Ctx): void {
     mark(faction, `automated:${producer.item}`)
     if (producer.item === "automation-science-pack") mark(faction, "automated-red-science")
   }
-}
-
-// ---------------------------------------------------------------------------------------------------------
-// Science throughput (SPEC §3: ≥ the final stage's target, e.g. 30 red + 30 green per minute, sustained over
-// `factory-sustain-minutes`) and the research goal (D30). Packs consumed by the labs count (force item statistics).
-
-const SCIENCE_SAMPLE_TICKS = 3600
-/** Samples kept (game minutes): an 8-hour run plus margin. */
-const SCIENCE_MAX_SAMPLES = 600
-
-function researchDone(force: LuaForce): boolean {
-  for (const t of researchGoal()) if (!force.technologies[t]?.researched) return false
-  return true
-}
-
-function science(ctx: Ctx): void {
-  const f = ctx.f
-  const brain = ctx.faction.brain!
-  if (brain.milestones["research-goal-done"] === undefined && researchDone(ctx.force)) mark(ctx.faction, "research-goal-done")
-  f.science ??= { samples: [], best: 0 }
-  const sc = f.science
-  const last = sc.samples[sc.samples.length - 1]
-  if (last !== undefined && ctx.tick - last.tick < SCIENCE_SAMPLE_TICKS) return
-  const stages = parseStages(ctx.config.factoryTargets)
-  const target = stages[stages.length - 1] ?? []
-  const stats = ctx.force.get_item_production_statistics(ctx.surface)
-  const made: Record<string, number> = {}
-  const used: Record<string, number> = {}
-  for (const t of target) {
-    made[t.item] = stats.get_input_count(t.item)
-    used[t.item] = stats.get_output_count(t.item)
-  }
-  sc.samples.push({ tick: ctx.tick, made, used })
-  if (sc.samples.length > SCIENCE_MAX_SAMPLES) sc.samples.shift()
-  // Automated packs beyond the first (green): its producer is built and the labs used some.
-  for (const t of target) if (brain.milestones[`automated:${t.item}`] === undefined && packsAutomated(f)[t.item] && used[t.item] >= 10) mark(ctx.faction, `automated:${t.item}`)
-  // Sustained: every pack over the window at its target rate.
-  const window = ctx.config.factorySustainMinutes
-  const n = sc.samples.length
-  if (n <= window || target.length === 0) return
-  const then = sc.samples[n - 1 - window]
-  const minutes = (ctx.tick - then.tick) / 3600
-  let worst = math.huge
-  const rates: Record<string, number> = {}
-  for (const t of target) {
-    const r = (used[t.item] - (then.used[t.item] ?? 0)) / minutes
-    rates[t.item] = r
-    worst = math.min(worst, r / t.perMinute)
-  }
-  sc.rates = rates
-  if (worst > sc.best) {
-    sc.best = worst
-    sc.bestTick = ctx.tick
-  }
-  if (worst >= 1 && brain.milestones["science-sustained"] === undefined) {
-    mark(ctx.faction, "science-sustained")
-    log(`[rival-engineers] faction ${ctx.faction.name}: science sustained over ${window} min: ${target.map((t) => `${t.item} ${string.format("%.1f", rates[t.item])}/min`).join(", ")}`)
-  }
-  if (brain.milestones["science-sustained"] !== undefined && brain.milestones["research-goal-done"] !== undefined) mark(ctx.faction, "v1-done")
 }
 
 // ---------------------------------------------------------------------------------------------------------
