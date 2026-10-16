@@ -101,6 +101,12 @@ export interface SmelterParams extends CommonParams {
   furnaces: number
   furnace?: string
   fuel?: string
+  /**
+   * D42 / B5: a buffer depot, the chest entity to use ("" or absent: none). An inserter at the head takes plates off the
+   * west output belt into this chest, which the crew collects from (its slots are limited at build time). Electric
+   * inserters only (a burner buffer inserter would need fuel).
+   */
+  buffer?: string
 }
 
 /**
@@ -127,6 +133,13 @@ export function smelterColumn(facts: ProtoFacts, p: SmelterParams): ModuleDef {
   for (let x = 6; x <= 10; x++) L.beltAt(x + 0.5, 0.5, WEST)
   L.beltAt(0.5, 1.5, NORTH)
   L.beltAt(10.5, 1.5, NORTH)
+  // D42 buffer: in the gap row, an inserter picking from the west output belt (it faces west: the side it picks from)
+  // drops into a chest east of it. Powered by the first unit's west pole (1.5, 3.5).
+  const buffer = electric && p.buffer !== undefined && p.buffer !== "" ? p.buffer : undefined
+  if (buffer !== undefined) {
+    L.ins(1.5, 1.5, WEST)
+    L.add(buffer, 2.5, 1.5, undefined, { buffer: true })
+  }
   for (let u = 0; u < units; u++) {
     const y0 = 2 + 4 * u
     for (const j of [0, 2]) {
@@ -165,7 +178,7 @@ export function smelterColumn(facts: ProtoFacts, p: SmelterParams): ModuleDef {
   const orePerFurnace = (speed / recipe.energy) * ore.amount
   const maxFurnaces = Math.floor(laneCapacity(facts, L.belt) / orePerFurnace + 1e-9)
   const draft: ModuleDraft = {
-    id: `smelter-column/${p.recipe}/${p.furnaces}/${L.belt}/${L.inserter}`,
+    id: `smelter-column/${p.recipe}/${p.furnaces}/${L.belt}/${L.inserter}${buffer !== undefined ? `/buffer=${buffer}` : ""}`,
     source: "generated",
     generator: "smelter-column",
     provenance: "generator smelter-column (Rival Engineers)",
@@ -176,7 +189,7 @@ export function smelterColumn(facts: ProtoFacts, p: SmelterParams): ModuleDef {
     recipe: p.recipe,
     rotatable: true,
     mirrorable: true,
-    params: { furnaces: p.furnaces, recipe: p.recipe, belt: L.belt, inserter: L.inserter, fuel },
+    params: { furnaces: p.furnaces, recipe: p.recipe, belt: L.belt, inserter: L.inserter, fuel, buffer: buffer ?? "" },
     expand: {
       unit: { footprint: { w: 11, h: 4 }, entities: sliceUnit(L.entities, "y", 2, 6) },
       axis: "y",

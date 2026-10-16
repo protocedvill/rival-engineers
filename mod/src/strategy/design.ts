@@ -41,6 +41,8 @@ export interface DesignContext {
   plannable?: Record<string, boolean>
   /** Resource entities the faction knows about. */
   resources: string[]
+  /** D42 / B5: the chest for module buffer depots (smelter columns), "" or absent = none. */
+  buffer?: string
   /** Burner fuel (coal) and entity choices (config defaults, from prototypes). */
   fuel: string
   assembler: string
@@ -186,7 +188,7 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string, burnerOnly 
     }
   } else if (gen === "smelter-column") {
     const recipe = ctx.facts.recipeForItem(item)!
-    for (let n = 4; n <= 48; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel })
+    for (let n = 4; n <= 48; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
   } else if (gen === "red-line") {
     for (let u = 1; u <= 12; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
   } else if (gen === "circuit-block") {

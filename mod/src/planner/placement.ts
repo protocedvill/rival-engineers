@@ -28,6 +28,11 @@ export interface PlacementRequest {
   region: Rect
   /** Rectangles the footprint must not overlap (a module re-placed after its routes failed avoids its old spot). */
   avoid?: Rect[]
+  /**
+   * D50 / B9: modules whose soft claims don't count for this one: its direct partners (it feeds them or they feed it).
+   * Their ports sit at their growing end, where a partner belongs; growth reroutes their connection anyway.
+   */
+  softExempt?: Record<string, boolean>
 }
 
 interface TDef {
@@ -195,6 +200,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const aRes = s.sat.res
   const aSoft = s.sat.soft
   const softTiles = state.soft
+  const exempt = s.req.softExempt ?? {}
   const occ = state.occ
   const reserved = state.reserved
   const routeOcc = state.routeOcc
@@ -229,7 +235,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     else if (b === ROCK) clear += clearRock
     else if (b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
-    if (softTiles !== undefined && softTiles[k] !== undefined) soft++
+    if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard

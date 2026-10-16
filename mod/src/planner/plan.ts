@@ -290,6 +290,16 @@ export function resolve(job: PlanJob, ref: PortRef): PortRef {
   return { module: job.alias[ref.module] ?? ref.module, port: ref.port }
 }
 
+/** D50: the modules `id` connects to (placed or not): their soft claims don't push it away. */
+function partnersOf(job: PlanJob, id: string): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const c of connectionsOf(job.request, id)) {
+    const other = c.from?.module === id ? c.to : c.from
+    if (other !== undefined) out[resolve(job, other).module] = true
+  }
+  return out
+}
+
 /** Where each belt port of module `id` should face: the partner port's outside tile, if placed. */
 function targetsFor(job: PlanJob, id: string): Record<string, Vec> {
   const out: Record<string, Vec> = {}
@@ -413,7 +423,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   const id = job.replaceQueue[0]
   if (job.placement === undefined) {
     const mreq = moduleRequest(job, id)
-    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: job.avoid[id] })
+    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: job.avoid[id], softExempt: partnersOf(job, id) })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
@@ -500,7 +510,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         if (t !== undefined) center = { x: t.x, y: t.y }
       }
     }
-    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region })
+    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, softExempt: partnersOf(job, id) })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0

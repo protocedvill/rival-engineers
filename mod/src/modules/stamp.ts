@@ -2,12 +2,15 @@
 // `def` must already be transformed (geometry.ts transformModule); `origin` is the world tile of its top-left corner.
 
 import { LuaEntity, LuaForce, LuaSurface, MapPosition, SurfaceCreateEntity } from "factorio:runtime"
+import { limitBuffer } from "./buffers"
 import { ModuleDef, ModuleEntity, Port } from "./types"
 
 export interface StampOptions {
   ghost?: boolean
   /** Raise script_raised_built for created entities. */
   raiseBuilt?: boolean
+  /** D42: usable slots of buffer chests stamped as real entities (default 0: every slot barred, as D33 validation wants). */
+  bufferSlots?: number
 }
 
 export function worldPos(origin: MapPosition, p: { x: number; y: number }): MapPosition {
@@ -37,6 +40,8 @@ export function stampModule(surface: LuaSurface, force: LuaForce | string, def: 
     const params = createParams(def.entities[i], origin, force, opts.ghost === true)
     if (opts.raiseBuilt) (params as unknown as Record<string, unknown>).raise_built = true
     out[i] = surface.create_entity(params)
+    const made = out[i]
+    if (made !== undefined && def.entities[i].buffer && opts.ghost !== true) limitBuffer(made, opts.bufferSlots ?? 0)
   }
   return out
 }

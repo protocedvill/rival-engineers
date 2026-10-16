@@ -192,7 +192,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     bundleFactor: 0.9,
     softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.1 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.5 },
 }
 registerPolicy(EARLY_COMPACT)
 
@@ -203,6 +203,10 @@ export interface PolicyOverrides {
   topology?: string
   utilization?: number
   smelting?: string
+  /** D50: soft-claim and bundling weights (settings; absent or negative = keep the policy's value). */
+  placementSoftClaim?: number
+  routerSoftClaim?: number
+  routerBundleFactor?: number
 }
 
 /**
@@ -232,5 +236,8 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.topology === "point-to-point" || overrides.topology === "splitter-tap") p.topology = overrides.topology
   if (overrides.utilization !== undefined && overrides.utilization > 0) p.utilization = overrides.utilization
   if (overrides.smelting === "compact-core" || overrides.smelting === "near-ore") p.smelting = overrides.smelting
+  if (overrides.placementSoftClaim !== undefined && overrides.placementSoftClaim >= 0) p.placement = { ...p.placement, softClaim: overrides.placementSoftClaim }
+  if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
+  if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p
 }

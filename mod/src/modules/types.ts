@@ -37,6 +37,11 @@ export interface ModuleEntity {
   ioType?: "input" | "output"
   /** Mining drills: the resource the module is built for (informational; the drill mines what is under it). */
   mines?: string
+  /**
+   * D42 buffer depot: a chest the module fills through an inserter and the crew collects from. Never a demand in the
+   * graph or rates; its usable slots are limited when built and blocked in throughput validation (D33).
+   */
+  buffer?: boolean
 }
 
 export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power" | "chest-out"

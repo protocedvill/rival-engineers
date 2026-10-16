@@ -70,4 +70,11 @@ export const Settings = {
   logisticsUndergroundMinSaving: "rival-engineers-logistics-underground-min-saving",
   logisticsSplitterMinSaving: "rival-engineers-logistics-splitter-min-saving",
   plannerCompareWorkFactor: "rival-engineers-planner-compare-work-factor",
+  plannerPlacementSoftClaim: "rival-engineers-planner-placement-soft-claim",
+  plannerRouterSoftClaim: "rival-engineers-planner-router-soft-claim",
+  plannerRouterBundleFactor: "rival-engineers-planner-router-bundle-factor",
+  plannerCompareMinWork: "rival-engineers-planner-compare-min-work",
+  logisticsSplitterCompare: "rival-engineers-logistics-splitter-compare",
+  moduleBuffer: "rival-engineers-module-buffer",
+  moduleBufferSlots: "rival-engineers-module-buffer-slots",
 } as const

@@ -9,6 +9,7 @@ import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { mallSources } from "./factory"
+import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
 
@@ -919,6 +920,8 @@ interface Source {
 function collectSources(ctx: Ctx, item: string | undefined): Source[] {
   // The factory's mall (M5) supplies buildings: its output chests come first.
   const out: Source[] = mallSources(ctx.faction.name, item)
+  // D42 / B5: module buffer depots (the end of a smelter column) next.
+  for (const b of bufferSources(ctx.faction.force, item)) out.push(b)
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
     if (site.status === "failed" || site.status === "retired") continue

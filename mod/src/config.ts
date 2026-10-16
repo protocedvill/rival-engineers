@@ -142,6 +142,20 @@ export interface Config {
   logisticsSplitterMinSaving: number
   /** D36 / B2: each comparison may use at most this many times the plan's own routing work (bounded extra work). */
   plannerCompareWorkFactor: number
+  /** D50 / B9: placement cost per footprint tile on another module's growth area (policy placement.softClaim). */
+  plannerPlacementSoftClaim: number
+  /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
+  plannerRouterSoftClaim: number
+  /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
+  plannerRouterBundleFactor: number
+  /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */
+  plannerCompareMinWork: number
+  /** D50 / B2: run the splitter-tap comparison at all (default off). */
+  logisticsSplitterCompare: boolean
+  /** D42 / B5: chest entity of module buffer depots (smelter columns); "" = none. */
+  moduleBuffer: string
+  /** D42 / B5: usable slots of a buffer chest (the rest are barred). */
+  moduleBufferSlots: number
 }
 
 export type ConfigKey = keyof Config
@@ -222,6 +236,13 @@ export function getConfig(): Config {
     logisticsUndergroundMinSaving: setting(Settings.logisticsUndergroundMinSaving),
     logisticsSplitterMinSaving: setting(Settings.logisticsSplitterMinSaving),
     plannerCompareWorkFactor: setting(Settings.plannerCompareWorkFactor),
+    plannerPlacementSoftClaim: setting(Settings.plannerPlacementSoftClaim),
+    plannerRouterSoftClaim: setting(Settings.plannerRouterSoftClaim),
+    plannerRouterBundleFactor: setting(Settings.plannerRouterBundleFactor),
+    plannerCompareMinWork: setting(Settings.plannerCompareMinWork),
+    logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
+    moduleBuffer: setting(Settings.moduleBuffer),
+    moduleBufferSlots: setting(Settings.moduleBufferSlots),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

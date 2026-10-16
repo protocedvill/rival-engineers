@@ -177,7 +177,7 @@ test("B9: placement keeps off another module's growth area (a cost, not a block)
   const without = placeNow(req, state, terrain, policy({}, { softClaim: 0 }))
   eq(without.phase, "done", "placed without the weight")
   ok(overlaps(without.result!.rect), "without the weight it sits in the growth area")
-  // The mechanism at weight 0.5 (early-compact's default is 0.1, a mild preference: see the M5c report).
+  // The mechanism at weight 0.5 (early-compact's default since D50).
   const withW = placeNow(req, state, terrain, policy({}, { softClaim: 0.5 }))
   eq(withW.phase, "done", "placed with the weight")
   ok(!overlaps(withW.result!.rect), `with the weight it keeps off (${withW.result!.rect.x},${withW.result!.rect.y})`)
@@ -190,6 +190,23 @@ test("B9: placement keeps off another module's growth area (a cost, not a block)
   }
   const forced = placeNow({ ...req, region: { x: 0, y: 0, w: 120, h: 120 } }, state, asciiTerrain(rows), policy({}, { softClaim: 0.5 }))
   eq(forced.phase, "done", "still placeable inside the claim when nothing else is free")
+})
+
+test("D50: a module's own partners are exempt from its soft claim at placement (its ports sit at the growing end)", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const terrain = asciiTerrain(field(120, 120))
+  const state = newLayout()
+  const m = place(state, { ...def, id: "s" }, 50, 30, IDENTITY, 2)
+  const area = growthArea(m)!
+  const other = box("o", 4, 4, [])
+  const center = { x: area.x + math.floor(area.w / 2), y: area.y + math.floor(area.h / 2) }
+  const overlaps = (r: { x: number; y: number; w: number; h: number }): boolean => r.x < area.x + area.w && area.x < r.x + r.w && r.y < area.y + area.h && area.y < r.y + r.h
+  const req = { id: "o", def: other, targets: {}, center, region: { x: 0, y: 0, w: 120, h: 120 } }
+  const stranger = placeNow(req, state, terrain, policy({}, { softClaim: 0.5 }))
+  ok(!overlaps(stranger.result!.rect), "an unrelated module keeps off")
+  const partner = placeNow({ ...req, softExempt: { s: true } }, state, terrain, policy({}, { softClaim: 0.5 }))
+  eq(partner.phase, "done", "placed")
+  ok(overlaps(partner.result!.rect), "the smelter's partner may sit at its growing end")
 })
 
 test("B9: routes detour around a growth area when the detour is short", () => {

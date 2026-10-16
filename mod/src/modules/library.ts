@@ -94,7 +94,8 @@ export interface CatalogEntry {
 
 export const V1_CATALOG: CatalogEntry[] = [
   { name: "smelter iron 12", generator: "smelter-column", params: { recipe: "iron-plate", furnaces: 12 }, slow: true },
-  { name: "smelter copper 4", generator: "smelter-column", params: { recipe: "copper-plate", furnaces: 4 }, slow: true },
+  // D42: with a buffer depot (blocked during validation: stampModule bars every slot).
+  { name: "smelter copper 4 buffer", generator: "smelter-column", params: { recipe: "copper-plate", furnaces: 4, buffer: "iron-chest" }, slow: true },
   { name: "smelter stone-brick 4", generator: "smelter-column", params: { recipe: "stone-brick", furnaces: 4 }, slow: true },
   { name: "mining iron 4x2 electric", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2 } },
   { name: "mining coal 3x2 burner", generator: "mining-outpost", params: { resource: "coal", rows: 3, sides: 2, drill: "burner-mining-drill" } },

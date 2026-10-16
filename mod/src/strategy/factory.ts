@@ -27,6 +27,7 @@ import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
+import { registerBuffer } from "../modules/buffers"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -311,6 +312,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     enabled: enabledRecipes(ctx.force),
     plannable,
     resources,
+    buffer: ctx.config.moduleBuffer,
     fuel: brain.catalog.fuel,
     assembler: e.assembler ?? "assembling-machine-1",
     furnace: brain.catalog.furnace,
@@ -560,6 +562,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
       const gh = ctx.surface.create_entity(params as never)
       if (gh === undefined) continue
+      if (e.buffer) registerBuffer(ctx.surface, ctx.faction.force, gh)
       b.ghosts.push(gh)
       markDirty(ctx.faction.surface, gh.bounding_box.left_top, gh.bounding_box.right_bottom)
       const id = addPlaceJob(ctx.faction, gh, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
@@ -652,9 +655,6 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) attempt ${g.attempts}: ${g.nodes.length} modules, ${connections.length} connections, region radius ${r}`)
 }
 
-/** Below this, a comparison may still use this much planner work (tiny plans have tiny routing work). */
-const COMPARE_MIN_WORK = 5000
-
 /** The technology that unlocks a belt tier's underground (`what` = "underground") or splitter, if not researched yet. */
 function unresearchedTech(ctx: Ctx, what: "underground" | "splitter"): string | undefined {
   const entity = tiers()[0]?.[what]
@@ -673,11 +673,11 @@ function compareOptions(ctx: Ctx, g: FactoryGoal, maxUnderground: number | undef
   const f = ctx.f
   const c = ctx.config
   if (g.kind !== "production" && g.kind !== "mall") return undefined
-  const opts: CompareOptions = { workFactor: c.plannerCompareWorkFactor, minWork: COMPARE_MIN_WORK }
+  const opts: CompareOptions = { workFactor: c.plannerCompareWorkFactor, minWork: c.plannerCompareMinWork }
   if (c.logisticsUndergroundMinSaving > 0 && maxUnderground !== undefined && f.needUndergrounds === undefined && unresearchedTech(ctx, "underground") !== undefined) {
     opts.undergrounds = { tiers: tiers() }
   }
-  if (c.logisticsSplitterMinSaving > 0 && f.needSplitters === undefined && policyFor(c).topology !== "splitter-tap" && unresearchedTech(ctx, "splitter") !== undefined) {
+  if (c.logisticsSplitterCompare && c.logisticsSplitterMinSaving > 0 && f.needSplitters === undefined && policyFor(c).topology !== "splitter-tap" && unresearchedTech(ctx, "splitter") !== undefined) {
     const count: Record<string, number> = {}
     for (const n of g.nodes) count[n.item] = (count[n.item] ?? 0) + 1
     const items: string[] = []

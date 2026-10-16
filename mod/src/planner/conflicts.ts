@@ -8,6 +8,7 @@ import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { addClearJob, addPlaceJob } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
+import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import { tkey, Vec } from "./grid"
@@ -102,6 +103,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
       if (e.ioType !== undefined) params.type = e.ioType
       if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
       gh = surface.create_entity(params as never)
+      if (gh !== undefined && e.buffer) registerBuffer(surface, force, gh)
     }
     if (gh === undefined) {
       failed.push(`${e.owner}: ${e.name}@${e.x},${e.y}`)

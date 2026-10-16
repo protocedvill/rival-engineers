@@ -160,6 +160,14 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     ok(job.phase === "done", `plan done (${why.join("; ")})`)
+    if (os.getenv("REPLAY_DUMP") !== undefined) {
+      for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h}`)
+      if (job.layout.soft !== undefined) {
+        const owners: Record<string, number> = {}
+        for (const [, o] of pairs(job.layout.soft)) owners[o as string] = (owners[o as string] ?? 0) + 1
+        for (const [o, n] of pairs(owners)) print(`    soft claim of ${o as string}: ${n as number} tiles`)
+      }
+    }
     const results: CompareResult[] = job.compare?.results ?? []
     const d = logisticsFirst(results, 50, 50)
     print(`  ${name}: plan work ${math.floor(job.stats.work)} (routing ${math.floor(job.stats.routeWork)}, comparison ${math.floor(job.stats.compareWork ?? 0)}); ${d.why.join("; ")}`)
@@ -173,7 +181,11 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
 // first on these seeds. One coal producer with a splitter tap instead of two would save 32 / 46 tiles: under 50, so
 // splitters alone would not. (Seeds 44444 and 555555's captures don't replay: plain Lua's `pairs` order makes the
 // no-underground cluster fail there, as it often does in game.)
-compareReplay("seed11-production-ok", { undergrounds: true, splitters: false })
+// D50 (placement soft claim 0.5, a module's partners exempt): seed 11's placement is the same as at 0.1 except one coal
+// outpost 2 tiles over, but the no-underground cluster then routes 392 tiles instead of 336 (rip-up order); one coal
+// producer then saves 88 tiles, so the splitter comparison (off by default since D50) would research splitters there.
+// REPLAY_DUMP=1 prints the placements and soft claims.
+compareReplay("seed11-production-ok", { undergrounds: true, splitters: true })
 compareReplay("seed3333-production-ok", { undergrounds: true, splitters: false })
 
 run("plan-replay")

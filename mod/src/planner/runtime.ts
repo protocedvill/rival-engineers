@@ -10,6 +10,7 @@ import { getJob } from "../jobs/board"
 import { addClearJob, addPlaceJob, getFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { stampModule } from "../modules/stamp"
+import { registerBuffer } from "../modules/buffers"
 import { BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
@@ -84,6 +85,9 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     topology: entry.topology ?? c.layoutTopology,
     utilization: c.beltUtilization,
     smelting: c.layoutSmelting,
+    placementSoftClaim: c.plannerPlacementSoftClaim,
+    routerSoftClaim: c.plannerRouterSoftClaim,
+    routerBundleFactor: c.plannerRouterBundleFactor,
   })
 }
 
@@ -249,7 +253,9 @@ function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: bo
   const params: Record<string, unknown> = { name: ghost ? "entity-ghost" : e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
   if (ghost) params.inner_name = e.name
   if (e.ioType !== undefined) params.type = e.ioType
-  return surface.create_entity(params as never)
+  const created = surface.create_entity(params as never)
+  if (created !== undefined && e.buffer) registerBuffer(surface, force, created)
+  return created
 }
 
 export interface StampResult {

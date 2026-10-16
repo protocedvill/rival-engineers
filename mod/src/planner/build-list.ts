@@ -17,6 +17,8 @@ export interface EntitySpec {
   ioType?: "input" | "output"
   /** Module instance or route id. */
   owner: string
+  /** D42: a module buffer chest (its slots are limited when built). */
+  buffer?: boolean
 }
 
 export function moduleEntities(layout: LayoutState): EntitySpec[] {

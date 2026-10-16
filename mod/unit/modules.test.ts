@@ -130,6 +130,27 @@ test("lab array: research units at 1/unitTime per lab, packs merged on one belt"
   near(out(fast, "research-unit"), INS_BELT / 2, 1e-9, "inserter-limited units/s")
 })
 
+test("D42 / B5: a smelter column's buffer depot: an inserter off the west output belt into a chest; rates unchanged", () => {
+  const plain = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
+  eq(def.entities.length, plain.entities.length + 2, "one inserter and one chest more")
+  const chest = def.entities.filter((e) => e.buffer === true)
+  eq(chest.length, 1, "one buffer chest")
+  eq(chest[0].name, "iron-chest", "the configured chest")
+  eq(`${chest[0].x},${chest[0].y}`, "2.5,1.5", "in the gap row")
+  const ins = def.entities.filter((e) => e.x === 1.5 && e.y === 1.5)[0]
+  eq(ins.name, "inserter", "an inserter next to it")
+  eq(ins.dir, WEST, "picks from the west output belt (0.5, 1.5)")
+  const belt = def.entities.filter((e) => e.x === 0.5 && e.y === 1.5)[0]
+  eq(belt.name, "transport-belt", "the output belt it picks from")
+  near(out(def, "iron-plate"), out(plain, "iron-plate"), 1e-9, "the buffer is no demand: same output rate")
+  near(inp(def, "iron-ore"), inp(plain, "iron-ore"), 1e-9, "same input")
+  ok(def.id !== plain.id, "a different module id")
+  eq(def.expand!.unit.entities.length, plain.expand!.unit.entities.length, "units unchanged (the buffer stays at the head)")
+  const burner = smelterColumn(F, { recipe: "iron-plate", furnaces: 4, inserter: "burner-inserter", buffer: "iron-chest" })
+  eq(burner.entities.filter((e) => e.buffer === true).length, 0, "no buffer with burner inserters (it would need fuel)")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
@@ -137,6 +158,8 @@ function allGenerated(): ModuleDef[] {
     smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
     smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest" }),
     miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2 }),
     miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1 }),
     miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill" }),

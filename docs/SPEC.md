@@ -73,6 +73,7 @@ Two layers, by analogy:
 | D47 | Conflict repair (2026-10-15, user decision on P19) | P19 approved as built: blocked routes are rerouted, a blocked module or pole moves its whole goal, at most `conflict-max-repairs` (3) per goal. **M6:** relocate only the blocked module (and its routes) instead of the whole goal. |
 | D48 | Growth by belts, upgrades, soft claims (2026-10-15, user direction; later stage) | (1) Plan raw-material modules in **whole belts of I/O** (e.g. 48 stone furnaces fill one yellow belt; ratios as in https://factoriocheatsheet.com/#material-processing): an expandable module (`ModuleDef.expand`) has a full size of N belts. (2) Early on, build only **part** of a module for current needs, and **finish it** later when demand grows. (3) Prefer **in-place upgrades** of existing modules when more is needed (stone → steel furnaces, yellow → red belts, other same-footprint replacements) before building new ones; this extends D24's `upgrade-tier`. (4) **Soft claims:** when an expandable module is placed, the area it can grow into gets a placement/routing cost for anything else (a weight, not a hard block). Schedule: soft claims with the planner work (backlog B9); partial-then-finish and in-place upgrades after M5 (M6 where in v1 scope; steel furnaces need steel, so post-v1 per D20). |
 | D49 | Reconciler remedies (2026-10-15, user decision on P21) | P21 approved, including the D28 exception: the crew re-place missing **belts and poles** (never machines). **Belt capacity** (D24 tier upgrade / parallel route) is decided **only in planning**, and only when adding a consumer or producer would take an edge above its limit (D25); the reconciler never upgrades a belt at runtime. The reconciler **runs from the start**, but nodes supplied by the crew by design (hand-fed labs before automated science) are expected: neither reported as problems nor remedied. |
+| D50 | Planner weights as settings (2026-10-16, user decisions via the manager) | (1) The placement soft-claim weight (B9, D48 (4)) is a setting, **default 0.5** (`planner-placement-soft-claim`); the planner must work at 0.5. (2) Also settings, current values as defaults: the least comparison work `planner-compare-min-work` (5,000), router `planner-router-bundle-factor` (0.9) and router `planner-router-soft-claim` (0.5). The work-count tolerance (15%) and the reference-base size stay tooling, not settings. (3) P23 approved: the D36 / B2 comparison reroutes the same placement. (4) The splitter comparison (B2) gets an enable setting `logistics-splitter-compare`, **default off**; the code stays. |
 
 ## 3. v1 Definition of Done
 
@@ -697,7 +698,7 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
 
 M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5c"):
 
-- **P23, how D36 / B2 compare (proposed):** a production or mall plan made without undergrounds / splitters (their
+- **P23, how D36 / B2 compare (approved → D50, 2026-10-16):** a production or mall plan made without undergrounds / splitters (their
   technology not researched) routes its *same placement* again with them (routing only, no new placement: at most
   `planner-compare-work-factor` × its routing work, at least 5,000 units). Length = entities placed (belt tiles,
   underground ends, +1 per splitter). Splitter alternative: per item made by several new point-to-point producers, the
@@ -708,10 +709,12 @@ M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
   (hand-fed packs), and after it the goal is planned from scratch (with undergrounds; splitter taps for the recorded
   consumers). A capped or failed alternative counts as no evidence. Alternative: compare full plans (placement too),
   ~10× the extra work.
-- **P24, bundling and soft-claim weights (proposed, B7 / B9):** `RouterWeights.bundleFactor` 0.9 (a tile next to
+- **P24, bundling and soft-claim weights (decided → D50, 2026-10-16: settings; placement soft-claim default 0.5, not 0.1):** `RouterWeights.bundleFactor` 0.9 (a tile next to
   another route's belt costs 0.9×); soft claims (D48 (4)) cost 0.5 per tile for routes (a module's own routes are exempt:
   its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
   clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
+
+Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 
 Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
 
@@ -742,6 +745,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.17 (2026-10-16, user decisions via the manager): D50 (planner weights as settings, placement soft claim 0.5, splitter
+  comparison off by default); §11 P23 approved, P24 decided.
 - v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).
 - v0.16 (2026-10-16, M5c): §11 P23–P24 proposed (D36 / B2 comparison, bundling and soft-claim weights); §5.7
   logistics-first settings.

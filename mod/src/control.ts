@@ -5,6 +5,7 @@ declare function require(this: void, module: string): unknown
 
 import { onPathRequestFinished } from "./character/pathing"
 import { onEntityChanged } from "./planner/terrain"
+import { onBufferBuilt } from "./modules/buffers"
 import { registerRemoteInterface } from "./remote"
 import { registerReview } from "./review/index"
 import { initStorage } from "./storage-init"
@@ -30,12 +31,17 @@ for (const ev of [
   defines.events.on_entity_died,
   defines.events.script_raised_destroy,
 ]) {
-  script.on_event(ev, (e) => onEntityChanged((e as { entity?: LuaEntity }).entity))
+  script.on_event(ev, (e) => {
+    const entity = (e as { entity?: LuaEntity }).entity
+    onEntityChanged(entity)
+    // D42: a buffer chest built from its ghost gets its slot limit.
+    if (ev === defines.events.script_raised_revive || ev === defines.events.script_raised_built || ev === defines.events.on_built_entity) onBufferBuilt(entity)
+  })
 }
 registerRemoteInterface()
 registerReview()
 
 if (script.active_mods["factorio-test"]) {
   const init = require("__factorio-test__/init") as (this: void, files: string[], config?: object) => void
-  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test", "test/research_test", "test/bootstrap_test", "test/modules_test", "test/routing_test", "test/review_test", "test/factory_test", "test/world_test", "test/conflicts_test", "test/mining-arena_test", "test/reconciler_test"], { load_luassert: false })
+  init(["test/engine-capabilities_test", "test/remote_test", "test/controller_test", "test/jobs_test", "test/research_test", "test/bootstrap_test", "test/modules_test", "test/routing_test", "test/review_test", "test/factory_test", "test/world_test", "test/conflicts_test", "test/mining-arena_test", "test/reconciler_test", "test/buffers_test"], { load_luassert: false })
 }
