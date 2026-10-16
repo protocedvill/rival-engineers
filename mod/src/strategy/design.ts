@@ -74,6 +74,11 @@ export interface DesignContext {
    * own (built before; they keep it). Absent: point-to-point.
    */
   sharedFuel?: { keep: Record<string, boolean> }
+  /**
+   * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
+   * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
+   */
+  powerCap?: number
 }
 
 export interface DesignTarget {
@@ -523,6 +528,20 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
   return estimate
 }
 
+/** M6: a second steam block (role `power#2`) for what the first can't supply, with its own fuel supply. */
+function secondSteam(ctx: DesignContext, w: Walk, extraW: number): void {
+  const s = sizeModule(ctx, "steam-block", "electricity", extraW)
+  if (s === undefined) {
+    w.errors.push("second steam-block: no valid size")
+    return
+  }
+  const util = s.capacity > EPS ? math.min(1, extraW / s.capacity) : 1
+  const role = "power#2"
+  w.nodes.push({ role, kind: "power", generator: "steam-block", params: s.params, def: s.def, item: "electricity", need: extraW, capacity: s.capacity, inputs: inputPorts(s.def, util), powerW: s.capacity, cluster: w.cluster })
+  for (const p of inputPorts(s.def, util)) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+  expandItem(w, ctx.fuel)
+}
+
 function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>, sharedPower = false): number {
   const available = availableTiers(ctx.tiers, ctx.researched)
   let split = 1
@@ -597,6 +616,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     }
     const probe = { short: false }
     electric = designPower(ctx, walks[0], others, clusters > 1 ? probe : undefined)
+    if (ctx.powerCap !== undefined && electric > ctx.powerCap + EPS) secondSteam(ctx, walks[0], electric - ctx.powerCap)
     let shared = clusters > 1
     if (probe.short) {
       shared = false

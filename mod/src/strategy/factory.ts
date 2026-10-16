@@ -348,6 +348,14 @@ function sharedFuel(ctx: { faction: FactionState; force: LuaForce; config: Confi
   return { keep }
 }
 
+/** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */
+function powerCap(ctx: { faction: FactionState }): number | undefined {
+  const f = getFactory(ctx.faction.name)
+  if (f === undefined || (f.growFails?.["power"] ?? 0) < GROW_MAX_FAILS) return undefined
+  const n = nodeByRole(f.graph, "power")
+  return n !== undefined ? rateIn(n.capacity.outputs, "electricity") : undefined
+}
+
 function splittersEnabled(force: LuaForce): boolean {
   const sp = tiers()[0]?.splitter
   const r = sp !== undefined ? (prototypeFacts.recipeForItem(sp) ?? sp) : undefined
@@ -399,6 +407,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     taps: getFactory(ctx.faction.name)?.taps,
     curated: curatedProducers(),
     sharedFuel: sharedFuel(ctx, stage),
+    powerCap: powerCap(ctx),
   }
 }
 
@@ -425,7 +434,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
   let taps = 0
   for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
-  const key = `${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${(f.growFails?.["power"] ?? 0) >= GROW_MAX_FAILS}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).

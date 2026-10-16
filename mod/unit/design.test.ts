@@ -305,4 +305,17 @@ test("M6: shared fuel: new smelters share one coal outpost per cluster; the stag
   ok(p2p.nodes.filter((n) => n.item === "coal").length >= 9, "point-to-point: one per smelter")
 })
 
+test("M6: a steam block that can't grow gets a second one (power#2) for the excess, with its own coal", () => {
+  const d0 = design(greenCtx(), STAGE2)
+  const cap = 1.8e6
+  ok(byRole(d0.nodes, "power")!.need > cap, "the design needs more than one boiler")
+  const d = design(greenCtx({ powerCap: cap }), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const p2 = byRole(d.nodes, "power#2")
+  ok(p2 !== undefined, "second steam block")
+  ok(p2!.capacity + 1e-6 >= byRole(d.nodes, "power")!.need - cap, `covers the excess (${p2!.capacity} W)`)
+  ok(byRole(d.nodes, "coal>power#2") !== undefined, "its own coal")
+  ok(isPowerRole("power#2") && isPowerRole("coal>power#2"), "power roles")
+})
+
 run("design")
