@@ -63,12 +63,19 @@ export interface DesignContext {
    * when splitters were worth researching. Other demands for the item stay point-to-point.
    */
   taps?: Record<string, string[]>
+  /**
+   * Curated modules by the item they make (M6: the green science line). Generators come first (D34); a curated module
+   * is used for an item no generator rule can make with a producible input chain.
+   */
+  curated?: Record<string, string>
 }
 
 export interface DesignTarget {
   /** Science pack consumed by the labs, packs/s. */
   item: string
   perSecond: number
+  /** M6: more packs the labs consume at the same time (30 red + 30 green: the green pack here). */
+  also?: { item: string; perSecond: number }[]
   /**
    * A mall (material supply for buildings) as a second sink: a curated module whose `chest-out` ports the crew empties,
    * planned at `utilization` of its full-speed inputs (it only runs while its chests have room).
@@ -152,6 +159,34 @@ function resourceFor(ctx: DesignContext, item: string): string | undefined {
 
 /** The generator that makes `item`, by structure of its recipe. */
 export function generatorFor(ctx: DesignContext, item: string): GeneratorName | undefined {
+  return generatorRule(ctx, item)
+}
+
+/**
+ * The module that makes `item`: a generator whose inputs can all be made (recursively), else a curated module that
+ * makes it (generators first, D34; the green line is curated because an inserter has three ingredients).
+ */
+export function producerFor(ctx: DesignContext, item: string): ModuleKind | undefined {
+  const gen = generatorRule(ctx, item)
+  const curated = ctx.curated?.[item]
+  if (gen !== undefined && (curated === undefined || chainProducible(ctx, item, 0))) return gen
+  return curated !== undefined ? "curated" : gen
+}
+
+/** Whether every ingredient of `item`'s recipe has a generator (down to raw resources). */
+function chainProducible(ctx: DesignContext, item: string, depth: number): boolean {
+  if (depth > 8) return false
+  if (resourceFor(ctx, item) !== undefined) return true
+  const gen = generatorRule(ctx, item)
+  if (gen === undefined) return false
+  const rn = ctx.facts.recipeForItem(item)
+  const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
+  if (r === undefined) return false
+  for (const ing of r.ingredients) if (!chainProducible(ctx, ing.name, depth + 1)) return false
+  return true
+}
+
+function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefined {
   if (resourceFor(ctx, item) !== undefined) return "mining-outpost"
   const rn = ctx.facts.recipeForItem(item)
   const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
@@ -201,7 +236,7 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string, burnerOnly 
   return out
 }
 
-function kindOf(gen: GeneratorName): NodeKind {
+function kindOf(gen: ModuleKind): NodeKind {
   if (gen === "mining-outpost") return "outpost"
   if (gen === "steam-block") return "power"
   if (gen === "lab-array") return "labs"
@@ -229,7 +264,17 @@ interface Sized {
 }
 
 /** The smallest size of `gen` whose output of `item` covers `need`. */
-function sizeModule(ctx: DesignContext, gen: GeneratorName, item: string, need: number, burnerOnly = false): Sized | undefined {
+function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: number, burnerOnly = false): Sized | undefined {
+  if (gen === "curated") {
+    const id = ctx.curated?.[item]
+    if (id === undefined) return undefined
+    const [ok, def] = pcall(ctx.make, "curated", { id })
+    if (!ok) return undefined
+    const d = def as ModuleDef
+    const capacity = outputRate(d, item)
+    // Not expandable: one size (a bigger need splits the target into production clusters, D24).
+    return { params: { id }, def: d, capacity, short: capacity + EPS < need }
+  }
   let last: Sized | undefined
   for (const params of sizes(ctx, gen, item, burnerOnly)) {
     const [ok, def] = pcall(ctx.make, gen, params)
@@ -287,7 +332,7 @@ interface Walk {
 
 function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false): void {
   const ctx = w.ctx
-  const gen = generatorFor(ctx, item)
+  const gen = producerFor(ctx, item)
   if (gen === undefined) {
     w.errors.push(`no module makes ${item}`)
     return
@@ -364,22 +409,42 @@ function expandItem(w: Walk, item: string): void {
   for (const d of single) addProducer(w, item, d.rate, [d])
 }
 
+/** Every pack of a target with its rate (packs/s). */
+export function targetItems(target: DesignTarget): { item: string; perSecond: number }[] {
+  return [{ item: target.item, perSecond: target.perSecond }, ...(target.also ?? [])]
+}
+
+/**
+ * Role suffix of production cluster `c` of `clusters`. Cluster 1 keeps the plain roles, so a stage that splits its
+ * target into clusters (M6: two green lines) reuses and grows the modules the previous stage built as its first cluster.
+ */
+export function clusterSuffix(c: number, clusters: number): string {
+  return clusters > 1 && c > 1 ? `#${c}` : ""
+}
+
 function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number): Walk {
-  const suffix = clusters > 1 ? `#${cluster}` : ""
+  const suffix = clusterSuffix(cluster, clusters)
   const w: Walk = { ctx, cluster, suffix, nodes: [], edges: [], demands: [], errors: [], short: false }
-  const rate = target.perSecond / clusters
-  // The sink: labs sized to consume the packs at the configured unit time.
+  const items = targetItems(target)
+  // Labs consume one of each pack per research unit: sized for the fastest pack rate at the configured unit time.
+  let rate = 0
+  for (const t of items) rate = math.max(rate, t.perSecond / clusters)
   const speed = ctx.facts.entity(ctx.lab)?.researchSpeed ?? 1
   const labs = math.max(2, 2 * math.ceil((rate * ctx.researchUnitTime) / speed / 2 - EPS))
-  const packs = ctx.packs.indexOf(target.item) >= 0 ? ctx.packs : [target.item]
+  let packs = [...ctx.packs]
+  for (const t of items) if (packs.indexOf(t.item) < 0) packs = [t.item]
   const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
   const labDef = ctx.make("lab-array", labParams)
   const labRole = `labs${suffix}`
-  w.nodes.push({ role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster })
-  let port: string | undefined
-  for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === target.item) port = p.id
-  w.nodes[0].inputs.push({ port: port ?? `in-${target.item}`, item: target.item, rate })
-  w.demands.push({ item: target.item, rate, to: labRole, toPort: port ?? `in-${target.item}` })
+  const labNode: DesignNode = { role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster }
+  w.nodes.push(labNode)
+  for (const t of items) {
+    let port: string | undefined
+    for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === t.item) port = p.id
+    const r = t.perSecond / clusters
+    labNode.inputs.push({ port: port ?? `in-${t.item}`, item: t.item, rate: r })
+    w.demands.push({ item: t.item, rate: r, to: labRole, toPort: port ?? `in-${t.item}` })
+  }
   if (target.mall !== undefined && cluster === 1) {
     const def = ctx.make("curated", { id: target.mall.id })
     const inputs = inputPorts(def, target.mall.utilization)
@@ -401,11 +466,11 @@ export function isPowerRole(role: string): boolean {
  * demand (furnaces and boilers). Electric fuel drills add demand, so this iterates to a fixed point. The steam block's
  * own fuel supply uses burner drills until electric drills are enabled now (it must run before any power exists).
  */
-function designPower(ctx: DesignContext, w: Walk): number {
+function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: boolean }): number {
   const core = [...w.nodes]
   const coreEdges = [...w.edges]
   const fuelDemands = [...w.demands]
-  let estimate = 0
+  let estimate = extraW
   for (const n of core) estimate += n.powerW
   for (let iter = 0; iter < 5; iter++) {
     w.nodes = [...core]
@@ -420,7 +485,8 @@ function designPower(ctx: DesignContext, w: Walk): number {
       w.errors.push("steam-block: no valid size")
       return estimate
     }
-    if (s.short) w.short = true
+    if (s.short && report !== undefined) report.short = true
+    else if (s.short) w.short = true
     const util = s.capacity > EPS ? math.min(1, estimate / s.capacity) : 1
     const steam: DesignNode = {
       role: `power${w.suffix}`,
@@ -438,7 +504,7 @@ function designPower(ctx: DesignContext, w: Walk): number {
     w.nodes.push(steam)
     for (const p of steam.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: steam.role, toPort: p.port })
     expandItem(w, ctx.fuel)
-    let total = 0
+    let total = extraW
     for (const n of w.nodes) if (n.kind !== "power") total += n.powerW
     steam.need = total
     if (total <= s.capacity + EPS || math.abs(total - estimate) < EPS) return total
@@ -447,10 +513,22 @@ function designPower(ctx: DesignContext, w: Walk): number {
   return estimate
 }
 
-function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>): number {
+function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>, sharedPower = false): number {
   const available = availableTiers(ctx.tiers, ctx.researched)
   let split = 1
   for (const e of w.edges) {
+    if (sharedPower && isPowerRole(e.to)) {
+      // Still a faster tier when researched; never a cluster split.
+      const tier = ctx.tiers[0]
+      if (tier === undefined) continue
+      const d = decideOverflow({ demand: e.rate, edge: { tier, lanes: 2, utilization: ctx.policy.utilization }, available, order: ctx.policy.overflow.order, maxParallel: ctx.policy.overflow.maxParallel })
+      e.decision = d.action === "upgrade-tier" ? d : { action: "none" }
+      if (d.action === "upgrade-tier") {
+        e.belt = d.belt
+        overflow[e.role] = `upgrade-tier → ${d.belt}`
+      } else if (d.action !== "none") overflow[e.role] = `shared power fuel over capacity (${d.action} not applied)`
+      continue
+    }
     const tier = ctx.tiers[0]
     if (tier === undefined) break
     const limits = { tier, lanes: 2, utilization: ctx.policy.utilization }
@@ -475,7 +553,7 @@ function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string
 export function design(ctx: DesignContext, target: DesignTarget): Design {
   const solveJob = solveNow(
     {
-      targets: [{ item: target.item, perSecond: target.perSecond }],
+      targets: targetItems(target),
       machines: [ctx.assembler, ctx.furnace],
       drills: [electricDrills(ctx) ? ctx.electricDrill : ctx.burnerDrill],
       resources: ctx.resources,
@@ -496,12 +574,34 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     electric = 0
     let split = clusters
     let short = false
-    for (let c = 1; c <= clusters; c++) {
-      const w = designCluster(ctx, target, order, c, clusters)
-      electric += designPower(ctx, w)
-      split = math.max(split, clusters * checkEdges(ctx, w, overflow))
+    for (let c = 1; c <= clusters; c++) walks.push(designCluster(ctx, target, order, c, clusters))
+    // One steam block (in cluster 1) for every cluster: the other clusters mine their own fuel (their electric coal
+    // drills add demand), then cluster 1's power is sized for the whole factory.
+    // If even the largest steam block can't, every cluster gets its own (power#c).
+    const snap = walks.map((w) => ({ nodes: [...w.nodes], edges: [...w.edges], demands: [...w.demands] }))
+    let others = 0
+    for (let c = 2; c <= clusters; c++) {
+      const w = walks[c - 1]
+      expandItem(w, ctx.fuel)
+      for (const n of w.nodes) others += n.powerW
+    }
+    const probe = { short: false }
+    electric = designPower(ctx, walks[0], others, clusters > 1 ? probe : undefined)
+    let shared = clusters > 1
+    if (probe.short) {
+      shared = false
+      electric = 0
+      walks.forEach((w, i) => {
+        w.nodes = snap[i].nodes
+        w.edges = snap[i].edges
+        w.demands = snap[i].demands
+      })
+      for (const w of walks) electric += designPower(ctx, w)
+    }
+    for (const w of walks) {
+      // A shared steam block's flows don't shrink with more clusters: they never split the target.
+      split = math.max(split, clusters * checkEdges(ctx, w, overflow, shared))
       if (w.short) short = true
-      walks.push(w)
     }
     if (short && split === clusters) split = clusters + 1
     if (split <= clusters) break
@@ -553,6 +653,14 @@ export function unitsFor(def: ModuleDef, item: string, extra: number): number | 
   return k <= e.maxUnits ? k : undefined
 }
 
+/** Labs in a module (undefined without a module). */
+function labCount(def: ModuleDef | undefined, lab: string): number | undefined {
+  if (def === undefined) return undefined
+  let n = 0
+  for (const e of def.entities) if (e.name === lab) n++
+  return n
+}
+
 export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, node: string) => ModuleDef | undefined): DesignDiff {
   const missing: DesignNode[] = []
   const grow: Growth[] = []
@@ -562,9 +670,20 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
       missing.push(n)
       continue
     }
-    const cap = n.kind === "labs" ? n.need : rateIn(have.capacity.outputs, n.item)
-    if (cap + 1e-6 >= n.need) continue
     const def = canonical(have.id)
+    if (n.kind === "labs") {
+      // Labs by count (their declared rate depends on the unit time they were sized for): grow by pairs (expand units).
+      const want = (n.params.labs as number | undefined) ?? 0
+      const lab = (n.params.lab as string | undefined) ?? "lab"
+      const got = labCount(def, lab)
+      if (got === undefined || got >= want) continue
+      const per = def?.expand !== undefined ? labCount({ ...def, entities: def.expand.unit.entities } as ModuleDef, lab) ?? 0 : 0
+      const k = per > 0 ? math.ceil((want - got) / per - EPS) : -1
+      grow.push({ role: n.role, node: have.id, units: def?.expand !== undefined && k >= 1 && k <= def.expand.maxUnits ? k : -1, need: want, have: got })
+      continue
+    }
+    const cap = rateIn(have.capacity.outputs, n.item)
+    if (cap + 1e-6 >= n.need) continue
     const units = def !== undefined ? unitsFor(def, n.item, n.need - cap) : undefined
     grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap })
   }
@@ -581,6 +700,8 @@ export type GoalKind = "power" | "labs" | "production" | "mall" | "grow" | "repa
 
 export interface GoalSpec {
   kind: GoalKind
+  /** Production goals: one per production cluster (M6: a stage split into clusters plans and builds them in turn). */
+  cluster?: number
   nodes: DesignNode[]
   edges: DesignEdge[]
   growth?: Growth
@@ -596,17 +717,21 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
   const goals: GoalSpec[] = []
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
-  const get = (kind: GoalKind): GoalSpec => {
-    let gs = byKind[kind]
+  const keys: string[] = []
+  const get = (kind: GoalKind, cluster = 1): GoalSpec => {
+    const key = kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind
+    let gs = byKind[key]
     if (gs === undefined) {
       gs = { kind, nodes: [], edges: [], techs: [] }
-      byKind[kind] = gs
+      if (kind === "production" || kind === "labs") gs.cluster = cluster
+      byKind[key] = gs
+      keys.push(key)
     }
     return gs
   }
   for (const n of diff.missing) {
     const kind: GoalKind = n.kind === "labs" ? "labs" : isPowerRole(n.role) ? "power" : n.role === "mall" || string.match(n.role, ">mall$")[0] !== undefined ? "mall" : "production"
-    const gs = get(kind)
+    const gs = get(kind, n.cluster)
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
@@ -619,7 +744,18 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
     if (a !== undefined && b !== undefined && rank[b.kind] > rank[a.kind]) gs = b
     gs.edges.push(e)
   }
-  for (const k of ["power", "labs", "production", "mall"] as GoalKind[]) if (byKind[k] !== undefined) goals.push(byKind[k])
+  // Build order: power, then each cluster's labs and production in turn (cluster 1 first), the mall after cluster 1.
+  let clusters = 1
+  for (const k of keys) {
+    const [c] = string.match(k, "#(%d+)$")
+    if (c !== undefined) clusters = math.max(clusters, tonumber(c)!)
+  }
+  const order = ["power"]
+  for (let c = 1; c <= clusters; c++) {
+    order.push(`labs#${c}`, `production#${c}`)
+    if (c === 1) order.push("mall")
+  }
+  for (const k of order) if (byKind[k] !== undefined) goals.push(byKind[k])
   for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
   for (const gs of goals) gs.techs.sort()
   return goals

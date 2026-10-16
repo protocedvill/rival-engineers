@@ -162,6 +162,12 @@ export interface Config {
   bootstrapFactoryWaitSeconds: number
   /** D38: craft jobs a member queues in the background of a batch (0 = craft standing). */
   crewBackgroundCrafts: number
+  /** M6: the design plans every stage target times this (headroom so the measured rate reaches the target). */
+  factoryDesignMargin: number
+  /** M6: per stage (";"), the unit time labs are sized for: "mean" / "max" over the research goal, or seconds. */
+  factoryLabSizing: string
+  /** M6 (SPEC §3): game minutes the last stage's science rate must hold to count as sustained. */
+  factorySustainMinutes: number
 }
 
 export type ConfigKey = keyof Config
@@ -252,6 +258,9 @@ export function getConfig(): Config {
     bootstrapFactories: setting(Settings.bootstrapFactories),
     bootstrapFactoryWaitSeconds: setting(Settings.bootstrapFactoryWaitSeconds),
     crewBackgroundCrafts: setting(Settings.crewBackgroundCrafts),
+    factoryDesignMargin: setting(Settings.factoryDesignMargin),
+    factoryLabSizing: setting(Settings.factoryLabSizing),
+    factorySustainMinutes: setting(Settings.factorySustainMinutes),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

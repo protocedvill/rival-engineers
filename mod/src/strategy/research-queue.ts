@@ -18,6 +18,17 @@ export function techCost(t: LuaTechnologyPrototype): number {
   return t.research_unit_count * (t.research_unit_energy / 60) * math.max(1, t.research_unit_ingredients.length)
 }
 
+/** Longest seconds per research unit over the research goal's pack technologies (labs sized for it never cap a stage). */
+export function maxUnitTime(): number {
+  let best = 0
+  for (const name of researchGoal()) {
+    const t = prototypes.technology[name]
+    if (t.research_trigger !== undefined || t.research_unit_ingredients.length === 0) continue
+    best = math.max(best, t.research_unit_energy / 60)
+  }
+  return best > 0 ? best : 30
+}
+
 /** Mean seconds per research unit over the research goal's pack technologies (sizes the labs). */
 export function meanUnitTime(): number {
   let sum = 0

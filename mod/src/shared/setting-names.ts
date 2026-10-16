@@ -80,4 +80,7 @@ export const Settings = {
   bootstrapFactories: "rival-engineers-bootstrap-factories",
   bootstrapFactoryWaitSeconds: "rival-engineers-bootstrap-factory-wait-seconds",
   crewBackgroundCrafts: "rival-engineers-crew-background-crafts",
+  factoryDesignMargin: "rival-engineers-factory-design-margin",
+  factoryLabSizing: "rival-engineers-factory-lab-sizing",
+  factorySustainMinutes: "rival-engineers-factory-sustain-minutes",
 } as const

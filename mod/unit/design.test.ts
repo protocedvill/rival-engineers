@@ -3,7 +3,7 @@ import { ModuleDef } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
 import { addNode, LogicalGraph, newGraph } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole } from "../src/strategy/design"
+import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor } from "../src/strategy/design"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -153,8 +153,8 @@ test("D24: an edge over its usable capacity upgrades its belt tier when research
   const tight = { utilization: 0.02 }
   const split = design(ctx({}, tight), { item: RED, perSecond: 10 / 60 })
   eq(split.clusters, 2, "parallel-route × 2 → two production clusters")
-  ok(byRole(split.nodes, "labs#1") !== undefined && byRole(split.nodes, "labs#2") !== undefined, "two lab arrays")
-  for (const e of split.edges) ok(e.rate <= 0.3 + 1e-9, `edge ${e.role} ${e.rate}/s fits after the split`)
+  ok(byRole(split.nodes, "labs") !== undefined && byRole(split.nodes, "labs#2") !== undefined, "two lab arrays (cluster 1 keeps the plain roles)")
+  for (const e of split.edges) if (!isPowerRole(e.to)) ok(e.rate <= 0.3 + 1e-9, `edge ${e.role} ${e.rate}/s fits after the split`)
   let remedies = 0
   for (const [, v] of pairs(split.overflow)) if (string.find(v as string, "parallel", 1, true)[0] !== undefined) remedies++
   ok(remedies > 0, "remedy recorded")
@@ -195,6 +195,98 @@ test("B2: recorded splitter taps: one coal producer feeds both smelters; the pow
   eq(edges, 2, "two edges from the shared producer")
   const p2p = design(ctx(), { item: RED, perSecond: 10 / 60 })
   near(coal!.need, byRole(p2p.nodes, `coal>${SMELT_FE}`)!.need + byRole(p2p.nodes, `coal>${SMELT_CU}`)!.need, 1e-9, "sized for both")
+})
+
+// M6: the green line is curated (an inserter has three ingredients); T1 uses a stub with its measured rates.
+const GREEN = "logistic-science-pack"
+const GREEN_ID = "green-line-hellpet"
+function greenStub(): ModuleDef {
+  return {
+    id: GREEN_ID,
+    source: "curated",
+    footprint: { w: 19, h: 12 },
+    entities: [],
+    ports: [
+      { id: "out", kind: "belt-out", pos: { x: 0.5, y: 6.5 }, dir: 12, item: GREEN },
+      { id: "in-copper-plate", kind: "belt-in", pos: { x: 18.5, y: 0.5 }, dir: 12, item: "copper-plate" },
+      { id: "in-iron-plate", kind: "belt-in", pos: { x: 18.5, y: 5.5 }, dir: 12, item: "iron-plate" },
+    ],
+    recipe: GREEN,
+    machines: [{ name: "assembling-machine-1", count: 11 }],
+    rates: {
+      inputs: [
+        { item: "iron-plate", perSecond: 0.28 * 5.5 },
+        { item: "copper-plate", perSecond: 0.28 * 1.5 },
+        { item: "electricity", perSecond: 900000, kind: "power" },
+      ],
+      outputs: [{ item: GREEN, perSecond: 0.28 }],
+    },
+    requiresTech: ["logistic-science-pack", "logistics"],
+    rotatable: true,
+  } as unknown as ModuleDef
+}
+
+function greenCtx(changes: Partial<DesignContext> = {}): DesignContext {
+  const make = (gen: string, params: Record<string, unknown>): ModuleDef => (gen === "curated" ? greenStub() : (generate(F, gen as GeneratorName, params) as ModuleDef))
+  return ctx({ curated: { [GREEN]: GREEN_ID }, researchUnitTime: 30, make, ...changes })
+}
+
+const STAGE2 = { item: RED, perSecond: 0.55, also: [{ item: GREEN, perSecond: 0.55 }] }
+
+test("M6: green science comes from the curated line (its chain has no generator for inserters)", () => {
+  const c = greenCtx()
+  eq(producerFor(c, GREEN), "curated", "green: curated")
+  eq(producerFor(c, RED), "red-line", "red: still the generator (generators first)")
+  eq(producerFor(c, "iron-plate"), "smelter-column", "plates: generators")
+})
+
+test("M6: 30 + 30/min (+10%) splits into two clusters around one steam block; cluster 1 keeps the stage-1 roles", () => {
+  const d = design(greenCtx(), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  eq(d.clusters, 2, "a green line makes 0.28/s: two clusters")
+  const labs = byRole(d.nodes, "labs")!
+  eq(labs.params.labs, 10, "labs = 2⌈0.275 · 30 s / 2⌉")
+  ok(byRole(d.nodes, "labs#2") !== undefined, "second lab array")
+  eq(labs.inputs.length, 2, "labs take red and green")
+  const g1 = byRole(d.nodes, `${GREEN}>labs`)!
+  eq(g1.generator, "curated", "green line in cluster 1")
+  ok(byRole(d.nodes, `${GREEN}>labs#2`) !== undefined, "green line in cluster 2")
+  ok(byRole(d.nodes, `${RED}>labs`) !== undefined && byRole(d.nodes, `${RED}>labs#2`) !== undefined, "a red line per cluster")
+  ok(byRole(d.nodes, `iron-plate>${GREEN}>labs`) !== undefined, "the green line's iron smelter")
+  ok(byRole(d.nodes, "power") !== undefined, "one steam block")
+  eq(byRole(d.nodes, "power#2"), undefined, "no second steam block")
+  let demand = 0
+  for (const n of d.nodes) if (n.kind !== "power") demand += n.powerW
+  ok(byRole(d.nodes, "power")!.capacity + 1e-6 >= demand, `the steam block covers both clusters (${byRole(d.nodes, "power")!.capacity} W ≥ ${demand} W)`)
+  for (const e of d.edges) if (e.item === GREEN) near(e.rate, 0.275, 1e-9, "each green line feeds its labs half the target")
+})
+
+test("M6: the stage-2 diff on a built stage-1 factory grows the labs and plans the green chain, then cluster 2", () => {
+  const c = greenCtx()
+  const s1 = design(greenCtx({ researchUnitTime: 15 }), { item: RED, perSecond: 10 / 60 })
+  const all: string[] = []
+  for (const n of s1.nodes) all.push(n.role)
+  const g = graphWith(s1, all)
+  const labDef = generate(F, "lab-array", byRole(s1.nodes, "labs")!.params) as ModuleDef
+  let labsId = ""
+  for (const id of g.nodeOrder) if (g.nodes[id].role === "labs") labsId = id
+  const d = design(c, STAGE2)
+  const diff = diffDesign(d, g, (node) => (node === labsId ? labDef : undefined))
+  let labsGrow: { units: number; need: number; have: number } | undefined
+  for (const gr of diff.grow) if (gr.role === "labs") labsGrow = gr
+  ok(labsGrow !== undefined, "the labs grow")
+  eq(labsGrow!.have, 4, "4 labs built")
+  eq(labsGrow!.need, 10, "10 wanted")
+  eq(labsGrow!.units, 3, "3 units of 2 labs")
+  const goals = goalsFrom(diff, {})
+  const kinds = goals.map((gs) => (gs.kind === "production" ? `production#${gs.cluster}` : gs.kind))
+  ok(kinds.indexOf("production#1") >= 0 && kinds.indexOf("production#2") >= 0, `production per cluster: ${kinds.join(",")}`)
+  ok(kinds.indexOf("production#1") < kinds.indexOf("production#2"), "cluster 1 first")
+  for (const gs of goals) {
+    if (gs.kind !== "production" || gs.cluster !== 1) continue
+    for (const n of gs.nodes) ok(string.find(n.role, "#", 1, true)[0] === undefined, `cluster-1 goal holds only cluster-1 roles (${n.role})`)
+    ok(byRole(gs.nodes, `${GREEN}>labs`) !== undefined, "cluster 1 builds its green line")
+  }
 })
 
 run("design")

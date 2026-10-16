@@ -56,6 +56,7 @@ PLAN_FAILED = re.compile(r"goal (g\d+) plan failed")
 PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
 GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
+MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
 
 
 def load_config(path, args):
@@ -150,6 +151,9 @@ class FailFast:
 
     def __init__(self, rules, log_file):
         self.rules = {k: int(v) for k, v in rules.items() if k in FAIL_FAST_KEYS and v}
+        # deadlines: milestone -> game hours by which it must have happened (M6: long runs that can't make the bar).
+        self.deadlines = {k: float(v) * TICKS_PER_HOUR for k, v in (rules.get("deadlines") or {}).items()}
+        self.milestones = set()
         self.log_file = log_file
         self.pos = 0
         self.partial = ""
@@ -172,6 +176,12 @@ class FailFast:
             m = TICK_LINE.search(line)
             if m:
                 self.tick = int(m.group(1))
+                for name, limit in self.deadlines.items():
+                    if name not in self.milestones and self.tick > limit:
+                        reason = reason or f"no {name} by {limit / TICKS_PER_HOUR:g} game hours"
+            m = MILESTONE_LINE.search(line)
+            if m:
+                self.milestones.add(m.group(1))
             if STALL_LINE.search(line):
                 self.stalls += 1
                 if self.rules.get("stalls") and self.stalls >= self.rules["stalls"]:

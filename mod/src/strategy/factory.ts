@@ -4,7 +4,7 @@ import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
 import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
-import { curatedModule, generatedModule } from "../modules/library"
+import { curatedIds, curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
@@ -22,7 +22,7 @@ import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, 
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec, isPowerRole } from "./design"
-import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
+import { maxUnitTime, meanUnitTime, researchGoal, startResearch } from "./research-queue"
 import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
@@ -131,6 +131,15 @@ export interface FactoryState {
   compares?: { goal: string; tick: number; research: boolean; why: string[] }[]
   /** D38: temporary factory cells built so far per product (never rebuilt once retired), and retired cells. */
   temp?: { built: Record<string, number>; retired: number }
+  /**
+   * M6 (SPEC §3): science packs made and consumed (force item statistics, cumulative) once per game minute, for the
+   * sustained-throughput check and the scorecard; `best` = the best window so far (each pack's rate / its target, min).
+   */
+  science?: { samples: { tick: number; made: Record<string, number>; used: Record<string, number> }[]; best: number; bestTick?: number; rates?: Record<string, number> }
+  /** M6: the final stage is built and the research goal done: no planner progress is expected (not a stall). */
+  idle?: boolean
+  /** M6: failed expansions per role this stage (a grow that keeps failing no longer holds the stage). */
+  growFails?: Record<string, number>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -150,6 +159,8 @@ const FUEL_TOP_MINUTES = 8
 const LAB_LOW = 2
 const LAB_FEED = 5
 const MAX_PLAN_ATTEMPTS = 4
+/** A grow whose expansion failed this many times no longer holds its stage (M6). */
+const GROW_MAX_FAILS = 3
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
 const TEMP_CLEARANCE = 6
 /** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
@@ -275,6 +286,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     upkeep(ctx)
   }
   milestones(ctx)
+  science(ctx)
   f.waiting = ctx.waiting
   checkStall(ctx)
 }
@@ -299,7 +311,33 @@ function makeModule(this: void, gen: ModuleKind, params: Record<string, unknown>
   return generatedModule(gen, params)
 }
 
-export function designContext(ctx: { faction: FactionState; force: LuaForce; config: Config; entities: Record<string, string> }): DesignContext {
+/**
+ * Seconds per research unit the labs of `stage` are sized for: `factory-research-unit-time` when set, else the stage's
+ * entry of `factory-lab-sizing` ("mean" / "max" over the research goal's pack technologies, or seconds; the last entry
+ * repeats).
+ */
+export function labUnitTime(config: Config, stage: number): number {
+  if (config.factoryResearchUnitTime > 0) return config.factoryResearchUnitTime
+  const parts: string[] = []
+  for (const [p] of string.gmatch(config.factoryLabSizing, "[^;%s]+")) parts.push(p)
+  const v = parts[math.min(stage, parts.length - 1)] ?? "mean"
+  if (v === "max") return maxUnitTime()
+  const n = tonumber(v)
+  return n !== undefined && n > 0 ? n : meanUnitTime()
+}
+
+/** Curated modules by the item they make (their recipe's product on a belt-out port): the design's fallback (M6 green). */
+function curatedProducers(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const id of curatedIds()) {
+    const def = curatedModule(id)
+    if (def.recipe === undefined) continue
+    for (const p of def.ports) if (p.kind === "belt-out" && p.item !== undefined && out[p.item] === undefined) out[p.item] = id
+  }
+  return out
+}
+
+export function designContext(ctx: { faction: FactionState; force: LuaForce; config: Config; entities: Record<string, string> }, stage = 0): DesignContext {
   const brain = ctx.faction.brain!
   const researched = researchedTechs(ctx.force)
   const plannable: Record<string, boolean> = {}
@@ -327,10 +365,11 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     boiler: e.boiler ?? "boiler",
     engine: e.engine ?? "steam-engine",
     packs,
-    researchUnitTime: ctx.config.factoryResearchUnitTime > 0 ? ctx.config.factoryResearchUnitTime : meanUnitTime(),
+    researchUnitTime: labUnitTime(ctx.config, stage),
     tiers: tiers(),
     policy: policyFor(ctx.config),
     taps: getFactory(ctx.faction.name)?.taps,
+    curated: curatedProducers(),
   }
 }
 
@@ -339,13 +378,16 @@ function policyFor(config: Config) {
   return entryPolicy({ request: { modules: [], connections: [], center: { x: 0, y: 0 }, region: { x: 0, y: 0, w: 0, h: 0 } }, policy: config.layoutPolicy } as never)
 }
 
-/** The design of the current stage (v1: one pack item per stage drives the lab sink). */
+/** The design of the current stage: the labs consume every pack of the stage target (times the design margin). */
 function designNow(ctx: Ctx): Design | undefined {
   const f = ctx.f
   const stages = parseStages(ctx.config.factoryTargets)
-  const stage = stages[math.min(f.stage, stages.length - 1)]
+  const stageIndex = math.min(f.stage, stages.length - 1)
+  const stage = stages[stageIndex]
   if (stage === undefined || stage.length === 0) return undefined
-  const target = stage[0]
+  const margin = ctx.config.factoryDesignMargin
+  const items = stage.map((t) => ({ item: t.item, perSecond: (t.perMinute / 60) * margin }))
+  const targetKey = items.map((t) => `${t.item}=${string.format("%.6g", t.perSecond)}`).join(",")
   // The design is a pure function of the target, the force's tech and the graph: recompute it only when they change
   // (a session cache: rebuilt after load, same result, so it is deterministic).
   let researchedCount = 0
@@ -354,13 +396,13 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
   let taps = 0
   for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
-  const key = `${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
   const mallId = ctx.config.factoryMall
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
-  const d = design(designContext(ctx), { item: target.item, perSecond: target.perMinute / 60, mall })
+  const d = design(designContext(ctx, stageIndex), { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
   const diff = diffDesign(d, f.graph, (node) => findModule(f.layout, node)?.canonical)
   f.design = {
     stage: f.stage,
@@ -420,6 +462,13 @@ function built(f: FactoryState, kind: GoalKind): boolean {
   return g !== undefined && g.status === "done"
 }
 
+/** A grow spec that cannot start: no expand units fit, or its expansion failed `GROW_MAX_FAILS` times. */
+function growBlocked(f: FactoryState, spec: GoalSpec): boolean {
+  if (spec.kind !== "grow") return false
+  const gr = spec.growth!
+  return gr.units < 1 || (f.growFails?.[gr.role] ?? 0) >= GROW_MAX_FAILS
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {
@@ -428,29 +477,59 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   }
   const specs = (d as Design & { goals?: GoalSpec[] }).goals ?? []
   if (d.errors.length > 0) ctx.waiting.push(`design: ${d.errors.join("; ")}`)
-  if (specs.length === 0) {
+  // Grows that cannot happen don't hold the stage (their shortfall stays a waiting reason).
+  const pending = specs.filter((s) => !growBlocked(f, s))
+  for (const s of specs) if (growBlocked(f, s)) ctx.waiting.push(`${s.growth!.role} short (${string.format("%.3g", s.growth!.have)}/${string.format("%.3g", s.growth!.need)}): cannot grow${(f.growFails?.[s.growth!.role] ?? 0) > 0 ? ` (${f.growFails![s.growth!.role]} failed expansions)` : ""}`)
+  f.idle = false
+  if (pending.length === 0) {
     // The stage is fully planned: once everything is built, move to the next stage.
     let allBuilt = true
     for (const n of nodesOf(f.graph)) if (n.lifecycle !== "built") allBuilt = false
     const stages = parseStages(ctx.config.factoryTargets)
+    if (allBuilt && f.stage + 1 >= stages.length && activeGoal(f, "grow") === undefined && activeGoal(f, "repair") === undefined) f.idle = researchDone(ctx.force)
     if (allBuilt && f.stage + 1 < stages.length) {
       f.stage++
+      f.growFails = undefined
+      mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
     }
     return
   }
   if (planning(f) !== undefined) return
-  for (const spec of specs) {
+  // Grows that can start: the steam block's first (production and the mall wait for power), then the others before a
+  // later cluster's labs and production (M6: cluster 1 is the previous stage's factory, grown in place).
+  let powerGrow = false
+  let anyGrow = false
+  for (const s of pending) {
+    if (s.kind !== "grow") continue
+    anyGrow = true
+    if (isPowerRole(s.growth!.role)) powerGrow = true
+  }
+  const growing = activeGoal(f, "grow") !== undefined
+  let earlierProduction = math.huge
+  for (const s of pending) if (s.kind === "production") earlierProduction = math.min(earlierProduction, s.cluster ?? 1)
+  for (const spec of pending) {
     if (activeGoal(f, spec.kind) !== undefined) continue
+    const cluster = spec.cluster ?? 1
     // Order: power, labs, then production (it needs research the labs do), then growth.
     if (spec.kind === "labs" && !built(f, "power") && activeGoal(f, "power") === undefined && nodeByRole(f.graph, "power") === undefined) {
       ctx.waiting.push("labs wait for power")
       continue
     }
+    if (cluster > 1 && (spec.kind === "labs" || spec.kind === "production")) {
+      const blocked: string[] = []
+      if (spec.kind === "labs" && (activeGoal(f, "production") !== undefined || earlierProduction < cluster)) blocked.push("the previous cluster's production")
+      if (anyGrow || growing) blocked.push("growth of the built modules")
+      if (blocked.length > 0) {
+        ctx.waiting.push(`${spec.kind} #${cluster} waits for ${blocked.join(", ")}`)
+        continue
+      }
+    }
     if (spec.kind === "production" || spec.kind === "grow" || spec.kind === "mall") {
       const blocked: string[] = []
       const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : ["power", "labs", "production"]
       for (const k of before) if (activeGoal(f, k) !== undefined) blocked.push(k)
+      if (spec.kind !== "grow" && (powerGrow || (growing && isPowerRole(f.graph.nodes[activeGoal(f, "grow")!.growth?.node ?? ""]?.role ?? "")))) blocked.push("the steam block's growth")
       if (blocked.length > 0) {
         ctx.waiting.push(`${spec.kind} waits for ${blocked.join(", ")}`)
         continue
@@ -463,6 +542,8 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       }
     }
     if (spec.kind === "grow") {
+      // The steam block grows first.
+      if (powerGrow && !isPowerRole(spec.growth!.role)) continue
       if (startGrow(ctx, spec)) return
       continue
     }
@@ -511,6 +592,9 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   const plan = planGrowth(f.layout, claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
   if (!plan.ok) {
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
+    f.growFails ??= {}
+    f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
+    log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow by ${gr.units} units (failure ${f.growFails[gr.role]}): ${plan.reason}`)
     return false
   }
   const g: FactoryGoal = {
@@ -1634,6 +1718,65 @@ function milestones(ctx: Ctx): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Science throughput (SPEC §3: ≥ the final stage's target, e.g. 30 red + 30 green per minute, sustained over
+// `factory-sustain-minutes`) and the research goal (D30). Packs consumed by the labs count (force item statistics).
+
+const SCIENCE_SAMPLE_TICKS = 3600
+/** Samples kept (game minutes): an 8-hour run plus margin. */
+const SCIENCE_MAX_SAMPLES = 600
+
+function researchDone(force: LuaForce): boolean {
+  for (const t of researchGoal()) if (!force.technologies[t]?.researched) return false
+  return true
+}
+
+function science(ctx: Ctx): void {
+  const f = ctx.f
+  const brain = ctx.faction.brain!
+  if (brain.milestones["research-goal-done"] === undefined && researchDone(ctx.force)) mark(ctx.faction, "research-goal-done")
+  f.science ??= { samples: [], best: 0 }
+  const sc = f.science
+  const last = sc.samples[sc.samples.length - 1]
+  if (last !== undefined && ctx.tick - last.tick < SCIENCE_SAMPLE_TICKS) return
+  const stages = parseStages(ctx.config.factoryTargets)
+  const target = stages[stages.length - 1] ?? []
+  const stats = ctx.force.get_item_production_statistics(ctx.surface)
+  const made: Record<string, number> = {}
+  const used: Record<string, number> = {}
+  for (const t of target) {
+    made[t.item] = stats.get_input_count(t.item)
+    used[t.item] = stats.get_output_count(t.item)
+  }
+  sc.samples.push({ tick: ctx.tick, made, used })
+  if (sc.samples.length > SCIENCE_MAX_SAMPLES) sc.samples.shift()
+  // Automated packs beyond the first (green): its producer is built and the labs used some.
+  for (const t of target) if (brain.milestones[`automated:${t.item}`] === undefined && packsAutomated(f)[t.item] && used[t.item] >= 10) mark(ctx.faction, `automated:${t.item}`)
+  // Sustained: every pack over the window at its target rate.
+  const window = ctx.config.factorySustainMinutes
+  const n = sc.samples.length
+  if (n <= window || target.length === 0) return
+  const then = sc.samples[n - 1 - window]
+  const minutes = (ctx.tick - then.tick) / 3600
+  let worst = math.huge
+  const rates: Record<string, number> = {}
+  for (const t of target) {
+    const r = (used[t.item] - (then.used[t.item] ?? 0)) / minutes
+    rates[t.item] = r
+    worst = math.min(worst, r / t.perMinute)
+  }
+  sc.rates = rates
+  if (worst > sc.best) {
+    sc.best = worst
+    sc.bestTick = ctx.tick
+  }
+  if (worst >= 1 && brain.milestones["science-sustained"] === undefined) {
+    mark(ctx.faction, "science-sustained")
+    log(`[rival-engineers] faction ${ctx.faction.name}: science sustained over ${window} min: ${target.map((t) => `${t.item} ${string.format("%.1f", rates[t.item])}/min`).join(", ")}`)
+  }
+  if (brain.milestones["science-sustained"] !== undefined && brain.milestones["research-goal-done"] !== undefined) mark(ctx.faction, "v1-done")
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Stalls (SPEC §3: no planner progress for stall-ticks). Before the bootstrap is done its own check runs.
 
 function checkStall(ctx: Ctx): void {
@@ -1649,6 +1792,8 @@ function checkStall(ctx: Ctx): void {
     if (last !== undefined && last.recoveredTick === undefined && brain.done) last.recoveredTick = ctx.tick
     return
   }
+  // Nothing left to do by design (final stage built, research goal done): idle, not stalled.
+  if (f.idle) f.progressTick = ctx.tick
   if (!brain.done || ctx.tick - f.progressTick < ctx.config.stallTicks) return
   const goals: string[] = []
   for (const g of f.goals) if (g.status === "planning" || g.status === "building") goals.push(`${g.id} ${g.kind} ${g.status} (placed ${g.placed})`)
@@ -1726,6 +1871,9 @@ export function factoryReport(name: string) {
     verify: f.verify,
     reconciler: reconcilerReport(f),
     logistics: { undergrounds: f.needUndergrounds, splitters: f.needSplitters, taps: f.taps, compares: f.compares },
+    science: f.science,
+    idle: f.idle,
+    growFails: f.growFails,
   }
 }
 
