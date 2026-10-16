@@ -6,7 +6,8 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
-import { exportFactoryGraph, factoryReport, getFactory, startFactory } from "./strategy/factory"
+import { getFactory, startFactory } from "./strategy/factory"
+import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { exportGraph, getPlannerEntry, startPlan, StartPlanOptions } from "./planner/runtime"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 

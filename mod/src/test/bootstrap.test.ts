@@ -11,6 +11,10 @@ import { at, createLab, Lab } from "./lab"
 import { evictSites } from "../strategy/evict"
 import { claimView } from "../planner/runtime"
 import { FREE, tkey, TREE } from "../planner/grid"
+import { getPlannerEntry, removePlan, startBuild, startPlan } from "../planner/runtime"
+import { allParts, partTiles } from "../planner/build-list"
+import { generatedModule } from "../modules/library"
+import { addStockpile } from "../jobs/faction"
 
 // M3 (SPEC §8): the burner bootstrap's pieces. The full bootstrap runs in the T3 soak (tools/harness), not here.
 // Debug parity toggles stay off.
@@ -278,6 +282,65 @@ describe("burner bootstrap", () => {
         }
       }
       return false
+    })
+  })
+
+  test("B20: a planned outpost over a live bootstrap site: the site is evicted and picked up, the outpost built", () => {
+    const lab = createLab(40)
+    // A small patch: an outpost of two electric drills can only go where the bootstrap's site already stands.
+    ore(lab, "stone", 8, -14, 5, 6)
+    setConfigOverride("bootstrapSites", "stone=1")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "b20", { "burner-mining-drill": 2, "wooden-chest": 2, wood: 4, coal: 30 })
+    const brain = faction.brain!
+    let site: Site | undefined
+    let planned = false
+    let built = false
+    const id = "b20-plan"
+    if (getPlannerEntry(id) !== undefined) removePlan(id)
+    until(50000, () => {
+      if (site === undefined) {
+        for (const s of brain.sites) if (s.kind === "chest" && s.status === "built") site = s
+        if (site === undefined) return false
+        // Materials for the outpost in a chest the crew uses as a depot.
+        const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, -6.5, 10.5), force: faction.force })!
+        chest.insert({ name: "electric-mining-drill", count: 4 })
+        chest.insert({ name: "transport-belt", count: 20 })
+        chest.insert({ name: "small-electric-pole", count: 6 })
+        addStockpile(faction, chest)
+        const def = generatedModule("mining-outpost", { resource: "stone", rows: 2, sides: 1 })
+        const o = at(lab, 0, 0)
+        const region = { x: math.floor(o.x) - 30, y: math.floor(o.y) - 30, w: 60, h: 60 }
+        startPlan({ id, surface: lab.surface.name, force: faction.force, faction: faction.name, baseFaction: faction.name, request: { modules: [{ id: "out", def }], connections: [], center: at(lab, 10, -11), region } })
+        return false
+      }
+      const entry = getPlannerEntry(id)!
+      if (!planned) {
+        if (entry.phase === "scan" || entry.phase === "plan") return false
+        assert(entry.phase === "done", `plan failed: ${serpent.line(entry.job?.failures)}`)
+        const parts = allParts(entry.job!.layout)
+        const taken: Record<number, boolean> = {}
+        for (const k of partTiles(entry.job!.layout, parts)) taken[k] = true
+        const evicted = evictSites(faction, lab.surface, taken, "test plan")
+        assert(evicted.length > 0 && site.status === "retired", `the bootstrap site under the outpost is evicted (${evicted.length}, ${site.status})`)
+        for (const k of partTiles(entry.job!.layout, parts)) brain.reserved[k] = true
+        startBuild(entry, { parts, clear: evicted, priority: 90 })
+        planned = true
+        return false
+      }
+      if (entry.build!.phase !== "done") return false
+      let ghosts = 0
+      let drills = 0
+      const m = entry.job!.layout.modules[0]
+      const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+      ghosts = lab.surface.count_entities_filtered({ area, type: "entity-ghost" })
+      drills = lab.surface.count_entities_filtered({ area, name: "electric-mining-drill" })
+      if (ghosts > 0 && !built) return false
+      for (const part of site.parts) assert(part.built === undefined || !part.built.valid, "the evicted site was picked up")
+      assert(drills === 2 && ghosts === 0, `outpost built: ${drills} drills, ${ghosts} ghosts`)
+      built = true
+      log(`[m6] B20 outpost built over evicted site ${site.id} at tick ${game.tick}`)
+      return true
     })
   })
 })

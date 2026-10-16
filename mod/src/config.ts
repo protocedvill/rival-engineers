@@ -169,7 +169,11 @@ export interface Config {
   /** M6 (SPEC §3): game minutes the last stage's science rate must hold to count as sustained. */
   factorySustainMinutes: number
   /** M6: from this stage on (1-based, 0 = never), new fuel consumers share one fuel producer per cluster (splitter taps). */
-  factorySharedFuel: number
+  factorySharedProviders: number
+  /** B19: research splitters before production when sharing providers saves at least this many modules (0 = never). */
+  logisticsShareMinModules: number
+  /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */
+  buildStuckRounds: number
 }
 
 export type ConfigKey = keyof Config
@@ -263,7 +267,9 @@ export function getConfig(): Config {
     factoryDesignMargin: setting(Settings.factoryDesignMargin),
     factoryLabSizing: setting(Settings.factoryLabSizing),
     factorySustainMinutes: setting(Settings.factorySustainMinutes),
-    factorySharedFuel: setting(Settings.factorySharedFuel),
+    factorySharedProviders: setting(Settings.factorySharedProviders),
+    logisticsShareMinModules: setting(Settings.logisticsShareMinModules),
+    buildStuckRounds: setting(Settings.buildStuckRounds),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

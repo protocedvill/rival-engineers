@@ -18,6 +18,8 @@ import { startBootstrap } from "../strategy/bootstrap"
 import { claimOreField } from "../world/claims"
 import { at, createLab, Lab } from "./lab"
 import { followRoute } from "./route-lab"
+import { getPlannerEntry, removePlan, startBuild, startPlan, tappedBelts } from "../planner/runtime"
+import { addStockpile } from "../jobs/faction"
 
 // M5a.2: factions sharing ground. A faction never plans on another faction's claim (its reserved tiles) or ghosts; a
 // route blocked by something the faction doesn't own is rerouted (old pieces picked up); a module whose ground was
@@ -250,5 +252,64 @@ describe("faction conflicts", () => {
       const target = (a.board.jobs[id].payload as { target?: LuaEntity }).target
       assert(target !== undefined && target.valid && target.force.name === a.force, "clear job targets an own entity")
     }
+  })
+
+  test("B19: a new consumer taps a built route: the crew picks up the belt, builds the splitter, both routes connect", () => {
+    const lab = createLab(64)
+    const f = faction(lab, "tap", 10, 0, false)
+    f.brain!.goals = []
+    const { layout, ghosts } = smeltingLab(lab, f.force)
+    revive(ghosts)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // The faction's base: the built mine, smelter and ore route (fixed).
+    for (const m of layout.modules) m.fixed = true
+    for (const id of layout.routeOrder) layout.routes[id].fixed = true
+    storage.factories ??= {}
+    // A base layout under its own key (a real factory state would run its own strategy think).
+    storage.factories["b19-base"] = { layout } as never
+    const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 20.5, 20.5), force: f.force })!
+    chest.insert({ name: "splitter", count: 2 })
+    chest.insert({ name: "transport-belt", count: 120 })
+    chest.insert({ name: "stone-furnace", count: 4 })
+    chest.insert({ name: "inserter", count: 20 })
+    chest.insert({ name: "small-electric-pole", count: 10 })
+    addStockpile(f, chest)
+    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+    const id = "b19-tap"
+    if (getPlannerEntry(id) !== undefined) removePlan(id)
+    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: "smelt2", def }], connections: [{ id: "ore2", from: { module: "mine", port: "out" }, to: { module: "smelt2", port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
+    let building = false
+    async(60 * 60 * 30)
+    on_tick(() => {
+      const e = getPlannerEntry(id)!
+      if (e.phase === "scan" || e.phase === "plan") return
+      const job = e.job!
+      if (!building) {
+        assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
+        const r = job.layout.routes["route:ore2"]
+        assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
+        const parts = { modules: ["smelt2"], routes: ["route:ore2"], poles: [] as string[] }
+        const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
+        assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
+        startBuild(e, { parts, priority: 90 })
+        building = true
+        return
+      }
+      if (e.build!.phase !== "done") return
+      if (lab.surface.count_entities_filtered({ type: "entity-ghost", force: f.force }) > 0) return
+      const problems: string[] = []
+      for (const rid of ["route:ore", "route:ore2"]) {
+        const p = followRoute(lab.surface, job.layout, job.layout.routes[rid])
+        if (p !== undefined) problems.push(`${rid}: ${p}`)
+      }
+      assert(problems.length === 0, problems.join("; "))
+      assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 1, "a splitter")
+      delete storage.factories!["b19-base"]
+      removePlan(id)
+      log(`[m6] B19 tap on a built route built at tick ${game.tick}`)
+      done()
+      return false
+    })
   })
 })

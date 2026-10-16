@@ -69,16 +69,22 @@ export interface DesignContext {
    */
   curated?: Record<string, string>
   /**
-   * M6: fuel consumers without a fuel producer of their own share one per cluster (fed through splitter taps): a coal
-   * outpost per 4-furnace column filled the coal patches on two seeds. `keep` = consumer roles that already have their
-   * own (built before; they keep it). Absent: point-to-point.
+   * B19 (M6): providers are shared through splitter taps once splitters can be built. `keep`: `item@consumer role`
+   * (already fed) → its producer's role (it keeps it). New consumers of an item first tap a producer of it with spare capacity
+   * (`spare`: item → producer role → planned output minus what its edges carry), else share one new producer per cluster
+   * (`item*>first consumer`). Absent: point-to-point.
    */
-  sharedFuel?: { keep: Record<string, boolean> }
+  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>> }
   /**
    * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
    * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
    */
   powerCap?: number
+  /**
+   * M6: lab arrays (by role) that can't grow any more, with their lab count: the labs beyond it go into a second array
+   * (`<role>+`) whose packs come from the same producers (shared providers) or new ones.
+   */
+  labsCap?: Record<string, number>
 }
 
 export interface DesignTarget {
@@ -393,6 +399,60 @@ function edge(w: Walk, from: string, fromPort: string, c: Demand): DesignEdge {
   }
 }
 
+/**
+ * B19: consumers already fed keep their producer (grouped by it, under its role); new consumers tap a producer of the
+ * item with spare capacity, else share one new producer (`item*>first consumer`); a lone new consumer gets its own.
+ * The steam block never waits for production: its fuel demand is never a new shared consumer.
+ */
+function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable<DesignContext["sharing"]>): void {
+  const byProducer: Record<string, Demand[]> = {}
+  const producers: string[] = []
+  const fresh: Demand[] = []
+  const alone: Demand[] = []
+  for (const d of mine) {
+    const p = shared.keep[`${item}@${d.to}`]
+    if (p !== undefined) {
+      if (byProducer[p] === undefined) {
+        byProducer[p] = []
+        producers.push(p)
+      }
+      byProducer[p].push(d)
+    } else fresh.push(d)
+  }
+  producers.sort()
+  const spare = shared.spare[item] ?? {}
+  for (const p of producers) {
+    let room = spare[p] ?? 0
+    if (room <= EPS) continue
+    const rest: Demand[] = []
+    for (const d of fresh) {
+      if (d.rate <= room + EPS) {
+        room -= d.rate
+        byProducer[p].push(d)
+      } else rest.push(d)
+    }
+    fresh.length = 0
+    for (const d of rest) fresh.push(d)
+  }
+  // A new steam block (power#2) may tap a built producer, but never waits in a new shared group.
+  for (let i = fresh.length - 1; i >= 0; i--) {
+    if (!isPowerRole(fresh[i].to)) continue
+    alone.push(fresh[i])
+    fresh.splice(i, 1)
+  }
+  for (const p of producers) {
+    let total = 0
+    for (const d of byProducer[p]) total += d.rate
+    addProducer(w, item, total, byProducer[p], true, p)
+  }
+  if (fresh.length >= 2) {
+    let total = 0
+    for (const d of fresh) total += d.rate
+    addProducer(w, item, total, fresh, true, `${item}*>${fresh[0].to}`)
+  } else for (const d of fresh) alone.push(d)
+  for (const d of alone) addProducer(w, item, d.rate, [d])
+}
+
 /** Expands every pending demand for `item` (point-to-point: one producer each; splitter-tap: one for all). */
 function expandItem(w: Walk, item: string): void {
   const mine: Demand[] = []
@@ -406,20 +466,21 @@ function expandItem(w: Walk, item: string): void {
     addProducer(w, item, total, mine)
     return
   }
+  const shared = w.ctx.sharing
+  if (shared !== undefined) {
+    expandShared(w, item, mine, shared)
+    return
+  }
   // B2: the consumers recorded for splitter taps share one producer (the power node's fuel stays its own, so the
   // power goal never waits for production).
   const tapped = w.ctx.taps?.[item]
-  const shared = item === w.ctx.fuel ? w.ctx.sharedFuel : undefined
   const group: Demand[] = []
   const single: Demand[] = []
-  for (const d of mine) {
-    const share = !isPowerRole(d.to) && ((tapped !== undefined && tapped.indexOf(d.to) >= 0) || (shared !== undefined && !shared.keep[d.to]))
-    ;(share ? group : single).push(d)
-  }
+  for (const d of mine) (tapped !== undefined && tapped.indexOf(d.to) >= 0 && !isPowerRole(d.to) ? group : single).push(d)
   if (group.length >= 2) {
     let total = 0
     for (const d of group) total += d.rate
-    addProducer(w, item, total, group, true, shared !== undefined ? `${item}*>${group[0].to}` : undefined)
+    addProducer(w, item, total, group, true)
   } else for (const d of group) single.push(d)
   for (const d of single) addProducer(w, item, d.rate, [d])
 }
@@ -451,15 +512,23 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
   const labDef = ctx.make("lab-array", labParams)
   const labRole = `labs${suffix}`
-  const labNode: DesignNode = { role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster }
-  w.nodes.push(labNode)
-  for (const t of items) {
-    let port: string | undefined
-    for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === t.item) port = p.id
-    const r = t.perSecond / clusters
-    labNode.inputs.push({ port: port ?? `in-${t.item}`, item: t.item, rate: r })
-    w.demands.push({ item: t.item, rate: r, to: labRole, toPort: port ?? `in-${t.item}` })
-  }
+  const cap = ctx.labsCap?.[labRole]
+  const split = cap !== undefined && cap >= 2 && labs > cap ? [cap, math.max(2, labs - cap)] : [labs]
+  split.forEach((n, i) => {
+    const params = { labs: n, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
+    const def = i === 0 && split.length === 1 ? labDef : ctx.make("lab-array", params)
+    const role = i === 0 ? labRole : `${labRole}+`
+    const share = n / (split.length === 1 ? n : split[0] + split[1])
+    const node: DesignNode = { role, kind: "labs", generator: "lab-array", params, def, item: "research-unit", need: rate * share, capacity: rate * share, inputs: [], powerW: powerOf(def.rates.inputs), cluster }
+    w.nodes.push(node)
+    for (const t of items) {
+      let port: string | undefined
+      for (const p of def.ports) if (p.kind === "belt-in" && p.item === t.item) port = p.id
+      const r = (t.perSecond / clusters) * share
+      node.inputs.push({ port: port ?? `in-${t.item}`, item: t.item, rate: r })
+      w.demands.push({ item: t.item, rate: r, to: role, toPort: port ?? `in-${t.item}` })
+    }
+  })
   if (target.mall !== undefined && cluster === 1) {
     const def = ctx.make("curated", { id: target.mall.id })
     const inputs = inputPorts(def, target.mall.utilization)
@@ -681,6 +750,15 @@ export function unitsFor(def: ModuleDef, item: string, extra: number): number | 
   if (per <= EPS) return undefined
   const k = math.ceil(extra / per - EPS)
   return k <= e.maxUnits ? k : undefined
+}
+
+/**
+ * B20: leftover-ghost rounds that placed nothing in a row: a round whose leftover count did not drop counts one more,
+ * any progress resets it. `limit` reached (> 0) means escalate.
+ */
+export function stuckRounds(prev: number | undefined, lastLeft: number | undefined, left: number, limit: number): { stuck: number; escalate: boolean } {
+  const stuck = lastLeft !== undefined && left >= lastLeft ? (prev ?? 0) + 1 : 0
+  return limit > 0 && stuck >= limit ? { stuck: 0, escalate: true } : { stuck, escalate: false }
 }
 
 /** Labs in a module (undefined without a module). */

@@ -3,7 +3,7 @@ import { ModuleDef } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
 import { addNode, LogicalGraph, newGraph } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor } from "../src/strategy/design"
+import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor, stuckRounds } from "../src/strategy/design"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -289,9 +289,15 @@ test("M6: the stage-2 diff on a built stage-1 factory grows the labs and plans t
   }
 })
 
-test("M6: shared fuel: new smelters share one coal outpost per cluster; the stage-1 smelters keep theirs", () => {
-  const keep = { [SMELT_FE]: true, [SMELT_CU]: true }
-  const d = design(greenCtx({ sharedFuel: { keep } }), STAGE2)
+function keepOf(d: ReturnType<typeof design>): Record<string, string> {
+  const keep: Record<string, string> = {}
+  for (const e of d.edges) keep[`${e.item}@${e.to}`] = e.from
+  return keep
+}
+
+test("B19: shared providers: new smelters share one coal outpost per cluster; stage-1 smelters keep theirs", () => {
+  const s1 = design(greenCtx({ researchUnitTime: 15 }), { item: RED, perSecond: 10 / 60 })
+  const d = design(greenCtx({ sharing: { keep: keepOf(s1), spare: {} } }), STAGE2)
   eq(d.errors.length, 0, d.errors.join("; "))
   const coal = d.nodes.filter((n) => n.item === "coal")
   const roles = coal.map((n) => n.role).sort()
@@ -305,6 +311,28 @@ test("M6: shared fuel: new smelters share one coal outpost per cluster; the stag
   ok(p2p.nodes.filter((n) => n.item === "coal").length >= 9, "point-to-point: one per smelter")
 })
 
+test("B19: one coal outpost feeds both smelter columns and the power block (power's outpost has room)", () => {
+  // Power and its coal outpost are built (point-to-point, before splitters); production comes with splitters.
+  const s0 = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const powerCoal = byRole(s0.nodes, "coal>power")!
+  const keep = { "coal@power": "coal>power" }
+  let used = 0
+  for (const e of s0.edges) if (e.from === "coal>power") used += e.rate
+  const room = powerCoal.capacity - used
+  ok(room > 0.1, `the steam block's coal outpost has room (${room}/s)`)
+  const d = design(ctx({ sharing: { keep, spare: { coal: { "coal>power": room } } } }), { item: RED, perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const coal = d.nodes.filter((n) => n.item === "coal")
+  eq(coal.length, 1, `one coal producer: ${coal.map((n) => n.role).join(" | ")}`)
+  eq(coal[0].role, "coal>power", "the steam block's")
+  const fed = d.edges.filter((e) => e.from === "coal>power").map((e) => e.to).sort()
+  eq(fed.join(","), [SMELT_CU, SMELT_FE, "power"].sort().join(","), "feeds both smelters and the steam block")
+  near(coal[0].need, used + d.edges.filter((e) => e.from === "coal>power" && e.to !== "power").reduce((a, e) => a + e.rate, 0), 1e-9, "sized for all three")
+  // Without room the smelters share one new outpost: 2 mines instead of 3.
+  const tight = design(ctx({ sharing: { keep, spare: {} } }), { item: RED, perSecond: 10 / 60 })
+  eq(tight.nodes.filter((n) => n.item === "coal").length, 2, "power's own + one shared")
+})
+
 test("M6: a steam block that can't grow gets a second one (power#2) for the excess, with its own coal", () => {
   const d0 = design(greenCtx(), STAGE2)
   const cap = 1.8e6
@@ -316,6 +344,33 @@ test("M6: a steam block that can't grow gets a second one (power#2) for the exce
   ok(p2!.capacity + 1e-6 >= byRole(d.nodes, "power")!.need - cap, `covers the excess (${p2!.capacity} W)`)
   ok(byRole(d.nodes, "coal>power#2") !== undefined, "its own coal")
   ok(isPowerRole("power#2") && isPowerRole("coal>power#2"), "power roles")
+})
+
+test("M6: labs that can't grow get a second array (labs+) for the rest, fed with both packs", () => {
+  const d = design(greenCtx({ labsCap: { labs: 4 } }), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  eq(byRole(d.nodes, "labs")!.params.labs, 4, "the built array stays at 4")
+  const extra = byRole(d.nodes, "labs+")
+  ok(extra !== undefined, "a second array")
+  eq(extra!.params.labs, 6, "the other 6 labs")
+  let packs = 0
+  for (const e of d.edges) if (e.to === "labs+") packs++
+  eq(packs, 2, "red and green belts into it")
+})
+
+test("B20: a build escalates after N leftover-ghost rounds that placed nothing; progress resets the count", () => {
+  let stuck: number | undefined = undefined
+  let last: number | undefined = undefined
+  const seq = [5, 5, 5, 4, 4, 4, 4]
+  const out: string[] = []
+  for (const left of seq) {
+    const r = stuckRounds(stuck, last, left, 3)
+    stuck = r.stuck
+    last = left
+    out.push(r.escalate ? "E" : tostring(r.stuck))
+  }
+  eq(out.join(","), "0,1,2,0,1,2,E", "rounds 2-3 stuck, progress at 4 resets, escalates at the third stuck round")
+  eq(stuckRounds(100, 1, 1, 0).escalate, false, "0 = never")
 })
 
 run("design")

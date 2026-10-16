@@ -8,7 +8,7 @@ import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { mallSources, tempCells } from "./factory"
+import { mallSources, tempCells } from "./factory-report"
 import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"

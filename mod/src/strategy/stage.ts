@@ -4,6 +4,7 @@ import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { nodeByRole, rateIn } from "../planner/logical"
+import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
@@ -14,6 +15,13 @@ import type { FactoryState } from "./factory"
 
 /** A grow whose expansion failed this many times no longer holds its stage (M6). */
 export const GROW_MAX_FAILS = 3
+
+/** D38: role prefix of temporary chest cells. */
+export const TEMP_PREFIX = "temp:"
+
+export function isTempRole(role: string): boolean {
+  return string.sub(role, 1, TEMP_PREFIX.length) === TEMP_PREFIX
+}
 
 /** Stages of `factory-targets`: per stage, item → packs per minute. */
 export function parseStages(value: string): { item: string; perMinute: number }[][] {
@@ -42,26 +50,57 @@ export function labUnitTime(config: Config, stage: number): number {
 }
 
 /**
- * M6: from stage `factory-shared-fuel` on (1-based; 0 = never) and once splitters can be built, new fuel consumers share
- * one fuel producer per cluster; consumers that have their own keep it.
+ * B19 (M6): from stage `factory-shared-providers` on (1-based; 0 = never) and once splitters can be built, providers are
+ * shared (design.ts `DesignContext.sharing`): consumers already fed keep their producer; a producer's spare capacity
+ * (planned output minus what its edges carry) is offered to new consumers of its item.
  */
-export function sharedFuel(ctx: { faction: FactionState; force: LuaForce; config: Config }, f: FactoryState | undefined, stage: number): { keep: Record<string, boolean> } | undefined {
-  const from = ctx.config.factorySharedFuel
-  if (from <= 0 || stage + 1 < from || !splittersEnabled(ctx.force)) return undefined
-  const fuel = ctx.faction.brain!.catalog.fuel
-  // Consumers fed fuel already (their own producer or an earlier shared one) keep it: a new group never taps a built
-  // route.
-  const keep: Record<string, boolean> = {}
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>> } | undefined {
+  const from = ctx.config.factorySharedProviders
+  if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
+  const keep: Record<string, string> = {}
+  const spare: Record<string, Record<string, number>> = {}
   if (f !== undefined) {
+    const out: Record<string, number> = {}
     for (const id of f.graph.edgeOrder) {
       const e = f.graph.edges[id]
-      if (e.kind === "belt" && e.item === fuel && f.graph.nodes[e.to] !== undefined) keep[f.graph.nodes[e.to].role] = true
+      if (e.kind !== "belt" || e.from === undefined) continue
+      const p = f.graph.nodes[e.from]
+      const c = f.graph.nodes[e.to]
+      if (p === undefined || c === undefined) continue
+      keep[`${e.item}@${c.role}`] = p.role
+      out[p.id] = (out[p.id] ?? 0) + e.plannedRate
+    }
+    for (const [id, used] of pairs(out)) {
+      const p = f.graph.nodes[id as string]
+      if (p.item === undefined) continue
+      const room = rateIn(p.capacity.outputs, p.item) - (used as number)
+      if (room <= 0) continue
+      spare[p.item] ??= {}
+      spare[p.item][p.role] = room
     }
   }
-  return { keep }
+  return { keep, spare }
 }
 
 /** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */
+/** M6: lab arrays whose growth keeps failing, with their built lab count (the design adds a second array). */
+export function labsCap(f: FactoryState | undefined, lab: string): Record<string, number> | undefined {
+  if (f === undefined || f.growFails === undefined) return undefined
+  let out: Record<string, number> | undefined
+  for (const [role, n] of pairs(f.growFails)) {
+    if ((n as number) < GROW_MAX_FAILS) continue
+    const node = nodeByRole(f.graph, role as string)
+    if (node === undefined || node.kind !== "labs") continue
+    const m = findModule(f.layout, node.id)
+    if (m === undefined) continue
+    let count = 0
+    for (const e of m.canonical.entities) if (e.name === lab) count++
+    out ??= {}
+    out[role as string] = count
+  }
+  return out
+}
+
 export function powerCap(f: FactoryState | undefined): number | undefined {
   if (f === undefined || (f.growFails?.["power"] ?? 0) < GROW_MAX_FAILS) return undefined
   const n = nodeByRole(f.graph, "power")

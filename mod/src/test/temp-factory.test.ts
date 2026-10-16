@@ -6,7 +6,8 @@ import { commitModule, PlacedModule } from "../planner/layout"
 import { addNode, rateIn } from "../planner/logical"
 import { stampParts } from "../planner/runtime"
 import { startBootstrap } from "../strategy/bootstrap"
-import { getFactory, startFactory, tempCells } from "../strategy/factory"
+import { getFactory, startFactory } from "../strategy/factory"
+import { tempCells } from "../strategy/factory-report"
 import { at, createLab } from "./lab"
 
 // D38 (M5d): a temporary chest-fed gear cell supplies the bootstrap economy. The brain needs gears: it collects them

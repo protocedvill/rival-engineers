@@ -314,6 +314,22 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
   return { entities, failed }
 }
 
+/** Built belts where new splitter taps of `parts` go onto routes outside `parts` (the base layout's). */
+export function tappedBelts(surface: LuaSurface, layout: LayoutState, parts: BuildParts | undefined, force: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  if (parts === undefined) return out
+  const mine: Record<string, boolean> = {}
+  for (const id of parts.routes) mine[id] = true
+  for (const id of parts.routes) {
+    const r = layout.routes[id]
+    if (r === undefined || r.tapOf === undefined || mine[r.tapOf]) continue
+    const st = r.steps[0]
+    if (st === undefined || st.kind !== "splitter") continue
+    for (const e of findEntities(surface, { type: "transport-belt", force, position: { x: st.x + 0.5, y: st.y + 0.5 }, limit: 1 })) out.push(e)
+  }
+  return out
+}
+
 /**
  * Turns a finished plan into Job Board work for its faction: clear jobs now, ghosts and place jobs once the clearing
  * is done (`stepBuild`).
@@ -327,6 +343,8 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
   for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) clearJobs.push(addClearJob(faction, e, opts.priority))
   // B15: entities of evicted bootstrap sites under the plan.
   for (const e of opts.clear ?? []) if (e.valid) clearJobs.push(addClearJob(faction, e, opts.priority))
+  // B19: a new splitter tap on a built route replaces that route's belt: pick the belt up first.
+  for (const e of tappedBelts(surface, entry.job.layout, opts.parts, faction.force)) clearJobs.push(addClearJob(faction, e, opts.priority))
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
   return entry.build
 }

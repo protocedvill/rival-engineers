@@ -1,7 +1,7 @@
 import { LuaEntityPrototype, LuaProfiler, LuaSurface, MapPosition } from "factorio:runtime"
 import { getConfig } from "./config"
 import { brainReport } from "./strategy/bootstrap"
-import { exportFactoryGraph, factoryReport } from "./strategy/factory"
+import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { setAiProfiler } from "./profiling"
 import { workReport } from "./work"
 
