@@ -78,9 +78,37 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
    `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
    Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the
    plan in plain Lua in ~10 s (`npm run test:unit -- plan-replay`; `REPLAY_ROUTER="maxRipups=6"` and
-   `REPLAY_UNDERGROUND=4` try router variants).
+   `REPLAY_UNDERGROUND=4` try router variants). Soaks also keep every *adopted* plan's input (`plans/<faction>/`);
+   `compareReplay(...)` replays one with the D36 / B2 comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`,
+   `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
 4. Engine-side bugs (walks, mining, placement) get a T2 test with the same neighbourhood (`npm test -- "name"`, ~20 s).
 5. Full acceptance last, more seeds than the bar (`--seeds 11,222,...,7,77,777`) so one round shows several bugs.
+
+**Performance gates (SPEC §9).** Wall-clock numbers move with whatever else the machine runs, so two other measures:
+
+1. **Work counts (soft gate, every validation).** The mod counts its work deterministically (`mod/src/work.ts`: planner
+   work units, placement candidates scored, router expansions, path requests, entity scans, jobs processed, reconciler
+   node evaluations; per run and the peak per game-minute) into each seed's `telemetry.json` (`work`). A config names
+   its committed baseline (`[run] work_baseline`, e.g. `tools/harness/baselines/m5-work.json`); `soak.py` and
+   `m5_scorecard.py` append a "Work counts" section flagging every counter more than 15% above it (a flag is a
+   regression signal for the report, not a failure). By hand:
+   ```bash
+   python3 tools/harness/workcounts.py out/soak/<run>             # compare with the config's baseline
+   python3 tools/harness/workcounts.py out/soak/<run> --update    # make this run the baseline (commit the file)
+   ```
+   The counts depend only on seed, config and code, not on concurrency. Changing behaviour changes run lengths too;
+   the scorecard says when a seed ran longer or shorter than its baseline.
+2. **Reference-save benchmark (to confirm a flagged regression, on an idle machine).** A fixed vanilla base generated
+   by script (`refbench.py generate`, once: 48 cells of drills → electric furnaces → sinks, assemblers on infinity
+   chests, belt loops; ~12,000 entities, no mods) is benchmarked in the same session as the mod run, and AI time is
+   reported as a percentage of its update time:
+   ```bash
+   python3 tools/harness/refbench.py generate                     # → .factorio-test/refbench/reference.zip
+   python3 tools/harness/refbench.py report out/soak/<run>        # bench the reference now; each seed's AI as % of it
+   python3 tools/harness/refbench.py session -c tools/harness/m5-mall.toml --seeds 11 --name ref-11
+                                                                  # bench, soak at -j 1, bench again
+   ```
+   Absolute ms/tick stays informational.
 
 In-game test logs (`[m1] ...` measurements) are printed only for failing tests. Read them from the shard's
 `.factorio-test/shards/N/factorio-current.log` (the summary names the shard of each failure; `out/test-results.json`
