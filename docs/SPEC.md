@@ -751,7 +751,7 @@ M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
   its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
   clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
 
-M6a proposals (2026-10-16, all **proposed**; evidence in `docs/reports/M6-report.md` "M6a"):
+M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-report.md` "M6a"):
 
 - **P30, the 30 + 30 stage (proposed, D37):** default `factory-targets` = `automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30`,
   every stage designed at `factory-design-margin` (1.1) × its target so the measured rate reaches it. Green science
@@ -781,6 +781,14 @@ M6a proposals (2026-10-16, all **proposed**; evidence in `docs/reports/M6-report
   clearable ground (like trees); a plan or growth that takes their tiles evicts them: built sites are retired and picked
   up before the build, planned ones dropped, and the bootstrap gets a replacement goal elsewhere. The depot is never
   evicted.
+- **P36, coal running out for power and the green clusters (proposed, M6a close-out; hand-off to M6b):** two of the five
+  acceptance seeds fail on coal, not on planning. Seed 555555: the first steam block's coal outpost depletes at ~150
+  game-min and the steam block starves (D28 defers relocation to P2). Seed 3333: the only coal patch within 168 tiles of
+  the hub is ~70% built over (power, bootstrap pairs, earlier outposts) and the new cluster's shared coal outpost has no
+  feasible position on four region sizes. Proposed: (a) a depleted (or nearly depleted) coal supply of a steam block
+  gets a replacement outpost elsewhere, like D43 for bootstrap sites (an exception to D28 limited to power fuel);
+  (b) when a fuel producer can't be placed, the consumers tap the nearest built coal producer and that producer grows
+  (or the cluster waits) instead of failing the goal. Not implemented.
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

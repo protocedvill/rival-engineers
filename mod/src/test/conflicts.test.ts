@@ -82,6 +82,10 @@ function smeltingLab(lab: Lab, force: string): { layout: LayoutState; ghosts: Lu
 }
 
 describe("faction conflicts", () => {
+  // Leftover factions keep planning (and slow every later test in the shard).
+  after_all(() => {
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
+  })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()

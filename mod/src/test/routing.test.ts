@@ -162,6 +162,8 @@ describe("M4b routing", () => {
   })
   after_all(() => {
     game.speed = speed
+    // Leftover factions keep planning (and slow every later test in the shard).
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
   })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
