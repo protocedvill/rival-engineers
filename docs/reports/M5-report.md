@@ -1024,8 +1024,9 @@ Acceptance minutes per seed (game minutes to automated red science):
   undergrounds, fails to route, and its underground alternative routes at once (D36 per attempt), so the goal defers
   after one attempt. The temporary cells (3 assemblers and their chests, inserters and poles to build) and the
   placement soft claim at 0.5 make the core more crowded at that point.
-- Every seed built its three cells 1–2 game-min after `automation`; the pack cell was retired when red science was
-  automated. The gear and belt cells stay until the mall (after the acceptance milestone).
+- Cells were built 0.9–2.6 game-min after `automation` on four seeds; on 44444 only at 35.5 min (17.7 min later,
+  0.3 min before the pack cell was retired again: the crew built production first). The pack cell was retired when red
+  science was automated on every seed. The gear and belt cells stay until the mall (after the acceptance milestone).
 - Reconciler: labs read `expected` while hand-fed (1 change on 3 seeds); no starved labs, no remedies.
 - **A/B on seeds 7 and 777 (not acceptance seeds; `tools/harness/m5-nod38.toml`):** without temporary factories and
   background crafting 46.0 / 45.1 min; background crafting alone 40.1 / 39.5 (it shortened every phase that crafts);
