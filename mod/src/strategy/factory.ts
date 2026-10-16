@@ -13,7 +13,7 @@ import { markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
-import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, rateIn, removeEdge, removeNode } from "../planner/logical"
+import { addEdge, addNode, edgeByRole, edgesInto, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, rateIn, removeEdge, removeNode } from "../planner/logical"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
@@ -1211,9 +1211,12 @@ function measureAndReconcile(ctx: Ctx): void {
     meter.lastSample = ctx.tick
     sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
     f.reconciler ??= newReconcileState()
-    const automated = packsAutomated(f)
-    // D49: labs are hand-fed by the crew until their pack is automated (a built producer belts it in).
-    const crewSupplied = (n: LogicalNode, item: string): boolean => n.kind === "labs" && !automated[item]
+    // D49: labs are hand-fed by the crew until a built producer belts their pack in.
+    const crewSupplied = (n: LogicalNode, item: string): boolean => {
+      if (n.kind !== "labs") return false
+      for (const e of edgesInto(f.graph, n.id)) if (e.kind === "belt" && e.item === item && e.from !== undefined && f.graph.nodes[e.from]?.lifecycle === "built") return false
+      return true
+    }
     const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied })
     countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
     requestProbes(meter, r.probe)
