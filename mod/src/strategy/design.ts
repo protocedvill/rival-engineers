@@ -41,7 +41,7 @@ export interface DesignContext {
   plannable?: Record<string, boolean>
   /** Resource entities the faction knows about. */
   resources: string[]
-  /** D42 / B5: the chest for module buffer depots (smelter columns), "" or absent = none. */
+  /** D42 / D51: the chest for module buffer depots (smelter columns, assembler rows, circuit blocks), "" or absent = none. */
   buffer?: string
   /** Burner fuel (coal) and entity choices (config defaults, from prototypes). */
   fuel: string
@@ -227,9 +227,9 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string, burnerOnly 
   } else if (gen === "red-line") {
     for (let u = 1; u <= 12; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
   } else if (gen === "circuit-block") {
-    for (let u = 1; u <= 8; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
+    for (let u = 1; u <= 8; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler, buffer: ctx.buffer ?? "" })
   } else if (gen === "assembler-row") {
-    for (let n = 2; n <= 24; n += 2) out.push({ recipe: ctx.facts.recipeForItem(item), count: n, machine: ctx.assembler })
+    for (let n = 2; n <= 24; n += 2) out.push({ recipe: ctx.facts.recipeForItem(item), count: n, machine: ctx.assembler, buffer: ctx.buffer ?? "" })
   } else if (gen === "steam-block") {
     for (let b = 1; b <= 10; b++) out.push({ boilers: b, fuel: ctx.fuel, boiler: ctx.boiler, engine: ctx.engine })
   }

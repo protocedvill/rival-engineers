@@ -101,6 +101,9 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "mining coal 3x2 burner", generator: "mining-outpost", params: { resource: "coal", rows: 3, sides: 2, drill: "burner-mining-drill" } },
   { name: "steam 2 boilers", generator: "steam-block", params: { boilers: 2 } },
   { name: "assembler-row gear 4", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4 } },
+  // D51 / B14: buffer heads (validation bars them).
+  { name: "assembler-row gear 4 buffer", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" } },
+  { name: "circuit-block 1 buffer", generator: "circuit-block", params: { units: 1, buffer: "iron-chest" } },
   { name: "assembler-row cable 2", generator: "assembler-row", params: { recipe: "copper-cable", count: 2 } },
   { name: "assembler-row belt 2", generator: "assembler-row", params: { recipe: "transport-belt", count: 2 } },
   { name: "red-line 2", generator: "red-line", params: { units: 2 }, slow: true },

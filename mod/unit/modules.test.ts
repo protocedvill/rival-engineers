@@ -151,6 +151,29 @@ test("D42 / B5: a smelter column's buffer depot: an inserter off the west output
   eq(burner.entities.filter((e) => e.buffer === true).length, 0, "no buffer with burner inserters (it would need fuel)")
 })
 
+test("D51 / B14: gear rows and circuit blocks get a buffer head at the output end; rates and units unchanged", () => {
+  const cases: [ModuleDef, ModuleDef, string][] = [
+    [assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, buffer: "iron-chest" }), "iron-gear-wheel"],
+    [circuitBlock(F, { units: 1 }), circuitBlock(F, { units: 1, buffer: "iron-chest" }), "electronic-circuit"],
+  ]
+  for (const [plain, def, item] of cases) {
+    eq(def.footprint.w, plain.footprint.w + 2, `${def.id}: two columns wider`)
+    const chest = def.entities.filter((e) => e.buffer === true)
+    eq(chest.length, 1, "one buffer chest")
+    eq(`${chest[0].x},${chest[0].y}`, "1.5,2.5", "at the head")
+    const ins = def.entities.filter((e) => e.x === 1.5 && e.y === 1.5)[0]
+    eq(ins.name, "inserter", "an inserter above it")
+    eq(ins.dir, NORTH, "picks from the output belt (1.5, 0.5)")
+    eq(def.entities.filter((e) => e.x === 1.5 && e.y === 0.5)[0].name, "transport-belt", "the output belt runs past it")
+    const outPort = def.ports.filter((p) => p.kind === "belt-out")[0]
+    eq(`${outPort.pos.x},${outPort.pos.y}`, "0.5,0.5", "output port at the head")
+    near(out(def, item), out(plain, item), 1e-9, "the buffer is no demand: same output")
+    eq(def.expand!.unit.entities.length, plain.expand!.unit.entities.length, "same unit")
+    eq(def.expand!.insertAt, plain.expand!.insertAt + 2, "units go in at the same place")
+    eq(def.expand!.maxUnits, plain.expand!.maxUnits, "same cap")
+  }
+})
+
 test("D38: a chest cell (temporary factory): chest → inserter → assembler → inserter → chest, rates of one assembler", () => {
   const gear = chestCell(F, { recipe: "iron-gear-wheel" })
   eq(gear.footprint.w * 10 + gear.footprint.h, 73, "7 × 3")
@@ -182,6 +205,9 @@ function allGenerated(): ModuleDef[] {
     assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }),
     assemblerRow(F, { recipe: "transport-belt", count: 6 }),
     assemblerRow(F, { recipe: "pipe", count: 2 }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" }),
+    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest" }),
+    circuitBlock(F, { units: 2, buffer: "iron-chest" }),
     redLine(F, { units: 3 }),
     circuitBlock(F, { units: 2 }),
     labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
@@ -220,6 +246,8 @@ test("expandModule(gen(n), k) is exactly gen(n + k): growth never moves a unit",
     [assemblerRow(F, { recipe: "copper-cable", count: 2 }), 1, assemblerRow(F, { recipe: "copper-cable", count: 4 })],
     [redLine(F, { units: 1 }), 2, redLine(F, { units: 3 })],
     [circuitBlock(F, { units: 1 }), 1, circuitBlock(F, { units: 2 })],
+    [assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, buffer: "iron-chest" }), 2, assemblerRow(F, { recipe: "iron-gear-wheel", count: 6, buffer: "iron-chest" })],
+    [circuitBlock(F, { units: 1, buffer: "iron-chest" }), 1, circuitBlock(F, { units: 2, buffer: "iron-chest" })],
     [labArray(F, { labs: 2, packs: ["automation-science-pack", "logistic-science-pack"] }), 3, labArray(F, { labs: 8, packs: ["automation-science-pack", "logistic-science-pack"] })],
     [miningOutpost(F, { resource: "iron-ore", rows: 2 }), 2, miningOutpost(F, { resource: "iron-ore", rows: 6 })],
     [miningOutpost(F, { resource: "coal", rows: 1, drill: "burner-mining-drill" }), 4, miningOutpost(F, { resource: "coal", rows: 5, drill: "burner-mining-drill" })],

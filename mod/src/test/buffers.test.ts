@@ -67,4 +67,47 @@ describe("D42 buffer depots", () => {
       assert(src.get_item_count("iron-plate") >= 389, `the rest stays upstream (${src.get_item_count("iron-plate")})`)
     })
   })
+
+  // D51 / B14: gear rows and circuit blocks carry a buffer at their head; it takes products off the output belt.
+  for (const [name, gen, params, feed, item] of [
+    ["gear row", "assembler-row", { recipe: "iron-gear-wheel", count: 2, buffer: "iron-chest" }, { "iron-plate": 100 }, "iron-gear-wheel"],
+    ["circuit block", "circuit-block", { units: 1, buffer: "iron-chest" }, { "iron-plate": 50, "copper-plate": 50 }, "electronic-circuit"],
+  ] as [string, string, Record<string, unknown>, Record<string, number>, string][]) {
+    test(`B14: a ${name}'s buffer head collects its product from the output belt`, () => {
+      const lab = createLab(30)
+      const def = generatedModule(gen as never, params)
+      for (const r of ["iron-gear-wheel", "copper-cable", "electronic-circuit"]) game.forces.player.recipes[r].enabled = true
+      const origin = at(lab, -10, -4)
+      const made = stampModule(lab.surface, "player", def, origin, { bufferSlots: 2 })
+      let chest: LuaEntity | undefined
+      for (let i = 0; i < def.entities.length; i++) {
+        const e = made[i]
+        if (e === undefined) continue
+        if (def.entities[i].buffer) chest = e
+        if (e.type === "assembling-machine") {
+          const r = e.get_recipe()[0]
+          // Feed the machines that take plates (cable assemblers take copper; circuit ones get cable by insertion).
+          if (r !== undefined) for (const ing of r.ingredients) if (feed[ing.name] !== undefined) e.get_inventory(defines.inventory.assembling_machine_input)!.insert({ name: ing.name, count: feed[ing.name] })
+        }
+      }
+      assert(chest !== undefined, "a buffer chest")
+      // Power: an energy interface on a pole next to the module's power port.
+      const pp = def.ports.filter((p) => p.kind === "power")[0].pos
+      lab.surface.create_entity({ name: "small-electric-pole", position: { x: origin.x + pp.x - 2, y: origin.y + pp.y }, force: "player" })
+      const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: { x: origin.x + pp.x - 3.5, y: origin.y + pp.y + 0.5 }, force: "player" })!
+      eei.power_production = 1e7
+      eei.electric_buffer_size = 1e7
+      after_ticks(2400, () => {
+        const n = chest!.get_item_count(item)
+        const states: string[] = []
+        for (const e of made) if (e !== undefined && e.valid && e.type === "assembling-machine") {
+          let st = tostring(e.status)
+          for (const [k, v] of pairs(defines.entity_status)) if (v === e.status) st = k as string
+          states.push(`${e.get_recipe()[0]?.name}:${st}:${e.products_finished}:${e.energy}`)
+        }
+        log(`[m6] B14 ${name}: ${n} ${item} in the buffer after 40 s`)
+        assert(n > 0, `the buffer got ${item} (${n}); machines ${states.join(" ")}`)
+      })
+    })
+  }
 })

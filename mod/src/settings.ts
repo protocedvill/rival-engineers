@@ -659,7 +659,7 @@ data.extend([
     type: "int-setting",
     name: Settings.moduleBufferSlots,
     setting_type: "runtime-global",
-    default_value: 1,
+    default_value: 2,
     minimum_value: 1,
     maximum_value: 48,
     order: "m-b",
