@@ -717,4 +717,13 @@ data.extend([
     maximum_value: 480,
     order: "j-bc",
   },
+  {
+    type: "int-setting",
+    name: Settings.factorySharedFuel,
+    setting_type: "runtime-global",
+    default_value: 2,
+    minimum_value: 0,
+    maximum_value: 16,
+    order: "j-bd",
+  },
 ])

@@ -68,6 +68,12 @@ export interface DesignContext {
    * is used for an item no generator rule can make with a producible input chain.
    */
   curated?: Record<string, string>
+  /**
+   * M6: fuel consumers without a fuel producer of their own share one per cluster (fed through splitter taps): a coal
+   * outpost per 4-furnace column filled the coal patches on two seeds. `keep` = consumer roles that already have their
+   * own (built before; they keep it). Absent: point-to-point.
+   */
+  sharedFuel?: { keep: Record<string, boolean> }
 }
 
 export interface DesignTarget {
@@ -330,7 +336,7 @@ interface Walk {
   short: boolean
 }
 
-function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false): void {
+function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string): void {
   const ctx = w.ctx
   const gen = producerFor(ctx, item)
   if (gen === undefined) {
@@ -346,7 +352,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     return
   }
   if (s.short) w.short = true
-  const role = ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`
+  const role = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
   const util = s.capacity > EPS ? math.min(1, rate / s.capacity) : 1
   const node: DesignNode = {
     role,
@@ -398,13 +404,17 @@ function expandItem(w: Walk, item: string): void {
   // B2: the consumers recorded for splitter taps share one producer (the power node's fuel stays its own, so the
   // power goal never waits for production).
   const tapped = w.ctx.taps?.[item]
+  const shared = item === w.ctx.fuel ? w.ctx.sharedFuel : undefined
   const group: Demand[] = []
   const single: Demand[] = []
-  for (const d of mine) (tapped !== undefined && tapped.indexOf(d.to) >= 0 && !isPowerRole(d.to) ? group : single).push(d)
+  for (const d of mine) {
+    const share = !isPowerRole(d.to) && ((tapped !== undefined && tapped.indexOf(d.to) >= 0) || (shared !== undefined && !shared.keep[d.to]))
+    ;(share ? group : single).push(d)
+  }
   if (group.length >= 2) {
     let total = 0
     for (const d of group) total += d.rate
-    addProducer(w, item, total, group, true)
+    addProducer(w, item, total, group, true, shared !== undefined ? `${item}*>${group[0].to}` : undefined)
   } else for (const d of group) single.push(d)
   for (const d of single) addProducer(w, item, d.rate, [d])
 }

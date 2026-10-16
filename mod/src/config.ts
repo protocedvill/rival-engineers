@@ -168,6 +168,8 @@ export interface Config {
   factoryLabSizing: string
   /** M6 (SPEC §3): game minutes the last stage's science rate must hold to count as sustained. */
   factorySustainMinutes: number
+  /** M6: from this stage on (1-based, 0 = never), new fuel consumers share one fuel producer per cluster (splitter taps). */
+  factorySharedFuel: number
 }
 
 export type ConfigKey = keyof Config
@@ -261,6 +263,7 @@ export function getConfig(): Config {
     factoryDesignMargin: setting(Settings.factoryDesignMargin),
     factoryLabSizing: setting(Settings.factoryLabSizing),
     factorySustainMinutes: setting(Settings.factorySustainMinutes),
+    factorySharedFuel: setting(Settings.factorySharedFuel),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

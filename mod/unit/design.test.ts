@@ -289,4 +289,20 @@ test("M6: the stage-2 diff on a built stage-1 factory grows the labs and plans t
   }
 })
 
+test("M6: shared fuel: new smelters share one coal outpost per cluster; the stage-1 smelters keep theirs", () => {
+  const keep = { [SMELT_FE]: true, [SMELT_CU]: true }
+  const d = design(greenCtx({ sharedFuel: { keep } }), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const coal = d.nodes.filter((n) => n.item === "coal")
+  const roles = coal.map((n) => n.role).sort()
+  ok(byRole(d.nodes, `coal>${SMELT_FE}`) !== undefined && byRole(d.nodes, `coal>${SMELT_CU}`) !== undefined, "stage-1 smelters keep their own coal")
+  ok(byRole(d.nodes, "coal>power") !== undefined, "power keeps its own")
+  let shared = 0
+  for (const n of coal) if (string.find(n.role, "coal*>", 1, true)[0] === 1) shared++
+  eq(shared, 2, `one shared coal producer per cluster: ${roles.join(" | ")}`)
+  eq(coal.length, 5, "2 kept + power + 2 shared")
+  const p2p = design(greenCtx(), STAGE2)
+  ok(p2p.nodes.filter((n) => n.item === "coal").length >= 9, "point-to-point: one per smelter")
+})
+
 run("design")

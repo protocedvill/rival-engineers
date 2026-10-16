@@ -327,6 +327,33 @@ export function labUnitTime(config: Config, stage: number): number {
   return n !== undefined && n > 0 ? n : meanUnitTime()
 }
 
+/**
+ * M6: from stage `factory-shared-fuel` on (1-based; 0 = never) and once splitters can be built, new fuel consumers share
+ * one fuel producer per cluster; consumers that have their own keep it.
+ */
+function sharedFuel(ctx: { faction: FactionState; force: LuaForce; config: Config }, stage: number): { keep: Record<string, boolean> } | undefined {
+  const from = ctx.config.factorySharedFuel
+  if (from <= 0 || stage + 1 < from || !splittersEnabled(ctx.force)) return undefined
+  const f = getFactory(ctx.faction.name)
+  const fuel = ctx.faction.brain!.catalog.fuel
+  // Consumers fed fuel already (their own producer or an earlier shared one) keep it: a new group never taps a built
+  // route.
+  const keep: Record<string, boolean> = {}
+  if (f !== undefined) {
+    for (const id of f.graph.edgeOrder) {
+      const e = f.graph.edges[id]
+      if (e.kind === "belt" && e.item === fuel && f.graph.nodes[e.to] !== undefined) keep[f.graph.nodes[e.to].role] = true
+    }
+  }
+  return { keep }
+}
+
+function splittersEnabled(force: LuaForce): boolean {
+  const sp = tiers()[0]?.splitter
+  const r = sp !== undefined ? (prototypeFacts.recipeForItem(sp) ?? sp) : undefined
+  return r !== undefined && force.recipes[r]?.enabled === true
+}
+
 /** Curated modules by the item they make (their recipe's product on a belt-out port): the design's fallback (M6 green). */
 function curatedProducers(): Record<string, string> {
   const out: Record<string, string> = {}
@@ -371,6 +398,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     policy: policyFor(ctx.config),
     taps: getFactory(ctx.faction.name)?.taps,
     curated: curatedProducers(),
+    sharedFuel: sharedFuel(ctx, stage),
   }
 }
 
@@ -752,7 +780,12 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   if (getPlannerEntry(id) !== undefined) removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)
   request.compare = compareOptions(ctx, g, maxUnderground)
-  const topology = f.taps !== undefined && next(f.taps)[0] !== undefined ? "splitter-tap" : undefined
+  // Splitter taps: recorded B2 taps, or a shared fuel producer (M6) feeding several consumers.
+  let sharedProducer = false
+  const fromCount: Record<string, number> = {}
+  for (const e of g.edges) fromCount[e.from] = (fromCount[e.from] ?? 0) + 1
+  for (const [, n] of pairs(fromCount)) if ((n as number) > 1) sharedProducer = true
+  const topology = (f.taps !== undefined && next(f.taps)[0] !== undefined) || sharedProducer ? "splitter-tap" : undefined
   startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology })
   g.plan = id
   g.status = "planning"
@@ -1237,6 +1270,14 @@ function failureReasons(ctx: Ctx, ids: number[]): string {
 function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof getPlannerEntry>>["build"], left: LuaEntity[]): void {
   const faction = ctx.faction
   b!.placeJobs = []
+  // B15: a bootstrap site built after the plan's terrain scan may stand under a leftover ghost: evict it.
+  const under: Record<number, boolean> = {}
+  for (const gh of left) {
+    if (!gh.valid) continue
+    const box = gh.bounding_box
+    for (let x = math.floor(box.left_top.x + 0.05); x < math.ceil(box.right_bottom.x - 0.05); x++) for (let y = math.floor(box.left_top.y + 0.05); y < math.ceil(box.right_bottom.y - 0.05); y++) under[tkey(x, y)] = true
+  }
+  for (const e of evictSites(faction, ctx.surface, under, `goal ${g.id}'s leftover ghosts`)) addClearJob(faction, e, b!.priority)
   for (const gh of left) {
     // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
     // blocks the placement for good: clear it again.
