@@ -427,8 +427,10 @@ Default to configurable (D18). Settings live in three places:
   the plan's own routing work).
 - **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+- **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
+  `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
-  `module-buffer-slots` (1), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
+  `module-buffer-slots` (2, D51), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
   = none), `bootstrap-factory-wait-seconds` (60), `crew-background-crafts` (1; 0 = craft standing).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
@@ -749,6 +751,37 @@ M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
   its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
   clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
 
+M6a proposals (2026-10-16, all **proposed**; evidence in `docs/reports/M6-report.md` "M6a"):
+
+- **P30, the 30 + 30 stage (proposed, D37):** default `factory-targets` = `automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30`,
+  every stage designed at `factory-design-margin` (1.1) × its target so the measured rate reaches it. Green science
+  comes from the curated green line (an inserter has three ingredients, no generator makes it); one line makes 0.28/s, so
+  the stage splits into two **production clusters** (D24). Cluster 1 keeps the stage-1 roles (its modules grow in place:
+  labs, red line, smelters), cluster 2 is new; one steam block serves both. Labs are sized per stage by
+  `factory-lab-sizing` (`mean;max`: stage 1 the mean unit time as D37 says, stage 2 the slowest, 30 s, so the labs never
+  cap the 30 + 30 rate). Cluster 1's goals come first (power growth, its green chain, its grows), then cluster 2's labs and
+  production.
+- **P31, how "30 + 30 sustained" is measured (proposed, §3):** packs **consumed by the labs** (force item statistics),
+  sampled every game-minute; the bar holds once every pack of the last stage averaged at least its target over
+  `factory-sustain-minutes` (30) consecutive minutes (`science-sustained`). With `research-goal-done` that is `v1-done`.
+  The scorecard recomputes it from the samples.
+- **P32, shared providers (proposed, B19):** from stage `factory-shared-providers` (1) on and once splitters can be built,
+  a new consumer of an item first taps a built producer of it that has spare capacity (its planned output minus what its
+  edges carry; the steam block's coal outpost included), else the new consumers of a cluster share one new producer; a
+  tap on a built route has the crew pick up the belt under the splitter first. Splitters are researched before production
+  when sharing saves at least `logistics-share-min-modules` (1) modules (like D36). No distance check yet: a tap may run a
+  long belt.
+- **P33, when the factory can't grow a module (proposed):** a growth whose expansion fails 3 times no longer holds its
+  stage; a steam block that can't grow gets a second one (`power#2`) for the excess, labs a second array (`labs+`).
+- **P34, stuck builds and boxed-in crews (proposed, B20):** a build whose leftover ghosts placed nothing for
+  `build-stuck-rounds` (10, 30 s apart) gives up its location (a growth is abandoned with what stands); a crew member that
+  finds no path 3 times in a row picks up the nearest small entity around it and leaves a ghost for it (a player walled in
+  by their own build does the same).
+- **P35, bootstrap eviction (proposed, B15, implements D51 (3)):** plans see the faction's bootstrap mining sites as
+  clearable ground (like trees); a plan or growth that takes their tiles evicts them: built sites are retired and picked
+  up before the build, planned ones dropped, and the bootstrap gets a replacement goal elsewhere. The depot is never
+  evicted.
+
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 
 Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
@@ -780,6 +813,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.20 (2026-10-16, M6a): §11 P30–P35 proposed (30 + 30 stage and clusters, sustained-throughput measure, shared
+  providers, second steam block / lab array, stuck builds and boxed-in crews, bootstrap eviction); §5.7 M6 settings.
 - v0.19 (2026-10-16, user decisions via the manager): D51 (buffers 2 slots on smelter columns, circuit blocks and gear rows; P29 approved; bootstrap sites allowed on production patches, deconstructible); P26 pending the user's in-game check.
 - v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
   crafting, soft claims and partners, D36 per attempt); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"

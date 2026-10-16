@@ -346,16 +346,21 @@ test("M6: a steam block that can't grow gets a second one (power#2) for the exce
   ok(isPowerRole("power#2") && isPowerRole("coal>power#2"), "power roles")
 })
 
-test("M6: labs that can't grow get a second array (labs+) for the rest, fed with both packs", () => {
-  const d = design(greenCtx({ labsCap: { labs: 4 } }), STAGE2)
+test("M6: a cluster-1 module that can't grow caps cluster 1's share; the other clusters make the rest", () => {
+  // Cluster 1's labs stay at 4 of the 10 wanted: it takes 0.4 of its half, 0.2 of the target.
+  const d = design(greenCtx({ cluster1Max: 0.2 }), STAGE2)
   eq(d.errors.length, 0, d.errors.join("; "))
-  eq(byRole(d.nodes, "labs")!.params.labs, 4, "the built array stays at 4")
-  const extra = byRole(d.nodes, "labs+")
-  ok(extra !== undefined, "a second array")
-  eq(extra!.params.labs, 6, "the other 6 labs")
-  let packs = 0
-  for (const e of d.edges) if (e.to === "labs+") packs++
-  eq(packs, 2, "red and green belts into it")
+  eq(byRole(d.nodes, "labs")!.params.labs, 4, "cluster 1 keeps 4 labs")
+  let green1 = 0
+  let rest = 0
+  for (const e of d.edges) {
+    if (e.item !== GREEN) continue
+    if (e.to === "labs") green1 += e.rate
+    else rest += e.rate
+  }
+  near(green1, 0.2 * 0.55, 1e-9, "cluster 1's green share")
+  near(green1 + rest, 0.55, 1e-9, "the whole target is still planned")
+  ok(d.clusters >= 3, `more clusters for the rest (${d.clusters}): a green line makes 0.28/s`)
 })
 
 test("B20: a build escalates after N leftover-ghost rounds that placed nothing; progress resets the count", () => {

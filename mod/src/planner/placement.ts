@@ -142,6 +142,17 @@ function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): 
   return terrain.ore(x, y) === def.anchor?.resource
 }
 
+/**
+ * M6: search radii around the target; resource-patch modules (mining outposts) get one more, up to
+ * OUTPOST_FAR_RADIUS (within the plan's region): the ore near the core runs out once several clusters mine it.
+ */
+const OUTPOST_FAR_RADIUS = 192
+function radii(s: PlacementSearch, policy: LayoutPolicy): number[] {
+  if (s.req.def.site !== "resource-patch") return policy.searchRadii
+  const last = policy.searchRadii[policy.searchRadii.length - 1] ?? 0
+  return last >= OUTPOST_FAR_RADIUS ? policy.searchRadii : [...policy.searchRadii, OUTPOST_FAR_RADIUS]
+}
+
 function maxDim(s: PlacementSearch): number {
   let m = 0
   for (const td of s.tdefs) m = math.max(m, td.def.footprint.w, td.def.footprint.h)
@@ -149,7 +160,7 @@ function maxDim(s: PlacementSearch): number {
 }
 
 function startWindow(s: PlacementSearch, policy: LayoutPolicy): void {
-  const R = policy.searchRadii[s.radiusIdx]
+  const R = radii(s, policy)[s.radiusIdx]
   const M = maxDim(s) + policy.corridor.preferred + 4
   const t = s.target!
   s.wx = math.max(t.x - R - M, s.req.region.x)
@@ -365,7 +376,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     }
     // Scan: candidates for transform ti, origin index ci over a (2R + 1)² square around the target, every `stride`
     // tiles; then refine (±1 around the best few per transform of a coarse pass).
-    const R = policy.searchRadii[s.radiusIdx]
+    const R = radii(s, policy)[s.radiusIdx]
     const side = 2 * R + 1
     const n = math.floor((side - 1) / s.stride) + 1
     if (s.ri >= 0) {
@@ -422,7 +433,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         }
         s.result = m
         s.phase = "done"
-      } else if (s.radiusIdx + 1 < policy.searchRadii.length) {
+      } else if (s.radiusIdx + 1 < radii(s, policy).length) {
         s.radiusIdx++
         startWindow(s, policy)
       } else {

@@ -81,10 +81,10 @@ export interface DesignContext {
    */
   powerCap?: number
   /**
-   * M6: lab arrays (by role) that can't grow any more, with their lab count: the labs beyond it go into a second array
-   * (`<role>+`) whose packs come from the same producers (shared providers) or new ones.
+   * M6: the largest share of the stage target production cluster 1 may take (0..1): some of its modules (the previous
+   * stage's) can't grow far enough, so the other clusters make the rest. Absent: equal shares.
    */
-  labsCap?: Record<string, number>
+  cluster1Max?: number
 }
 
 export interface DesignTarget {
@@ -498,13 +498,21 @@ export function clusterSuffix(c: number, clusters: number): string {
   return clusters > 1 && c > 1 ? `#${c}` : ""
 }
 
+/** The share of the stage target cluster `c` of `n` makes: equal, unless cluster 1 is capped (`cluster1Max`). */
+export function clusterFraction(ctx: DesignContext, c: number, n: number): number {
+  const cap = ctx.cluster1Max
+  if (cap === undefined || cap >= 1 / n || n < 2) return 1 / n
+  return c === 1 ? cap : (1 - cap) / (n - 1)
+}
+
 function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number): Walk {
   const suffix = clusterSuffix(cluster, clusters)
   const w: Walk = { ctx, cluster, suffix, nodes: [], edges: [], demands: [], errors: [], short: false }
   const items = targetItems(target)
+  const frac = clusterFraction(ctx, cluster, clusters)
   // Labs consume one of each pack per research unit: sized for the fastest pack rate at the configured unit time.
   let rate = 0
-  for (const t of items) rate = math.max(rate, t.perSecond / clusters)
+  for (const t of items) rate = math.max(rate, t.perSecond * frac)
   const speed = ctx.facts.entity(ctx.lab)?.researchSpeed ?? 1
   const labs = math.max(2, 2 * math.ceil((rate * ctx.researchUnitTime) / speed / 2 - EPS))
   let packs = [...ctx.packs]
@@ -512,23 +520,15 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
   const labDef = ctx.make("lab-array", labParams)
   const labRole = `labs${suffix}`
-  const cap = ctx.labsCap?.[labRole]
-  const split = cap !== undefined && cap >= 2 && labs > cap ? [cap, math.max(2, labs - cap)] : [labs]
-  split.forEach((n, i) => {
-    const params = { labs: n, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
-    const def = i === 0 && split.length === 1 ? labDef : ctx.make("lab-array", params)
-    const role = i === 0 ? labRole : `${labRole}+`
-    const share = n / (split.length === 1 ? n : split[0] + split[1])
-    const node: DesignNode = { role, kind: "labs", generator: "lab-array", params, def, item: "research-unit", need: rate * share, capacity: rate * share, inputs: [], powerW: powerOf(def.rates.inputs), cluster }
-    w.nodes.push(node)
-    for (const t of items) {
-      let port: string | undefined
-      for (const p of def.ports) if (p.kind === "belt-in" && p.item === t.item) port = p.id
-      const r = (t.perSecond / clusters) * share
-      node.inputs.push({ port: port ?? `in-${t.item}`, item: t.item, rate: r })
-      w.demands.push({ item: t.item, rate: r, to: role, toPort: port ?? `in-${t.item}` })
-    }
-  })
+  const labNode: DesignNode = { role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster }
+  w.nodes.push(labNode)
+  for (const t of items) {
+    let port: string | undefined
+    for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === t.item) port = p.id
+    const r = t.perSecond * frac
+    labNode.inputs.push({ port: port ?? `in-${t.item}`, item: t.item, rate: r })
+    w.demands.push({ item: t.item, rate: r, to: labRole, toPort: port ?? `in-${t.item}` })
+  }
   if (target.mall !== undefined && cluster === 1) {
     const def = ctx.make("curated", { id: target.mall.id })
     const inputs = inputPorts(def, target.mall.utilization)
@@ -664,7 +664,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
   )
   const order = solveJob.order
   const overflow: Record<string, string> = {}
-  let clusters = 1
+  let clusters = ctx.cluster1Max !== undefined && ctx.cluster1Max < 1 ? 2 : 1
   let walks: Walk[] = []
   let electric = 0
   for (let attempt = 0; attempt < 4; attempt++) {

@@ -4,7 +4,6 @@ import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { nodeByRole, rateIn } from "../planner/logical"
-import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
@@ -72,7 +71,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
-      if (p.item === undefined) continue
+      if (p.item === undefined || f.noTap?.[p.role]) continue
       const room = rateIn(p.capacity.outputs, p.item) - (used as number)
       if (room <= 0) continue
       spare[p.item] ??= {}
@@ -83,21 +82,13 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
 }
 
 /** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */
-/** M6: lab arrays whose growth keeps failing, with their built lab count (the design adds a second array). */
-export function labsCap(f: FactoryState | undefined, lab: string): Record<string, number> | undefined {
-  if (f === undefined || f.growFails === undefined) return undefined
-  let out: Record<string, number> | undefined
-  for (const [role, n] of pairs(f.growFails)) {
-    if ((n as number) < GROW_MAX_FAILS) continue
-    const node = nodeByRole(f.graph, role as string)
-    if (node === undefined || node.kind !== "labs") continue
-    const m = findModule(f.layout, node.id)
-    if (m === undefined) continue
-    let count = 0
-    for (const e of m.canonical.entities) if (e.name === lab) count++
-    out ??= {}
-    out[role as string] = count
-  }
+/**
+ * M6: the largest share of the stage target cluster 1 may take, from its modules that can't grow (`cluster1Caps`: role →
+ * the share it could still serve when its growth failed for good). Undefined: no cap.
+ */
+export function cluster1Max(f: FactoryState | undefined): number | undefined {
+  let out: number | undefined
+  for (const [, v] of pairs(f?.cluster1Caps ?? {})) out = math.min(out ?? 1, v as number)
   return out
 }
 

@@ -116,7 +116,7 @@ export interface FactoryState {
   goals: FactoryGoal[]
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
-  design?: { stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
+  design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
   /** Why no goal is being worked on right now. */
   waiting: string[]
   jobKeys: Record<string, number>
@@ -146,6 +146,10 @@ export interface FactoryState {
   science?: { samples: { tick: number; made: Record<string, number>; used: Record<string, number> }[]; best: number; bestTick?: number; rates?: Record<string, number> }
   /** M6: the final stage is built and the research goal done: no planner progress is expected (not a stall). */
   idle?: boolean
+  /** B19: built producers whose routes could not take a tap: new consumers don't share them. */
+  noTap?: Record<string, boolean>
+  /** M6: cluster-1 roles that can't grow far enough → the share of the stage target cluster 1 can still serve. */
+  cluster1Caps?: Record<string, number>
   /** M6: failed expansions per role this stage (a grow that keeps failing no longer holds the stage). */
   growFails?: Record<string, number>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
@@ -341,7 +345,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     curated: ST.curatedProducers(),
     sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
     powerCap: ST.powerCap(getFactory(ctx.faction.name)),
-    labsCap: ST.labsCap(getFactory(ctx.faction.name), e.lab ?? "lab"),
+    cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
   }
 }
 
@@ -370,13 +374,16 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
   let blocked = ""
   for (const [role, n] of pairs(f.growFails ?? {})) if ((n as number) >= ST.GROW_MAX_FAILS) blocked += `${role as string};`
-  const key = `${blocked}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let noTap = 0
+  for (const [,] of pairs(f.noTap ?? {})) noTap++
+  const key = `${noTap}|${blocked}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
   const mallId = ctx.config.factoryMall
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
-  const d = DS.design(designContext(ctx, stageIndex), { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
+  const dctx = designContext(ctx, stageIndex)
+  const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
   const diff = DS.diffDesign(d, f.graph, (node) => findModule(f.layout, node)?.canonical)
   f.design = {
     stage: f.stage,
@@ -389,6 +396,7 @@ function designNow(ctx: Ctx): Design | undefined {
     clusters: d.clusters,
     missing: diff.missing.length,
     grow: diff.grow.length,
+    cluster1Share: DS.clusterFraction(dctx, 1, d.clusters),
   }
   const researched = researchedTechs(ctx.force)
   // B19 (like D36): splitters first when sharing providers saves at least `logistics-share-min-modules` modules.
@@ -480,6 +488,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     if (allBuilt && f.stage + 1 < stages.length) {
       f.stage++
       f.growFails = undefined
+      f.cluster1Caps = undefined
       mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
     }
@@ -584,6 +593,12 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
     f.growFails ??= {}
     f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
+    // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
+    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS && !DS.isPowerRole(gr.role) && string.find(gr.role, "#", 1, true)[0] === undefined && gr.need > 0) {
+      f.cluster1Caps ??= {}
+      f.cluster1Caps[gr.role] = math.max(0.05, math.min(1, gr.have / gr.need)) * (f.design?.cluster1Share ?? 1)
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} can't grow: production cluster 1 takes at most ${string.format("%.3f", f.cluster1Caps[gr.role])} of the target`)
+    }
     log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow by ${gr.units} units (failure ${f.growFails[gr.role]}): ${plan.reason}`)
     return false
   }
@@ -722,6 +737,10 @@ function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undef
   return LG.nodeByRole(f.graph, role)?.id
 }
 
+function nodeByRoleIn(f: FactoryState, role: string) {
+  return LG.nodeByRole(f.graph, role)
+}
+
 function failedBefore(f: FactoryState, kind: GoalKind): number {
   let n = 0
   for (const g of f.goals) if (g.kind === kind && g.status === "failed" && !g.deferred) n++
@@ -842,14 +861,33 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if ((entry.phase === "done" || entry.phase === "failed") && contest === undefined && deferForLogistics(ctx, g, entry)) return
   if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
+    let newNoTap = false
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
       const m = string.match(k as string, "^module:(.*)$")[0]
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
+      // B19: a connection from a built producer that failed (its route has no room for a tap): don't tap it again.
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
+        f.noTap ??= {}
+        if (!f.noTap[e.from]) {
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${e.from} is not tapped again (${v})`)
+          newNoTap = true
+        }
+        f.noTap[e.from] = true
+      }
     }
     if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
+    if (newNoTap) {
+      // Planned again at once without that tap (the design gives those consumers their own producer).
+      RT.removePlan(entry.id)
+      g.status = "failed"
+      g.deferred = true
+      g.reason = `replan without taps on ${g.reason}`
+      return
+    }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
     // With frame dumps on (soaks), keep the failed layout for tools/render (--graph over the nearest frame).
     // The plan's input too (for a T1 replay: mod/unit/fixtures).
