@@ -626,7 +626,16 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   node.goal = g.id
   for (const id of f.graph.edgeOrder) {
     const e = f.graph.edges[id]
-    if (e.kind === "belt" && plan.rerouted.indexOf(e.role) >= 0) e.physical = [`route:${e.role}`]
+    if (e.kind !== "belt" || plan.rerouted.indexOf(e.role) < 0) continue
+    // Its new route (a splitter tap: its root's too).
+    const physical: string[] = []
+    for (const rid of f.layout.routeOrder) {
+      const r = f.layout.routes[rid]
+      if (r.conn !== e.role) continue
+      if (r.tapOf !== undefined) physical.push(r.tapOf)
+      physical.push(rid)
+    }
+    e.physical = physical.length > 0 ? physical : [`route:${e.role}`]
   }
   const clearJobs: number[] = []
   const taken: Record<number, boolean> = {}
@@ -647,7 +656,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   const reserved = ctx.faction.brain!.reserved
   for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
   claimModuleFields(ctx, m)
-  for (const c of plan.rerouted) for (const k of f.layout.routes[`route:${c}`]?.tiles ?? []) reserved[k] = true
+  for (const rid of f.layout.routeOrder) if (plan.rerouted.indexOf(f.layout.routes[rid].conn) >= 0) for (const k of f.layout.routes[rid].tiles) reserved[k] = true
   g.growBuild = { phase: "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [] }
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
   return true

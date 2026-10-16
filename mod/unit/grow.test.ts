@@ -1,5 +1,6 @@
 import { miningOutpost, smelterColumn } from "../src/modules/generators"
 import { beltTiers } from "../src/planner/capacity"
+import { partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, UNKNOWN } from "../src/planner/grid"
 import { planGrowth } from "../src/planner/grow"
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
@@ -47,6 +48,40 @@ test("a built 4-furnace smelter grows to 8: 4 furnaces added, the moved end rebu
   for (const e of g.remove) ok(e.name !== "stone-furnace", "no furnace picked up")
   ok(g.remove.length > 0, "the moved end is picked up")
   eq(g.rerouted.join(","), "ore", "the ore route rerouted")
+  const problems = checkLayout(g.layout, view, () => 5).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
+test("growing a producer with a splitter tap rips and reroutes the tap too (seed 11: tap belts left under the new drills)", () => {
+  const view = free(120, 120)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "mine", ore, 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
+  const conns: ConnectionRequest[] = [
+    { id: "ore-a", from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: "ore-b", from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  let tapped = 0
+  for (const rid of job.layout.routeOrder) if (job.layout.routes[rid].tapOf !== undefined) tapped++
+  eq(tapped, 1, "one splitter tap")
+  const g = planGrowth(job.layout, view, F, POLICY, TIER, "mine", 1)
+  ok(g.ok, `grown: ${g.reason}`)
+  eq([...g.rerouted].sort().join(","), "ore-a,ore-b", "the route and its tap rerouted")
+  let conns2 = 0
+  for (const rid of g.layout.routeOrder) if (g.layout.routes[rid].conn === "ore-b" || g.layout.routes[rid].conn === "ore-a") conns2++
+  eq(conns2, 2, "both connections still in the layout")
+  // Every piece of the old tap is picked up or part of the new layout: none is left standing, untracked.
+  const k = (e: { name: string; x: number; y: number; dir: number }) => string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir)
+  const accounted: Record<string, boolean> = {}
+  for (const e of g.remove) accounted[k(e)] = true
+  for (const e of partEntities(g.layout, { modules: [], routes: [...g.layout.routeOrder], poles: [] })) accounted[k(e)] = true
+  const tapIds = job.layout.routeOrder.filter((rid) => job.layout.routes[rid].tapOf !== undefined)
+  for (const e of partEntities(job.layout, { modules: [], routes: tapIds, poles: [] })) ok(accounted[k(e)] === true, `old tap piece ${k(e)} picked up or kept`)
   const problems = checkLayout(g.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
 })

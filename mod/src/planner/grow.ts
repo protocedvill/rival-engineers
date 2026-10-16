@@ -33,6 +33,13 @@ function key(e: EntitySpec): string {
  * Plans growing module `id` of `base` by `units`. The terrain is the faction's (it shows the module and its routes as
  * built): the module's footprint and the tiles of its ripped routes count as free for the growth and the reroute.
  */
+/** A route and, depth first, every splitter tap hanging off it (the route first: a tap is routed onto its root). */
+function tapGroup(layout: LayoutState, rid: string): string[] {
+  const out = [rid]
+  for (const other of layout.routeOrder) if (layout.routes[other]?.tapOf === rid) for (const t of tapGroup(layout, other)) out.push(t)
+  return out
+}
+
 export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number): GrowthPlan {
   const layout = cloneLayout(base)
   const m = findModule(layout, id)
@@ -41,16 +48,23 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   // Rip every route touching the module: ports may move, and the growth may need the tiles.
   const ripped: string[] = []
   const conns: ConnectionRequest[] = []
+  let taps = false
   const routeTiles: Record<number, boolean> = {}
   for (const rid of [...layout.routeOrder]) {
     const r = layout.routes[rid]
     if (r === undefined || (r.to.module !== id && r.from?.module !== id)) continue
     if (r.tapOf !== undefined) continue
-    for (const k of r.tiles) routeTiles[k] = true
-    const old = partEntities(layout, { modules: [], routes: [rid], poles: [] })
-    for (const e of old) before.push(e)
+    // The route and the splitter taps hanging off it (ripRoute rips those too): their entities are picked up, their
+    // tiles freed and their connections routed again (seed 11: a tap's belts were left standing, untracked, and the
+    // grown coal outpost's drill ghost overlapped them forever).
+    for (const gid of tapGroup(layout, rid)) {
+      const gr = layout.routes[gid]
+      if (gr.tapOf !== undefined) taps = true
+      for (const k of gr.tiles) routeTiles[k] = true
+      for (const e of partEntities(layout, { modules: [], routes: [gid], poles: [] })) before.push(e)
+      conns.push({ id: gr.conn, from: gr.from, to: gr.to, belt: gr.belt })
+    }
     for (const removed of ripRoute(layout, rid)) ripped.push(removed)
-    conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt })
   }
   // Every other route stays put.
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
@@ -68,14 +82,21 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   m.fixed = true
   if (!r.ok) return { ok: false, reason: r.reason, layout: base, remove: [], add: [], rerouted: [] }
   // Reroute the ripped connections on the grown layout.
-  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: rect.x, y: rect.y }, region: { x: rect.x - 96, y: rect.y - 96, w: rect.w + 192, h: rect.h + 192 } }, tier, layout), view, facts, policy)
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: rect.x, y: rect.y }, region: { x: rect.x - 96, y: rect.y - 96, w: rect.w + 192, h: rect.h + 192 } }, tier, layout), view, facts, taps ? { ...policy, topology: "splitter-tap" } : policy)
   if (job.phase !== "done") {
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k}: ${v}`)
     return { ok: false, reason: `reroute failed: ${why.join("; ")}`, layout: base, remove: [], add: [], rerouted: [], job }
   }
-  for (const rid of job.layout.routeOrder) if (conns.some((c) => `route:${c.id}` === rid)) job.layout.routes[rid].fixed = true
-  const parts: BuildParts = { modules: [id], routes: conns.map((c) => `route:${c.id}`), poles: [] }
+  const wanted: Record<string, boolean> = {}
+  for (const c of conns) wanted[c.id] = true
+  const routes: string[] = []
+  for (const rid of job.layout.routeOrder) {
+    const rr = job.layout.routes[rid]
+    if (wanted[rr.conn] && !rr.fixed) routes.push(rid)
+  }
+  for (const rid of routes) job.layout.routes[rid].fixed = true
+  const parts: BuildParts = { modules: [id], routes, poles: [] }
   const after = partEntities(job.layout, parts)
   const had: Record<string, boolean> = {}
   for (const e of before) had[key(e)] = true
