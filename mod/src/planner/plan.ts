@@ -46,6 +46,41 @@ export interface PlanRequest {
   region: Rect
   /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
   poles?: string
+  /**
+   * D36 / B2: after routing, route the same placement again with what an unresearched technology would allow, and
+   * report how much shorter it is (the strategy researches it first when the saving is big enough).
+   */
+  compare?: CompareOptions
+}
+
+/** What the comparison routes (SPEC D36, backlog B2). */
+export interface CompareOptions {
+  /** The belt tiers with their real undergrounds (the plan itself has them clamped to none). */
+  undergrounds?: { tiers: BeltTier[] }
+  /**
+   * Point-to-point producers of these items that feed several consumers in this plan: route with one producer per
+   * item feeding the others' consumers through splitter taps (D22 splitter-tap), the rest of their supply chain gone.
+   */
+  splitters?: { items: string[] }
+  /** Bound per alternative: this many times the plan's own routing work (at least `minWork`). */
+  workFactor: number
+  minWork: number
+}
+
+export interface CompareResult {
+  kind: "undergrounds" | "splitters"
+  status: "done" | "failed" | "capped" | "none"
+  /** Route length (entities: belts, underground ends, splitters) of the plan's new routes, and of the alternative. */
+  base: number
+  alt?: number
+  /** base − alt (positive: the alternative is shorter). */
+  saving?: number
+  work: number
+  /** Splitters: per item, the consumer modules (request ids) one producer would feed. */
+  merged?: Record<string, string[]>
+  /** Splitters: producers dropped (request ids). */
+  dropped?: string[]
+  reason?: string
 }
 
 export interface PlanStats {
@@ -56,6 +91,8 @@ export interface PlanStats {
   routeWork: number
   /** Placement candidates scored (work counters). */
   candidates: number
+  /** D36 / B2: work of the comparison alternatives (also in `work`). */
+  compareWork?: number
   expansions: number
   searches: number
   ripups: number
@@ -70,7 +107,7 @@ export interface PlanJob {
   /** Tiers by belt name for per-connection tiers. */
   tiers?: BeltTier[]
   layout: LayoutState
-  phase: "place" | "route" | "poles" | "done" | "failed"
+  phase: "place" | "route" | "compare" | "poles" | "done" | "failed"
   /** The pole network phase (request.poles). */
   poleJob?: PoleJob
   /** Ids of what existed in the base layout before this job (to tell new parts from old). */
@@ -95,6 +132,8 @@ export interface PlanJob {
   /** Old footprints a re-placed module must avoid. */
   avoid: Record<string, Rect[]>
   stats: PlanStats
+  /** D36 / B2 comparison (request.compare): alternatives still to route, the running one, and the results. */
+  compare?: { queue: CompareResult["kind"][]; current?: { kind: CompareResult["kind"]; job: PlanJob; cap: number; base: number; merged?: Record<string, string[]>; dropped?: string[] }; results: CompareResult[] }
 }
 
 function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
@@ -499,7 +538,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (id === undefined) {
       let failed = false
       for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
-      job.phase = failed ? "failed" : job.request.poles !== undefined ? "poles" : "done"
+      job.phase = failed ? "failed" : job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
       return 0
     }
     const c = connection(job, id)
@@ -579,6 +618,235 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   return used
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// D36 / B2 comparison: the same placement routed again with undergrounds, or with splitter taps instead of one
+// producer per consumer. Bounded: each alternative is a routing-only job on a copy of the layout (no placement, which is
+// ~90% of a plan's work), capped at `workFactor` × the plan's routing work. A capped or failed alternative is no
+// evidence (the strategy then keeps the plan).
+
+/** Total length of the routes a plan added (belts + underground ends, + 1 per splitter tap). */
+export function newRouteLength(layout: LayoutState, baseRoutes: Record<string, boolean>): number {
+  let n = 0
+  for (const id of layout.routeOrder) {
+    if (baseRoutes[id]) continue
+    const r = layout.routes[id]
+    n += r.length + (r.tapOf !== undefined ? 1 : 0)
+  }
+  return n
+}
+
+/** A copy of the plan's layout without the routes it added (the alternative routes them again). */
+function unroutedCopy(job: PlanJob): LayoutState {
+  const l = cloneLayout(job.layout)
+  for (const id of [...l.routeOrder]) if (!job.baseRoutes[id] && l.routes[id] !== undefined) ripRoute(l, id)
+  return l
+}
+
+function portItem(job: PlanJob, ref: PortRef): string | undefined {
+  const m = findModule(job.layout, resolve(job, ref).module)
+  return m !== undefined ? findPort(m, ref.port)?.item : undefined
+}
+
+/** A routing-only job over `layout` for `request` (aliases of expanded requests carried over). */
+function altJob(job: PlanJob, request: PlanRequest, tier: BeltTier, tiers: BeltTier[] | undefined, layout: LayoutState): PlanJob {
+  // Not `{ ...request, compare: undefined }`: TSTL drops undefined fields from object literals, so the spread keeps them.
+  const r: PlanRequest = { ...request }
+  r.compare = undefined
+  r.poles = undefined
+  const alt = newRoutingJob(r, tier, layout)
+  alt.tiers = tiers
+  for (const [k, v] of pairs(job.alias)) alt.alias[k as string] = v as string
+  alt.baseRoutes = job.baseRoutes
+  return alt
+}
+
+/**
+ * Splitter alternative: per candidate item, the new producers feeding this plan's consumers of it are merged into the
+ * one nearest to all those consumers; the others and everything that only feeds them (their supply chain) are dropped,
+ * and their consumers are fed from the kept producer through splitter taps. Undefined when no item has two producers.
+ */
+interface SplitterAlt {
+  request: PlanRequest
+  layout: LayoutState
+  merged: Record<string, string[]>
+  dropped: string[]
+}
+
+function splitterAlt(job: PlanJob, items: string[], facts: ProtoFacts): SplitterAlt | undefined {
+  const req = job.request
+  const isNew = (id: string): boolean => job.alias[id] === undefined && !job.baseModules[id] && findModule(job.layout, id) !== undefined
+  const groups: Record<string, ConnectionRequest[]> = {}
+  const order: string[] = []
+  for (const c of req.connections) {
+    if (c.from === undefined || !isNew(c.from.module)) continue
+    const item = portItem(job, c.to)
+    if (item === undefined || items.indexOf(item) < 0) continue
+    if (groups[item] === undefined) {
+      groups[item] = []
+      order.push(item)
+    }
+    groups[item].push(c)
+  }
+  const dropped: Record<string, boolean> = {}
+  const rewire: Record<string, PortRef> = {}
+  const merged: Record<string, string[]> = {}
+  for (const item of order) {
+    const g = groups[item]
+    const producers: string[] = []
+    for (const c of g) if (producers.indexOf(c.from!.module) < 0) producers.push(c.from!.module)
+    if (producers.length < 2) continue
+    // Keep the producer whose out port is nearest to all the group's consumers (first in request order on ties).
+    let keep: ConnectionRequest | undefined
+    let best = math.huge
+    for (const c of g) {
+      const pm = findModule(job.layout, c.from!.module)!
+      const o = portOutside(pm, findPort(pm, c.from!.port)!)
+      let d = 0
+      for (const other of g) {
+        const cm = findModule(job.layout, resolve(job, other.to).module)!
+        const ct = portTile(cm, findPort(cm, other.to.port)!)
+        d += math.abs(o.x - ct.x) + math.abs(o.y - ct.y)
+      }
+      if (d < best) {
+        best = d
+        keep = c
+      }
+    }
+    merged[item] = []
+    for (const c of g) {
+      merged[item].push(c.to.module)
+      if (c.from!.module === keep!.from!.module) continue
+      dropped[c.from!.module] = true
+      rewire[c.id] = keep!.from!
+    }
+  }
+  if (order.filter((i) => merged[i] !== undefined).length === 0) return undefined
+  // Supply chains of dropped producers: new modules all of whose consumers are dropped.
+  for (let changed = true; changed; ) {
+    changed = false
+    for (const m of req.modules) {
+      if (dropped[m.id] || !isNew(m.id)) continue
+      let outs = 0
+      let toDropped = 0
+      for (const c of req.connections) {
+        if (c.from?.module !== m.id) continue
+        outs++
+        if (dropped[c.to.module]) toDropped++
+      }
+      if (outs > 0 && outs === toDropped) {
+        dropped[m.id] = true
+        changed = true
+      }
+    }
+  }
+  const connections: ConnectionRequest[] = []
+  for (const c of req.connections) {
+    if (dropped[c.to.module]) continue
+    if (rewire[c.id] !== undefined) connections.push({ ...c, from: rewire[c.id] })
+    else if (c.from === undefined || !dropped[c.from.module]) connections.push(c)
+  }
+  const layout = unroutedCopy(job)
+  const droppedIds: string[] = []
+  for (const m of req.modules) {
+    if (!dropped[m.id]) continue
+    droppedIds.push(m.id)
+    const pm = findModule(layout, m.id)
+    if (pm !== undefined) {
+      unmarkModule(layout, pm, facts)
+      layout.modules = layout.modules.filter((x) => x.id !== m.id)
+    }
+  }
+  return { request: { ...req, modules: req.modules.filter((m) => !dropped[m.id]), connections }, layout, merged, dropped: droppedIds }
+}
+
+function compareStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const opts = job.request.compare!
+  if (job.compare === undefined) {
+    const queue: CompareResult["kind"][] = []
+    if (opts.undergrounds !== undefined) queue.push("undergrounds")
+    if (opts.splitters !== undefined && opts.splitters.items.length > 0) queue.push("splitters")
+    job.compare = { queue, results: [] }
+  }
+  const cmp = job.compare
+  if (cmp.current === undefined) {
+    const kind = cmp.queue.shift()
+    if (kind === undefined) {
+      job.phase = job.request.poles !== undefined ? "poles" : "done"
+      return 0
+    }
+    const base = newRouteLength(job.layout, job.baseRoutes)
+    const cap = math.max(opts.minWork, opts.workFactor * job.stats.routeWork)
+    if (kind === "undergrounds") {
+      const tiers = opts.undergrounds!.tiers
+      const tier = tierByBelt(tiers, job.tier.belt) ?? tiers[0]
+      cmp.current = { kind, job: altJob(job, job.request, tier, tiers, unroutedCopy(job)), cap, base }
+    } else {
+      const s = splitterAlt(job, opts.splitters!.items, facts)
+      if (s === undefined) {
+        cmp.results.push({ kind, status: "none", base, work: 0, reason: "no item has two producers in this plan" })
+        return 1
+      }
+      cmp.current = { kind, job: altJob(job, s.request, job.tier, job.tiers, s.layout), cap, base, merged: s.merged, dropped: s.dropped }
+    }
+    return 1
+  }
+  const cur = cmp.current
+  const altPolicy: LayoutPolicy = cur.kind === "splitters" ? { ...policy, topology: "splitter-tap" } : policy
+  const e0 = cur.job.stats.expansions
+  const w0 = cur.job.stats.work
+  stepPlan(cur.job, terrain, facts, altPolicy, budget)
+  const used = cur.job.stats.work - w0
+  job.stats.expansions += cur.job.stats.expansions - e0
+  job.stats.compareWork = (job.stats.compareWork ?? 0) + used
+  const done = cur.job.phase === "done" || cur.job.phase === "failed"
+  if (!done && cur.job.stats.work < cur.cap) return used
+  const r: CompareResult = { kind: cur.kind, status: "capped", base: cur.base, work: cur.job.stats.work, merged: cur.merged, dropped: cur.dropped }
+  if (cur.job.phase === "done") {
+    r.status = "done"
+    r.alt = newRouteLength(cur.job.layout, job.baseRoutes)
+    r.saving = r.base - r.alt
+  } else if (cur.job.phase === "failed") {
+    r.status = "failed"
+    const why: string[] = []
+    for (const [k, v] of pairs(cur.job.failures)) why.push(`${k as string}: ${v as string}`)
+    r.reason = why.join("; ")
+  } else r.reason = `capped at ${cur.cap} work units (${cur.job.phase}, ${cur.job.stats.work})`
+  cmp.results.push(r)
+  cmp.current = undefined
+  return used
+}
+
+export interface LogisticsDecision {
+  /** Research the technology first (and plan again afterwards). */
+  undergrounds: boolean
+  splitters: boolean
+  /** Splitters: per item, the consumer modules one producer feeds through taps (request ids). */
+  taps: Record<string, string[]>
+  /** One line per alternative, for logs and telemetry. */
+  why: string[]
+}
+
+/**
+ * D36 / B2: research what unlocks undergrounds (splitters) before building this plan when the alternative is at least
+ * `minUnderground` (`minSplitter`) tiles shorter. 0 turns a rule off. Capped, failed or missing alternatives are no
+ * evidence (keep the plan).
+ */
+export function logisticsFirst(results: CompareResult[], minUnderground: number, minSplitter: number): LogisticsDecision {
+  const d: LogisticsDecision = { undergrounds: false, splitters: false, taps: {}, why: [] }
+  for (const r of results) {
+    const min = r.kind === "undergrounds" ? minUnderground : minSplitter
+    const hit = r.status === "done" && min > 0 && r.saving !== undefined && r.saving >= min
+    d.why.push(`${r.kind}: ${r.status}${r.status === "done" ? ` ${r.base} → ${r.alt} tiles (saves ${r.saving}, threshold ${min})` : r.reason !== undefined ? ` (${r.reason})` : ""}, work ${math.floor(r.work)}${hit ? ": research first" : ""}`)
+    if (!hit) continue
+    if (r.kind === "undergrounds") d.undergrounds = true
+    else {
+      d.splitters = true
+      for (const [item, consumers] of pairs(r.merged ?? {})) d.taps[item as string] = [...(consumers as string[])]
+    }
+  }
+  return d
+}
+
 /** The pole network phase: joins every consumer module to a generator module. Unreachable modules are failures. */
 function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   job.poleJob ??= newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
@@ -597,10 +865,11 @@ function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
 /** Advances the job by about `budget` work units. Returns true when it has finished (done or failed). */
 export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): boolean {
   let used = 0
-  while (used < budget && (job.phase === "place" || job.phase === "route" || job.phase === "poles")) {
+  while (used < budget && (job.phase === "place" || job.phase === "route" || job.phase === "compare" || job.phase === "poles")) {
     const before = used
     if (job.phase === "place") used += placeStep(job, terrain, facts, policy, budget - used)
     else if (job.phase === "route") used += routeStep(job, terrain, facts, policy, budget - used)
+    else if (job.phase === "compare") used += compareStep(job, terrain, facts, policy, budget - used)
     else used += poleStep(job, terrain, facts, policy, budget - used)
     if (used === before) used += 0.01
   }

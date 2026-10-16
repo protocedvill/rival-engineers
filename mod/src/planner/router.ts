@@ -153,9 +153,13 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   } else if (b !== FREE) return -1
   if (terrain.ore(x, y) !== undefined) extra += w.oreTile
   if (req.avoid?.[k]) extra += w.rip
-  // B9: another module's room to grow (a route there would block its expansion).
+  // B9: another module's room to grow (a route there would block its expansion). A module's own routes don't pay: its
+  // ports sit at the growing end and move with it, so its routes are rerouted when it grows anyway.
   const soft = w.softClaim ?? 0
-  if (soft > 0 && state.soft?.[k] !== undefined) extra += soft
+  if (soft > 0) {
+    const owner = state.soft?.[k]
+    if (owner !== undefined && owner !== req.to.module && owner !== req.from?.module) extra += soft
+  }
   let f = state.corridor[k] ? w.corridorFactor : 1
   // B7: next to another route's belt, routes bundle.
   const bf = w.bundleFactor ?? 1

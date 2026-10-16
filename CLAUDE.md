@@ -41,6 +41,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `noImplicitSelf` does **not** cover inline arrow functions assigned to a property of a generic options object
   (e.g. `planBatch(..., { isFree: (p) => ... })`): TSTL compiled it with a `self` parameter and the call shifted
   every argument. Declare callback types as `(this: void, ...) => ...`.
+- **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
+  spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
@@ -145,7 +147,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   end node next to it collides). Walks to trees/rocks aim at their box plus that margin (`walk.ts`).
 - **Without undergrounds (before `logistics`) a 7-flow production cluster next to fixed modules can be unroutable**:
   belts can't cross, rip-up cycles forever. After a production/mall goal fails all attempts without undergrounds, the
-  factory makes their technology a prerequisite (`needUndergrounds`).
+  factory makes their technology a prerequisite (`needUndergrounds`). D36 (M5c): a successful plan also reroutes its
+  placement with undergrounds and researches them first when that is ≥ 50 tiles shorter; the no-underground cluster is
+  chaotic (small weight changes flip it between routable and not), so judge planner changes on several replays.
 - **Mining acts on whatever is selected at the mining position**: a tree's selection box over an ore tile makes the
   crew mine the tree, a built belt on ore gets picked up. The controller mines from a corner of the target's box where
   the target itself is selected, refuses built entities over ore, and mines trees/rocks first. After the selected

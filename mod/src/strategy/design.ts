@@ -56,6 +56,11 @@ export interface DesignContext {
   researchUnitTime: number
   tiers: BeltTier[]
   policy: LayoutPolicy
+  /**
+   * B2 (D36): items whose producer feeds these consumer roles through splitter taps (one producer, role `item`), decided
+   * when splitters were worth researching. Other demands for the item stay point-to-point.
+   */
+  taps?: Record<string, string[]>
 }
 
 export interface DesignTarget {
@@ -278,7 +283,7 @@ interface Walk {
   short: boolean
 }
 
-function addProducer(w: Walk, item: string, rate: number, consumers: Demand[]): void {
+function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false): void {
   const ctx = w.ctx
   const gen = generatorFor(ctx, item)
   if (gen === undefined) {
@@ -294,7 +299,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[]): 
     return
   }
   if (s.short) w.short = true
-  const role = ctx.policy.topology === "splitter-tap" ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`
+  const role = ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`
   const util = s.capacity > EPS ? math.min(1, rate / s.capacity) : 1
   const node: DesignNode = {
     role,
@@ -341,7 +346,20 @@ function expandItem(w: Walk, item: string): void {
     let total = 0
     for (const d of mine) total += d.rate
     addProducer(w, item, total, mine)
-  } else for (const d of mine) addProducer(w, item, d.rate, [d])
+    return
+  }
+  // B2: the consumers recorded for splitter taps share one producer (the power node's fuel stays its own, so the
+  // power goal never waits for production).
+  const tapped = w.ctx.taps?.[item]
+  const group: Demand[] = []
+  const single: Demand[] = []
+  for (const d of mine) (tapped !== undefined && tapped.indexOf(d.to) >= 0 && !isPowerRole(d.to) ? group : single).push(d)
+  if (group.length >= 2) {
+    let total = 0
+    for (const d of group) total += d.rate
+    addProducer(w, item, total, group, true)
+  } else for (const d of group) single.push(d)
+  for (const d of single) addProducer(w, item, d.rate, [d])
 }
 
 function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number): Walk {

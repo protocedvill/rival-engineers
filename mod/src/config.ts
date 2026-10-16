@@ -133,6 +133,15 @@ export interface Config {
   /** M5b reconciler: ticks between two remedies for the same root cause, and remedies per root cause. */
   reconcileCooldownTicks: number
   reconcileMaxRemedies: number
+  /**
+   * D36: research the technology that unlocks undergrounds before a production/mall plan when routing that plan with
+   * undergrounds is at least this many tiles shorter (0 = off; a plan that fails without them always researches it).
+   */
+  logisticsUndergroundMinSaving: number
+  /** B2 (D36): the same for splitters: one producer feeding several consumers through splitter taps vs separate belts. */
+  logisticsSplitterMinSaving: number
+  /** D36 / B2: each comparison may use at most this many times the plan's own routing work (bounded extra work). */
+  plannerCompareWorkFactor: number
 }
 
 export type ConfigKey = keyof Config
@@ -210,6 +219,9 @@ export function getConfig(): Config {
     reconcileShortfall: setting(Settings.reconcileShortfall),
     reconcileCooldownTicks: setting(Settings.reconcileCooldownTicks),
     reconcileMaxRemedies: setting(Settings.reconcileMaxRemedies),
+    logisticsUndergroundMinSaving: setting(Settings.logisticsUndergroundMinSaving),
+    logisticsSplitterMinSaving: setting(Settings.logisticsSplitterMinSaving),
+    plannerCompareWorkFactor: setting(Settings.plannerCompareWorkFactor),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

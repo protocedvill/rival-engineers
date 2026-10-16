@@ -57,6 +57,8 @@ export interface PlannerEntry {
   baseFaction?: string
   /** Max underground distance override (1 = no undergrounds: `logistics` not researched yet). */
   maxUnderground?: number
+  /** Topology override for this plan (B2: a goal whose producers feed several consumers through splitter taps). */
+  topology?: string
 }
 
 declare global {
@@ -79,7 +81,7 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
   return selectPolicy(entry.policy ?? c.layoutPolicy, { modules: entry.request.modules.length }, {
     corridorMin: c.layoutCorridorMin,
     corridorPreferred: c.layoutCorridorPreferred,
-    topology: c.layoutTopology,
+    topology: entry.topology ?? c.layoutTopology,
     utilization: c.beltUtilization,
     smelting: c.layoutSmelting,
   })
@@ -101,6 +103,7 @@ export interface StartPlanOptions {
   terrain?: string
   baseFaction?: string
   maxUnderground?: number
+  topology?: string
 }
 
 /** Starts a layout job: scan the request's region, then place and route, all under the per-tick budgets. */
@@ -125,6 +128,7 @@ export function startPlan(o: StartPlanOptions): PlannerEntry {
     sharedTerrain: o.terrain !== undefined,
     baseFaction: o.baseFaction,
     maxUnderground: o.maxUnderground,
+    topology: o.topology,
   }
   p.entries[o.id] = entry
   p.order.push(o.id)

@@ -182,4 +182,19 @@ test("splitter-tap topology: one producer per item, sized for every consumer", (
   eq(coalEdges, 3, "feeding both smelters and the steam block")
 })
 
+test("B2: recorded splitter taps: one coal producer feeds both smelters; the power node keeps its own coal", () => {
+  const d = design(ctx({ taps: { coal: [SMELT_FE, SMELT_CU] } }), { item: RED, perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const coal = byRole(d.nodes, "coal")
+  ok(coal !== undefined, "one shared coal producer")
+  eq(byRole(d.nodes, `coal>${SMELT_FE}`), undefined, "no point-to-point coal for the iron smelter")
+  eq(byRole(d.nodes, `coal>${SMELT_CU}`), undefined, "nor for the copper smelter")
+  ok(byRole(d.nodes, "coal>power") !== undefined, "power keeps its own fuel producer")
+  let edges = 0
+  for (const e of d.edges) if (e.from === "coal") edges++
+  eq(edges, 2, "two edges from the shared producer")
+  const p2p = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  near(coal!.need, byRole(p2p.nodes, `coal>${SMELT_FE}`)!.need + byRole(p2p.nodes, `coal>${SMELT_CU}`)!.need, 1e-9, "sized for both")
+})
+
 run("design")

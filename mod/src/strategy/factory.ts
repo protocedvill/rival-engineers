@@ -16,12 +16,12 @@ import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/lay
 import { addEdge, addNode, edgeByRole, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, rateIn, removeEdge, removeNode } from "../planner/logical"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
-import { ConnectionRequest, ModuleRequest, PlanRequest } from "../planner/plan"
+import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
 import { powerRoles } from "../planner/power"
 import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
-import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec } from "./design"
+import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec, isPowerRole } from "./design"
 import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
 import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
@@ -92,6 +92,8 @@ export interface FactoryGoal {
   growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
+  /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
+  deferred?: boolean
   rework?: { clearJobs: number[]; add: EntitySpec[] }
 }
 
@@ -116,11 +118,16 @@ export interface FactoryState {
   progressTick: number
   lastUpkeep: number
   /**
-   * A production or mall goal failed every attempt without undergrounds (routes blocking each other: without
-   * undergrounds belts can't cross): the technology that unlocks them becomes a prerequisite of those goals, researched
-   * with hand-fed packs like the other unblocking techs.
+   * D36: the technology that unlocks undergrounds is a prerequisite of production and mall goals, researched with
+   * hand-fed packs like the other unblocking techs: a plan with undergrounds was at least `logistics-underground-min-saving`
+   * tiles shorter, or (no plan at all without them) a goal failed every attempt without them.
    */
   needUndergrounds?: string
+  /** B2 (D36): the same for splitters (`logistics-splitter-min-saving`); `taps` = which consumers then share a producer. */
+  needSplitters?: string
+  taps?: Record<string, string[]>
+  /** D36 / B2 comparisons so far (telemetry): goal, attempt, decision and one line per alternative. */
+  compares?: { goal: string; tick: number; research: boolean; why: string[] }[]
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -316,6 +323,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     researchUnitTime: ctx.config.factoryResearchUnitTime > 0 ? ctx.config.factoryResearchUnitTime : meanUnitTime(),
     tiers: tiers(),
     policy: policyFor(ctx.config),
+    taps: getFactory(ctx.faction.name)?.taps,
   }
 }
 
@@ -337,7 +345,9 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
   let built = 0
   for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
-  const key = `${f.needUndergrounds ?? ""}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let taps = 0
+  for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
+  const key = `${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -359,10 +369,10 @@ function designNow(ctx: Ctx): Design | undefined {
   }
   const researched = researchedTechs(ctx.force)
   const goals = goalsFrom(diff, researched)
-  const ugTech = f.needUndergrounds
-  if (ugTech !== undefined && !researched[ugTech]) {
-    if (d.techs.indexOf(ugTech) < 0) d.techs = [...d.techs, ugTech]
-    for (const spec of goals) if ((spec.kind === "production" || spec.kind === "mall") && spec.techs.indexOf(ugTech) < 0) spec.techs.push(ugTech)
+  for (const tech of [f.needUndergrounds, f.needSplitters]) {
+    if (tech === undefined || researched[tech]) continue
+    if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]
+    for (const spec of goals) if ((spec.kind === "production" || spec.kind === "mall") && spec.techs.indexOf(tech) < 0) spec.techs.push(tech)
     f.design.techs = d.techs
   }
   ;(d as Design & { goals?: GoalSpec[] }).goals = goals
@@ -606,7 +616,7 @@ function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undef
 
 function failedBefore(f: FactoryState, kind: GoalKind): number {
   let n = 0
-  for (const g of f.goals) if (g.kind === kind && g.status === "failed") n++
+  for (const g of f.goals) if (g.kind === kind && g.status === "failed" && !g.deferred) n++
   return n
 }
 
@@ -634,10 +644,52 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
   if (getPlannerEntry(id) !== undefined) removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)
-  startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground })
+  request.compare = compareOptions(ctx, g, maxUnderground)
+  const topology = f.taps !== undefined && next(f.taps)[0] !== undefined ? "splitter-tap" : undefined
+  startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology })
   g.plan = id
   g.status = "planning"
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) attempt ${g.attempts}: ${g.nodes.length} modules, ${connections.length} connections, region radius ${r}`)
+}
+
+/** Below this, a comparison may still use this much planner work (tiny plans have tiny routing work). */
+const COMPARE_MIN_WORK = 5000
+
+/** The technology that unlocks a belt tier's underground (`what` = "underground") or splitter, if not researched yet. */
+function unresearchedTech(ctx: Ctx, what: "underground" | "splitter"): string | undefined {
+  const entity = tiers()[0]?.[what]
+  if (entity === undefined) return undefined
+  const tech = prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(entity) ?? entity)
+  return tech !== undefined && !ctx.force.technologies[tech]?.researched ? tech : undefined
+}
+
+/**
+ * D36 / B2: what to compare a production or mall plan against while the technology that unlocks undergrounds
+ * (splitters) is not researched and not already decided: the same placement routed with undergrounds; and, for items
+ * this goal makes in several point-to-point producers (and no earlier goal makes, except the power node's fuel), one
+ * producer feeding the others' consumers through splitter taps.
+ */
+function compareOptions(ctx: Ctx, g: FactoryGoal, maxUnderground: number | undefined): CompareOptions | undefined {
+  const f = ctx.f
+  const c = ctx.config
+  if (g.kind !== "production" && g.kind !== "mall") return undefined
+  const opts: CompareOptions = { workFactor: c.plannerCompareWorkFactor, minWork: COMPARE_MIN_WORK }
+  if (c.logisticsUndergroundMinSaving > 0 && maxUnderground !== undefined && f.needUndergrounds === undefined && unresearchedTech(ctx, "underground") !== undefined) {
+    opts.undergrounds = { tiers: tiers() }
+  }
+  if (c.logisticsSplitterMinSaving > 0 && f.needSplitters === undefined && policyFor(c).topology !== "splitter-tap" && unresearchedTech(ctx, "splitter") !== undefined) {
+    const count: Record<string, number> = {}
+    for (const n of g.nodes) count[n.item] = (count[n.item] ?? 0) + 1
+    const items: string[] = []
+    for (const n of g.nodes) {
+      if (count[n.item] < 2 || items.indexOf(n.item) >= 0) continue
+      let earlier = false
+      for (const other of nodesOf(f.graph)) if (other.item === n.item && !isPowerRole(other.role)) earlier = true
+      if (!earlier) items.push(n.item)
+    }
+    if (items.length > 0) opts.splitters = { items }
+  }
+  return opts.undergrounds !== undefined || opts.splitters !== undefined ? opts : undefined
 }
 
 /** Undergrounds only once they can be crafted (`logistics`): 1 (none) before. */
@@ -667,6 +719,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if (entry.phase === "scan" || entry.phase === "plan") return
   // Planned against a terrain scan: another faction (or a player) may have claimed or built on its ground since.
   const contest = entry.phase === "done" ? contested(ctx, entry) : undefined
+  if (entry.phase === "done" && contest === undefined && deferForLogistics(ctx, g, entry)) return
   if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
     const roles: Record<string, string> = {}
@@ -705,6 +758,49 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   adoptPlan(ctx, g)
 }
 
+/**
+ * D36 / B2: a finished plan that compared itself with undergrounds / splitter taps. When an alternative is shorter by
+ * at least the setting, the goal is given up (deferred, not a failure) and the technology becomes a prerequisite of
+ * production and mall goals; the next design plans the same goal again once it is researched (with splitter taps for
+ * the recorded consumers). Returns true when deferred.
+ */
+function deferForLogistics(ctx: Ctx, g: FactoryGoal, entry: NonNullable<ReturnType<typeof getPlannerEntry>>): boolean {
+  const results: CompareResult[] = entry.job?.compare?.results ?? []
+  if (results.length === 0) return false
+  const f = ctx.f
+  const d = logisticsFirst(results, ctx.config.logisticsUndergroundMinSaving, ctx.config.logisticsSplitterMinSaving)
+  const research = d.undergrounds || d.splitters
+  f.compares ??= []
+  f.compares.push({ goal: `${g.id}-a${g.attempts}`, tick: ctx.tick, research, why: d.why })
+  if (f.compares.length > 20) f.compares.shift()
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} logistics comparison: ${d.why.join("; ")}${research ? "" : ": build the plan as it is"}`)
+  if (!research) return false
+  const ugTech = d.undergrounds ? unresearchedTech(ctx, "underground") : undefined
+  const spTech = d.splitters ? unresearchedTech(ctx, "splitter") : undefined
+  if (ugTech !== undefined) f.needUndergrounds = ugTech
+  if (spTech !== undefined) {
+    f.needSplitters = spTech
+    const roles: Record<string, string> = {}
+    for (const n of g.nodes) roles[n.id] = n.role
+    f.taps ??= {}
+    for (const [item, consumers] of pairs(d.taps)) {
+      const list = f.taps[item as string] ?? []
+      for (const id of consumers as string[]) {
+        const role = roles[id]
+        if (role !== undefined && list.indexOf(role) < 0) list.push(role)
+      }
+      f.taps[item as string] = list
+    }
+  }
+  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}-deferred.input.lua`)
+  removePlan(entry.id)
+  g.status = "failed"
+  g.deferred = true
+  g.reason = `research first: ${[ugTech, spTech].filter((t) => t !== undefined).join(", ")} (${d.why.join("; ")})`
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} deferred: ${g.reason}`)
+  return true
+}
+
 /** The new parts of a finished plan on ground another faction claimed or something foreign stands on, if any. */
 function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof getPlannerEntry>>): string | undefined {
   const job = entry.job!
@@ -734,6 +830,9 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
   const entry = getPlannerEntry(g.plan!)!
   const job = entry.job!
+  // With frame dumps on (soaks), every adopted plan's input too (before its layout becomes the base): plan-replay
+  // fixtures for planner changes (D36 / B2).
+  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
   f.layout = job.layout
   const parts: BuildParts = { modules: [], routes: [], poles: [] }
   for (const m of job.layout.modules) if (!job.baseModules[m.id]) parts.modules.push(m.id)
@@ -787,8 +886,6 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
     claimModuleFields(ctx, m)
   }
-  // With frame dumps on (soaks), every adopted plan's input too: plan-replay fixtures for planner changes (D36 / B2).
-  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
   const fuel = ctx.faction.brain!.catalog.fuel
   startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts })
   g.status = "building"
@@ -1474,7 +1571,7 @@ export function factoryReport(name: string) {
   for (const n of nodesOf(f.graph)) nodes[n.lifecycle] = (nodes[n.lifecycle] ?? 0) + 1
   return {
     stage: f.stage,
-    goals: f.goals.map((g) => ({ id: g.id, kind: g.kind, status: g.status, modules: g.nodes.length, flows: g.edges.length, attempts: g.attempts, placed: g.placed, rounds: g.rounds, created: g.createdTick, planned: g.plannedTick, built: g.builtTick, reason: g.reason })),
+    goals: f.goals.map((g) => ({ id: g.id, kind: g.kind, status: g.deferred ? "deferred" : g.status, modules: g.nodes.length, flows: g.edges.length, attempts: g.attempts, placed: g.placed, rounds: g.rounds, created: g.createdTick, planned: g.plannedTick, built: g.builtTick, reason: g.reason })),
     nodes,
     edges: f.graph.edgeOrder.length,
     design: f.design,
@@ -1482,6 +1579,7 @@ export function factoryReport(name: string) {
     waiting: f.waiting,
     verify: f.verify,
     reconciler: reconcilerReport(f),
+    logistics: { undergrounds: f.needUndergrounds, splitters: f.needSplitters, taps: f.taps, compares: f.compares },
   }
 }
 

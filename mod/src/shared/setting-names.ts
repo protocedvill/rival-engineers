@@ -67,4 +67,7 @@ export const Settings = {
   reconcileShortfall: "rival-engineers-reconcile-shortfall",
   reconcileCooldownTicks: "rival-engineers-reconcile-cooldown-ticks",
   reconcileMaxRemedies: "rival-engineers-reconcile-max-remedies",
+  logisticsUndergroundMinSaving: "rival-engineers-logistics-underground-min-saving",
+  logisticsSplitterMinSaving: "rival-engineers-logistics-splitter-min-saving",
+  plannerCompareWorkFactor: "rival-engineers-planner-compare-work-factor",
 } as const

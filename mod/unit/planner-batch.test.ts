@@ -8,7 +8,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { asciiTerrain, keyX, keyY, rectContains, TerrainView, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { placeNow, tryExpand } from "../src/planner/placement"
-import { ConnectionRequest, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
+import { CompareResult, ConnectionRequest, logisticsFirst, newRouteLength, newRoutingJob, PlanJob, PlanRequest, runJob } from "../src/planner/plan"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -177,7 +177,8 @@ test("B9: placement keeps off another module's growth area (a cost, not a block)
   const without = placeNow(req, state, terrain, policy({}, { softClaim: 0 }))
   eq(without.phase, "done", "placed without the weight")
   ok(overlaps(without.result!.rect), "without the weight it sits in the growth area")
-  const withW = placeNow(req, state, terrain, policy())
+  // The mechanism at weight 0.5 (early-compact's default is 0.1, a mild preference: see the M5c report).
+  const withW = placeNow(req, state, terrain, policy({}, { softClaim: 0.5 }))
   eq(withW.phase, "done", "placed with the weight")
   ok(!overlaps(withW.result!.rect), `with the weight it keeps off (${withW.result!.rect.x},${withW.result!.rect.y})`)
   // A wall of cliffs everywhere but the growth area: the claim does not block.
@@ -187,7 +188,7 @@ test("B9: placement keeps off another module's growth area (a cost, not a block)
     for (let x = 0; x < 120; x++) r += rectContains(area, x, y) || rectContains(m.rect, x, y) ? "." : "C"
     rows[y] = r
   }
-  const forced = placeNow({ ...req, region: { x: 0, y: 0, w: 120, h: 120 } }, state, asciiTerrain(rows), policy())
+  const forced = placeNow({ ...req, region: { x: 0, y: 0, w: 120, h: 120 } }, state, asciiTerrain(rows), policy({}, { softClaim: 0.5 }))
   eq(forced.phase, "done", "still placeable inside the claim when nothing else is free")
 })
 
@@ -218,6 +219,129 @@ test("B9: routes detour around a growth area when the detour is short", () => {
   print(string.format("    [b9] route tiles in the growth area: weight 0 → %d, weight 2 → %d", inside(off), inside(on)))
   ok(inside(off) > 0, "without the weight the route crosses the growth area")
   ok(inside(on) < inside(off), "with the weight it crosses fewer claimed tiles")
+})
+
+// --- D36 undergrounds / B2 splitters: the comparison --------------------------------------------------------
+
+const NO_UG = { ...YELLOW, maxUnderground: 1 }
+
+function result(job: PlanJob, kind: CompareResult["kind"]): CompareResult {
+  for (const r of job.compare?.results ?? []) if (r.kind === kind) return r
+  error(`no ${kind} result`)
+}
+
+/** A 3-wide river from the top down to `gapY`, a source west of it and a sink east of it (routes must go round). */
+function riverCase(gapY: number): PlanJob {
+  const rows = field(60, 80)
+  // The router's window reaches `margin` tiles past the endpoints: wide enough for the detour.
+  for (let y = 0; y < gapY; y++) rows[y] = rows[y].substring(0, 28) + "~~~" + rows[y].substring(31)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 10, 5)
+  place(state, b, 50, 5)
+  const req = request([a, b], [conn("c", "a", "b")], 60, 80)
+  req.compare = { undergrounds: { tiers: TIERS }, workFactor: 2, minWork: 5000 }
+  const job = runJob(newRoutingJob(req, NO_UG, state), terrain, F, policy({ margin: 40 }))
+  eq(job.phase, "done", "planned without undergrounds")
+  noProblems(job.layout, terrain, "river case")
+  eq(job.layout.routes["route:c"].undergrounds, 0, "the plan itself has no undergrounds")
+  return job
+}
+
+test("D36: a river 30 tiles long: the underground route is ≥ 50 tiles shorter", () => {
+  const job = riverCase(40)
+  const r = result(job, "undergrounds")
+  print(string.format("    [d36] long river: without %d, with undergrounds %s (saving %s), alternative work %g", r.base, tostring(r.alt), tostring(r.saving), r.work))
+  eq(r.status, "done", "alternative routed")
+  ok(r.saving! >= 50, `saving ${r.saving} ≥ 50`)
+  eq(r.base, newRouteLength(job.layout, job.baseRoutes), "base = the plan's route length")
+  ok(job.layout.routes["route:c"] !== undefined, "the plan's own route is kept")
+})
+
+test("D36: a short river: the underground route saves less than 50 tiles", () => {
+  const r = result(riverCase(12), "undergrounds")
+  print(string.format("    [d36] short river: without %d, with undergrounds %s (saving %s) %s", r.base, tostring(r.alt), tostring(r.saving), tostring(r.reason)))
+  eq(r.status, "done", "alternative routed")
+  ok(r.saving! > 0 && r.saving! < 50, `0 < saving ${r.saving} < 50`)
+})
+
+test("D36: the alternative's work is bounded (capped alternatives are no evidence)", () => {
+  const rows = field(60, 80)
+  for (let y = 0; y < 40; y++) rows[y] = rows[y].substring(0, 28) + "~~~" + rows[y].substring(31)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 10, 5)
+  place(state, b, 50, 5)
+  const req = request([a, b], [conn("c", "a", "b")], 60, 80)
+  req.compare = { undergrounds: { tiers: TIERS }, workFactor: 0, minWork: 5 }
+  const job = runJob(newRoutingJob(req, NO_UG, state), terrain, F, policy({ margin: 40 }), 50)
+  const r = result(job, "undergrounds")
+  eq(r.status, "capped", "capped")
+  ok(r.work <= 5 + 50, `work ${r.work} within the cap plus one step`)
+  eq(job.phase, "done", "the plan itself still finishes")
+})
+
+/** Two consumers of coal in the west, their coal producers far east (each with an ore feeder): point-to-point. */
+function coalCase(east: number): PlanJob {
+  const terrain = asciiTerrain(field(east + 12, 40))
+  const state = newLayout()
+  const s1 = sink("s1", EAST, "coal")
+  const s2 = sink("s2", EAST, "coal")
+  const k1 = box("k1", 1, 1, [{ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST_DIR, item: "coal" }])
+  const k2 = box("k2", 2, 1, [
+    { id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST_DIR, item: "coal" },
+    { id: "in", kind: "belt-in", pos: { x: 1.5, y: 0.5 }, dir: WEST_DIR, item: "stone" },
+  ])
+  const o2 = source("o2", WEST_DIR, "stone")
+  place(state, s1, 8, 10)
+  place(state, s2, 8, 20)
+  place(state, k1, east, 12)
+  place(state, k2, east, 18)
+  place(state, o2, east + 6, 18)
+  const req = request([s1, s2, k1, k2, o2], [conn("c1", "k1", "s1"), conn("c2", "k2", "s2"), conn("ore", "o2", "k2")], east + 12, 40)
+  req.compare = { splitters: { items: ["coal"] }, workFactor: 2, minWork: 5000 }
+  const job = runJob(newRoutingJob(req, NO_UG, state), terrain, F, policy())
+  eq(job.phase, "done", "planned point-to-point")
+  return job
+}
+
+const WEST_DIR = 12 as 0
+
+test("B2: two far coal producers: one producer with a splitter tap is ≥ 50 tiles shorter; its supply chain is dropped", () => {
+  const job = coalCase(70)
+  const r = result(job, "splitters")
+  print(string.format("    [b2] far: point-to-point %d, splitter taps %s (saving %s); dropped %s", r.base, tostring(r.alt), tostring(r.saving), (r.dropped ?? []).join(",")))
+  eq(r.status, "done", `alternative routed (${r.reason})`)
+  ok(r.saving! >= 50, `saving ${r.saving} ≥ 50`)
+  eq((r.merged?.coal ?? []).join(","), "s1,s2", "one coal producer would feed s1 and s2")
+  eq((r.dropped ?? []).join(","), "k2,o2", "k2 and its ore feeder dropped (k1 is nearer to both)")
+})
+
+test("B2: near coal producers: splitter taps save less than 50 tiles", () => {
+  const r = result(coalCase(20), "splitters")
+  print(string.format("    [b2] near: point-to-point %d, splitter taps %s (saving %s)", r.base, tostring(r.alt), tostring(r.saving)))
+  eq(r.status, "done", "alternative routed")
+  ok(r.saving! < 50, `saving ${r.saving} < 50`)
+})
+
+test("D36 / B2: the decision: research first only at or above the threshold; capped or failed alternatives don't count", () => {
+  const ug = (status: CompareResult["status"], saving?: number): CompareResult => ({ kind: "undergrounds", status, base: 100, alt: saving !== undefined ? 100 - saving : undefined, saving, work: 10 })
+  const sp: CompareResult = { kind: "splitters", status: "done", base: 120, alt: 60, saving: 60, work: 10, merged: { coal: ["n1", "n2"] } }
+  eq(logisticsFirst([ug("done", 50)], 50, 50).undergrounds, true, "50 ≥ 50")
+  eq(logisticsFirst([ug("done", 49)], 50, 50).undergrounds, false, "49 < 50")
+  eq(logisticsFirst([ug("capped")], 50, 50).undergrounds, false, "capped: no evidence")
+  eq(logisticsFirst([ug("failed")], 50, 50).undergrounds, false, "failed: no evidence")
+  eq(logisticsFirst([ug("done", 80)], 0, 50).undergrounds, false, "threshold 0 = rule off")
+  const d = logisticsFirst([ug("done", 10), sp], 50, 50)
+  eq(d.undergrounds, false, "undergrounds not worth it")
+  eq(d.splitters, true, "splitters are")
+  eq((d.taps.coal ?? []).join(","), "n1,n2", "taps recorded")
+  eq(logisticsFirst([sp], 50, 61).splitters, false, "own threshold for splitters")
+  eq(d.why.length, 2, "one line per alternative")
 })
 
 run("planner-batch")
