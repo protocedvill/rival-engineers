@@ -150,6 +150,8 @@ const FUEL_TOP_MINUTES = 8
 const LAB_LOW = 2
 const LAB_FEED = 5
 const MAX_PLAN_ATTEMPTS = 4
+/** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
+const TEMP_CLEARANCE = 6
 /** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
 const BUILD_ROUND_TICKS = 1800
 
@@ -647,6 +649,9 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const off = offsets[tries % offsets.length]
   const center = { x: f.center.x + off[0], y: f.center.y + off[1] }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
+  // factory still has to connect (seed 11: cells next to the labs' pack input made production unroutable).
+  if (g.kind === "temp") request.avoid = f.layout.modules.map((m) => ({ x: m.rect.x - TEMP_CLEARANCE, y: m.rect.y - TEMP_CLEARANCE, w: m.rect.w + 2 * TEMP_CLEARANCE, h: m.rect.h + 2 * TEMP_CLEARANCE }))
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
   if (getPlannerEntry(id) !== undefined) removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)

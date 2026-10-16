@@ -10,7 +10,7 @@ import { getFactory, startFactory, tempCells } from "../strategy/factory"
 import { at, createLab } from "./lab"
 
 // D38 (M5d): a temporary chest-fed gear cell supplies the bootstrap economy. The brain needs gears: it collects them
-// from the cell's output chest, feeds the cell's input chest with plates from the depot, waits for up to
+// from the cell's output chest, feeds the cell's input chest with surplus plates from the depot, waits for up to
 // `bootstrap-factory-wait-seconds` of the cell's output and hand-crafts only the rest.
 
 const SPEED = 50

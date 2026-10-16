@@ -51,6 +51,8 @@ export interface PlanRequest {
    * report how much shorter it is (the strategy researches it first when the saving is big enough).
    */
   compare?: CompareOptions
+  /** Rectangles no module of this request may overlap (D38: temporary factories keep clear of the core's modules). */
+  avoid?: Rect[]
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -427,7 +429,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   const id = job.replaceQueue[0]
   if (job.placement === undefined) {
     const mreq = moduleRequest(job, id)
-    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: job.avoid[id], softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id) })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
@@ -514,7 +516,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         if (t !== undefined) center = { x: t.x, y: t.y }
       }
     }
-    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id) })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0

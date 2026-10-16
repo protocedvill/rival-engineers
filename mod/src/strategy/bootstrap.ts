@@ -1025,9 +1025,11 @@ function produce(ctx: Ctx, item: string, short: number): void {
 }
 
 /**
- * D38: temporary factory cells making `item` (strategy/factory.ts): what their input chests and machines hold will
- * come out; the economy waits for at most `bootstrap-factory-wait-seconds` of a cell's output and feeds it (a fuel-style
- * insert job per ingredient into its input chest) up to that. Returns what is still short (hand-crafted).
+ * D38: temporary factory cells making `item` (strategy/factory.ts). What a cell holds (input chest and machine) and what
+ * the crew is bringing it will come out: the economy counts up to `bootstrap-factory-wait-seconds` of the cell's output as
+ * on its way. A cell is fed from the depot's **surplus** only (ingredients in stock beyond what the active jobs need),
+ * so the economy never waits on a chain of cells (belts on gears on plates): what the cells can't cover from stock now
+ * is hand-crafted. Returns what is still short.
  */
 function feedTempCells(ctx: Ctx, item: string, short: number): number {
   const cells = tempCells(ctx.faction.name, item)
@@ -1044,28 +1046,37 @@ function feedTempCells(ctx: Ctx, item: string, short: number): number {
     const inv = m.get_inventory(defines.inventory.crafter_input)
     const have: Record<string, number> = {}
     let queued = math.huge
+    let coming = math.huge
+    let feeding = false
     for (const ing of recipe.ingredients) {
+      const n = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      let inflight = 0
       const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
-      let n = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
       if (keyActive(ctx, key)) {
+        feeding = true
         const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]]
-        if (job.payload.kind === "fuel") n += job.payload.count
+        if (job.payload.kind === "fuel") inflight = job.payload.count
       }
       have[ing.name] = n
       queued = math.min(queued, math.floor(n / ing.amount))
+      coming = math.min(coming, math.floor((n + inflight) / ing.amount))
     }
     if (queued === math.huge) continue
-    const coming = math.min(queued * per, cap)
-    short -= coming
-    if (short <= 0) break
-    const room = math.floor((cap - queued * per) / per)
-    if (room < 1) continue
-    const n = math.min(math.ceil(short / per), room)
+    // What it holds and what the crew is bringing it (fed from surplus, so it is in stock) will come out.
+    short -= math.min(coming * per, cap)
+    if (short <= 0 || feeding) continue
+    // Fill it up to `cap` of output from the depot's surplus.
+    let crafts = math.floor((cap - queued * per) / per)
     for (const ing of recipe.ingredients) {
-      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
-      const add = (queued + n) * ing.amount - have[ing.name]
-      if (add <= 0 || keyActive(ctx, key)) continue
-      addKeyed(ctx, key, {
+      const surplus = (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)
+      crafts = math.min(crafts, math.floor((surplus + have[ing.name] - queued * ing.amount) / ing.amount))
+    }
+    if (crafts < 1) continue
+    short -= crafts * per
+    for (const ing of recipe.ingredients) {
+      const add = (queued + crafts) * ing.amount - have[ing.name]
+      if (add <= 0) continue
+      addKeyed(ctx, `tempfeed:${cell.input.unit_number}:${ing.name}`, {
         kind: "fuel",
         pos: cell.input.position,
         materials: [{ item: ing.name, count: add }],
@@ -1074,7 +1085,6 @@ function feedTempCells(ctx: Ctx, item: string, short: number): number {
       })
       addDemand(ctx, ing.name, add)
     }
-    short -= n * per
   }
   return short
 }
