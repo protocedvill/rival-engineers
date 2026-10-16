@@ -22,7 +22,14 @@ import {
   selectJob,
   addJob,
 } from "./board"
-import { factionSurface } from "./faction"
+import { addPlaceJob, factionSurface } from "./faction"
+
+declare global {
+  interface RivalEngineersStorage {
+    /** M6: entities boxed-in crew members picked up, to re-place from ghosts once gone. */
+    unboxGhosts?: { faction: string; params: Record<string, unknown>; tick: number }[]
+  }
+}
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { countWork, findEntities } from "../work"
 
@@ -60,6 +67,7 @@ export function onCrewTick(): void {
     config ??= getConfig()
     stepFaction(faction, config, tick)
   }
+  if (tick % 60 === 0) placeUnboxGhosts(tick)
 }
 
 function stepFaction(faction: FactionState, config: Config, tick: number): void {
@@ -144,6 +152,14 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     if (status === "queued" || status === "running") break
     member.actions.shift()
     unreserve(faction, ca.reserve)
+    // M6: a member that finds no path anywhere, several times in a row, is boxed in by what the crew built around it.
+    if (action?.reason === "no-path" && action.detail === "pathfinder found no path") member.noPaths = (member.noPaths ?? 0) + 1
+    else if (status === "succeeded") member.noPaths = 0
+    if ((member.noPaths ?? 0) >= TRAPPED_NO_PATHS) {
+      member.noPaths = 0
+      unbox(faction, member, tick)
+      return
+    }
     if (ca.job === undefined) continue // the walk to the standing spot
     const job = board.jobs[ca.job]
     if (job.status !== "claimed" || job.claimedBy !== member.id) continue
@@ -168,6 +184,70 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     member.actions = rest
     jobFailed(faction, member, job, action, status, config, tick)
   }
+}
+
+/** No-path failures in a row after which a member counts as boxed in (M6, seed 222: a member enclosed by a grown steam block hoarded the belts its build needed for hours). */
+const TRAPPED_NO_PATHS = 3
+/** How far around a boxed-in member to look for a small entity to pick up. */
+const UNBOX_RADIUS = 3
+/** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
+const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
+
+/**
+ * M6: like a player walled in by their own build, a boxed-in member picks up the nearest small entity around it and
+ * leaves a ghost in its place (a place job re-places it once the member is out). Its other work is dropped.
+ */
+function unbox(faction: FactionState, member: CrewMember, tick: number): void {
+  const c = member.character
+  if (!c.valid) return
+  const p = c.position
+  const found = findEntities(factionSurface(faction), { force: faction.force, type: UNBOX_TYPES, area: [[p.x - UNBOX_RADIUS, p.y - UNBOX_RADIUS], [p.x + UNBOX_RADIUS, p.y + UNBOX_RADIUS]] })
+  let best: LuaEntity | undefined
+  let bestRank = math.huge
+  for (const e of found) {
+    const d = (e.position.x - p.x) ** 2 + (e.position.y - p.y) ** 2
+    const rank = UNBOX_TYPES.indexOf(e.type) * 100 + d
+    if (rank < bestRank || (rank === bestRank && best !== undefined && (e.unit_number ?? 0) < (best.unit_number ?? 0))) {
+      best = e
+      bestRank = rank
+    }
+  }
+  resetMember(faction, member, tick)
+  if (best === undefined) {
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${math.floor(p.x)},${math.floor(p.y)} finds no path anywhere and nothing to pick up`)
+    return
+  }
+  const params: Record<string, unknown> = { name: "entity-ghost", inner_name: best.name, position: best.position, direction: best.direction, force: faction.force }
+  if (best.type === "underground-belt") params.type = best.belt_to_ground_type
+  const name = best.name
+  const at = `${best.position.x},${best.position.y}`
+  member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: best }) })
+  member.stats.unboxed = (member.stats.unboxed ?? 0) + 1
+  // The ghost goes in once the entity is gone (a ghost can't overlap it): the next poll makes it.
+  storage.unboxGhosts ??= []
+  storage.unboxGhosts.push({ faction: faction.name, params, tick })
+  log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${name} at ${at} (re-placed from a ghost)`)
+}
+
+/** M6: ghosts for what boxed-in members picked up, once the entity is gone; each gets a place job. */
+export function placeUnboxGhosts(tick: number): void {
+  const list = storage.unboxGhosts
+  if (list === undefined || list.length === 0) return
+  const keep: typeof list = []
+  for (const g of list) {
+    const faction = storage.factions[g.faction]
+    if (faction === undefined) continue
+    const surface = factionSurface(faction)
+    const pos = g.params.position as { x: number; y: number }
+    const still = findEntities(surface, { name: g.params.inner_name as string, position: pos, force: faction.force, limit: 1 })[0]
+    if (still !== undefined) {
+      if (tick - g.tick < 3600) keep.push(g)
+      continue
+    }
+    const ghost = surface.create_entity(g.params as never)
+    if (ghost !== undefined) addPlaceJob(faction, ghost, { priority: 90 })
+  }
+  storage.unboxGhosts = keep
 }
 
 function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, action: ActionRecord | undefined, tick: number): void {

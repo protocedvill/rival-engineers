@@ -409,4 +409,35 @@ describe("job board", () => {
       storage.testScratch = undefined
     })
   })
+
+  test("M6: a member boxed in by its own build picks up a pipe, gets out, does its job and the pipe is re-placed", () => {
+    const lab = createLab(24)
+    const faction = createFaction("m6-boxed", { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    // A closed ring of pipes around the member (pipes collide with characters).
+    let ring = 0
+    for (let x = -2; x <= 2; x++) {
+      for (let y = -2; y <= 2; y++) {
+        if (math.abs(x) !== 2 && math.abs(y) !== 2) continue
+        lab.surface.create_entity({ name: "pipe", position: at(lab, x, y), force: faction.force })
+        ring++
+      }
+    }
+    const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 10.5, 0.5), force: faction.force })!
+    chest.insert({ name: "wooden-chest", count: 1 })
+    addStockpile(faction, chest)
+    const ghost = lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 10.5, 6.5), force: faction.force })!
+    void ghost
+    planGhosts(faction)
+    async(60 * 60 * 5)
+    on_tick(() => {
+      const built = lab.surface.count_entities_filtered({ name: "wooden-chest", force: faction.force }) === 1
+      const pipes = lab.surface.count_entities_filtered({ name: "pipe", force: faction.force, area: [at(lab, -3, -3), at(lab, 3, 3)] })
+      if (!built || pipes !== ring) return
+      const m = storage.crew[faction.crew[0]]
+      assert((m.stats.unboxed ?? 0) >= 1, "it picked something up to get out")
+      log(`[m6] boxed-in member got out (${m.stats.unboxed} pick-ups), built the chest and re-placed the ring at tick ${game.tick}`)
+      done()
+      return false
+    })
+  })
 })

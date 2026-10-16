@@ -39,6 +39,21 @@ function factionStats(name: string) {
 export function registerRemoteInterface(): void {
   remote.add_interface("rival-engineers", {
     version: () => script.active_mods["rival-engineers"],
+    /** Debug probes: each crew member's position, claims (job kind and position) and running action. */
+    crew_debug: () => {
+      const out: unknown[] = []
+      for (const [id, m] of pairs(storage.crew)) {
+        const ctrl = storage.controllers[m.controller]
+        const cur = ctrl?.queue[0] !== undefined ? getAction(ctrl.queue[0]) : undefined
+        const claims: string[] = []
+        for (const j of m.claims) {
+          const job = storage.factions[m.faction]?.board.jobs[j]
+          if (job !== undefined) claims.push(`${j}:${job.payload.kind}@${math.floor(job.pos.x)},${math.floor(job.pos.y)}`)
+        }
+        out.push({ id, dead: m.dead, pos: m.character.valid ? m.character.position : undefined, claims, actions: m.actions.length, running: cur && { kind: cur.spec.kind, status: cur.status, phase: (cur as unknown as { phase?: string }).phase, reason: cur.reason } })
+      }
+      return out
+    },
     /** dump_entities(file, center, radius, surface?, water?) */
     dump_entities: (file: string, center: MapPosition, radius: number, surface?: string, water?: boolean) =>
       dumpEntities(file, center, radius, surface !== undefined ? game.surfaces[surface] : undefined, water),
