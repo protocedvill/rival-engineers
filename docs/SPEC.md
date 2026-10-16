@@ -420,6 +420,9 @@ Default to configurable (D18). Settings live in three places:
   window), `measure-probe-ticks` (600), `reconcile-remedies` (on), `reconcile-warmup-ticks` (18000), `reconcile-confirm`
   (3), `reconcile-shortfall` (0.25), `reconcile-cooldown-ticks` (18000), `reconcile-max-remedies` (3). **D35:**
   `layout-smelting` (`compact-core` | `near-ore`; empty = the policy's choice, `compact-core` in `early-compact`).
+- **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
+  `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
+  the plan's own routing work).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -692,6 +695,24 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
   port, counted from belt items' unique ids on that tile (one edge probed at a time per faction, 10 s each), not derived
   from machine counters; node rates come from `products_finished` (crafting machines) or the working share (drills, labs).
 
+M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5c"):
+
+- **P23, how D36 / B2 compare (proposed):** a production or mall plan made without undergrounds / splitters (their
+  technology not researched) routes its *same placement* again with them (routing only, no new placement: at most
+  `planner-compare-work-factor` × its routing work, at least 5,000 units). Length = entities placed (belt tiles,
+  underground ends, +1 per splitter). Splitter alternative: per item made by several new point-to-point producers, the
+  producer nearest to all their consumers is kept and feeds the others' consumers through splitter taps; the dropped
+  producers and their own supply chains vanish (the kept one is not re-sized: an estimate). The power node's fuel is
+  never tapped (the power goal must not wait for production). When an alternative is at least the setting shorter, the
+  goal is given up as *deferred* (not a failure), the technology becomes a prerequisite of production and mall goals
+  (hand-fed packs), and after it the goal is planned from scratch (with undergrounds; splitter taps for the recorded
+  consumers). A capped or failed alternative counts as no evidence. Alternative: compare full plans (placement too),
+  ~10× the extra work.
+- **P24, bundling and soft-claim weights (proposed, B7 / B9):** `RouterWeights.bundleFactor` 0.9 (a tile next to
+  another route's belt costs 0.9×); soft claims (D48 (4)) cost 0.5 per tile for routes (a module's own routes are exempt:
+  its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
+  clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
+
 Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
 
 Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
@@ -722,6 +743,8 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 ## Changelog
 
 - v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).
+- v0.16 (2026-10-16, M5c): §11 P23–P24 proposed (D36 / B2 comparison, bundling and soft-claim weights); §5.7
+  logistics-first settings.
 - v0.15 (2026-10-15, M5b): §11 P21–P22 proposed (reconciler remedies, edge flow probes); §5.7 measurement, reconciler
   and `layout-smelting` (D35) settings.
 - v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D47; §11 P17–P19 resolved.

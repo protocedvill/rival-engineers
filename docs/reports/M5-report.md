@@ -750,3 +750,146 @@ file (~1 min each) plus ~10 T1 runs, ~15 min. (c) Soaks: M5 acceptance 5 seeds �
 -j 5), 1 killed, 1 stopped; two factions 3 seeds × 1 (~7 min); CPU A/B 2 × 1 seed at -j 1 (~8 min); about 55 min
 in total. (d) Everything else (reading, design, code, report, waiting on runs that died): ~3 h, an estimate.
 
+
+## M5c: planner batch (2026-10-16)
+
+Backlog B2, B7, B9, B10 and the D36 rule. Commits 209b69a (work counters), 6348f20 (B7, B9), 2f3e204 (D36 / B2),
+07e4ee4 (reference benchmark; final code). Docs only after that.
+
+### D36: undergrounds by the 50-tile rule (2f3e204)
+
+- A production or mall plan made while undergrounds are not researched now gets a **comparison phase** after routing
+  (`planner/plan.ts` `compareStep`): a copy of its layout without its new routes is routed again with the real
+  underground tiers. Routing only, on the same placement (placement is ~90% of a plan's work), capped at
+  `planner-compare-work-factor` (2) × the plan's own routing work, at least 5,000 units. Length = entities placed
+  (belts + underground ends, +1 per splitter).
+- `logisticsFirst` (pure, T1) decides: an alternative at least `logistics-underground-min-saving` (50) tiles shorter
+  means research first. The goal is then **deferred** (status failed + `deferred`; it does not shift the retry offsets),
+  the technology becomes a prerequisite of production and mall goals (hand-fed packs, as P16 did), and the goal is
+  planned again from scratch once it is researched. Capped or failed alternatives are no evidence (the plan is built).
+- **The infinite case** stays the P16 path: a goal that fails every attempt without undergrounds makes them a
+  prerequisite. (The comparison only runs on a plan that succeeded.)
+- **Cost** (soaks and replays): the underground alternative used 5.5k–12k work units per plan, 7–15% of the plan's
+  work (production plans: 80k–390k). The real cost is the replan after the research: a deferred goal is planned twice.
+- **Effect on the acceptance seeds** (development round `m5c-dev1` on 2f3e204): 4 of 5 production plans were at least
+  50 tiles shorter with undergrounds (savings 92, 100, 104, 212; seed 11: 40, so it builds without). Those 4 research
+  `logistics` first. Seed 222 no longer burns 4 failed plans (47.1 → 41.7 min); the others moved by under a minute.
+
+### B2: splitters by the same rule (2f3e204)
+
+- Own setting `logistics-splitter-min-saving` (50). The alternative (`splitterAlt`): per item that several new
+  point-to-point producers make in this plan (and no earlier goal makes, except the power node's fuel), the producer
+  nearest to all their consumers is kept and feeds the other consumers through splitter taps (`topology: splitter-tap`
+  on that routing job); the dropped producers and everything that only fed them (their ore outposts) disappear. The
+  kept producer is not re-sized (an estimate, P23).
+- When it triggers, the faction records which consumer roles share a producer (`FactoryState.taps`); the design then
+  gives that item one producer (role `item`) for those consumers (`DesignContext.taps`), the power node keeps its own
+  fuel, and the plan entry runs with the splitter-tap topology. In vanilla `logistics` unlocks both.
+- In the soaks only coal qualified (two smelters' fuel). Savings: 34, −2, −133 tiles, or the alternative failed to
+  route (rip-up limits) on two seeds: **never ≥ 50**. Replays: 32 and 46. So splitters never triggered research; the
+  synthetic T1 case (two coal producers 60 tiles away) does (saving 60). Cost: 22k–42k work per plan, 2–3× the
+  underground alternative (more rip-ups with taps). If the user wants it cheaper, set the factor lower or the rule off.
+
+### B7: belt bundling (6348f20)
+
+`RouterWeights.bundleFactor` (0.9): a route tile with another route's belt on a 4-neighbour costs 0.9× (times
+`corridorFactor`). Reserved port outside and approach tiles (P5, P15) stay blocked, so the bonus can't open them.
+The A* heuristic uses the cheapest possible tile (`minTileCost`), so it stays admissible. T1: two flows with many equal
+paths, the second runs along the first for 74 of 77 tiles (0 without) at the same total length; at 0.8 a bundled route
+took a 10-tile detour to bundle, hence 0.9. The router-cost benchmark used fewer expansions (4,215 vs 5,015).
+
+### B9: soft claims (6348f20, weights 2f3e204)
+
+`growthArea(m)` (`layout.ts`): the strip an expandable module would add growing by every unit it still may, on the
+side `tryExpand` grows (the end that moves fewer entities), for any rotation/mirror. `markModule` records it in
+`LayoutState.soft` (tile → module); `unmarkModule` and growth to the cap release it. Placement adds a summed-area layer
+(`PlacementWeights.softClaim`, per footprint tile), the router `RouterWeights.softClaim` per tile (a module's own routes
+exempt: its ports sit at the growing end and move with it). T1: the claim equals what `tryExpand` adds for 4 transforms;
+placement keeps off it (and still uses it when nothing else is free); a route detours around it (11 → 0 tiles).
+**Weights:** the first default (0.5 placement) made production clusters 10–30% longer in belts in the replays and broke
+two of the no-underground replays (the no-underground cluster is chaotic: small weight changes flip it). Default
+placement weight is now **0.1** (route length back to within a few tiles), router 0.5. A tuning question for the user.
+
+### B10: performance gates (209b69a, 07e4ee4)
+
+1. **Work counters** (`mod/src/work.ts`, leaf module, `storage.work`): planner work units, placement candidates scored,
+   router expansions, path requests, entity scans (every AI `find/count_entities_filtered` goes through `findEntities` /
+   `countEntities`; telemetry and review tools don't count), jobs processed (crew completions), reconciler node
+   evaluations. Totals and peak per game-minute in `telemetry.json` (`work`). `tools/harness/workcounts.py` compares a
+   run with the config's committed baseline (`[run] work_baseline`), flags rises > 15% per seed, per counter, per peak and
+   over all seeds, and notes differing run lengths; `soak.py` and `m5_scorecard.py` append the section. Baseline
+   `tools/harness/baselines/m5-work.json` from `m5c-base` (209b69a: identical game minutes to M5b, so the counters don't
+   change behaviour). `m5-two-factions.toml` names `baselines/m5-two-factions-work.json`, **not recorded yet**: the
+   manager's next two-faction run can create it with `workcounts.py <run> --update`.
+2. **Reference benchmark** (`tools/harness/refbench.py`): `generate` builds a vanilla base by script on a fresh map (48
+   cells: 7 electric drills → belt → 10 electric furnaces → sinks, 10 assembling machines 2 on infinity chests, a belt
+   loop of moving plates, substations; an electric-energy-interface for power; ~12,000 built entities; checked after a
+   10-min warm-up: all drills and assemblers working, furnaces 60% as their ore supply allows) and saves it with a
+   headless server (`--benchmark` can't save). `bench` runs it with `--benchmark` (median of 3); `report <run>` benches
+   now and gives each seed's AI ms/tick as % of the reference update; `session` benches, runs a soak at -j 1, benches
+   again. Soaks also keep every adopted plan's input (`plans/`, for replays).
+
+### Tests
+
+- T1 `mod/unit/planner-batch.test.ts` (11): B7 bundling and reserved tiles; B9 claim = growth for 4 transforms,
+  placement, routing; D36 river ≥ 50 (saving 74) and < 50 (18), bounded/capped alternative; B2 far coal (60, supply
+  chain dropped) and near (10); the decision function. `design.test.ts`: recorded taps give one coal producer, power
+  keeps its own. `plan-replay.test.ts`: the seed 11 and 3333 production plans of the baseline soak replayed with the
+  comparison: undergrounds save 94 / 82 (research first), splitters 32 / 46 (not). (44444's and 555555's captures don't
+  replay: plain Lua's `pairs` order makes their no-underground cluster fail.)
+- T2 `routing.test.ts` "D36: ... in game": a plan clamped to no undergrounds across a river compares itself through the
+  runtime (saving 46, the most the lab's router window allows), bounded, and the work counters count it.
+
+### Results
+
+| Check | Commit | Result |
+|---|---|---|
+| Full T2 (`npm test`, 764 s wall, 8 shards, machine shared) | 07e4ee4 | **98/98** |
+| T1 (11 files) | 07e4ee4 | pass |
+| M5 acceptance (`m5.toml`, 5 seeds, -j 5, `out/soak/m5c-final`) | 07e4ee4 | **5/5**, no stalls: 11: 34.6, 222: 41.7, 3333: 32.4, 44444: 40.9, 555555: 28.7 game-min (M5b: 34.1, 47.1, 31.6, 42.3, 29.4) |
+| Work counts vs `m5-work.json` (209b69a) | 07e4ee4 | all seeds together: planner work +9%, candidates +4%, router expansions +12%, path requests, entity scans, jobs, reconciler −5 to −9% (shorter runs). 19 per-seed flags, all planner counters on the 4 seeds that defer production for `logistics` (the goal is planned twice: 1.2–2.7× planner work; seed 222, which used to fail 4 plans, is not flagged) |
+| Reference benchmark (`refbench.py session`, seed 11, -j 1, `out/soak/m5c-ref11`) | 07e4ee4 | reference base 0.410 / 0.411 ms/tick before / after; AI **0.495 ms/tick = 121%** of the reference update, worst minute 1.14 ms = 279% |
+
+The -j 5 acceptance run read 1.78–2.39 ms/tick AI (450–600% of the reference): concurrency, not cost (seed 11 alone
+reads 0.495). `m5c-dev1` (2f3e204) gave the same game minutes to the decimal, as expected (07e4ee4 only adds a tool).
+Seeds 222, 3333, 44444 and 555555 research `logistics` before production now; 11 builds without (saving 40 < 50).
+Their production phases are 0.8–2.0 min longer (research) and the build phases shorter on 222 / 44444 / 555555.
+
+### Magic numbers for the user
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `logistics-underground-min-saving` | `settings.ts`, `strategy/factory.ts` | 50 tiles | User decision D36. | yes |
+| `logistics-splitter-min-saving` | same | 50 tiles | Same as undergrounds (D36 says "n", own setting); a splitter costs more material than an underground pair. | yes |
+| `planner-compare-work-factor` | same, `planner/plan.ts` | 2 × the plan's routing work | Rerouting the same placement took 0.3–1× the routing work for undergrounds, 1–2× for splitters; 2 bounds it without cutting normal cases. | yes |
+| `COMPARE_MIN_WORK` | `strategy/factory.ts` | 5,000 units | Tiny plans have tiny routing work; 5,000 is ~1 s of planner budget at 100/tick. | no |
+| `bundleFactor` | `planner/policy.ts` (early-compact router) | 0.9 | 0.8 took 10-tile detours to bundle in T1; 0.9 bundles at equal length. | no (policy) |
+| `router.softClaim` | same | 0.5 per tile | A route crossing an 11-tile growth strip pays 5.5: a short detour wins, a long one doesn't. | no (policy) |
+| `placement.softClaim` | same | 0.1 per tile | 0.5 lengthened production belts 10–30% and broke 2 replays; 0.1 keeps lengths. | no (policy) |
+| Work tolerance | `tools/harness/workcounts.py`, baseline file | +15% | Identical code gives 0%; behaviour changes move run lengths by ~5–15%. | baseline field |
+| Reference size, warm-up | `tools/harness/refbench.py` | 48 cells, 10 game-min, 6,000 ticks × 3 runs | ~12k entities ≈ a 60–90 SPM pre-bot base; warm-up until furnaces and belts are steady. | CLI flags |
+
+### Deviations and assumptions
+
+- The comparison reroutes the **same placement** rather than planning a full alternative; for splitters the kept
+  producer keeps its size. Both underestimate what the alternative could do (conservative: research first less often).
+- Splitter decisions apply only to items no earlier goal makes (besides the power node's fuel): retrofitting taps onto
+  a built producer would duplicate it in the design.
+- The in-game T2 river case saves 46 tiles, not ≥ 50: the router's 24-tile window around the endpoints limits the
+  detour a lab can force. The ≥ 50 cases are T1 (synthetic and two real replays).
+
+### Questions for the user (non-blocking)
+
+1. P23: is "reroute the same placement" a fair comparison for D36 / B2, or should the alternative be a full plan (~10×
+   the extra work)?
+2. P24: soft-claim placement weight 0.1 (mild) or stronger (keeps growth room, longer belts)?
+3. Splitters never reached 50 tiles on the acceptance seeds (coal only). Keep the comparison (22k–42k work per
+   production plan), lower the factor, or turn it off until trunks (D22) matter?
+
+### Wall-clock time (estimates)
+
+(a) Full `npm test`: 1 × ~13 min (on the final commit). (b) Targeted: ~30 T1 runs (planner-batch, replays with weight
+variants) ~25 min, 3 T2 runs of the D36 test ~1 min, ~6 reference-base generations ~6 min. (c) Soaks: M5 acceptance 5
+seeds × 3 rounds at -j 5 (baseline ~14 min, development ~9 min, final ~9 min; the baseline overlapped the manager's
+validation soak) and 1 seed × 1 at -j 1 (~2 min plus 2 reference benches). (d) Everything else (reading, design, code,
+report): ~3.5 h, an estimate; a usage-limit pause is not counted.
