@@ -137,13 +137,17 @@ function prepareDataDir(dir) {
 
 const shortPath = (p) => relative(process.cwd(), p) || "."
 
+const SHARD_OUTPUT_TIMEOUT_S = 900
+
 function runShard(shard, id) {
   const dataDir = join(shardsDir, String(id))
   prepareDataDir(dataDir)
   const resultsFile = join(shardOutDir, `shard-${id}.json`)
   const logFile = join(shardOutDir, `shard-${id}.log`)
   rmSync(resultsFile, { force: true })
-  const args = ["run", "-d", dataDir, "--output-file", resultsFile, "--no-frozen-lockfile", "--no-reorder-failed-first", "--", ...shard.patterns]
+  // A shard runs next to the others, so a long on_tick test without a heartbeat (module validation waits 15-23
+  // game-min for steady state) can be silent far longer than factorio-test.json's 180 s alone allows.
+  const args = ["run", "-d", dataDir, "--output-file", resultsFile, "--output-timeout", String(SHARD_OUTPUT_TIMEOUT_S), "--no-frozen-lockfile", "--no-reorder-failed-first", "--", ...shard.patterns]
   const started = Date.now()
   return new Promise((resolve) => {
     const log = []
