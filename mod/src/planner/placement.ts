@@ -558,12 +558,16 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
     // B6: the grown drills' mining areas must not reach a second ore (or another faction's field, D46).
     const resource = canon.anchor?.resource
     for (const a of placed.anchor?.miningAreas ?? []) {
+      // M6a.2 (seed 222): a drill with none of its ore in reach can't be placed at all (worked-out ground).
+      let mine = false
       for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
         for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
           const ore = terrain.ore(x, y)
           if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
+          if (ore === resource) mine = true
         }
       }
+      if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${origin.x + a.x},${origin.y + a.y}`, movedPorts: [], moved: [] }
     }
   }
   const ring = inflate(rect, policy.corridor.min)

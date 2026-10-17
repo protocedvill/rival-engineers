@@ -19,6 +19,11 @@ function free(w: number, h: number): TerrainView {
   return { block: (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? UNKNOWN : FREE), ore: () => undefined }
 }
 
+/** Free terrain with iron ore from row `fromY` down (the mines' patch; the smelters stand north of it). */
+function oreField(w: number, h: number, fromY: number): TerrainView {
+  return { block: free(w, h).block, ore: (x, y) => (y >= fromY && x >= 0 && x < w && y < h ? "iron-ore" : undefined) }
+}
+
 function place(l: LayoutState, id: string, def: ModuleDef, x: number, y: number): PlacedModule {
   const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(l, m, F, 2)
@@ -53,7 +58,7 @@ test("a built 4-furnace smelter grows to 8: 4 furnaces added, the moved end rebu
 })
 
 test("growing a producer with a splitter tap rips and reroutes the tap too (seed 11: tap belts left under the new drills)", () => {
-  const view = free(120, 120)
+  const view = oreField(120, 120, 45)
   const l = newLayout()
   const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
   const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
@@ -86,8 +91,22 @@ test("growing a producer with a splitter tap rips and reroutes the tap too (seed
   eq(problems.length, 0, problems.join("; "))
 })
 
+test("a mining outpost doesn't grow onto worked-out ground: every new drill needs its ore in reach (M6a.2, seed 222)", () => {
+  const mk = (oreRows: number): TerrainView => ({
+    block: (x, y) => (x < 0 || y < 0 || x >= 90 || y >= 90 ? UNKNOWN : FREE),
+    ore: (x, y) => (y >= 55 && y < 55 + oreRows && x >= 30 && x < 70 ? "iron-ore" : undefined),
+  })
+  const l = newLayout()
+  const mine = place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 44, 60)
+  const rich = planGrowth(l, mk(40), F, POLICY, TIER, "mine", 1)
+  ok(rich.ok, `grows on ore: ${rich.reason}`)
+  // Ore only under the built drills (the rest worked out): the growth is refused, whichever end it takes.
+  const r2 = planGrowth(l, { block: mk(0).block, ore: (x, y) => (x >= mine.rect.x - 2 && x < mine.rect.x + mine.rect.w + 2 && y >= mine.rect.y - 2 && y < mine.rect.y + mine.rect.h + 2 ? "iron-ore" : undefined) }, F, POLICY, TIER, "mine", 1)
+  ok(!r2.ok && string.find(r2.reason ?? "", "no iron-ore under a drill", 1, true)[0] !== undefined, `refused: ${r2.reason}`)
+})
+
 test("the factory's reserved tiles follow its layout: tiles a growth or reroute gives up are released (M6a.2, seed 11)", () => {
-  const view = free(120, 120)
+  const view = oreField(120, 120, 45)
   const l = newLayout()
   const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
   place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 50, 70)

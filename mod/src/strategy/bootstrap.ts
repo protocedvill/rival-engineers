@@ -12,6 +12,7 @@ import { mallSources, tempCells } from "./factory-report"
 import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
+import { markDirty } from "../planner/terrain"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -628,6 +629,8 @@ function checkDepletion(ctx: Ctx): void {
 /** D43: the replacement is built; the old site stops being maintained and its entities are picked up. */
 function retireSite(ctx: Ctx, site: Site): void {
   site.status = "retired"
+  // Its ore is (nearly) worked out: planners scan that ground again before they count on it (M6a.2, seed 222).
+  for (const part of site.parts) markDirty(ctx.faction.surface, { x: part.position.x - 4, y: part.position.y - 4 }, { x: part.position.x + 4, y: part.position.y + 4 })
   log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) retired`)
 }
 

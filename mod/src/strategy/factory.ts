@@ -11,7 +11,7 @@ import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
 import { planGrowth } from "../planner/grow"
 import { markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
-import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
+import { findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
@@ -597,6 +597,14 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   const t = storage.terrains?.[f.terrain]
   if (t === undefined) return false
+  // M6a.2 (seed 222): ore under a mining module's growth may be worked out since the last scan: look again.
+  const gm = findModule(f.layout, gr.node)
+  if (gm?.canonical.anchor?.resource !== undefined) {
+    const ga = growthArea(gm) ?? gm.rect
+    for (let cx = math.floor(math.min(gm.rect.x, ga.x) / 32); cx <= math.floor((math.max(gm.rect.x + gm.rect.w, ga.x + ga.w) + 2) / 32); cx++) {
+      for (let cy = math.floor(math.min(gm.rect.y, ga.y) / 32); cy <= math.floor((math.max(gm.rect.y + gm.rect.h, ga.y + ga.h) + 2) / 32); cy++) if (ctx.surface.is_chunk_generated({ x: cx, y: cy })) scanChunk(t, ctx.surface, cx, cy)
+    }
+  }
   const policy = policyFor(ctx.config)
   const tier = RT.tiers()[0]
   const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
