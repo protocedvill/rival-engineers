@@ -821,7 +821,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
-- v0.20 (2026-10-16, M6a): §11 P30–P35 proposed (30 + 30 stage and clusters, sustained-throughput measure, shared
+- v0.20 (2026-10-16/17, M6a): §11 P30–P36 proposed (30 + 30 stage and clusters, sustained-throughput measure, shared
   providers, second steam block / lab array, stuck builds and boxed-in crews, bootstrap eviction); §5.7 M6 settings.
 - v0.19 (2026-10-16, user decisions via the manager): D51 (buffers 2 slots on smelter columns, circuit blocks and gear rows; P29 approved; bootstrap sites allowed on production patches, deconstructible); P26 pending the user's in-game check.
 - v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
