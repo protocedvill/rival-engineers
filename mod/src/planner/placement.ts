@@ -215,6 +215,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const occ = state.occ
   const reserved = state.reserved
   const routeOcc = state.routeOcc
+  const mine = state.mine ?? {}
   let hard = 0
   let ores = 0
   let clear = 0
@@ -236,7 +237,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const k = tkey(x, y)
     const b = terrain.block(x, y)
     const o = occ[k]
-    if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined) hard++
+    if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined || (mine[k] !== undefined && mine[k] !== s.req.id)) hard++
     const ore = terrain.ore(x, y)
     if (ore !== undefined) {
       ores++
@@ -546,6 +547,8 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       const o = state.occ[kk]
       if (o !== undefined && !ownTags[o]) return { ok: false, reason: `occupied at ${x},${y}`, movedPorts: [], moved: [] }
       if (state.routeOcc[kk] !== undefined) return { ok: false, reason: `route at ${x},${y}`, movedPorts: [], moved: [] }
+      const mo = state.mine?.[kk]
+      if (mo !== undefined && mo !== m.id) return { ok: false, reason: `mine claim of ${mo} at ${x},${y}`, movedPorts: [], moved: [] }
       const r = state.reserved[kk]
       if (r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`) return { ok: false, reason: `reserved at ${x},${y}`, movedPorts: [], moved: [] }
       if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }

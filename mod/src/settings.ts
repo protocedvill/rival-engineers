@@ -744,4 +744,20 @@ data.extend([
     maximum_value: 1000,
     order: "j-bf",
   },
+  {
+    type: "int-setting",
+    name: Settings.factoryPowerFuelMinutes,
+    setting_type: "runtime-global",
+    default_value: 10,
+    minimum_value: 0,
+    maximum_value: 600,
+    order: "j-bg",
+  },
+  {
+    type: "bool-setting",
+    name: Settings.factoryFuelFallback,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "j-bh",
+  },
 ])

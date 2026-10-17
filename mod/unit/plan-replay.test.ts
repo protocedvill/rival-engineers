@@ -5,7 +5,7 @@
 // same scenario, not a bit-exact rerun.)
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
-import { FREE, TerrainView, UNKNOWN } from "../src/planner/grid"
+import { FREE, OWN, TerrainView, UNKNOWN } from "../src/planner/grid"
 import { LayoutState, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
@@ -58,10 +58,14 @@ function load(name: string): PlanInput {
 interface ReplayOptions {
   /** Plan with the vanilla belt tiers' undergrounds (the capture had them restricted). */
   undergrounds?: boolean
+  /** Tiles (x1, y1, x2, y2 inclusive) the capture saw as own ground that hold nothing: free them (stale reservations). */
+  free?: [number, number, number, number][]
+  /** Expected outcome (default done). */
+  expect?: "done" | "failed"
 }
 
 function replay(name: string, opts: ReplayOptions = {}): void {
-  test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}`, () => {
+  test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
     const fx = load(name)
     // Experiments: REPLAY_ROUTER="maxRipups=6,rip=10" overrides router weights of the captured policy.
     for (const [k, v] of string.gmatch(os.getenv("REPLAY_ROUTER") ?? "", "(%w+)=([%d.]+)")) (fx.policy.router as unknown as Record<string, number>)[k] = tonumber(v)!
@@ -70,11 +74,20 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
     const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
-    runJob(job, fixtureView(fx), F, fx.policy, 100000)
+    const view = fixtureView(fx)
+    const free = opts.free ?? []
+    const terrain: TerrainView = {
+      block: (x, y) => {
+        for (const [x1, y1, x2, y2] of free) if (x >= x1 && x <= x2 && y >= y1 && y <= y2 && view.block(x, y) === OWN) return FREE
+        return view.block(x, y)
+      },
+      ore: (x, y) => view.ore(x, y),
+    }
+    runJob(job, terrain, F, fx.policy, 100000)
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
-    ok(job.phase === "done", `plan done (${why.join("; ")})`)
+    ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
   })
 }
 
@@ -202,7 +215,14 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
 // outpost 2 tiles over, but the no-underground cluster then routes 392 tiles instead of 336 (rip-up order); one coal
 // producer then saves 88 tiles, so the splitter comparison (off by default since D50) would research splitters there.
 // REPLAY_DUMP=1 prints the placements and soft claims.
-compareReplay("seed11-production-ok", { undergrounds: true, splitters: true })
-compareReplay("seed3333-production-ok", { undergrounds: true, splitters: false })
+// D52 (3) (M6a.2): mining outposts' room to grow is a hard claim; the placements and routes moved, and the splitter
+// decisions flipped (seed 11: one coal producer now saves -1 tiles, was 88; seed 3333: 60, was 46). The splitter
+// comparison is off by default (D50); the underground decision is unchanged (118 / 82 tiles).
+compareReplay("seed11-production-ok", { undergrounds: true, splitters: false })
+compareReplay("seed3333-production-ok", { undergrounds: true, splitters: true })
+
+// M6a.2: seed 11's cluster-1 green line (fix11, t211770): the labs' green input is boxed in by fixed routes.
+replay("seed11-green-boxed", { expect: "failed" })
+replay("seed11-green-boxed", { free: [[475, -81, 493, -76]] })
 
 run("plan-replay")

@@ -4,6 +4,7 @@ import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { nodeByRole, rateIn } from "../planner/logical"
+import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
@@ -53,7 +54,7 @@ export function labUnitTime(config: Config, stage: number): number {
  * shared (design.ts `DesignContext.sharing`): consumers already fed keep their producer; a producer's spare capacity
  * (planned output minus what its edges carry) is offered to new consumers of its item.
  */
-export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>> } | undefined {
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
   const keep: Record<string, string> = {}
@@ -78,7 +79,35 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room
     }
   }
-  return { keep, spare }
+  return { keep, spare, fallback: fallbackProducers(f) }
+}
+
+/**
+ * P36 (b, proposed): for each item whose new producer could not be placed (`FactoryState.fallback`), the built producers
+ * of it new consumers tap instead, nearest the hub first (growable ones before those whose growth keeps failing). Never
+ * one that is not tapped again (`noTap`).
+ */
+export function fallbackProducers(f: FactoryState | undefined): Record<string, string[]> | undefined {
+  if (f?.fallback === undefined) return undefined
+  let out: Record<string, string[]> | undefined
+  for (const [item] of pairs(f.fallback)) {
+    const list: { role: string; key: number }[] = []
+    for (const id of f.graph.nodeOrder) {
+      const n = f.graph.nodes[id]
+      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role]) continue
+      const m = findModule(f.layout, id)
+      if (m === undefined) continue
+      const dx = m.rect.x + m.rect.w / 2 - f.center.x
+      const dy = m.rect.y + m.rect.h / 2 - f.center.y
+      const blocked = (f.growFails?.[n.role] ?? 0) >= GROW_MAX_FAILS ? 1e9 : 0
+      list.push({ role: n.role, key: blocked + dx * dx + dy * dy })
+    }
+    list.sort((a, b) => (a.key !== b.key ? a.key - b.key : a.role < b.role ? -1 : 1))
+    if (list.length === 0) continue
+    out ??= {}
+    out[item as string] = list.map((x) => x.role)
+  }
+  return out
 }
 
 /** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */

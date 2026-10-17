@@ -208,6 +208,8 @@ function ownerHasPoles(job: PoleJob, owner: string): boolean {
 function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): number {
   const k = tkey(x, y)
   if (layout.occ[k] !== undefined || layout.reserved[k] !== undefined || layout.routeOcc[k] !== undefined) return -1
+  // D52 (3): never on a mining outpost's room to grow.
+  if (layout.mine?.[k] !== undefined) return -1
   const b = terrain.block(x, y)
   let c = 1
   if (b === TREE) {

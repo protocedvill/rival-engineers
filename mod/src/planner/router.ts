@@ -136,6 +136,9 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   if (state.occ[k] !== undefined) return -1
   const r = state.reserved[k]
   if (r !== undefined && !req.own[r]) return -1
+  // D52 (3): a mining outpost's room to grow takes only its own routes.
+  const mo = state.mine?.[k]
+  if (mo !== undefined && mo !== req.to.module && mo !== req.from?.module) return -1
   const w = policy.router
   let extra = 0
   const occupant = state.routeOcc[k]

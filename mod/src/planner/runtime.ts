@@ -179,7 +179,7 @@ export function claimView(name: string | undefined, surface: string, base: Terra
       const k = tkey(x, y)
       if (others.length > 0 && claimed(others, k)) return FOREIGN
       if (reserved === undefined || !reserved[k]) return b
-      if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined)) return b
+      if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined || layout.mine?.[k] !== undefined)) return b
       return OWN
     },
     // D46: ore of another faction's field is not this faction's resource (a drill reaching it is refused, B6).

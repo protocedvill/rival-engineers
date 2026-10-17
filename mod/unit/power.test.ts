@@ -1,10 +1,12 @@
-import { labArray, steamBlock } from "../src/modules/generators"
+import { labArray, miningOutpost, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { ModuleDef } from "../src/modules/types"
 import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
-import { commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { commitModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { newPoleJob, polesNow, powerRoles, stepPoles, unpoweredModules } from "../src/planner/power"
 import { selectPolicy } from "../src/planner/policy"
+import { RouteRequest, tileCost } from "../src/planner/router"
+import { beltTiers } from "../src/planner/capacity"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -67,6 +69,28 @@ test("a line of small poles joins a lab array 40 tiles from the steam block; eac
   eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
   eq(layout.poleLines?.length, 1, "one line")
   eq(layout.poleLines![0].to, "labs", "joined the labs")
+})
+
+test("D52 (3): a mining outpost's room to grow is a hard claim: the pole line goes around it", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  // The labs east of the strip the mine grows into (south of it, x 30..38): a straight line would cross it.
+  place(layout, "labs", labs, 60, 20)
+  const mine = place(layout, "mine", miningOutpost(F, { resource: "coal", rows: 2, sides: 2, drill: "burner-mining-drill" }), 30, 0)
+  const g = growthArea(mine)!
+  print(`  mine ${mine.rect.x},${mine.rect.y} ${mine.rect.w}x${mine.rect.h}, growth ${g.x},${g.y} ${g.w}x${g.h}`)
+  let claimed = 0
+  for (const [, owner] of pairs(layout.mine ?? {})) if (owner === "mine") claimed++
+  eq(claimed, g.w * g.h, "every tile of its growth area is claimed")
+  const view = terrain(100, 90)
+  const job = polesNow(layout, view, F, POLICY)
+  eq(job.phase, "done", "done")
+  eq(unpoweredModules(layout, F).length, 0, "everything powered")
+  for (const p of layout.poles ?? []) ok(layout.mine![tkey(p.x, p.y)] === undefined, `pole ${p.id} at ${p.x},${p.y} off the mine's room to grow`)
+  // Routes: another module's route can't take it, the outpost's own can.
+  const req = (to: string): RouteRequest => ({ id: "r", conn: "r", item: "coal", to: { module: to, port: "in" }, goal: { x: 0, y: 0, dir: 0 }, tier: beltTiers(F)[0], own: {} })
+  ok(tileCost(layout, view, POLICY, req("labs"), false, g.x + 1, g.y + 3) < 0, "another module's route is refused")
+  ok(tileCost(layout, view, POLICY, req("mine"), false, g.x + 1, g.y + 3) >= 0, "the outpost's own route may pass")
 })
 
 test("poles go around a lake and never stand on water, cliffs or other structures", () => {

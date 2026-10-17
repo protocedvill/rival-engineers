@@ -1,12 +1,12 @@
 import { LuaForce, LuaSurface } from "factorio:runtime"
-import { clearConfigOverrides, setConfigOverride } from "../config"
+import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { EAST, ModuleDef, NORTH, SOUTH } from "../modules/types"
 import { beltTiers } from "../planner/capacity"
-import { Vec } from "../planner/grid"
+import { tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { addEdge, addNode, LogicalGraph, LogicalNode, NodeKind } from "../planner/logical"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -14,6 +14,7 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
+import { checkPowerFuel, powerFuelled } from "../strategy/fuel"
 import { FactoryState, getFactory, reconcileNow, startFactory } from "../strategy/factory"
 import { describeMachines } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
@@ -379,5 +380,45 @@ describe("M5b reconciler", () => {
       assert(getFactory(c.faction.name) === c.f, "same factory")
       done()
     })
+  })
+
+  test("P36 (a): a steam block's coal outpost with little ore left is given up (deconstructed, out of the layout and graph); one with plenty is kept", () => {
+    const lab = createLab(48)
+    const { faction, f } = testFaction(lab, 30, 30)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // Two coal patches: a poor one (1 per tile) and a rich one.
+    for (let x = -20; x < 0; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 1 })
+    for (let x = 10; x < 30; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 1000000 })
+    scan(lab, faction.force)
+    const layout = newLayout()
+    const poor = placeDef(layout, "poor", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox - 15, y: oy + 24 })
+    const rich = placeDef(layout, "rich", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox + 15, y: oy + 24 })
+    const r = stampParts(s, faction.force, layout, { modules: ["poor", "rich"], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const tick = game.tick
+    node(f.graph, poor, "module", "coal", 1, tick)
+    node(f.graph, rich, "module", "coal", 1, tick)
+    addNode(f.graph, { id: "pw", role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addNode(f.graph, { id: "pw2", role: "power#2", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    edge(f.graph, "coal>power=>power.in-fuel", "poor", "out", "pw", "in-fuel", "coal", 1)
+    edge(f.graph, "coal>power#2=>power#2.in-fuel", "rich", "out", "pw2", "in-fuel", "coal", 1)
+    for (let x = poor.rect.x; x < poor.rect.x + poor.rect.w; x++) for (let y = poor.rect.y; y < poor.rect.y + poor.rect.h; y++) faction.brain!.reserved[tkey(x, y)] = true
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
+    assert(checkPowerFuel(ctx, true) === undefined, "not while a plan works on a copy of the layout")
+    assert(checkPowerFuel({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
+    const gone = checkPowerFuel(ctx, false)
+    assert(gone === "poor", `the poor outpost is given up (${gone})`)
+    assert(f.graph.nodes["poor"] === undefined && f.graph.edges["coal>power=>power.in-fuel"] === undefined, "its node and edge leave the graph")
+    assert(findModule(f.layout, "poor") === undefined && findModule(f.layout, "rich") !== undefined, "it leaves the layout, the rich one stays")
+    assert(!powerFuelled(f.graph, f.graph.nodes["pw"]) && powerFuelled(f.graph, f.graph.nodes["pw2"]), "the first steam block has no fuel supply now (the crew fuels its boilers)")
+    let clears = 0
+    for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
+    assert(clears > 0, `its entities get clear jobs (${clears})`)
+    assert(faction.brain!.reserved[tkey(poor.rect.x + 1, poor.rect.y + 1)] === undefined, "its tiles are no longer reserved")
+    assert(f.fuelRelocations === 1, "counted")
+    assert(checkPowerFuel(ctx, false) === undefined, "the rich one is kept")
   })
 })

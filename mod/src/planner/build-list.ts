@@ -99,6 +99,35 @@ export function partTiles(layout: LayoutState, parts: BuildParts): number[] {
   return out
 }
 
+/**
+ * What the factory keeps the bootstrap off (`brain.reserved`): every tile the layout builds on plus a one-tile margin
+ * around each module. Recomputed from the layout whenever the layout gives up ground (M6a.2: a growth that rerouted a
+ * route left its old tiles reserved, and later plans saw them as the faction's own entities; seed 11's labs port was
+ * walled in by them).
+ */
+export function factoryReserveTiles(layout: LayoutState): number[] {
+  const out = layoutTiles(layout)
+  const seen: Record<number, boolean> = {}
+  for (const k of out) seen[k] = true
+  // D52 (3): mining outposts' room to grow too (the bootstrap and other factions keep off it).
+  for (const [k] of pairs(layout.mine ?? {})) {
+    if (seen[k as number]) continue
+    seen[k as number] = true
+    out.push(k as number)
+  }
+  for (const m of layout.modules) {
+    for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) {
+      for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) {
+        const k = tkey(x, y)
+        if (seen[k]) continue
+        seen[k] = true
+        out.push(k)
+      }
+    }
+  }
+  return out
+}
+
 /** Every tile the layout builds on (footprints, route tiles, splitter tiles): where trees and rocks must go. */
 export function layoutTiles(layout: LayoutState): number[] {
   const out: number[] = []

@@ -73,8 +73,10 @@ export interface DesignContext {
    * (already fed) → its producer's role (it keeps it). New consumers of an item first tap a producer of it with spare capacity
    * (`spare`: item → producer role → planned output minus what its edges carry), else share one new producer per cluster
    * (`item*>first consumer`). Absent: point-to-point.
+   * `fallback` (P36 (b), proposed): item → built producer roles, nearest first, that new consumers tap when a new producer
+   * of the item could not be placed (the first one takes them all and grows).
    */
-  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>> }
+  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]> }
   /**
    * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
    * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
@@ -434,6 +436,17 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     fresh.length = 0
     for (const d of rest) fresh.push(d)
   }
+  // P36 (b): no room for a new producer of this item: the nearest built one takes the new consumers (and grows),
+  // a steam block too (a built producer never makes it wait).
+  const fb = shared.fallback?.[item]?.[0]
+  if (fb !== undefined && fresh.length > 0) {
+    if (byProducer[fb] === undefined) {
+      byProducer[fb] = []
+      producers.push(fb)
+    }
+    for (const d of fresh) byProducer[fb].push(d)
+    fresh.length = 0
+  }
   // A new steam block (power#2) may tap a built producer, but never waits in a new shared group.
   for (let i = fresh.length - 1; i >= 0; i--) {
     if (!isPowerRole(fresh[i].to)) continue
@@ -647,6 +660,35 @@ function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string
   return split
 }
 
+/**
+ * A built producer shared by consumers in several clusters (B19 keep, P36 (b) fallback) is designed once per cluster
+ * walk: merge those copies into the first (needs, input rates and electric demand add up), so the diff sees the whole
+ * demand on the one graph node and grows it.
+ */
+export function mergeShared(nodes: DesignNode[]): void {
+  const first: Record<string, DesignNode> = {}
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const f = first[n.role]
+    if (f === undefined) {
+      first[n.role] = n
+      continue
+    }
+    f.need += n.need
+    f.powerW += n.powerW
+    for (const p of n.inputs) {
+      let hit = false
+      for (const q of f.inputs) if (q.port === p.port) {
+        q.rate += p.rate
+        hit = true
+      }
+      if (!hit) f.inputs.push({ ...p })
+    }
+    nodes.splice(i, 1)
+    i--
+  }
+}
+
 /** Solves and designs the factory for a stage target. */
 export function design(ctx: DesignContext, target: DesignTarget): Design {
   const solveJob = solveNow(
@@ -714,6 +756,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     for (const e of w.edges) edges.push(e)
     for (const x of w.errors) errors.push(x)
   }
+  mergeShared(nodes)
   const techs: string[] = []
   for (const n of nodes) for (const t of n.def.requiresTech) if (!ctx.researched[t] && techs.indexOf(t) < 0) techs.push(t)
   techs.sort()
@@ -778,6 +821,9 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
       missing.push(n)
       continue
     }
+    // A sink (the mall) has no output rate to grow: its "need" is the utilization it was planned at (M6a.2: every
+    // failing seed listed "mall short (0/0.25): cannot grow").
+    if (n.kind === "sink") continue
     const def = canonical(have.id)
     if (n.kind === "labs") {
       // Labs by count (their declared rate depends on the unit time they were sized for): grow by pairs (expand units).

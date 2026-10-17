@@ -174,6 +174,10 @@ export interface Config {
   logisticsShareMinModules: number
   /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */
   buildStuckRounds: number
+  /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
+  factoryPowerFuelMinutes: number
+  /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
+  factoryFuelFallback: boolean
 }
 
 export type ConfigKey = keyof Config
@@ -270,6 +274,8 @@ export function getConfig(): Config {
     factorySharedProviders: setting(Settings.factorySharedProviders),
     logisticsShareMinModules: setting(Settings.logisticsShareMinModules),
     buildStuckRounds: setting(Settings.buildStuckRounds),
+    factoryPowerFuelMinutes: setting(Settings.factoryPowerFuelMinutes),
+    factoryFuelFallback: setting(Settings.factoryFuelFallback),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

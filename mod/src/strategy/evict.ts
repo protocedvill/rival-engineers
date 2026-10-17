@@ -1,6 +1,8 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { FactionState } from "../jobs/types"
 import { tkey } from "../planner/grid"
+import { factoryReserveTiles } from "../planner/build-list"
+import { LayoutState } from "../planner/layout"
 import { findEntities } from "../work"
 import { BrainState, Site, SitePart } from "./types"
 
@@ -83,4 +85,25 @@ export function evictSites(faction: FactionState, surface: LuaSurface, keys: Rec
     log(`[rival-engineers] faction ${faction.name}: bootstrap site ${site.id} (${site.kind} ${site.resource ?? ""}, ${wasBuilt ? "built" : "planned"}) evicted by ${why}`)
   }
   return out
+}
+
+/**
+ * M6a.2: the faction's reserved tiles = its bootstrap sites' tiles plus what the factory layout holds
+ * (`factoryReserveTiles`). Called after a change that may give up ground (a growth, a reroute, a relocation): stale
+ * reservations read as the faction's own entities to every later plan and can wall in a port for good.
+ */
+export function resyncReserved(faction: FactionState, layout: LayoutState): number {
+  const brain = faction.brain
+  if (brain === undefined) return 0
+  const keep: Record<number, boolean> = {}
+  for (const site of brain.sites) for (const k of site.tiles) keep[k] = true
+  for (const k of factoryReserveTiles(layout)) keep[k] = true
+  let dropped = 0
+  for (const [k] of pairs(brain.reserved)) {
+    if (keep[k as number]) continue
+    delete brain.reserved[k as number]
+    dropped++
+  }
+  for (const k of factoryReserveTiles(layout)) brain.reserved[k] = true
+  return dropped
 }

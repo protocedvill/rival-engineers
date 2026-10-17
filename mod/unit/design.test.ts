@@ -148,6 +148,17 @@ test("goal diff: built power and labs leave only production; a short smelter gro
   eq(goals2[goals2.length - 1].kind, "grow", "a grow goal")
 })
 
+test("goal diff: a built mall (a sink planned at a utilization, no output rate) is never a growth (M6a.2)", () => {
+  const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const base = d.nodes[0]
+  d.nodes.push({ ...base, role: "mall", kind: "sink", item: "mall", need: 0.25, capacity: 1, inputs: [] })
+  const roles: string[] = []
+  for (const n of d.nodes) roles.push(n.role)
+  const diff = diffDesign(d, graphWith(d, roles, { mall: 0 }), () => undefined)
+  for (const gr of diff.grow) ok(gr.role !== "mall", "the mall does not grow")
+  for (const n of diff.missing) ok(n.role !== "mall", "and is not missing")
+})
+
 test("D24: an edge over its usable capacity upgrades its belt tier when researched, else splits into clusters", () => {
   // A tiny utilization cap makes the 1/3 plate/s flows overflow a yellow belt (usable 0.3/s).
   const tight = { utilization: 0.02 }
@@ -331,6 +342,34 @@ test("B19: one coal outpost feeds both smelter columns and the power block (powe
   // Without room the smelters share one new outpost: 2 mines instead of 3.
   const tight = design(ctx({ sharing: { keep, spare: {} } }), { item: RED, perSecond: 10 / 60 })
   eq(tight.nodes.filter((n) => n.item === "coal").length, 2, "power's own + one shared")
+})
+
+test("P36 (b): when a new coal outpost can't be placed, new consumers in every cluster tap the nearest built one, which grows", () => {
+  const s1 = design(greenCtx({ researchUnitTime: 15 }), { item: RED, perSecond: 10 / 60 })
+  const keep = keepOf(s1)
+  const d = design(greenCtx({ sharing: { keep, spare: {}, fallback: { coal: ["coal>power", `coal>${SMELT_FE}`] } } }), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const coal = d.nodes.filter((n) => n.item === "coal")
+  const roles = coal.map((n) => n.role).sort()
+  for (const n of coal) ok(string.find(n.role, "coal*>", 1, true)[0] === undefined, `no new shared coal producer (${n.role})`)
+  eq(coal.length, 3, `only the built ones: ${roles.join(" | ")}`)
+  let seen = 0
+  for (const n of d.nodes) if (n.role === "coal>power") seen++
+  eq(seen, 1, "the tapped producer appears once (its per-cluster copies merged)")
+  let fed = 0
+  let into = 0
+  let cluster2 = 0
+  for (const e of d.edges) {
+    if (e.from !== "coal>power") continue
+    fed += e.rate
+    into++
+    if (string.find(e.to, "#2", 1, true)[0] !== undefined) cluster2++
+  }
+  ok(into >= 3 && cluster2 >= 1, `the steam block's outpost feeds the new consumers of both clusters (${into} edges, ${cluster2} in cluster 2)`)
+  near(byRole(d.nodes, "coal>power")!.need, fed, 1e-6, "its need is every edge it feeds (the diff grows it)")
+  // Unchanged without a fallback: new shared producers.
+  const plain = design(greenCtx({ sharing: { keep, spare: {} } }), STAGE2)
+  ok(plain.nodes.filter((n) => string.find(n.role, "coal*>", 1, true)[0] === 1).length >= 1, "without it, a new shared outpost")
 })
 
 test("M6: a steam block that can't grow gets a second one (power#2) for the excess, with its own coal", () => {

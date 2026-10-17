@@ -23,7 +23,8 @@ import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRe
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
-import { evictSites } from "./evict"
+import { evictSites, resyncReserved } from "./evict"
+import { checkPowerFuel, powerFuelled } from "./fuel"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import * as RT from "../planner/runtime"
@@ -146,6 +147,13 @@ export interface FactoryState {
   science?: { samples: { tick: number; made: Record<string, number>; used: Record<string, number> }[]; best: number; bestTick?: number; rates?: Record<string, number> }
   /** M6: the final stage is built and the research goal done: no planner progress is expected (not a stall). */
   idle?: boolean
+  /**
+   * P36 (b, proposed): items whose new producer could not be placed (`factory-fuel-fallback`): new consumers tap the
+   * nearest built producer of it, which grows (stage.ts `fallbackProducers`).
+   */
+  fallback?: Record<string, boolean>
+  /** P36 (a, proposed): steam-block fuel producers replaced because their ore ran low (telemetry). */
+  fuelRelocations?: number
   /** B19: built producers whose routes could not take a tap: new consumers don't share them. */
   noTap?: Record<string, boolean>
   /** M6: cluster-1 roles that can't grow far enough → the share of the stage target cluster 1 can still serve. */
@@ -171,6 +179,8 @@ const FUEL_TOP_MINUTES = 8
 const LAB_LOW = 2
 const LAB_FEED = 5
 const MAX_PLAN_ATTEMPTS = 4
+/** P36 (b): plan attempts a new fuel producer must fail to place before its consumers tap a built one. */
+const FUEL_FALLBACK_ATTEMPTS = 2
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
 const TEMP_CLEARANCE = 6
 /** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
@@ -274,6 +284,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
+  checkPowerFuel(ctx, planning(f) !== undefined)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
@@ -376,7 +387,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role, n] of pairs(f.growFails ?? {})) if ((n as number) >= ST.GROW_MAX_FAILS) blocked += `${role as string};`
   let noTap = 0
   for (const [,] of pairs(f.noTap ?? {})) noTap++
-  const key = `${noTap}|${blocked}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -657,6 +668,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
   claimModuleFields(ctx, m)
   for (const rid of f.layout.routeOrder) if (plan.rerouted.indexOf(f.layout.routes[rid].conn) >= 0) for (const k of f.layout.routes[rid].tiles) reserved[k] = true
+  // M6a.2: the tiles the growth gave up (old route tiles, the old footprint's margin) are free again.
+  resyncReserved(ctx.faction, f.layout)
   g.growBuild = { phase: "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [] }
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
   return true
@@ -876,6 +889,14 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
       const m = string.match(k as string, "^module:(.*)$")[0]
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
+      // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
+      for (const n of g.nodes) {
+        if (n.id !== m || n.item !== ctx.faction.brain!.catalog.fuel || !ctx.config.factoryFuelFallback || g.attempts < FUEL_FALLBACK_ATTEMPTS || f.fallback?.[n.item]) continue
+        f.fallback ??= {}
+        f.fallback[n.item] = true
+        newNoTap = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: P36 ${n.role} can't be placed (${v}): new ${n.item} consumers tap a built producer`)
+      }
       // B19: a connection from a built producer that failed (its route has no room for a tap): don't tap it again.
       for (const e of g.edges) {
         if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
@@ -1057,6 +1078,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
     claimModuleFields(ctx, m)
   }
+  resyncReserved(ctx.faction, job.layout)
   const fuel = ctx.faction.brain!.catalog.fuel
   RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
   g.status = "building"
@@ -1230,6 +1252,7 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): bool
   b.parts!.routes = kept
   const reserved = ctx.faction.brain!.reserved
   for (const k of partTiles(plan.layout, { modules: [], routes: plan.routes, poles: [] })) reserved[k] = true
+  resyncReserved(ctx.faction, plan.layout)
   // Graph edges: their physical routes.
   for (const id of f.graph.edgeOrder) {
     const e = f.graph.edges[id]
@@ -1280,6 +1303,7 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
     const m = findModule(entry.job!.layout, id)
     if (m !== undefined) for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) delete reserved[tkey(x, y)]
   }
+  resyncReserved(ctx.faction, f.layout)
   for (const n of g.nodes) LG.removeNode(f.graph, n.id)
   for (const e of g.edges) LG.removeEdge(f.graph, `e:${e.role}`)
   g.status = "failed"
@@ -1701,6 +1725,8 @@ function upkeep(ctx: Ctx): void {
     if (n.lifecycle !== "built") continue
     const m = findModule(f.layout, id)
     const names = m?.canonical.upkeep?.fuel.map((x) => x.name) ?? []
+    // P36 (a): a steam block without a built fuel supply (its outpost being replaced) gets coal by hand.
+    if (n.kind === "power" && !powerFuelled(f.graph, n)) names.push(ctx.entities.boiler ?? "boiler")
     if (m === undefined || names.length === 0) continue
     const found = findEntities(ctx.surface, { name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
     for (const e of found) {

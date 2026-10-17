@@ -112,6 +112,11 @@ export interface LayoutState {
    * that module's id. Placement and routing pay a cost there (policy weights), nothing blocks.
    */
   soft?: Record<number, string>
+  /**
+   * D52 (3): a mining outpost's planned room to grow (its growth area: tile → outpost id) is a hard claim: no other
+   * module, no other module's route and no pole may take it (the user saw poles block mine expansion).
+   */
+  mine?: Record<number, string>
   /** Underground spans per line ("h<y>" or "v<x>"). */
   spans: Record<string, UgSpan[]>
   routes: Record<string, Route>
@@ -235,8 +240,17 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     const ka = tkey(a.x, a.y)
     if (state.occ[ka] === undefined && state.reserved[ka] === undefined) state.reserved[ka] = portTag(m.id, p.id)
   }
-  // B9: the area it can still grow into (soft claim).
+  // B9: the area it can still grow into (soft claim); D52 (3): hard for a mining outpost.
   const g = growthArea(m)
+  if (g !== undefined && m.canonical.anchor?.resource !== undefined) {
+    state.mine ??= {}
+    for (let x = g.x; x < g.x + g.w; x++) {
+      for (let y = g.y; y < g.y + g.h; y++) {
+        const k = tkey(x, y)
+        if (state.mine[k] === undefined && state.occ[k] === undefined) state.mine[k] = m.id
+      }
+    }
+  }
   if (g !== undefined) {
     state.soft ??= {}
     for (let x = g.x; x < g.x + g.w; x++) {
@@ -283,6 +297,7 @@ export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
   const tag = `m:${m.id}`
   const xtag = `x:${m.id}`
   if (state.soft !== undefined) for (const [k, owner] of pairs(state.soft)) if (owner === m.id) delete state.soft[k as number]
+  if (state.mine !== undefined) for (const [k, owner] of pairs(state.mine)) if (owner === m.id) delete state.mine[k as number]
   for (const k of moduleTiles(m)) if (state.occ[k] === tag) delete state.occ[k]
   for (const t of interactionTiles(m.def, facts)) {
     const k = tkey(m.origin.x + t.x, m.origin.y + t.y)
