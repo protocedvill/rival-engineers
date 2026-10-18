@@ -204,3 +204,72 @@ Session of 2026-10-17 (close-out), about 4.5 h wall clock in all:
 
 The 2-hour fix budget was spent on the seed-11 diagnosis and fix; the 3333/555555 coal problems were diagnosed but
 not fixed (P36), and the seed-11 follow-up failure surfaced only in the final soak window.
+
+## M6a.2: seed 222 — depot ring, stale terrain, inverted tap chain (2026-10-17/18)
+
+Picked up the dead session on seed 222 (manager `cd92ceea` + fix subagent died 2026-10-17 08:08 UTC, work at
+`c058d19`). Seed 222 stalled twice in M6a.2 (m6a2-dev1, 123 game-min): the stage-2 growth stall, then the green line
+failing `no path` at every region radius. Live probes from the min-0120 save (dev2–dev10, entity/terrain/route
+classifications every 10 game-min) found **three independent bug classes**, each sufficient to stall the run:
+
+1. **The lab's in-logistic port is walled in by depot 22** (reservation staleness). Depot 22 (a "depot full" spare
+   chest, site 22) was built at (-42,482) with its 25-tile reservation ring. The lab n3's in-logistic port
+   (approach (-42,484), destination (-42,485)) can only be entered through that approach tile, and the approach's
+   three outside neighbors (-42,483), (-43,484), (-41,484) are depot 22 ring tiles. Depots were never evictable
+   (evict.ts `evictable` excluded `kind === "depot"`), and depots are never retired (D43 skips them), so those tiles
+   read as hard OWN for good. A 520800 probe classified all 1631 OWN tiles: 1160 legit terrain, 259 module margin
+   orphans (by design), 107 retired-site tiles (sites 2/4/6/14/23 — `retireSite` never released `site.tiles`), and
+   125 depot ring tiles (sites 1/22/26/28).
+2. **Character mining leaves stale terrain** (no events). The crew's pick-up is the only pickup path
+   (crew.ts "clear" → "pickUp" → `mining_state`), and it raises **none** of the 8 events the terrain model listens to
+   (there is no `on_deconstructed_tile` in this Factorio version); `ghost.destroy()` is silent too. Probe: site 23's
+   drill (-46,467) and chest (-45.5,468.5) present at 432000, gone by 540000 (item on the ground), zero terrain
+   events in the region → 44 terrain=3 tiles with nothing on them. The dirty queue also drained only during planner
+   entries, so removals during builds sat stale for hours.
+3. **The coal tap chain is inverted for growth** (planner). The main `coal>power` route (to n1) has
+   `tapOf` = the iron route, which has `tapOf` = the copper route (to n17, the root): the route touching the growth
+   module is the **deepest tap**, and `planGrowth`'s rip loop skipped every route with `tapOf` set. Nothing was
+   ripped, (41,367) stayed in `routeOcc`, and n1's +2 growth failed with `route at 41,367`. Two earlier failures
+   (dev1) plus this one hit `GROW_MAX_FAILS` (3) and blocked the growth for the stage; the `power#2` fallback (n19/n20)
+   carried on instead.
+
+**Fixes (all on `m6-v1`):**
+
+| Fix | Where | What |
+|---|---|---|
+| Depot evicts | `strategy/evict.ts` `evictable` | Depots evict like any bootstrap site: a plan taking the chest's footprint retires the depot, the crew picks it up, the bootstrap rebuilds a depot near the hub. Ring tiles read as clearable ground (TREE) even before eviction. |
+| Retired sites release their ground | `strategy/evict.ts` `resyncReserved`, `strategy/bootstrap.ts` `retireSite` | `retireSite` clears `site.tiles` from `brain.reserved` at retirement (standing parts stay protected by the terrain scan until picked up); the resync skips retired sites' tiles (cleans pre-fix saves). Failed sites keep their spot (bad ground). |
+| Tap chain rips to the root | `planner/grow.ts` | A route touching the module is walked up its `tapOf` chain to the group root (deduped); the root is ripped (taps come with it) and every route in the group is rerouted. The reroute region now covers every module a rerouted connection touches (the coal taps feed smelters ~110 tiles west of the grown steam block). |
+| Drops and pick-ups rescan | `planner/terrain.ts` `destroyEntity`, `tick.ts`, `character/controller.ts`, 7 destroy sites | `destroyEntity` (destroy + `markDirty`) at every ghost-drop site (evict, factory ×2, bootstrap ×3, conflicts); the character controller remembers the box of a pick-up target and of covering obstacles and rescans when they vanish; `onTick` drains every terrain's dirty queue (budget: the existing `terrain-chunks-per-tick` setting) so a synchronous growth between planner entries never reads stale ground. |
+| Hand-fuelling skips grown producers | `strategy/fuel.ts` `producerGrowing`, `strategy/factory.ts` `upkeep` | P36 (a)'s hand-fuelling no longer fires while a steam block's fuel producer is being grown (its built drills run through the growth); at build priority it starved the growth's own craft jobs and stalled the stage (the g8 stall, fixed earlier this session, validated on dev5: g8 done at 436800). |
+
+**Validation (m6a2-dev11, seed 222 from min-0120.zip, 156 game-min).** Probes at 432300 and 520800:
+
+- `growth_debug("1","n1",2,41,367)`: `ok=true`; tile (41,367) owned by `coal>power` before, free after. The tap chain
+  in the save is exactly the inverted one (main route `tapOf`=iron, iron `tapOf`=copper, copper root).
+- The growth happened in game: `grow-built` at 51.6 game-min (dev5: third failure, blocked).
+- The green line planned and was adopted (g11, t457740); at 520800 its route runs through depot 22's ring tile
+  (-41,484) → approach (-42,484) → destination (-42,485), all in the layout as the `in-logistic` route.
+- Retired sites' ground released: (-46,467) (site 23) and (-45,468) (site 4) no longer reserved.
+- No new stalls (the 108.1-min stall in the scorecard is from the pre-save original run). Work counts: one flag,
+  `routerExpansions` 1.82× — the successful growth rerouted the whole coal group (3 routes) over the scanned terrain,
+  while the baseline run's growth had failed before any reroute; a one-off, not a per-tick cost.
+
+**Tests.** T1 `grow.test.ts`: a mine feeding three smelters where the growth target is fed by a tap — the whole
+group rips and reroutes (fails on the old code with `route at 16.0,28.0`, the same failure mode). T1 `evict.test.ts`
+(new): depot tiles are clearable; evicting a built depot retires it, releases its tiles and queues a replacement
+depot; the resync releases retired sites' tiles and keeps failed/active ones; `destroyEntity` marks the chunk dirty.
+`plan-replay`: the failed 520800 capture still fails as captured, succeeds with depot 22's ring freed (the fix), and
+the same plan as dev11 saw it (depot ring clearable in the capture, fixture `m6a2-seed222-green-line-dev11`) plans
+with 0 rip-ups. `tsconfig.unit.json` now includes the Factorio runtime types and `storage.d.ts` (the evict/terrain
+imports need the Factorio globals). Debug remotes `reserved_debug` and `growth_debug` (marked "Debug probe (M6a.2)"
+in `remote.ts`) stay for the acceptance run.
+
+### Acceptance results (M6a.2)
+
+(TBD: full 5-seed run after the suite passes; bar ≥ 4/5 seeds at `v1-done`.)
+
+### Magic numbers for the user (M6a.2)
+
+No new settings: the global terrain drain reuses `terrain-chunks-per-tick` (default 2). `GROW_MAX_FAILS` (3) and the
+reroute region padding (±96 tiles) are unchanged.

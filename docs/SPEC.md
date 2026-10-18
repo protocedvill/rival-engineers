@@ -780,8 +780,10 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   by their own build does the same).
 - **P35, bootstrap eviction (proposed, B15, implements D51 (3)):** plans see the faction's bootstrap mining sites as
   clearable ground (like trees); a plan or growth that takes their tiles evicts them: built sites are retired and picked
-  up before the build, planned ones dropped, and the bootstrap gets a replacement goal elsewhere. The depot is never
-  evicted.
+  up before the build, planned ones dropped, and the bootstrap gets a replacement goal elsewhere. M6a.2 (seed 222):
+  the depot is evicted too (an extra depot built over a factory port's approach tiles read as unevictable OWN ground and
+  walled the port in for good; the bootstrap rebuilds the depot near the hub), and a retired site releases its tiles as
+  soon as it is picked up.
 - **P36, coal running out for power and the green clusters (proposed, M6a close-out; hand-off to M6b):** two of the five
   acceptance seeds fail on coal, not on planning. Seed 555555: the first steam block's coal outpost depletes at ~150
   game-min and the steam block starves (D28 defers relocation to P2). Seed 3333: the only coal patch within 168 tiles of
@@ -789,7 +791,9 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   feasible position on four region sizes. Proposed: (a) a depleted (or nearly depleted) coal supply of a steam block
   gets a replacement outpost elsewhere, like D43 for bootstrap sites (an exception to D28 limited to power fuel);
   (b) when a fuel producer can't be placed, the consumers tap the nearest built coal producer and that producer grows
-  (or the cluster waits) instead of failing the goal. Not implemented.
+  (or the cluster waits) instead of failing the goal. Not implemented. M6a.2 (seed 222): (a)'s hand-fuelling skips a
+  steam block whose fuel producer is currently being grown (the built drills run through the growth) — at the build
+  priority it starved the growth's own craft jobs and stalled the stage.
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

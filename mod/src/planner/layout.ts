@@ -21,6 +21,8 @@ export interface PlacedModule {
   rect: Rect
   /** Built already (routes to it may not be ripped... and it never moves). */
   fixed?: boolean
+  /** D52: immutable whole-patch design; `def` is partial or complete, while `claim` is reserved up front. */
+  minePlan?: { full: ModuleDef; claim: number[]; occupied: number[]; complete: boolean }
 }
 
 export interface PortRef {
@@ -210,8 +212,22 @@ export function interactionTiles(def: ModuleDef, facts: ProtoFacts): Vec[] {
 
 /** Entity tiles of a placed module (world), for checks. */
 export function moduleTiles(m: PlacedModule): number[] {
+  if (m.minePlan !== undefined) return m.minePlan.occupied
   const out: number[] = []
   for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) out.push(tkey(x, y))
+  return out
+}
+
+/** Modules whose actual entity footprint intersects `tiles`, even if a later overlapping claim replaced `occ`. */
+export function modulesOnTiles(state: LayoutState, tiles: Record<number, boolean>): PlacedModule[] {
+  const out: PlacedModule[] = []
+  for (const m of state.modules) {
+    for (const k of moduleTiles(m)) {
+      if (!tiles[k]) continue
+      out.push(m)
+      break
+    }
+  }
   return out
 }
 
@@ -242,7 +258,14 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
   }
   // B9: the area it can still grow into (soft claim); D52 (3): hard for a mining outpost.
   const g = growthArea(m)
-  if (g !== undefined && m.canonical.anchor?.resource !== undefined) {
+  if (m.minePlan !== undefined) {
+    state.mine ??= {}
+    state.soft ??= {}
+    for (const k of m.minePlan.claim) {
+      if (state.mine[k] === undefined && state.occ[k] === undefined) state.mine[k] = m.id
+      if (state.soft[k] === undefined && state.occ[k] === undefined) state.soft[k] = m.id
+    }
+  } else if (g !== undefined && m.canonical.anchor?.resource !== undefined) {
     state.mine ??= {}
     for (let x = g.x; x < g.x + g.w; x++) {
       for (let y = g.y; y < g.y + g.h; y++) {
@@ -274,6 +297,7 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
  * side `tryExpand` would grow it (the end that moves fewer entities, as `expandMoves` decides); undefined if it can't.
  */
 export function growthArea(m: PlacedModule): Rect | undefined {
+  if (m.minePlan !== undefined) return undefined
   const c = m.canonical
   const spec = c.expand
   if (spec === undefined || spec.maxUnits <= 0) return undefined

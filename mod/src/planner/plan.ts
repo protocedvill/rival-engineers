@@ -8,7 +8,7 @@ import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, stepPlacement, tryExpand } from "./placement"
+import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
@@ -130,6 +130,8 @@ export interface PlanJob {
   failures: Record<string, string>
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
   expanded: Record<string, { module: string; units: number }>
+  /** B23: a shared whole-patch mine that could not be expanded for the request: request id → reason. */
+  wholeFail?: Record<string, string>
   /** Modules taken out after a connection could not be routed, to be placed again elsewhere (then routing resumes). */
   replaceQueue: string[]
   replaced: Record<string, number>
@@ -233,7 +235,7 @@ export function cloneLayout(l: LayoutState): LayoutState {
   const routes: Record<string, Route> = {}
   for (const [k, r] of pairs(l.routes)) routes[k as string] = { ...(r as Route) }
   return {
-    modules: l.modules.map((m) => ({ ...m })),
+    modules: l.modules.map((m) => ({ ...m, minePlan: m.minePlan !== undefined ? { ...m.minePlan, claim: [...m.minePlan.claim], occupied: [...m.minePlan.occupied] } : undefined })),
     occ: copy(l.occ),
     reserved: copy(l.reserved),
     routeOcc: copy(l.routeOcc),
@@ -349,15 +351,15 @@ function connection(job: PlanJob, id: string): ConnectionRequest {
   error(`unknown connection ${id}`)
 }
 
-/** Routes already serving the same producer port (splitter taps branch off them). */
-function sameSource(job: PlanJob, c: ConnectionRequest): string[] {
+/** Routes already serving the same producer port (splitter taps branch off them). B23: compared against the
+ * alias-resolved source — a request aliased onto a whole-patch base mine feeds from the base route's port. */
+function sameSource(job: PlanJob, from: PortRef): string[] {
   const out: string[] = []
-  if (c.from === undefined) return out
   for (const id of job.layout.routeOrder) {
     // Routes of the base layout belong to earlier requests: compare the route's own source.
     const r = job.layout.routes[id]
-    const from = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
-    if (from !== undefined && from.module === c.from.module && from.port === c.from.port) out.push(id)
+    const src = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
+    if (src !== undefined && src.module === from.module && src.port === from.port) out.push(id)
   }
   return out
 }
@@ -387,7 +389,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return `item mismatch ${fp.item} → ${tp.item}`
     req.from = from
     own[portTag(fm.id, fp.id)] = true
-    const taps = sameSource(job, c)
+    const taps = sameSource(job, from)
     if (taps.length > 0) {
       if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
       req.taps = taps
@@ -438,7 +440,10 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
-    if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
+    if (s.phase === "done") {
+      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy)
+      commitPlacement(job.layout, s.result!, facts, policy)
+    }
     else job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
     job.placement = undefined
     job.replaceQueue.shift()
@@ -493,6 +498,23 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   const id = job.order[job.placeIdx]
   const mreq = moduleRequest(job, id)
   if (job.placement === undefined) {
+    // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to
+    // squeeze another independent strip into its reserved footprint. B23: a built (fixed) mine that is not complete
+    // yet counts too; the plan's adoption builds its completion.
+    const whole = wholePatchCandidate(job.layout, mreq.def)
+    if (whole !== undefined) {
+      const r = tryExpand(job.layout, terrain, facts, policy, whole.id, 1)
+      if (r.ok) {
+        delete (job.wholeFail ?? {})[id]
+        job.alias[id] = whole.id
+        job.expanded[id] = { module: whole.id, units: 1 }
+        job.placeIdx++
+        return 1
+      }
+      // B23: remember why, so the module's failure names the shared mine instead of the misleading new placement.
+      job.wholeFail ??= {}
+      job.wholeFail[id] = `${whole.id}: ${r.reason ?? "expansion failed"}`
+    }
     // Expand-first: grow a compatible module when there is room.
     if (mreq.expandUnits !== undefined && policy.expansion === "expand-first") {
       const cand = expansionCandidate(job.layout, mreq.def, mreq.expandUnits)
@@ -525,6 +547,8 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
+    delete (job.wholeFail ?? {})[id]
+    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy)
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined
     job.placeIdx++
@@ -540,7 +564,9 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       }
     }
     if (!grown) {
-      job.failures[`module:${id}`] = s.reason ?? "placement failed"
+      // B23: a request that wanted the shared mine says so in its failure.
+      const wf = job.wholeFail?.[id]
+      job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
       job.phase = "failed"
     }
     job.placement = undefined

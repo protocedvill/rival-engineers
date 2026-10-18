@@ -8,7 +8,11 @@ import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
 import { getFactory, startFactory } from "./strategy/factory"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
-import { exportGraph, getPlannerEntry, startPlan, StartPlanOptions } from "./planner/runtime"
+import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
+import { tkey } from "./planner/grid"
+import { planGrowth } from "./planner/grow"
+import { prototypeFacts } from "./modules/prototype-facts"
+import { getTerrain, terrainView } from "./planner/terrain"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
@@ -54,6 +58,11 @@ export function registerRemoteInterface(): void {
       }
       return out
     },
+    /** Debug probe: the board's recent claim/done/fail/release events, newest last (bounded by CLAIM_LOG_KEPT). */
+    board_events: (name: string) => {
+      const events = mustFaction(name).board.claimLog
+      return events.map((e) => ({ ...e }))
+    },
     /** dump_entities(file, center, radius, surface?, water?) */
     dump_entities: (file: string, center: MapPosition, radius: number, surface?: string, water?: boolean) =>
       dumpEntities(file, center, radius, surface !== undefined ? game.surfaces[surface] : undefined, water),
@@ -83,6 +92,67 @@ export function registerRemoteInterface(): void {
     },
     /** Board counters, job counts by status, per-crew stats and the brain's report. */
     faction_stats: (faction: string) => factionStats(faction),
+    /**
+     * Debug probe (M6a.2): the faction's reserved tiles, its bootstrap sites (with per-site tile lists), and for the
+     * queried tiles the split between terrain, reservation (and which site owns it) and layout presence.
+     */
+    reserved_debug: (name: string, tiles?: { x: number; y: number }[]) => {
+      const faction = mustFaction(name)
+      const brain = faction.brain
+      if (brain === undefined) return undefined
+      const owner: Record<number, number> = {}
+      for (const s of brain.sites) for (const k of s.tiles) owner[k] = s.id
+      const siteList = brain.sites.map((s) => ({ id: s.id, kind: s.kind, resource: s.resource, status: s.status, depleting: s.depleting, tiles: s.tiles.length }))
+      let reservedCount = 0
+      for (const [k] of pairs(brain.reserved)) if (brain.reserved[k as number]) reservedCount++
+      let terrainId: string | undefined
+      for (const [id, t] of pairs(storage.terrains ?? {})) if (t.force === faction.force) { terrainId = id; break }
+      const view = terrainId !== undefined ? terrainView(getTerrain(terrainId)!) : undefined
+      const layout = storage.factories?.[faction.name]?.layout
+      let routeOccCount = 0
+      if (layout !== undefined) for (const [k] of pairs(layout.routeOcc)) if (layout.routeOcc[k] !== undefined) routeOccCount++
+      const detail = (tiles ?? []).map((p) => {
+        const k = tkey(p.x, p.y)
+        let inLayout: string | false = false
+        if (layout !== undefined) {
+          if (layout.occ[k] !== undefined) inLayout = "occ:" + layout.occ[k]
+          else if (layout.routeOcc[k] !== undefined) inLayout = "route:" + layout.routeOcc[k]
+          else if (layout.reserved[k] !== undefined) inLayout = "reserved:" + layout.reserved[k]
+          else if (layout.mine !== undefined && layout.mine[k] !== undefined) inLayout = "mine:" + layout.mine[k]
+        }
+        return {
+          x: p.x,
+          y: p.y,
+          terrain: view?.block(p.x, p.y),
+          reserved: brain.reserved[k] === true,
+          site: owner[k],
+          inLayout,
+        }
+      })
+      return { sites: siteList, reservedCount, terrain: terrainId, routeOccCount, routeCount: layout?.routeOrder?.length, detail }
+    },
+
+    /** Debug probe (M6a.2): replays startGrow's planGrowth for a module and reports which route owns a tile. */
+    growth_debug: (name: string, module: string, units: number, x: number, y: number) => {
+      const faction = storage.factions?.[name]
+      const f = storage.factories?.[name]
+      const t = f !== undefined ? storage.terrains?.[f.terrain] : undefined
+      if (faction === undefined || f === undefined || t === undefined) return undefined
+      const base = f.layout
+      const k = tkey(x, y)
+      const touching: { id: string; to: string; from: string | null; tapOf: string | null; hasTile: boolean }[] = []
+      for (const rid of base.routeOrder) {
+        const r = base.routes[rid]
+        if (r === undefined) continue
+        touching.push({ id: rid, to: r.to.module, from: r.from?.module ?? null, tapOf: r.tapOf ?? null, hasTile: r.tiles.indexOf(k) >= 0 })
+      }
+      const policy = entryPolicy({ request: { modules: [], connections: [], center: { x: 0, y: 0 }, region: { x: 0, y: 0, w: 0, h: 0 } }, policy: getConfig().layoutPolicy } as never)
+      const plan = planGrowth(base, claimView(faction.name, faction.surface, terrainView(t), false), prototypeFacts, policy, tiers()[0], module, units)
+      const after = plan.ok ? plan.layout : base
+      const ownerBefore = base.routeOcc[k]
+      const ownerAfter = after.routeOcc[k]
+      return { ok: plan.ok, reason: plan.reason, ownerBefore, ownerAfter, module, touching }
+    },
 
     // Burner bootstrap (M3).
     /** Spawns a faction per `spawn-mode` (or at `options.position`) with starter items and the bootstrap brain. */

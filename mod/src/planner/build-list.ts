@@ -4,7 +4,7 @@
 
 import { worldEntity } from "./world-entity"
 import { dirValue, tkey } from "./grid"
-import { LayoutState } from "./layout"
+import { LayoutState, moduleTiles } from "./layout"
 
 export interface EntitySpec {
   name: string
@@ -91,7 +91,7 @@ export function partTiles(layout: LayoutState, parts: BuildParts): number[] {
   }
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  for (const m of layout.modules) if (mods[m.id]) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
+  for (const m of layout.modules) if (mods[m.id]) for (const k of moduleTiles(m)) add(k)
   for (const id of parts.routes) for (const k of layout.routes[id]?.tiles ?? []) add(k)
   const poles: Record<string, boolean> = {}
   for (const id of parts.poles) poles[id] = true
@@ -137,7 +137,7 @@ export function layoutTiles(layout: LayoutState): number[] {
     seen[k] = true
     out.push(k)
   }
-  for (const m of layout.modules) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
+  for (const m of layout.modules) for (const k of moduleTiles(m)) add(k)
   for (const id of layout.routeOrder) for (const k of layout.routes[id].tiles) add(k)
   for (const p of layout.poles ?? []) add(tkey(p.x, p.y))
   return out

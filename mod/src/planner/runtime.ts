@@ -33,6 +33,8 @@ export interface BuildState {
   failed: string[]
   /** Build only these parts (a plan on top of a base); absent: everything in the layout. */
   parts?: BuildParts
+  /** B23: entities of a completed shared mine (a base module not in `parts`); ghosted after the clear. */
+  extraAdd?: EntitySpec[]
   /** Ghosts created (for re-planning their place jobs if jobs get dropped). */
   ghosts?: LuaEntity[]
 }
@@ -362,13 +364,22 @@ export function stepBuild(entry: PlannerEntry): void {
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
     if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
-    b.ghosts = r.entities
-    for (const g of r.entities) {
+    const stamped: LuaEntity[] = [...r.entities]
+    // B23: a completed shared mine's new entities (a base module not in `parts`) join the same build.
+    if (b.extraAdd !== undefined) {
+      for (const s of b.extraAdd) {
+        const e = createSpec(surface, entry.force, s, true)
+        if (e === undefined) b.failed.push(`ghost ${s.owner}: ${s.name}@${s.x},${s.y}`)
+        else stamped.push(e)
+      }
+    }
+    b.ghosts = stamped
+    for (const g of stamped) {
       const id = addPlaceJob(faction, g, { fuel: b.fuel, priority: b.priority })
       if (id !== undefined) b.placeJobs.push(id)
     }
     // Ghost creation raises no event: mark their chunks for the terrain model (they are planned own structures).
-    for (const g of r.entities) if (g.valid) markDirty(entry.surface, g.bounding_box.left_top, g.bounding_box.right_bottom)
+    for (const g of stamped) if (g.valid) markDirty(entry.surface, g.bounding_box.left_top, g.bounding_box.right_bottom)
     b.phase = "place"
     return
   }

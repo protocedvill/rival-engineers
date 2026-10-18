@@ -14,7 +14,7 @@ import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import { tkey, Vec } from "./grid"
 import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
 import { removePoleLines } from "./power"
-import { markDirty } from "./terrain"
+import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
 
 export interface PartConflict {
@@ -88,7 +88,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   const clearJobs: number[] = []
   for (const e of remove) {
     const ghost = ownGhost(surface, force, e)
-    if (ghost !== undefined) ghost.destroy()
+    if (ghost !== undefined) destroyEntity(ghost)
     const built = ownBuilt(surface, force, e)
     if (built !== undefined) clearJobs.push(addClearJob(faction, built, opts.priority))
   }

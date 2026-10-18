@@ -14,7 +14,7 @@
 // and inserters reserve the tiles they touch (`interactionTiles`), and port outside tiles are reserved.
 
 import { BeltTier } from "./capacity"
-import { ccw, cw, DX, DY, FREE, keyX, keyY, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
+import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
 import { LayoutState, lineKey, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import { LayoutPolicy } from "./policy"
 
@@ -153,7 +153,11 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   } else if (b === ROCK) {
     if (policy.obstacles.rocks !== "clear") return -1
     extra += w.clearRock
-  } else if (b !== FREE) return -1
+  } else if (b !== FREE) {
+    // B23: an input port's outside tile is reserved for the route that feeds it, and in the field that tile holds
+    // the module's unfed receive belt (an own-terrain entity): the feeder route replaces the belt in place.
+    if (b !== OWN || r === undefined || !req.own[r]) return -1
+  }
   if (terrain.ore(x, y) !== undefined) extra += w.oreTile
   if (req.avoid?.[k]) extra += w.rip
   // B9: another module's room to grow (a route there would block its expansion). A module's own routes don't pay: its

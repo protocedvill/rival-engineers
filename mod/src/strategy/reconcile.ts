@@ -274,7 +274,12 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
   const p = t.input.params
   if (n.status === "starved") {
     const items = missingItems(t, n)
-    if (items[0] === "depleted") return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D28: relocation is P2)` }
+    if (items[0] === "depleted") {
+      // D52/B21: a worked-out outpost expands in place over the rest of its patch (its growth area is already claimed);
+      // full relocation is still P2 if the belt-limited footprint is exhausted too.
+      if (n.kind === "outpost") remedy(t, { key: `deplete:${n.id}`, kind: "grow", node: n.id, why: `${label(n)}: the ore under its drills is used up; expand in place over the rest of the patch` })
+      return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D52: expand in place; D28: relocation is P2)` }
+    }
     if (items[0] === "water") return { kind: "node", id: n.id, what: "no water", why: `${label(n)}: boilers without water` }
     return traceInputs(t, n, items, depth)
   }

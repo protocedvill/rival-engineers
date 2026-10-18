@@ -5,6 +5,7 @@ import { distance } from "./steering"
 import { ActionRecord, ActionSpec, ActionStatus, ControllerState, FailureReason, ReachGoal } from "./types"
 import { newWalk, reachSatisfied, stepWalk, StepResult, stopWalking } from "./walk"
 import { findEntities } from "../work"
+import { markDirty } from "../planner/terrain"
 
 // Character Controller (SPEC §5.1): one per character body. Each controller runs a queue of actions;
 // each action is a resumable state machine stepped once per tick from on_tick, under a per-tick budget.
@@ -311,6 +312,16 @@ const MAX_COVER_DEPTH = 3
 
 type MineStep = "mining" | "refused" | { approach: LuaEntity }
 
+/** The box `e` covers, remembered while it is valid so its ground is rescanned once it is gone (M6a.2, seed 222: a
+ *  character's mining raises no event the terrain model listens to). */
+function boxOf(e: LuaEntity): { surface: string; left: MapPosition; right: MapPosition } {
+  return { surface: e.surface.name, left: e.bounding_box.left_top, right: e.bounding_box.right_bottom }
+}
+
+function rescanGone(box: { surface: string; left: MapPosition; right: MapPosition } | undefined): void {
+  if (box !== undefined) markDirty(box.surface, box.left, box.right)
+}
+
 /**
  * Starts or continues mining `target`. Mining acts on whatever is selected at the mining position, so mine from a
  * point of the target's selection box where the target itself is selected. If there is none, the entity covering it
@@ -326,7 +337,10 @@ function mineTick(character: LuaEntity, target: LuaEntity, action?: ActionRecord
     if (p !== undefined) {
       if (want !== target && !character.can_reach_entity(want)) return { approach: want }
       if (want === target && action !== undefined) action.minePoint = p
-      if (want !== target && action !== undefined) action.obstacle = want
+      if (want !== target && action !== undefined) {
+        action.obstacle = want
+        action.obstacleBox = boxOf(want)
+      }
       character.mining_state = { mining: true, position: p }
       return "mining"
     }
@@ -361,6 +375,7 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
     if (!target || !target.valid) return fail("target-invalid")
     if (!target.minable || !target.prototype.mineable_properties.minable) return fail("not-minable", target.name)
     action.target = target
+    action.goneBox = boxOf(target)
     action.item = primaryProduct(target)
     action.baseline = action.item ? itemCount(character, action.item) : 0
     action.goalCount = spec.count
@@ -370,10 +385,15 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
   const gained = action.item ? itemCount(character, action.item) - action.baseline! : 0
   action.stats.items = gained
   if (action.goalCount !== undefined && gained >= action.goalCount) return "done"
-  if (!target.valid) return "done" // depleted or mined away
+  if (!target.valid) {
+    rescanGone(action.goneBox) // depleted or mined away
+    return "done"
+  }
   if (action.obstacle !== undefined && !action.obstacle.valid) {
     // The character's mining stays on the mined-away obstacle: restart it so it picks the target up next tick.
+    rescanGone(action.obstacleBox)
     action.obstacle = undefined
+    action.obstacleBox = undefined
     action.cleared = (action.cleared ?? 0) + 1
     character.mining_state = { mining: false }
     return "running"
@@ -400,6 +420,7 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
   if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
   if (step !== "mining") {
     action.obstacle = step.approach
+    action.obstacleBox = boxOf(step.approach)
     action.obstacleFar = true
     character.mining_state = { mining: false }
     action.phase = "approach"
@@ -587,12 +608,14 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
   if (action.phase === "start") {
     if (!entity.valid) return fail("target-invalid")
     if (!entity.minable || !entity.prototype.mineable_properties.minable) return fail("not-minable", entity.name)
+    action.goneBox = boxOf(entity)
     action.item = primaryProduct(entity)
     action.baseline = action.item ? itemCount(character, action.item) : 0
     action.phase = "approach"
   }
   if (!entity.valid) {
     // Picked up if the item arrived; otherwise something else removed the entity.
+    rescanGone(action.goneBox)
     const gained = action.item ? itemCount(character, action.item) - action.baseline! : 1
     action.stats.items = gained
     return gained > 0 ? "done" : fail("target-invalid", "entity vanished")
@@ -608,7 +631,9 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
   }
   if (action.item && !character.can_insert({ name: action.item, count: 1 })) return fail("inventory-full", action.item)
   if (action.obstacle !== undefined && !action.obstacle.valid) {
+    rescanGone(action.obstacleBox)
     action.obstacle = undefined
+    action.obstacleBox = undefined
     action.cleared = (action.cleared ?? 0) + 1
     character.mining_state = { mining: false }
     return "running"

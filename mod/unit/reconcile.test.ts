@@ -157,6 +157,23 @@ test("starved by an undersized producer: the outpost runs flat out, the belt is 
   eq(r.remedies[0].node, "mine", "the outpost")
 })
 
+test("depleted outpost: the drills ran out of ore → expand in place over the rest of the patch (D52/B21)", () => {
+  const g = newGraph()
+  node(g, "mine", "outpost", "iron-ore", 1, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-ore", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { depleted: 1 }, estimated: true },
+  })
+  node(g, "smelt", "module", "iron-plate", 2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 8, states: st({ starved: 1 }), missing: { "iron-ore": 1 } },
+  })
+  belt(g, "ore", "mine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.mine.status, "starved", "outpost starved (worked out)")
+  eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
+  const grow = r.remedies.filter((x) => x.kind === "grow" && x.node === "mine")
+  eq(grow.length, 1, "a grow remedy for the depleted outpost")
+  ok(grow[0] !== undefined && grow[0].key === "deplete:mine", "keyed by the depletion")
+})
+
 test("a belt still filling: the producer makes much more than arrives → wait (no grow)", () => {
   const g = chain(st({ working: 0.97 }), 2, st({ working: 0.3, starved: 0.7 }), 0.4, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.4, from: 0, to: 0 })

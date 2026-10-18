@@ -4,12 +4,14 @@ import { tkey } from "../planner/grid"
 import { factoryReserveTiles } from "../planner/build-list"
 import { LayoutState } from "../planner/layout"
 import { findEntities } from "../work"
+import { destroyEntity } from "../planner/terrain"
 import { BrainState, Site, SitePart } from "./types"
 
 // B15 / D51 (3): bootstrap mining sites may stand on ore the factory will need (a production outpost's patch). The
 // factory's plans see their tiles as clearable ground (like trees) and, when a plan or a growth takes that ground, the
 // sites under it are evicted: a built site is retired (the crew picks it up, D43's mechanism) and a planned one dropped;
-// either way the bootstrap gets a replacement goal and builds it elsewhere. The depot is never evicted.
+// either way the bootstrap gets a replacement goal and builds it elsewhere. M6a.2 (seed 222): the depot is evicted too
+// (see `evictable`) — an extra depot built over a factory port's approach tiles walled the port in for good.
 //
 // Imports no strategy module: factory.ts and planner/runtime.ts use it, bootstrap.ts imports factory.ts.
 
@@ -27,7 +29,10 @@ function footprint(part: SitePart): number[] {
 }
 
 function evictable(site: Site): boolean {
-  return site.kind !== "depot" && (site.status === "planned" || site.status === "built")
+  // M6a.2 (seed 222): the depot is evicted too — an extra depot built over a factory port's approach tiles read as
+  // unevictable OWN ground and walled the port in for good (the lab's in-logistic port); the bootstrap rebuilds the
+  // depot near the hub.
+  return site.status === "planned" || site.status === "built"
 }
 
 /** Tiles of the faction's evictable bootstrap sites (footprints and their margins): the planner's clearable ground. */
@@ -63,7 +68,7 @@ export function evictSites(faction: FactionState, surface: LuaSurface, keys: Rec
       site.status = "failed"
       for (const part of site.parts) {
         const ghost = findEntities(surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-        if (ghost !== undefined) ghost.destroy()
+        if (ghost !== undefined) destroyEntity(ghost)
       }
     }
     // Its tiles are the factory's now (the caller reserves what it builds).
@@ -96,7 +101,12 @@ export function resyncReserved(faction: FactionState, layout: LayoutState): numb
   const brain = faction.brain
   if (brain === undefined) return 0
   const keep: Record<number, boolean> = {}
-  for (const site of brain.sites) for (const k of site.tiles) keep[k] = true
+  for (const site of brain.sites) {
+    // M6a.2 (seed 222): a retired site has been picked up, its ground is free again — its tiles read as OWN walls
+    // for good otherwise (sites 2/4/14 walled the lab's port approach). Failed sites keep their spot (bad ground).
+    if (site.status === "retired") continue
+    for (const k of site.tiles) keep[k] = true
+  }
   for (const k of factoryReserveTiles(layout)) keep[k] = true
   let dropped = 0
   for (const [k] of pairs(brain.reserved)) {

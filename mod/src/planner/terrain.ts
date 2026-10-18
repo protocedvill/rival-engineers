@@ -199,6 +199,26 @@ export function onEntityChanged(entity: LuaEntity | undefined): void {
   markDirty(entity.surface.name, box.left_top, box.right_bottom)
 }
 
+/**
+ * Destroys `entity` and marks its ground for a rescan: `destroy()` raises no event the terrain model listens to
+ * (M6a.2, seed 222: picked-up drills and dropped ghosts left their tiles OWN for good).
+ */
+export function destroyEntity(entity: LuaEntity): void {
+  const surface = entity.surface.name
+  const box = entity.bounding_box
+  entity.destroy()
+  markDirty(surface, box.left_top, box.right_bottom)
+}
+
+/**
+ * Drains every terrain's dirty queue under a per-terrain budget. The planner entries drain their own region on demand,
+ * but removals between entries (a pick-up, a dropped ghost) would otherwise wait for the next entry, and a synchronous
+ * planGrowth in between could read stale ground (M6a.2, seed 222).
+ */
+export function stepAllTerrains(maxChunks: number): void {
+  for (const [, t] of pairs(terrains())) stepTerrain(t, maxChunks)
+}
+
 /** The pure view the planner reads. Unscanned tiles are UNKNOWN. */
 export function terrainView(t: TerrainState): TerrainView {
   const chunks = t.chunks

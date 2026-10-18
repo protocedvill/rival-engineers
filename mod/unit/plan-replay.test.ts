@@ -5,9 +5,9 @@
 // same scenario, not a bit-exact rerun.)
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
-import { FREE, OWN, TerrainView, UNKNOWN } from "../src/planner/grid"
-import { LayoutState, ripRoute } from "../src/planner/layout"
-import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob } from "../src/planner/plan"
+import { FOREIGN, FREE, OWN, TerrainView, UNKNOWN } from "../src/planner/grid"
+import { findModule, LayoutState, ripRoute } from "../src/planner/layout"
+import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -224,5 +224,84 @@ compareReplay("seed3333-production-ok", { undergrounds: true, splitters: true })
 // M6a.2: seed 11's cluster-1 green line (fix11, t211770): the labs' green input is boxed in by fixed routes.
 replay("seed11-green-boxed", { expect: "failed" })
 replay("seed11-green-boxed", { free: [[475, -81, 493, -76]] })
+
+// M6a.2 (m6a2-dev5, seed 222, tick 520800): the logistic green line's route to the labs' in-logistic port fails
+// "no path" at every region radius: the port's approach tile is walled by depot 22's reservation ring (a built depot
+// was never evictable, so its 25 tiles read as OWN for good). In the fixed game the depot evicts like any other
+// bootstrap site (evict.ts `evictable`), so its ground is clearable and the port is reachable.
+replay("m6a2-seed222-green-line", { expect: "failed" })
+replay("m6a2-seed222-green-line", { free: [[-44, 480, -40, 484]] })
+
+// M6a.2 (m6a2-dev11, seed 222, tick 457740): the same plan as the fixed code saw it — depot 22's ring reads as
+// clearable ground (the depot evicts now) and the plan routes through it, no rip-ups.
+replay("m6a2-seed222-green-line-dev11")
+
+// M6a.2 (m6a2-b21l, seed 222, tick 299250): the mall's iron request (g11). The stage-1 whole-patch iron mine n16
+// (built 25 of 286 entities) is fixed, so the request was planned as a new 4x2 outpost — infeasible: the patch is
+// claimed by the mine and 131 of its unbuilt footprint tiles are OWN (retired bootstrap sites whose entities were
+// never picked up). "no feasible position" said nothing of the real cause. B23: the request instead completes the
+// shared mine (wholePatchCandidate admits a fixed, not-yet-complete mine; the adoption builds the completion,
+// `stepBuild` stamps `extraAdd`), and bootstrap sites on a mine's claim are evicted at adoption. As-is the freed
+// ground is still reserved, so the plan works around the debris with a fresh mine (a legal outcome); with the sites'
+// pickups freed (what the evictions do in game) it completes the mine and places smelter and mall.
+replay("m6a2-seed222-mall-iron")
+
+// B23 (A)→(B): the sites' pickups free the mine's claim; the request then completes the shared mine instead of
+// placing a new one — n22 aliases to n16, the mine's plan is whole, and the full claim is occupied.
+test("replay m6a2-seed222-mall-iron (stale reservations freed): the request completes the shared mine", () => {
+  const fx = load("m6a2-seed222-mall-iron")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  const terrain: TerrainView = {
+    block: (x, y) => {
+      if (x >= -86 && x <= -47 && y >= 499 && y <= 535 && view.block(x, y) === OWN) return FREE
+      return view.block(x, y)
+    },
+    ore: (x, y) => view.ore(x, y),
+  }
+  runJob(job, terrain, F, fx.policy, 100000)
+  const why: string[] = []
+  for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
+  print(`  m6a2-seed222-mall-iron (freed): ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+  ok(job.phase === "done", `plan done (${why.join("; ")})`)
+  ok((job.alias["n22"] ?? "") === "n16", `n22 reuses the built mine instead of a new one (alias: ${job.alias["n22"]})`)
+  const mine = findModule(job.layout, "n16")
+  ok(mine !== undefined && mine.minePlan !== undefined && mine.minePlan.complete === true, "the shared mine's plan is whole")
+  if (mine === undefined || mine.minePlan === undefined) return
+  ok(mine.minePlan.occupied.length === mine.minePlan.claim.length, `the whole claim is occupied (${mine.minePlan.occupied.length}/${mine.minePlan.claim.length})`)
+})
+
+// B23 (C): a failed completion is recorded on the job (wholeFail) and, when no fallback placement saves the module,
+// surfaces in the module's failure naming the shared mine. Deterministic sabotage: the completion's first unplanned
+// entity is the belt at mine tile (-47,500) (def-local 40.5,2.5); force foreign ground under it, so the completion
+// check fails there on the very first entity, before any pairs-order-sensitive search.
+test("replay m6a2-seed222-mall-iron: a blocked completion names the shared mine", () => {
+  const fx = load("m6a2-seed222-mall-iron")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  const terrain: TerrainView = {
+    block: (x, y) => {
+      if (x >= -86 && x <= -47 && y >= 499 && y <= 535 && view.block(x, y) === OWN) return FREE
+      if (x === -47 && y === 500) return FOREIGN
+      return view.block(x, y)
+    },
+    ore: (x, y) => view.ore(x, y),
+  }
+  // Small step budgets: placeStep records wholeFail when the completion fails, and clears it only if a fallback
+  // placement later succeeds — step by step and check the record between calls (the success is thousands of work
+  // units away, so the record cannot appear and vanish inside one call).
+  for (let i = 0; i < 1000000; i++) {
+    stepPlan(job, terrain, F, fx.policy, 5)
+    const wf = job.wholeFail?.["n22"]
+    if (wf !== undefined) {
+      ok(wf === "n16: planned mine blocked at -47,500", `wholeFail records the completion's blocker (n22: ${wf})`)
+      return
+    }
+    if (job.phase !== "place") break
+  }
+  ok(false, `the blocked completion was never tried (phase ${job.phase})`)
+})
 
 run("plan-replay")

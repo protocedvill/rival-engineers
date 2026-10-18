@@ -174,6 +174,48 @@ export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts): ModuleDef
 }
 
 /**
+ * The module grown by `k` units at the HEAD (0 ≤ k ≤ maxUnits): the k new units fill the space before 0 on the
+ * axis and every existing entity/ port shifts by +k × unit size. Mirror image of `expandModule` (which grows the
+ * tail). Used for "grow in any direction" (D52/OutpostPlanner): a mine on the edge of an irregular patch grows back
+ * toward the ore, not just away from it.
+ */
+export function expandHeadModule(def: ModuleDef, k: number, facts: ProtoFacts): ModuleDef {
+  const spec = def.expand
+  if (!spec) error(`module ${def.id} has no expand`)
+  if (k < 0 || k > spec.maxUnits) error(`module ${def.id}: can grow by 0..${spec.maxUnits} units, not ${k}`)
+  if (k === 0) return def
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const d = k * size
+  const entities: ModuleEntity[] = []
+  for (const e of def.entities) entities.push(shiftEntity(e, spec.axis, d))
+  for (let i = 0; i < k; i++) for (const e of spec.unit.entities) entities.push(shiftEntity(e, spec.axis, i * size))
+  const ports = def.ports.map((p) => (spec.axis === "x" ? { ...p, pos: { x: p.pos.x + d, y: p.pos.y } } : { ...p, pos: { x: p.pos.x, y: p.pos.y + d } }))
+  const footprint = spec.axis === "x" ? { w: def.footprint.w + d, h: def.footprint.h } : { w: def.footprint.w, h: def.footprint.h + d }
+  const params = { ...(def.params ?? {}), expandedBy: ((def.params?.expandedBy as number | undefined) ?? 0) + k }
+  return finalizeModule(
+    {
+      id: `${def.id}+h${k}`,
+      source: def.source,
+      generator: def.generator,
+      provenance: def.provenance,
+      description: def.description,
+      footprint,
+      entities,
+      ports,
+      recipe: def.recipe,
+      rotatable: def.rotatable,
+      mirrorable: def.mirrorable,
+      site: def.site,
+      anchor: def.anchor,
+      params,
+      notes: def.notes?.filter((n) => !n.startsWith("rates:")),
+      expand: { unit: spec.unit, axis: spec.axis, insertAt: spec.insertAt + d, maxUnits: spec.maxUnits - k },
+    },
+    facts,
+  )
+}
+
+/**
  * The module grown by `k` units (0 ≤ k ≤ maxUnits), as a complete ModuleDef with recomputed rates. The result's
  * `expand` allows maxUnits − k more. Entities at or beyond `insertAt` (the "tail") move: when growing a module that
  * is already built, the planner removes and re-places exactly those (see `expandTail`).

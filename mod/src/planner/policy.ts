@@ -60,6 +60,8 @@ export interface PlacementWeights {
   exactGap: number
   /** Mining modules: penalty per missing fraction of ore coverage. */
   coverage: number
+  /** D52: penalty per missing fraction of ore coverage of the first growth unit (the mine must be able to expand). */
+  growthCoverage?: number
   /** B9 (D48 (4)): per footprint tile in another module's soft claim (the area it can still grow into). */
   softClaim?: number
 }
@@ -112,6 +114,8 @@ export interface CandidateFeatures {
   exactGap: number
   /** Mining modules: ore coverage of the mining areas (0..1). */
   coverage: number
+  /** D52: ore coverage of the first growth unit (0..1) — a mine placed where it can't expand is a dead end. */
+  growthCoverage?: number
   /** Footprint tiles in other modules' soft claims (B9). */
   softClaim?: number
 }
@@ -156,6 +160,7 @@ registerPacking("compact-cluster", (f, p) => {
     w.adjacent * f.adjacent -
     w.exactGap * f.exactGap +
     w.coverage * (1 - f.coverage) +
+    (w.growthCoverage ?? 0) * (f.growthCoverage !== undefined && f.growthCoverage < 0.3 ? 1 : 0) +
     (w.softClaim ?? 0) * (f.softClaim ?? 0)
   )
 })
@@ -192,7 +197,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     bundleFactor: 0.9,
     softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.5 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5 },
 }
 registerPolicy(EARLY_COMPACT)
 

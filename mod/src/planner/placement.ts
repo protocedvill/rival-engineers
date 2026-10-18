@@ -7,13 +7,14 @@
 // candidates (every transform × origin within the radius) in O(1) each. Radii grow (policy.searchRadii) until one
 // candidate is feasible. Pure: no Factorio globals.
 
-import { expandModule, expandMoves } from "../modules/build"
+import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modules/build"
 import { ProtoFacts } from "../modules/facts"
-import { transformModule, transformPoint, Transform } from "../modules/geometry"
+import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { commitModule, findModule, LayoutState, markModule, PlacedModule, portOutside, portTile, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer } from "./policy"
+import { connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
 
 export interface PlacementRequest {
   /** Instance id. */
@@ -85,6 +86,47 @@ function transformsOf(def: ModuleDef): Transform[] {
 
 function isMining(def: ModuleDef): boolean {
   return def.site === "resource-patch"
+}
+
+function growthEnd(def: ModuleDef, end: "auto" | "head" | "tail"): "head" | "tail" {
+  if (end !== "auto") return end
+  const spec = def.expand!
+  let head = 0
+  let tail = 0
+  for (const e of def.entities) if ((spec.axis === "x" ? e.x : e.y) >= spec.insertAt) tail++
+  else head++
+  return head < tail ? "head" : "tail"
+}
+
+/** The canonical strip occupied by growth unit `i` at one end. */
+function growthStrip(def: ModuleDef, i: number, end: "auto" | "head" | "tail"): Rect {
+  const spec = def.expand!
+  const W = def.footprint.w
+  const H = def.footprint.h
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const head = growthEnd(def, end) === "head"
+  return spec.axis === "x"
+    ? { x: head ? -(i + 1) * size : W + i * size, y: 0, w: size, h: H }
+    : { x: 0, y: head ? -(i + 1) * size : H + i * size, w: W, h: size }
+}
+
+/**
+ * D52: ore coverage of the FIRST growth unit of a candidate mining outpost (0..1), or undefined if it can't grow or
+ * the unit leaves the search window. A mine placed where its first expansion lands off-ore will deplete and be
+ * unable to grow in place (seed 222: the red-line iron mine sat on the wide part of an irregular patch, and the only
+ * growth direction led into a neck with no ore under the drills).
+ */
+function firstGrowthCoverage(s: PlacementSearch, td: TDef, ox: number, oy: number, end: "auto" | "head" | "tail" = "auto"): number | undefined {
+  const cdef = s.req.def
+  const spec = cdef.expand
+  if (spec === undefined || spec.maxUnits < 1) return undefined
+  const W = cdef.footprint.w
+  const H = cdef.footprint.h
+  const strip = growthStrip(cdef, 0, end)
+  const r = transformRect(strip, W, H, td.t)
+  const n = sum(s, "res", { x: ox + r.x, y: oy + r.y, w: r.w, h: r.h })
+  if (n === undefined) return undefined
+  return n / (r.w * r.h)
 }
 
 function tdefOf(def: ModuleDef, t: Transform): TDef {
@@ -307,6 +349,21 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     }
     coverage = all > 0 ? have / all : 1
   }
+  // D52: a mine that can't expand in place is a dead end. Hard: an expandable outpost's first growth unit must still
+  // have some ore (seed 222: the rotated red-line iron mine sat on the patch's right edge, its growth led off-ore, it
+  // depleted and could not grow). Soft (below): prefer sites with more growth ore.
+  let growthCoverage: number | undefined
+  if (mining) {
+    // D52/OutpostPlanner: the mine may grow at either end, so both ends count — it is a dead end only if neither has
+    // ore. `def` is the transformed def (expand dropped); the expand spec lives on the canonical request def.
+    const tailCov = firstGrowthCoverage(s, td, ox, oy, "tail")
+    const headCov = firstGrowthCoverage(s, td, ox, oy, "head")
+    const cands = [tailCov, headCov].filter((c): c is number => c !== undefined)
+    if (cands.length > 0) {
+      growthCoverage = Math.max(...cands)
+      if ((s.req.def.expand?.maxUnits ?? 0) > 0 && growthCoverage === 0) return undefined
+    }
+  }
   let portDist = 0
   let facingAway = 0
   for (const p of td.ports) {
@@ -331,6 +388,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     adjacent,
     exactGap: adjacent - inner,
     coverage,
+    growthCoverage,
     softClaim: sum(s, "soft", rect) ?? 0,
   }
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
@@ -473,6 +531,38 @@ export function placeNow(req: PlacementRequest, state: LayoutState, terrain: Ter
   return s
 }
 
+/** Replaces the small linear placement template with its immutable, fixed-port whole-patch mine plan. */
+export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy): void {
+  // Until the staged plan exposes one fixed port per belt lane, sharing its single collector requires splitter taps.
+  if (policy.topology !== "splitter-tap" || !isMining(m.canonical) || m.minePlan !== undefined) return
+  const resource = m.canonical.anchor?.resource
+  const drillName = m.canonical.params?.drill
+  if (resource === undefined || typeof drillName !== "string") return
+  const drill = facts.entity(drillName)
+  if (drill === undefined) return
+  const seeds: Vec[] = []
+  for (const a of m.def.anchor?.miningAreas ?? []) {
+    for (let x = m.origin.x + a.x; x < m.origin.x + a.x + a.w; x++) {
+      for (let y = m.origin.y + a.y; y < m.origin.y + a.y + a.h; y++) if (terrain.ore(x, y) === resource) seeds.push({ x, y })
+    }
+  }
+  const patch = connectedPatch(terrain, resource, seeds, region)
+  if (patch === undefined) return
+  const plan = planWholePatch(terrain, patch, drill)
+  // Preserve the routing intent of the accepted small placement. Its output was oriented toward the consumer;
+  // using that outside tile as the materializer's target chooses the matching edge of the whole-patch plan.
+  const oldOut = m.def.ports.find((p) => p.id === "out")
+  const near = oldOut !== undefined ? portOutside(m, oldOut) : { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
+  const built = materializeMinePlan(m.canonical, plan, facts, near)
+  if (built === undefined) return
+  m.canonical = built.initial
+  m.def = built.initial
+  m.transform = IDENTITY
+  m.origin = built.origin
+  m.rect = { x: built.origin.x, y: built.origin.y, w: built.initial.footprint.w, h: built.initial.footprint.h }
+  m.minePlan = { full: built.full, claim: built.claim, occupied: built.occupied, complete: false }
+}
+
 export function commitPlacement(state: LayoutState, m: PlacedModule, facts: ProtoFacts, policy: LayoutPolicy): void {
   commitModule(state, m, facts, policy.corridor.preferred)
 }
@@ -484,11 +574,27 @@ export function commitPlacement(state: LayoutState, m: PlacedModule, facts: Prot
 export function expansionCandidate(state: LayoutState, def: ModuleDef, units: number): PlacedModule | undefined {
   for (const m of state.modules) {
     const c = m.canonical
-    if (m.fixed || c.expand === undefined || c.expand.maxUnits < units) continue
+    if (m.fixed) continue
+    if (m.minePlan !== undefined) {
+      if (m.minePlan.complete) continue
+    } else if (c.expand === undefined || c.expand.maxUnits < units) continue
     if (c.generator === undefined || c.generator !== def.generator) continue
     if (c.recipe !== def.recipe || c.site !== def.site) continue
     if (c.anchor?.resource !== def.anchor?.resource) continue
     return m
+  }
+  return undefined
+}
+
+/** A partial whole-patch mine compatible with a second logical outpost request. */
+export function wholePatchCandidate(state: LayoutState, def: ModuleDef): PlacedModule | undefined {
+  if (!isMining(def)) return undefined
+  for (const m of state.modules) {
+    // B23: a built (fixed) mine still counts: completing it adds the planned entities and moves nothing, so it is
+    // compatible with `fixed` (never moves). A completed mine has no room left.
+    if (m.minePlan === undefined || m.minePlan.complete) continue
+    const c = m.canonical
+    if (c.generator === def.generator && c.anchor?.resource === def.anchor?.resource) return m
   }
   return undefined
 }
@@ -508,25 +614,65 @@ export interface ExpansionResult {
 
 /**
  * Grows module `id` by `k` units if the new tiles are free (same rules as placement: terrain, other modules' corridor,
- * routes, ore). Keeps whichever end moves fewer entities in place (`expandMoves`). Commits on success.
+ * routes, ore). `end` picks which side the new units go on: "auto" keeps whichever end moves fewer entities in place
+ * (`expandMoves`); "head" grows before 0 (D52/OutpostPlanner: a mine on the edge of an irregular patch grows back
+ * toward the ore, not just away from it); "tail" grows past the far end. Commits on success.
  */
-export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number): ExpansionResult {
+export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto"): ExpansionResult {
   const m = findModule(state, id)
   if (m === undefined) return { ok: false, reason: "unknown module", movedPorts: [], moved: [] }
+  if (m.minePlan !== undefined) {
+    if (m.minePlan.complete || k < 1) return { ok: false, reason: "whole-patch mine is already complete", movedPorts: [], moved: [] }
+    const current: Record<string, boolean> = {}
+    for (const e of m.def.entities) current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)] = true
+    // B23: completion re-checks geometry (terrain, other modules, routes) but not ore: the patch was validated whole
+    // at planning time, and between planning and completion the terrain can only lose ore (mining) — a drill over
+    // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
+    // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
+    // would be stricter than the planning-time one that accepted them.)
+    for (const e of m.minePlan.full.entities) {
+      if (current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)]) continue
+      const er = entityRect(e, facts)
+      for (let x = m.origin.x + er.x; x < m.origin.x + er.x + er.w; x++) {
+        for (let y = m.origin.y + er.y; y < m.origin.y + er.y + er.h; y++) {
+          const kk = tkey(x, y)
+          const b = terrain.block(x, y)
+          if (b !== FREE && b !== TREE && b !== ROCK) return { ok: false, reason: `planned mine blocked at ${x},${y}`, movedPorts: [], moved: [] }
+          const o = state.occ[kk]
+          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}`) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
+          if (state.routeOcc[kk] !== undefined) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
+        }
+      }
+    }
+    unmarkModule(state, m, facts)
+    m.canonical = m.minePlan.full
+    m.def = m.minePlan.full
+    m.minePlan.complete = true
+    m.minePlan.occupied = [...m.minePlan.claim]
+    markModule(state, m, facts, policy.corridor.preferred)
+    return { ok: true, movedPorts: [], moved: [] }
+  }
   const canon = m.canonical
   const spec = canon.expand
   if (spec === undefined || k < 1 || k > spec.maxUnits) return { ok: false, reason: "cannot expand by that much", movedPorts: [], moved: [] }
-  const grown = expandModule(canon, k, facts)
-  const moves = expandMoves(canon, k)
+  const grown = end === "head" ? expandHeadModule(canon, k, facts) : expandModule(canon, k, facts)
   const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
-  const headMoves = moves.originShift.x !== 0 || moves.originShift.y !== 0
-  // An entity that stays put: a head entity if the tail moves, a tail entity if the head moves.
+  // Which end stays put. "head" growth keeps the far end (largest coordinate) in place; otherwise `expandMoves` decides.
+  let headMoves: boolean
   let anchor: ModuleEntity | undefined
-  for (const e of canon.entities) {
-    const tail = axisCoord(e, spec.axis) >= spec.insertAt
-    if (tail === headMoves) {
-      anchor = e
-      break
+  if (end === "head") {
+    headMoves = true
+    let best = -1
+    for (const e of canon.entities) {
+      const c = axisCoord(e, spec.axis)
+      if (c > best) { best = c; anchor = e }
+    }
+  } else {
+    const moves = expandMoves(canon, k)
+    headMoves = end === "tail" ? false : (moves.originShift.x !== 0 || moves.originShift.y !== 0)
+    for (const e of canon.entities) {
+      const tail = axisCoord(e, spec.axis) >= spec.insertAt
+      if (tail === headMoves) { anchor = e; break }
     }
   }
   if (anchor === undefined) return { ok: false, reason: "no fixed entity", movedPorts: [], moved: [] }
@@ -555,26 +701,46 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
     }
   }
   if (mining) {
-    // B6: the grown drills' mining areas must not reach a second ore (or another faction's field, D46).
+    // B6: every grown drill's mining area must not reach a second ore (or another faction's field, D46).
     const resource = canon.anchor?.resource
     for (const a of placed.anchor?.miningAreas ?? []) {
-      // M6a.2 (seed 222): a drill with none of its ore in reach can't be placed at all (worked-out ground).
-      let mine = false
       for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
         for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
           const ore = terrain.ore(x, y)
           if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
-          if (ore === resource) mine = true
         }
       }
-      if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${origin.x + a.x},${origin.y + a.y}`, movedPorts: [], moved: [] }
+    }
+    // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
+    // need resource in reach; otherwise depletion could never be remedied in place (M6a.2, seed 222).
+    for (let i = 0; i < k; i++) {
+      for (const e of spec.unit.entities) {
+        const f = facts.entity(e.name)
+        if (f?.type !== "mining-drill" || f.miningRadius === undefined) continue
+        const offset = end === "head" ? i * size : spec.insertAt + i * size
+        const local = spec.axis === "x" ? { x: e.x + offset, y: e.y } : { x: e.x, y: e.y + offset }
+        const p = transformPoint(local, grown.footprint.w, grown.footprint.h, m.transform)
+        const rad = f.miningRadius
+        const x1 = Math.floor(origin.x + p.x - rad + 0.01)
+        const y1 = Math.floor(origin.y + p.y - rad + 0.01)
+        const x2 = Math.ceil(origin.x + p.x + rad - 0.01)
+        const y2 = Math.ceil(origin.y + p.y + rad - 0.01)
+        let mine = false
+        for (let x = x1; x < x2; x++) for (let y = y1; y < y2; y++) if (terrain.ore(x, y) === resource) mine = true
+        if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${x1},${y1}`, movedPorts: [], moved: [] }
+      }
     }
   }
   const ring = inflate(rect, policy.corridor.min)
   for (let x = ring.x; x < ring.x + ring.w; x++) {
     for (let y = ring.y; y < ring.y + ring.h; y++) {
       const o = state.occ[tkey(x, y)]
-      if (o !== undefined && string.sub(o, 1, 2) === "m:" && !ownTags[o]) return { ok: false, reason: `too close to ${o}`, movedPorts: [], moved: [] }
+      if (o !== undefined && string.sub(o, 1, 2) === "m:" && !ownTags[o]) {
+        const other = findModule(state, string.sub(o, 3))
+        // Mining outposts intentionally cluster on one patch. Their footprints still cannot overlap (checked above),
+        // but a mine's corridor ring may touch another mine while it fills the preplanned patch footprint.
+        if (!mining || other === undefined || !isMining(other.canonical)) return { ok: false, reason: `too close to ${o}`, movedPorts: [], moved: [] }
+      }
     }
   }
   const before: Record<string, Vec> = {}
@@ -601,5 +767,8 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
     const was = before[p.id]
     if (was === undefined || was.x !== now.x || was.y !== now.y) movedPorts.push(p.id)
   }
-  return { ok: true, movedPorts, moved: moves.moved }
+  // Forced head growth keeps every existing entity in place; forced tail growth moves the canonical tail. Auto keeps
+  // the original minimum-movement behaviour.
+  const moved = end === "auto" ? expandMoves(canon, k).moved : end === "head" ? [] : expandTail(canon)
+  return { ok: true, movedPorts, moved }
 }

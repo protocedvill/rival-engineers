@@ -12,7 +12,7 @@ import { mallSources, tempCells } from "./factory-report"
 import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
-import { markDirty } from "../planner/terrain"
+import { destroyEntity, markDirty } from "../planner/terrain"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -522,7 +522,7 @@ function createSite(ctx: Ctx, kind: SiteKind, parts: PlannedPart[], resource?: s
   for (const p of parts) {
     const ghost = ctx.surface.create_entity({ name: "entity-ghost", inner_name: p.entity, position: p.position, direction: p.direction, force: ctx.faction.force })
     if (!ghost) {
-      for (const g of ghosts) if (g.valid) g.destroy()
+      for (const g of ghosts) if (g.valid) destroyEntity(g)
       return undefined
     }
     ghosts.push(ghost)
@@ -590,7 +590,7 @@ function failSite(ctx: Ctx, site: Site, why: string): void {
   for (const part of site.parts) {
     const job = part.job !== undefined ? ctx.faction.board.jobs[part.job] : undefined
     if (job && job.status === "open") failJob(ctx.faction.board, job.id, `site-failed: ${why}`, ctx.tick)
-    if (job && job.payload.kind === "place" && job.payload.ghost.valid && !(part.built && part.built.valid)) job.payload.ghost.destroy()
+    if (job && job.payload.kind === "place" && job.payload.ghost.valid && !(part.built && part.built.valid)) destroyEntity(job.payload.ghost)
   }
   // Keep the failed spot reserved (it is bad), but count failures per patch.
   if (site.patch !== undefined) {
@@ -629,6 +629,11 @@ function checkDepletion(ctx: Ctx): void {
 /** D43: the replacement is built; the old site stops being maintained and its entities are picked up. */
 function retireSite(ctx: Ctx, site: Site): void {
   site.status = "retired"
+  // Its ground is free again: release the reservation now (the next resyncReserved would anyway; M6a.2, seed 222:
+  // retired sites 2/4/14 kept reserving their tiles and read as OWN walls for good). The standing parts are still
+  // protected by the terrain scan until the crew picks them up.
+  for (const k of site.tiles) delete ctx.brain.reserved[k]
+  site.tiles = []
   // Its ore is (nearly) worked out: planners scan that ground again before they count on it (M6a.2, seed 222).
   for (const part of site.parts) markDirty(ctx.faction.surface, { x: part.position.x - 4, y: part.position.y - 4 }, { x: part.position.x + 4, y: part.position.y + 4 })
   log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) retired`)
@@ -1422,7 +1427,7 @@ export function replan(ctx: Ctx): void {
     site.status = "failed"
     for (const part of site.parts) {
       const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-      if (ghost) ghost.destroy()
+      if (ghost) destroyEntity(ghost)
     }
     for (const k of site.tiles) delete brain.reserved[k]
   }

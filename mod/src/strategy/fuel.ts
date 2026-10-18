@@ -33,6 +33,22 @@ export function powerFuelled(g: LogicalGraph, power: LogicalNode): boolean {
   return false
 }
 
+/**
+ * Whether a growth goal is currently expanding one of `power`'s fuel producers. A producer being grown still
+ * feeds the steam block (its built drills run through the growth), so the crew's hand-fuelling is redundant —
+ * and at priority 100 it starves the growth's own craft jobs, which never get claimed (M6a.2, seed 222). A
+ * brand-new producer built alongside an existing steam block is not a growth goal, so it still hand-fuels.
+ */
+export function producerGrowing(f: FactoryState, power: LogicalNode): boolean {
+  for (const e of LG.edgesInto(f.graph, power.id)) {
+    if (e.kind !== "belt" || e.from === undefined) continue
+    const from = f.graph.nodes[e.from]
+    if (from === undefined || from.lifecycle !== "building") continue
+    for (const g of f.goals) if (g.kind === "grow" && (g.status === "building" || g.status === "planning") && g.growth?.node === from.id) return true
+  }
+  return false
+}
+
 /** Ore left (summed over the distinct resource tiles its drills reach) and whether every drill has run dry. */
 function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { amount: number; dry: boolean } {
   const seen: Record<string, boolean> = {}

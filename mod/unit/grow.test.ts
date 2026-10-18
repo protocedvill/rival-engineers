@@ -1,9 +1,11 @@
 import { miningOutpost, smelterColumn } from "../src/modules/generators"
+import { transformModule } from "../src/modules/geometry"
 import { beltTiers } from "../src/planner/capacity"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { planGrowth } from "../src/planner/grow"
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute } from "../src/planner/layout"
+import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
 import { ModuleDef } from "../src/modules/types"
@@ -91,6 +93,36 @@ test("growing a producer with a splitter tap rips and reroutes the tap too (seed
   eq(problems.length, 0, problems.join("; "))
 })
 
+test("growing a module fed by a tap of its tap group rips the whole group (M6a.2, seed 222: route at 41,367)", () => {
+  const view = free(120, 120)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "mine", ore, 50, 70)
+  place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  place(l, "c", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
+  place(l, "d", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 10, 20)
+  const conns: ConnectionRequest[] = [
+    { id: "ore-b", from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+    { id: "ore-c", from: { module: "mine", port: "out" }, to: { module: "c", port: "in-ore" } },
+    { id: "ore-d", from: { module: "mine", port: "out" }, to: { module: "d", port: "in-ore" } },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  // The chain is rooted at the first-routed route: the route feeding d is a tap, and its root feeds b instead.
+  let dRoute = ""
+  for (const rid of job.layout.routeOrder) if (job.layout.routes[rid].to.module === "d") dRoute = rid
+  ok(dRoute !== "", "a route feeds d")
+  const dr = job.layout.routes[dRoute]
+  ok(dr.tapOf !== undefined, "the route feeding d is a tap of the group")
+  ok(dr.tapOf !== undefined && job.layout.routes[dr.tapOf].to.module === "b", "the root feeds b (not d)")
+  const g = planGrowth(job.layout, view, F, POLICY, TIER, "d", 1)
+  ok(g.ok, `grown: ${g.reason}`)
+  eq([...g.rerouted].sort().join(","), "ore-b,ore-c,ore-d", "the whole tap group rerouted")
+  const problems = checkLayout(g.layout, view, () => 5).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
 test("a mining outpost doesn't grow onto worked-out ground: every new drill needs its ore in reach (M6a.2, seed 222)", () => {
   const mk = (oreRows: number): TerrainView => ({
     block: (x, y) => (x < 0 || y < 0 || x >= 90 || y >= 90 ? UNKNOWN : FREE),
@@ -103,6 +135,25 @@ test("a mining outpost doesn't grow onto worked-out ground: every new drill need
   // Ore only under the built drills (the rest worked out): the growth is refused, whichever end it takes.
   const r2 = planGrowth(l, { block: mk(0).block, ore: (x, y) => (x >= mine.rect.x - 2 && x < mine.rect.x + mine.rect.w + 2 && y >= mine.rect.y - 2 && y < mine.rect.y + mine.rect.h + 2 ? "iron-ore" : undefined) }, F, POLICY, TIER, "mine", 1)
   ok(!r2.ok && string.find(r2.reason ?? "", "no iron-ore under a drill", 1, true)[0] !== undefined, `refused: ${r2.reason}`)
+})
+
+test("a mining outpost may grow beside another mine, but not beside a non-mining module (M6a.2, seed 222)", () => {
+  // Ore starts at the built mine: tail growth has ore, while the opposite/head fallback does not.
+  const view = oreField(120, 120, 70)
+  const mine = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  const l = newLayout()
+  place(l, "a", mine, 50, 70)
+  const rotated = transformModule(mine, { rot: 2, mirror: false })
+  const b: PlacedModule = { id: "b", canonical: mine, def: rotated, transform: { rot: 2, mirror: false }, origin: { x: 50, y: 83 }, rect: { x: 50, y: 83, w: rotated.footprint.w, h: rotated.footprint.h }, fixed: true }
+  commitModule(l, b, F, 2)
+  const besideMine = planGrowth(l, view, F, POLICY, TIER, "a", 1)
+  ok(besideMine.ok, `mine adjacency allowed: ${besideMine.reason}`)
+
+  const blocked = newLayout()
+  place(blocked, "a", mine, 50, 70)
+  place(blocked, "c", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 44, 83)
+  const besideSmelter = tryExpand(blocked, view, F, POLICY, "a", 1, "tail")
+  ok(!besideSmelter.ok && string.find(besideSmelter.reason ?? "", "too close to m:c", 1, true)[0] !== undefined, `non-mine adjacency refused: ${besideSmelter.reason}`)
 })
 
 test("the factory's reserved tiles follow its layout: tiles a growth or reroute gives up are released (M6a.2, seed 11)", () => {

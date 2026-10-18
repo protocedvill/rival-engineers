@@ -7,11 +7,11 @@ import { FactionState, JobPayload } from "../jobs/types"
 import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
-import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
-import { planGrowth } from "../planner/grow"
-import { markDirty, scanChunk, terrainView } from "../planner/terrain"
+import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
+import { maxExpandable, planGrowth } from "../planner/grow"
+import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
-import { findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../planner/layout"
+import { findModule, growthArea, LayoutState, modulesOnTiles, newLayout, PlacedModule } from "../planner/layout"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
@@ -24,7 +24,7 @@ import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
 import { evictSites, resyncReserved } from "./evict"
-import { checkPowerFuel, powerFuelled } from "./fuel"
+import { checkPowerFuel, powerFuelled, producerGrowing } from "./fuel"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import * as RT from "../planner/runtime"
@@ -727,7 +727,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     if (stuckRound(ctx, g, left.length)) {
       // B20: a growth that keeps failing to place is abandoned: its leftover ghosts go, the module counts as built with
       // what stands, and it is not grown again this stage.
-      for (const gh of left) if (gh.valid) gh.destroy()
+      for (const gh of left) if (gh.valid) destroyEntity(gh)
       b.phase = "done"
       g.status = "failed"
       const node = ctx.f.graph.nodes[g.growth?.node ?? ""]
@@ -1077,6 +1077,13 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   // B15 / D51: bootstrap mining sites on the plan's ground make way (picked up first, rebuilt elsewhere).
   const taken: Record<number, boolean> = {}
   for (const k of partTiles(job.layout, parts)) taken[k] = true
+  // B23 / D52: a whole-patch mine's claim covers its unbuilt footprint; a site standing on it would block the mine's
+  // completion (m6a2-b21l, seed 222: the mall's iron line found the patch full of retired sites).
+  for (const id of parts.modules) {
+    const m = findModule(job.layout, id)
+    if (m === undefined || m.minePlan === undefined) continue
+    for (const k of m.minePlan.claim) taken[k] = true
+  }
   const evicted = evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (${g.kind})`)
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
   const reserved = ctx.faction.brain!.reserved
@@ -1088,7 +1095,29 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   }
   resyncReserved(ctx.faction, job.layout)
   const fuel = ctx.faction.brain!.catalog.fuel
-  RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
+  const b = RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
+  // B23: a request that completed a built whole-patch mine (wholePatchCandidate): the mine is a base module, so its
+  // new entities are not in `parts`. Build them the growth way: evict and clear what stands on the new ground, then
+  // ghost and place (`stepBuild` stamps `extraAdd` once the clear is done). The out port of a completed mine is the
+  // partial mine's, so no routes move.
+  for (const [, ex] of pairs(job.expanded)) {
+    if (!job.baseModules[ex.module]) continue
+    const m = findModule(job.layout, ex.module)
+    if (m === undefined || m.minePlan === undefined || !m.minePlan.complete) continue
+    const add: EntitySpec[] = []
+    for (const s of partEntities(job.layout, { modules: [ex.module], routes: [], poles: [] })) {
+      const found = findEntities(ctx.surface, { name: s.name, position: { x: s.x, y: s.y }, force: ctx.faction.force, limit: 1 })
+      if (found.length > 0) continue
+      add.push(s)
+    }
+    if (add.length === 0) continue
+    const mineTaken: Record<number, boolean> = {}
+    for (const s of add) mineTaken[tkey(math.floor(s.x), math.floor(s.y))] = true
+    for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+    for (const e of RT.obstaclesUnder(ctx.surface, job.layout, { modules: [ex.module], routes: [], poles: [] })) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+    b.extraAdd = add
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${ex.module}: ${add.length} entities to build`)
+  }
   g.status = "building"
   g.plannedTick = ctx.tick
   const s = job.stats
@@ -1357,6 +1386,14 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
     const box = gh.bounding_box
     for (let x = math.floor(box.left_top.x + 0.05); x < math.ceil(box.right_bottom.x - 0.05); x++) for (let y = math.floor(box.left_top.y + 0.05); y < math.ceil(box.right_bottom.y - 0.05); y++) under[tkey(x, y)] = true
   }
+  // B21/D52: a whole-patch mine is materialized after its small seed placement, so its internal collector can reveal
+  // a collision with a D38 temporary cell on already-depleted ore. The accepted permanent plan wins: retire only the
+  // temporary cells actually under leftover ghosts. `modulesOnTiles` cannot rely on `occ`, because the mine's later
+  // exact claim may already own those keys.
+  for (const m of modulesOnTiles(ctx.f.layout, under)) {
+    const n = ctx.f.graph.nodes[m.id]
+    if (n !== undefined && n.lifecycle === "built" && ST.isTempRole(n.role)) retireTemp(ctx, n)
+  }
   for (const e of evictSites(faction, ctx.surface, under, `goal ${g.id}'s leftover ghosts`)) addClearJob(faction, e, b!.priority)
   for (const gh of left) {
     // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
@@ -1482,8 +1519,12 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     return
   }
   if (r.kind === "grow") {
-    // A plan in flight works on a copy of the layout and replaces it when adopted: grow after it.
-    if (planning(f) !== undefined || activeGoal(f, "grow") !== undefined) return
+    // A plan in flight works on a copy of the layout and replaces it when adopted: normally grow after it. But a
+    // depletion (key `deplete:`) must expand now — the worked-out outpost is starving the line — so it is only blocked
+    // by a growth of the SAME node (D52: a depleted outpost expands even while other goals plan or grow).
+    const busyGrow = activeGoal(f, "grow")
+    const blockedByPlan = planning(f) !== undefined && !r.key.startsWith("deplete:")
+    if (blockedByPlan || (busyGrow !== undefined && busyGrow.growth?.node === r.node)) return
     const n = f.graph.nodes[r.node!]
     const m = n !== undefined ? findModule(f.layout, n.id) : undefined
     if (n === undefined || m === undefined || m.canonical.expand === undefined) {
@@ -1491,9 +1532,19 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
       return
     }
     const have = LG.rateIn(n.capacity.outputs, n.item ?? "")
+    // D52/B21: a mining outpost expands in place over the rest of its patch; other modules grow by one unit at a time.
+    // The patch is usually smaller than the belt limit, so grow only as far as the ore runs (a full-size expansion
+    // would land the far drills off-ore and fail outright).
+    const t = storage.terrains?.[f.terrain]
+    let units = 1
+    if (n.kind === "outpost" && t !== undefined) {
+      units = maxExpandable(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policyFor(ctx.config), n.id)
+      if (units < 1) { say("cannot grow: no ore in the growth area (D28: relocate is P2)"); return }
+    }
+    if (units < 1) { say("cannot grow: at its expansion limit"); return }
     const before = f.goals.length
-    const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: have, have } })
-    say(ok && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by 1 unit` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units, need: have, have } })
+    say(ok && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by ${units} unit(s)` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
     return
   }
   // Repair: re-place the missing pieces of the edge's route (belt) or pole lines (power).
@@ -1706,13 +1757,10 @@ function retireTemp(ctx: Ctx, n: LogicalNode): void {
   const m = findModule(f.layout, n.id)
   let jobs = 0
   if (m !== undefined) {
-    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
-    for (const e of findEntities(ctx.surface, { area, force: ctx.faction.force })) {
-      if (e.type === "electric-pole" || e.type === "entity-ghost") continue
-      addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority)
-      jobs++
-    }
-    for (const gh of findEntities(ctx.surface, { area, force: ctx.faction.force, type: "entity-ghost" })) gh.destroy()
+    // Exact specs matter when a permanent whole-patch mine overlaps this disposable cell: clearing the rectangle
+    // would also destroy the mine's waiting belt ghosts, making the build look complete with a gap in its collector.
+    const own = partEntities(f.layout, { modules: [m.id], routes: [], poles: [] }).filter((e) => prototypeFacts.entity(e.name)?.type !== "electric-pole")
+    jobs = applyDiff(ctx.surface, ctx.faction, own, [], { priority: ctx.config.factoryBuildPriority }).clearJobs.length
   }
   LG.removeNode(f.graph, n.id)
   f.temp!.retired++
@@ -1733,8 +1781,10 @@ function upkeep(ctx: Ctx): void {
     if (n.lifecycle !== "built") continue
     const m = findModule(f.layout, id)
     const names = m?.canonical.upkeep?.fuel.map((x) => x.name) ?? []
-    // P36 (a): a steam block without a built fuel supply (its outpost being replaced) gets coal by hand.
-    if (n.kind === "power" && !powerFuelled(f.graph, n)) names.push(ctx.entities.boiler ?? "boiler")
+    // P36 (a): a steam block without a built fuel supply (its outpost being replaced) gets coal by hand. A fuel
+    // producer that is being grown still feeds (its built drills run through the growth), so skip the hand-fuelling
+    // that would otherwise starve the growth's own craft jobs (M6a.2, seed 222).
+    if (n.kind === "power" && !powerFuelled(f.graph, n) && !producerGrowing(f, n)) names.push(ctx.entities.boiler ?? "boiler")
     if (m === undefined || names.length === 0) continue
     const found = findEntities(ctx.surface, { name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
     for (const e of found) {
