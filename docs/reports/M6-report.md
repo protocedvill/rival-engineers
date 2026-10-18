@@ -162,8 +162,11 @@ for regression signals only, not a target.
 | `redLine` expansion cap | `modules/generators.ts` | 10 units (`10 - units`) | Guess: keeps a red line within ~120 tiles; no game limit. | no |
 | `labArray` expansion cap | `modules/generators.ts` | 10 units (`10 - units`) | Guess: same reason (8 tiles per unit). | no |
 | `OUTPOST_FAR_RADIUS` | `planner/placement.ts` | 192 tiles | One more search ring for mining outposts beyond the policy's radii (ore near the core runs out); within the plan's region. Guess. | no |
-| `TRAPPED_NO_PATHS` | `jobs/crew.ts` | 3 no-path failures in a row | Boxed-in detection: one or two failures happen on busy sites. Guess. | no |
-| `UNBOX_RADIUS` | `jobs/crew.ts` | 3 tiles | The small entities around a boxed-in member it may pick up (within reach). Guess. | no |
+| `TRAPPED_NO_PATHS` | `jobs/crew.ts` | 3 walk failures in a row (B22: no-path walks, stuck and unreachable re-path loops; only a finished *walk* resets it) | Boxed-in detection: one or two failures happen on busy sites. Guess. | no |
+| `UNBOX_RADIUS` | `jobs/crew.ts` | 3 tiles | The own entities around a boxed-in member it may pick up (within reach). Guess. | no |
+| `UNBOX_TREE_RADIUS` (B22) | `jobs/crew.ts` | 3 tiles | How far around a boxed-in member it looks for neutral trees/rocks to mine through. Guess. | no |
+| `UNBOX_TREES_PER_ESCAPE` (B22) | `jobs/crew.ts` | 16 | Most trees/rocks one escape mines before it walks on (the walk re-checks the rest); enough to open a dense seed-222-style ring in ≤2 escapes. Guess. | no |
+| `UNBOX_RETRY_TICKS` (B22) | `jobs/crew.ts` | 600 (10 game-s) | Wait before the next escape attempt when the last found nothing to clear (instead of dropping work every cycle). Guess. | no |
 | `ROW_BUFFER_W` | `modules/generators.ts` | 2 columns | Buffer head width on assembler rows / circuit blocks (belt + inserter + chest). Layout-derived. | no |
 | `SCIENCE_SAMPLE_TICKS` | `strategy/stage.ts` | 3600 (1 game-min) | Sample period for "sustained" (P31). | no |
 | `SCIENCE_MAX_SAMPLES` | `strategy/stage.ts` | 600 (10 game-h) | Keeps the 8-h run's samples with margin; bounds storage. | no |
@@ -316,3 +319,29 @@ claim is occupied; and a sabotaged completion (foreign ground under the first no
 `wholeFail["n22"] = "n16: planned mine blocked at -47,500"` before any fallback, checked step-by-step so it does not
 depend on Lua table order. Codex's B21 work (whole-patch drill plans `mine-plan.ts`, D52, and the rest of the
 uncommitted 25-file tree) landed in the same commit bec529b.
+
+## M6a.3: B22 the stuck member — unboxing becomes a real escape (2026-10-18)
+
+The M6 unbox (6db6e37) covered only part of the stuck-member problem, as the B22 row describes: it triggered only on
+3 straight "pathfinder found no path" walk failures (members looping "stuck"/"unreachable" re-paths never triggered
+it, and any successful action — a standing craft, a transfer — erased the count), it could only pick up small own
+entities within 3 tiles (big machines, walls, and all neutral trees/rocks were invisible to it), and with nothing to
+pick up it logged and dropped its work, re-triggering every cycle forever.
+
+**Fix (06534e3, `jobs/crew.ts`):**
+
+- The trigger now counts `stuck` and `unreachable` walk failures equally, and only a finished *walk* action resets
+  the count (a standing action says nothing about mobility).
+- The escape is chosen from what the member can act on **from where it stands** (`can_reach_entity`) and ordered
+  cheap first: its faction's own entities one at a time, small types then walls and big machines (the pick-up leaves
+  a ghost with the entity's recipe, so a picked-up assembler re-places with its recipe); if no own structure stands
+  in the way, it mines the neutral trees and rocks in its reach — all of them, up to `UNBOX_TREES_PER_ESCAPE` (16),
+  so a dense ring actually opens instead of one tree per cycle.
+- With nothing nearby to clear it no longer drops its work every cycle: the attempt waits out
+  `UNBOX_RETRY_TICKS` (600) before unboxing again, and the member's jobs keep running through the board's own
+  failure handling (penalised releases, `jobMaxAttempts`) — the real escalation path when the walk is unfixable.
+
+**Tests (T2 `jobs.test`):** a member boxed in behind two staggered tree rings (seed-222-style density, 28 trees)
+mines its way out and builds its chest; a member enveloped by its own assembling machines (pitch-3 ring, boxes
+touching in a continuous wall) picks one up, gets out, builds, and the machine is re-placed. Both pass `stats.unboxed`
+matches: the tree case mines (no ghosts), the machine case picks up. Full suite 115/115 at 06534e3.
