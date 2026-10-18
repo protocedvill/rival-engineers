@@ -2,6 +2,7 @@ import { EntityFacts } from "../src/modules/facts"
 import { miningOutpost } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { EAST, NORTH, SOUTH, WEST } from "../src/modules/types"
+import { entityRect } from "../src/modules/geometry"
 import { partEntities } from "../src/planner/build-list"
 import { FREE, keyX, keyY, Rect, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { commitModule, modulesOnTiles, newLayout, PlacedModule } from "../src/planner/layout"
@@ -163,6 +164,39 @@ test("B21 finds an older module under a later whole-patch claim", () => {
   const remove = partEntities(state, { modules: ["temp"], routes: [], poles: [] })
   eq(remove.length, old.def.entities.length, "retirement selects only the temporary module's exact entities")
   for (const e of remove) eq(e.owner, "temp", "overlapping mine entities are preserved")
+})
+
+test("B21 an incomplete stage's poles never stand on the complete plan's belt paths", () => {
+  // Seed 3333 (acceptance run 2026-10-18, tick ~75600) died on the first materialize of its whole-patch iron mine:
+  // the initial (partial) stage's pole placer only saw the partial belt subset as occupied, so it dropped a pole on
+  // a tile the complete stage's belt layer then claims (transport-belt@18.5,31.5 and small-electric-pole@18.5,31.5
+  // overlapped and finalizeModule's occupancy check threw). The initial pole set must be a subset of the complete
+  // stage's network, so every belt tile of the full plan blocks partial poles too.
+  const region = { x: 0, y: 0, w: 80, h: 70 }
+  // The shape that repros (pre-fix diag B05: rows=4, the consumer west of the patch):
+  const view = terrain(region, (x, y) => (x >= 14 && x < 58 && y >= 18 && y < 40 ? "iron-ore" : undefined))
+  const patch = connectedPatch(view, "iron-ore", [{ x: 17, y: 21 }], region)!
+  const plan = planWholePatch(view, patch, DRILL)
+  ok(plan.drills.length >= 10, `a multi-lane patch (${plan.drills.length} drills)`)
+  for (const rows of [4, 2]) {
+    const base = miningOutpost(F, { resource: "iron-ore", rows, sides: 1 })
+    const stages = materializeMinePlan(base, plan, F, { x: 20, y: 18 })!
+    const beltAt: Record<string, boolean> = {}
+    for (const e of stages.full.entities) {
+      if (e.name !== base.params?.belt) continue
+      const r = entityRect(e, F)
+      for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) beltAt[`${x},${y}`] = true
+    }
+    let poles = 0
+    for (const e of stages.initial.entities) {
+      if (F.entity(e.name)?.type !== "electric-pole") continue
+      poles++
+      const r = entityRect(e, F)
+      for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++)
+        ok(!beltAt[`${x},${y}`], `the partial stage's pole at ${e.x},${e.y} does not share the belt tile ${x},${y}`)
+    }
+    ok(poles > 0, "the partial stage has a power network")
+  }
 })
 
 run("mine-plan")

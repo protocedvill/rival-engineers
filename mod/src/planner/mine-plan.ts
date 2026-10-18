@@ -389,13 +389,20 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     const onChosenLane = laneFar !== undefined && (alongSign < 0 ? along > collector && along <= laneFar : along < collector && along >= laneFar)
     if (onCollector || onChosenLane) initialInfrastructure.push(normInfra[i])
   }
-  // Place only the partial stage's power network now. It remains a subset of the complete stage's network.
+  // Place only the partial stage's power network now. It remains a subset of the complete stage's network: a pole
+  // must never stand where the complete stage's belt layer or any drill will go (the first call's `existing` only
+  // marks the partial belt subset, so the whole layer's tiles are blocked explicitly).
   const futureDrillTiles: Record<string, boolean> = {}
   for (const e of normDrills) {
     const r = entityRect(e, facts)
     for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) futureDrillTiles[tileKey(x, y)] = true
   }
-  const initialPoles = pole !== undefined ? placePoles(footprint, [...initialInfrastructure, ...initialDrills], facts, pole, futureDrillTiles) : []
+  const futureBlocked: Record<string, boolean> = { ...futureDrillTiles }
+  for (const e of normInfra) {
+    const r = entityRect(e, facts)
+    for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) futureBlocked[tileKey(x, y)] = true
+  }
+  const initialPoles = pole !== undefined ? placePoles(footprint, [...initialInfrastructure, ...initialDrills], facts, pole, futureBlocked) : []
   for (const e of initialPoles) initialInfrastructure.push(e)
   if (pole !== undefined) {
     for (const e of initialPoles) normInfra.push(e)
