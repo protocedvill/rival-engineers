@@ -11,6 +11,7 @@ import {
   missingMaterials,
   newBoard,
   planBatch,
+  planTrip,
   Pos,
   Rect,
   release,
@@ -229,6 +230,38 @@ test("fitMaterials keeps jobs in order while the stock lasts; missingMaterials s
   eq(missing[0].count, 1)
   eq(missing[1].item, "drill")
   eq(missingMaterials(kept, { belt: 5, drill: 1 }).length, 0, "nothing missing")
+})
+
+
+function clearJob(board: Board, x: number, y: number, priority = 0): number {
+  return addJob(board, { kind: "clear", pos: { x, y }, priority, payload: undefined }, 0).id
+}
+
+test("planTrip: chains the nearest jobs from the anchor, within the radius, up to maxJobs", () => {
+  const b = newBoard()
+  const a = clearJob(b, 0, 0)
+  const far = clearJob(b, 30, 0)
+  const j3 = clearJob(b, 3, 0)
+  const j1 = clearJob(b, 1, 0)
+  const j2 = clearJob(b, 2, 1)
+  const opts = { maxJobs: 3, radius: 10, accept: () => true, load: () => 0.1, capacity: 10 }
+  const trip = planTrip(b, b.jobs[a], 0, opts)
+  eq(trip.join(","), [a, j1, j2].join(","), "nearest neighbour chain, capped at 3")
+  const all = planTrip(b, b.jobs[a], 0, { ...opts, maxJobs: 10 })
+  eq(all.join(","), [a, j1, j2, j3].join(","), "the far job is outside the radius")
+  ok(all.indexOf(far) < 0, "far job left out")
+})
+
+test("planTrip: stops when the inventory would overflow; skips claimed and refused jobs", () => {
+  const b = newBoard()
+  const a = clearJob(b, 0, 0)
+  const claimed = clearJob(b, 1, 0)
+  const refused = clearJob(b, 1, 1)
+  const j = clearJob(b, 2, 0)
+  clearJob(b, 3, 0)
+  claim(b, [claimed], 7, 0)
+  const trip = planTrip(b, b.jobs[a], 0, { maxJobs: 10, radius: 10, accept: (job) => job.id !== refused, load: () => 1, capacity: 2.5 })
+  eq(trip.join(","), [a, j].join(","), "anchor + one more fit in 2.5 slots")
 })
 
 run("board")

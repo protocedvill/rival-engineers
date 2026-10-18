@@ -50,6 +50,8 @@ export interface FactionState {
   paused: boolean
   /** Items crew members are on their way to take from the stockpiles, so others don't count them. */
   reserved: Record<string, number>
+  /** Empty the crew's pockets into the depot between jobs, as brain-driven factions always do (tests). */
+  depositBetweenJobs?: boolean
   /** The strategy layer (M3 burner bootstrap). Factions without one only work jobs added from outside. */
   brain?: BrainState
 }
@@ -71,6 +73,10 @@ export interface CrewStats {
   /** Busy ticks by the payload kind of the job being worked (telemetry). */
   byKind?: Record<string, number>
   deposits?: number
+  /** D38: craft jobs queued in the background of another batch. */
+  backgroundCrafts?: number
+  /** Mining trips of more than one job (B3). */
+  trips?: number
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */

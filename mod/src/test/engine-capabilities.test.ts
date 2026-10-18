@@ -182,4 +182,22 @@ describe("player-less character", () => {
       assert(pickedUp === 1, "chest returned to inventory")
     })
   })
+
+  test("hand-crafting by a player-less character does not fire craft-item research triggers (M5a finding)", () => {
+    const lab = createLab()
+    const force = game.forces["m5-trigger"] ?? game.create_force("m5-trigger")
+    force.reset()
+    for (const t of ["steam-power", "electronics"]) force.technologies[t].researched = true
+    const character = lab.surface.create_entity({ name: "character", position: at(lab, 0, 0), force })!
+    character.insert({ name: "electronic-circuit", count: 10 })
+    character.insert({ name: "iron-gear-wheel", count: 10 })
+    character.insert({ name: "transport-belt", count: 4 })
+    assert(character.begin_crafting({ recipe: "lab", count: 1 }) === 1, "lab queued")
+    after_ticks(200, () => {
+      assert(itemCount(character, "lab") === 1, "lab crafted")
+      const researched = force.technologies["automation-science-pack"].researched
+      log(`[spike] craft-item trigger (lab) after a player-less hand-craft: researched = ${researched}`)
+      assert(!researched, "the engine fired the trigger: the crew's emulation (strategy/factory.ts) is no longer needed")
+    })
+  })
 })

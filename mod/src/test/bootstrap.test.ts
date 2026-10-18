@@ -1,8 +1,9 @@
-import { LuaEntity, LuaSurface } from "factorio:runtime"
+import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { spawnFaction } from "../autospawn"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
+import { Site } from "../strategy/types"
 import { startBootstrap } from "../strategy/bootstrap"
 import { bestPatch, positionDistance, scanPatches } from "../world/resources"
 import { requiredResources } from "../world/spawn"
@@ -180,5 +181,41 @@ describe("burner bootstrap", () => {
       return true
     })
   })
-})
 
+  test("a depleting mining site is replaced on remaining ore, then picked up (D43, B4)", () => {
+    const lab = createLab(40)
+    ore(lab, "stone", 6, -8, 12, 4)
+    setConfigOverride("bootstrapSites", "stone=1")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "deplete", { "burner-mining-drill": 2, "wooden-chest": 2, wood: 4, coal: 30 })
+    const brain = faction.brain!
+    let first: Site | undefined
+    let drained: MapPosition[] = []
+    until(30000, () => {
+      if (first === undefined) {
+        for (const s of brain.sites) if (s.kind === "chest" && s.status === "built") first = s
+        if (first === undefined) return false
+        // Mine the patch under its drill down to a minute's worth (a burner drill mines 15 stone a minute).
+        const drill = first.parts[0].built!
+        for (const e of lab.surface.find_entities_filtered({ area: drill.mining_area, type: "resource" })) {
+          e.amount = 3
+          drained.push(e.position)
+        }
+        return false
+      }
+      if (first.status !== "retired") return false
+      for (const part of first.parts) if (part.built && part.built.valid) return false
+      let replacement: Site | undefined
+      for (const s of brain.sites) if (s.kind === "chest" && s.status === "built" && s.id !== first.id) replacement = s
+      assert(replacement !== undefined, "a replacement chest site is built")
+      const drill = replacement!.parts[0].built!
+      assert(drill.valid && drill.status !== defines.entity_status.no_minable_resources, `replacement drill status ${drill.status}`)
+      for (const e of lab.surface.find_entities_filtered({ area: drill.mining_area, type: "resource" })) {
+        for (const p of drained) assert(p.x !== e.position.x || p.y !== e.position.y, "the replacement is not on the drained tiles")
+      }
+      log(`[m3] depleting site ${first.id} replaced by ${replacement!.id} and picked up at tick ${game.tick}`)
+      drained = []
+      return true
+    })
+  })
+})

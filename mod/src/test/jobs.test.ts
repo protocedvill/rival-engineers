@@ -1,5 +1,5 @@
 import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
-import { clearConfigOverrides, getConfig } from "../config"
+import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob } from "../jobs/board"
 import { addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
@@ -310,6 +310,44 @@ describe("job board", () => {
         }
       }
       done()
+    })
+  })
+
+  test("D38: a crew member crafts in the background while it builds (queues the craft, walks and places, collects it)", () => {
+    // The same scenario twice: crafting standing at the depot (crew-background-crafts 0), then in the background.
+    // A craft job (40 gears, 20 s) and 16 chests to place 24 tiles away, one crew member.
+    const run = (background: number, then: (ticks: number, faction: FactionState) => void): void => {
+      setConfigOverride("crewBackgroundCrafts", background)
+      const lab = createLab(32)
+      const faction = createFaction(newFactionName(`bgcraft${background}`), { position: at(lab, 0, 0), crew: 1 })
+      faction.depositBetweenJobs = true
+      const pile = lab.surface.create_entity({ name: "wooden-chest", position: at(lab, 0.5, 2.5), force: faction.force })!
+      pile.insert({ name: "iron-plate", count: 80 })
+      pile.insert({ name: "wooden-chest", count: 16 })
+      addStockpile(faction, pile)
+      for (let i = 0; i < 16; i++) lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 24.5 + 2 * (i % 2), -4 + math.floor(i / 2) + 0.5), force: faction.force })
+      const tick = game.tick
+      addJob(faction.board, { kind: "craft", pos: pile.position, materials: [{ item: "iron-plate", count: 80 }], payload: { kind: "craft", recipe: "iron-gear-wheel", count: 40, item: "iron-gear-wheel", deliverTo: pile } }, tick)
+      planGhosts(faction, {})
+      on_tick(() => {
+        if (faction.board.active.length > 0) return
+        if (storage.crew[faction.crew[0]].actions.length > 0) return
+        then(game.tick - tick, faction)
+        return false
+      })
+    }
+    async(12000)
+    run(0, (standing, f0) => {
+      assert(f0.board.counters.completions === f0.board.counters.added, describeBoard(f0))
+      run(1, (background, f1) => {
+        assert(f1.board.counters.completions === f1.board.counters.added, describeBoard(f1))
+        const m = storage.crew[f1.crew[0]]
+        assert((m.stats.backgroundCrafts ?? 0) >= 1, "the craft ran in the background")
+        assert(f1.stockpiles[0].get_item_count("iron-gear-wheel") === 40, "40 gears delivered to the depot")
+        log(`[d38] craft + build: standing ${standing} ticks, in the background ${background} ticks`)
+        assert(background < standing - 200, `background crafting saves time: ${background} vs ${standing} ticks`)
+        done()
+      })
     })
   })
 

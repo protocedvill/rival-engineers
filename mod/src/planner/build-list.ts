@@ -17,6 +17,8 @@ export interface EntitySpec {
   ioType?: "input" | "output"
   /** Module instance or route id. */
   owner: string
+  /** D42: a module buffer chest (its slots are limited when built). */
+  buffer?: boolean
 }
 
 export function moduleEntities(layout: LayoutState): EntitySpec[] {
@@ -50,6 +52,53 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
   return kept
 }
 
+/** Which parts of a layout to build (a plan on top of an existing base builds only what it added). */
+export interface BuildParts {
+  modules: string[]
+  routes: string[]
+  /** Planned pole ids (layout.poles). */
+  poles: string[]
+}
+
+/** Every part of a layout. */
+export function allParts(layout: LayoutState): BuildParts {
+  return { modules: layout.modules.map((m) => m.id), routes: [...layout.routeOrder], poles: (layout.poles ?? []).map((p) => p.id) }
+}
+
+/** World entity specs of the listed parts: module entities, route entities (splitters replace tapped belts), poles. */
+export function partEntities(layout: LayoutState, parts: BuildParts): EntitySpec[] {
+  const out: EntitySpec[] = []
+  const mods: Record<string, boolean> = {}
+  for (const id of parts.modules) mods[id] = true
+  for (const m of layout.modules) if (mods[m.id]) for (const e of m.def.entities) out.push(worldEntity(e, m.origin, m.id))
+  const routes: Record<string, boolean> = {}
+  for (const id of parts.routes) routes[id] = true
+  for (const e of routeEntities(layout)) if (routes[e.owner]) out.push(e)
+  const poles: Record<string, boolean> = {}
+  for (const id of parts.poles) poles[id] = true
+  for (const p of layout.poles ?? []) if (poles[p.id]) out.push({ name: p.name, x: p.x + 0.5, y: p.y + 0.5, dir: 0, owner: p.line })
+  return out
+}
+
+/** The tiles the listed parts build on (footprints, route tiles, pole tiles). */
+export function partTiles(layout: LayoutState, parts: BuildParts): number[] {
+  const out: number[] = []
+  const seen: Record<number, boolean> = {}
+  const add = (k: number): void => {
+    if (seen[k]) return
+    seen[k] = true
+    out.push(k)
+  }
+  const mods: Record<string, boolean> = {}
+  for (const id of parts.modules) mods[id] = true
+  for (const m of layout.modules) if (mods[m.id]) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
+  for (const id of parts.routes) for (const k of layout.routes[id]?.tiles ?? []) add(k)
+  const poles: Record<string, boolean> = {}
+  for (const id of parts.poles) poles[id] = true
+  for (const p of layout.poles ?? []) if (poles[p.id]) add(tkey(p.x, p.y))
+  return out
+}
+
 /** Every tile the layout builds on (footprints, route tiles, splitter tiles): where trees and rocks must go. */
 export function layoutTiles(layout: LayoutState): number[] {
   const out: number[] = []
@@ -61,6 +110,7 @@ export function layoutTiles(layout: LayoutState): number[] {
   }
   for (const m of layout.modules) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
   for (const id of layout.routeOrder) for (const k of layout.routes[id].tiles) add(k)
+  for (const p of layout.poles ?? []) add(tkey(p.x, p.y))
   return out
 }
 

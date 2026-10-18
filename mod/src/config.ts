@@ -49,6 +49,12 @@ export interface Config {
    * scenario does for teams) at a not-yet-generated spot, so it gets starting resources like a player.
    */
   spawnStartingArea: boolean
+  /** Starting area: a spawn needs water within this radius (0 = no check); the starting-lake repair works in it. */
+  spawnWaterRadius: number
+  /** Starting area: repaint the starting lake when the spawn's tiles were generated before its starting point. */
+  spawnLakeRepair: boolean
+  /** Starting area: repair only when at least this many tiles the elevation noise makes water are land. */
+  spawnLakeRepairMinTiles: number
   /** Chunks within this radius of the base are generated (like a player exploring) and scanned for resources. */
   scanRadius: number
   /** The strategy layer re-evaluates each faction every this many ticks. */
@@ -77,8 +83,85 @@ export interface Config {
   plannerWorkPerTick: number
   /** Terrain model budget: chunks scanned per tick. */
   terrainChunksPerTick: number
+  /** M5 strategy layer: takes over from the burner bootstrap once the first-electricity materials are gathered. */
+  factoryEnabled: boolean
+  /** Staged targets (D27): packs per minute the labs consume, "item=n,...;item=n,..." (stages separated by ";"). */
+  factoryTargets: string
+  /** The base region (around the hub) plans place modules in; grown when a plan fails. */
+  factoryRegionRadius: number
+  /** Entities the factory designs with, "role=entity,...": assembler, electric-drill, lab, boiler, engine, pole. */
+  factoryEntities: string
+  /** Seconds per research unit the labs are sized for (0: the mean over the research goal's pack technologies). */
+  factoryResearchUnitTime: number
+  /** Hand-craft science packs into the labs until science is automated. */
+  factoryHandFeedLabs: boolean
+  /** Job priority of the factory's builds (bootstrap: place 90, craft 50, gather 20). */
+  factoryBuildPriority: number
+  /** Conflicts (M5a.2): reroutes or relocations per goal before its leftover ghosts are just retried. */
+  conflictMaxRepairs: number
+  /** Telemetry writes done.json (the soak harness stops) once every faction reached this milestone. */
+  soakDoneMilestone: string
+  /** Curated mall built once science is automated (material supply for buildings); "" = none. */
+  factoryMall: string
+  /** The mall's input flows are planned at this fraction of its full-speed rates. */
+  factoryMallUtilization: number
   /** Sandbox scenario (live review): keep biters. Off: no enemy bases, peaceful. */
   sandboxEnemies: boolean
+  /** B3: most clear / wood-gather jobs one crew member chains into one trip before returning to the depot (1 = no batching). */
+  tripMaxJobs: number
+  /** B3: every job of a trip lies within this many tiles of its first job. */
+  tripRadius: number
+  /** B3: a trip stops when its products would fill more than this fraction of the free inventory slots. */
+  tripInventoryFill: number
+  /** D43 / B4: a bootstrap mining site with less than this many minutes of ore left is replaced on remaining ore. */
+  bootstrapDepletionMinutes: number
+  /** D35: "compact-core" or "near-ore" smelting for the layout policy; "" = the policy's own choice. */
+  layoutSmelting: string
+  /** M5b measurement: node samples every this many ticks; the sliding window holds this many samples. */
+  measureIntervalTicks: number
+  measureWindowSamples: number
+  /** M5b measurement: ticks one edge flow probe runs. */
+  measureProbeTicks: number
+  /** M5b reconciler: act on root causes (off: classify and report only). */
+  reconcileRemedies: boolean
+  /** M5b reconciler: a node is classified only this long after it and its feeders were built. */
+  reconcileWarmupTicks: number
+  /** M5b reconciler: evaluations a new status must hold before a node's status changes. */
+  reconcileConfirm: number
+  /** M5b reconciler: output below planned x (1 - this) is a deficit. */
+  reconcileShortfall: number
+  /** M5b reconciler: ticks between two remedies for the same root cause, and remedies per root cause. */
+  reconcileCooldownTicks: number
+  reconcileMaxRemedies: number
+  /**
+   * D36: research the technology that unlocks undergrounds before a production/mall plan when routing that plan with
+   * undergrounds is at least this many tiles shorter (0 = off; a plan that fails without them always researches it).
+   */
+  logisticsUndergroundMinSaving: number
+  /** B2 (D36): the same for splitters: one producer feeding several consumers through splitter taps vs separate belts. */
+  logisticsSplitterMinSaving: number
+  /** D36 / B2: each comparison may use at most this many times the plan's own routing work (bounded extra work). */
+  plannerCompareWorkFactor: number
+  /** D50 / B9: placement cost per footprint tile on another module's growth area (policy placement.softClaim). */
+  plannerPlacementSoftClaim: number
+  /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
+  plannerRouterSoftClaim: number
+  /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
+  plannerRouterBundleFactor: number
+  /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */
+  plannerCompareMinWork: number
+  /** D50 / B2: run the splitter-tap comparison at all (default off). */
+  logisticsSplitterCompare: boolean
+  /** D42 / B5: chest entity of module buffer depots (smelter columns); "" = none. */
+  moduleBuffer: string
+  /** D42 / B5: usable slots of a buffer chest (the rest are barred). */
+  moduleBufferSlots: number
+  /** D38: temporary chest-fed assembler cells per product (item=count, empty = none). */
+  bootstrapFactories: string
+  /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */
+  bootstrapFactoryWaitSeconds: number
+  /** D38: craft jobs a member queues in the background of a batch (0 = craft standing). */
+  crewBackgroundCrafts: number
 }
 
 export type ConfigKey = keyof Config
@@ -112,6 +195,9 @@ export function getConfig(): Config {
     spawnResourceRadius: setting(Settings.spawnResourceRadius),
     spawnFixedOffsets: setting(Settings.spawnFixedOffsets),
     spawnStartingArea: setting(Settings.spawnStartingArea),
+    spawnWaterRadius: setting(Settings.spawnWaterRadius),
+    spawnLakeRepair: setting(Settings.spawnLakeRepair),
+    spawnLakeRepairMinTiles: setting(Settings.spawnLakeRepairMinTiles),
     scanRadius: setting(Settings.scanRadius),
     brainIntervalTicks: setting(Settings.brainIntervalTicks),
     bootstrapSites: setting(Settings.bootstrapSites),
@@ -127,7 +213,45 @@ export function getConfig(): Config {
     beltUtilization: setting(Settings.beltUtilization),
     plannerWorkPerTick: setting(Settings.plannerWorkPerTick),
     terrainChunksPerTick: setting(Settings.terrainChunksPerTick),
+    factoryEnabled: setting(Settings.factoryEnabled),
+    factoryTargets: setting(Settings.factoryTargets),
+    factoryRegionRadius: setting(Settings.factoryRegionRadius),
+    factoryEntities: setting(Settings.factoryEntities),
+    factoryResearchUnitTime: setting(Settings.factoryResearchUnitTime),
+    factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
+    factoryBuildPriority: setting(Settings.factoryBuildPriority),
+    conflictMaxRepairs: setting(Settings.conflictMaxRepairs),
+    soakDoneMilestone: setting(Settings.soakDoneMilestone),
+    factoryMall: setting(Settings.factoryMall),
+    factoryMallUtilization: setting(Settings.factoryMallUtilization),
     sandboxEnemies: setting(Settings.sandboxEnemies),
+    tripMaxJobs: setting(Settings.tripMaxJobs),
+    tripRadius: setting(Settings.tripRadius),
+    tripInventoryFill: setting(Settings.tripInventoryFill),
+    bootstrapDepletionMinutes: setting(Settings.bootstrapDepletionMinutes),
+    layoutSmelting: setting(Settings.layoutSmelting),
+    measureIntervalTicks: setting(Settings.measureIntervalTicks),
+    measureWindowSamples: setting(Settings.measureWindowSamples),
+    measureProbeTicks: setting(Settings.measureProbeTicks),
+    reconcileRemedies: setting(Settings.reconcileRemedies),
+    reconcileWarmupTicks: setting(Settings.reconcileWarmupTicks),
+    reconcileConfirm: setting(Settings.reconcileConfirm),
+    reconcileShortfall: setting(Settings.reconcileShortfall),
+    reconcileCooldownTicks: setting(Settings.reconcileCooldownTicks),
+    reconcileMaxRemedies: setting(Settings.reconcileMaxRemedies),
+    logisticsUndergroundMinSaving: setting(Settings.logisticsUndergroundMinSaving),
+    logisticsSplitterMinSaving: setting(Settings.logisticsSplitterMinSaving),
+    plannerCompareWorkFactor: setting(Settings.plannerCompareWorkFactor),
+    plannerPlacementSoftClaim: setting(Settings.plannerPlacementSoftClaim),
+    plannerRouterSoftClaim: setting(Settings.plannerRouterSoftClaim),
+    plannerRouterBundleFactor: setting(Settings.plannerRouterBundleFactor),
+    plannerCompareMinWork: setting(Settings.plannerCompareMinWork),
+    logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
+    moduleBuffer: setting(Settings.moduleBuffer),
+    moduleBufferSlots: setting(Settings.moduleBufferSlots),
+    bootstrapFactories: setting(Settings.bootstrapFactories),
+    bootstrapFactoryWaitSeconds: setting(Settings.bootstrapFactoryWaitSeconds),
+    crewBackgroundCrafts: setting(Settings.crewBackgroundCrafts),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

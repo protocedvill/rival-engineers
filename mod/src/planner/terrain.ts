@@ -5,6 +5,7 @@
 
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+import { findEntities } from "../work"
 
 export interface ChunkScan {
   /** Tile index (ly × 32 + lx) → obstacle class; absent = free. */
@@ -113,7 +114,8 @@ function classify(t: TerrainState, e: LuaEntity): number | undefined {
   if (type === "tree") return TREE
   if (type === "simple-entity") return ROCK
   if (type === "cliff") return CLIFF
-  if (type === "entity-ghost") return e.force.name === t.force ? OWN : undefined
+  // Ghosts of other forces are their planned structures: never plan over them (M5a.2).
+  if (type === "entity-ghost") return e.force.name === t.force ? OWN : FOREIGN
   return e.force.name === t.force ? OWN : FOREIGN
 }
 
@@ -133,7 +135,7 @@ export function scanChunk(t: TerrainState, surface: LuaSurface, cx: number, cy: 
   }
   for (const tile of surface.find_tiles_filtered({ area, collision_mask: "water_tile" })) set(tile.position.x, tile.position.y, WATER)
   for (const tile of surface.find_tiles_filtered({ area, name: "out-of-map" })) set(tile.position.x, tile.position.y, UNKNOWN)
-  for (const e of surface.find_entities_filtered({ area })) {
+  for (const e of findEntities(surface, { area })) {
     if (!e.valid) continue
     if (e.type === "resource") {
       const x = math.floor(e.position.x)

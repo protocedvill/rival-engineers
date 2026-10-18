@@ -3,6 +3,7 @@ import { Config } from "../config"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "./pathing"
 import { directionTowards, distance, newProgressTracker, nextWaypointIndex, pathLength, updateProgress } from "./steering"
 import { ActionStats, FailureReason, ReachGoal, WalkState } from "./types"
+import { findEntities } from "../work"
 
 // Walking as a resumable state machine: request a path, wait for the async result, then steer along
 // the waypoints by setting walking_state every tick. Stuck → re-path, with bounded retries.
@@ -32,7 +33,7 @@ function escapeSpot(character: LuaEntity, attempt: number): MapPosition | undefi
       // The tile under it must be free too, so the pathfinder can start there.
       const tile = { x: math.floor(p.x) + 0.5, y: math.floor(p.y) + 0.5 }
       let blocked = false
-      for (const e of character.surface.find_entities_filtered({ area: [[tile.x - 0.5, tile.y - 0.5], [tile.x + 0.5, tile.y + 0.5]], collision_mask: "player" })) {
+      for (const e of findEntities(character.surface, { area: [[tile.x - 0.5, tile.y - 0.5], [tile.x + 0.5, tile.y + 0.5]], collision_mask: "player" })) {
         if (e !== character && e.type !== "character") blocked = true
       }
       if (blocked) continue
@@ -82,7 +83,14 @@ export function pathRadiusFor(character: LuaEntity, reach: ReachGoal | undefined
       // Trees and rocks are mined like resources: can_reach_entity uses the short resource reach for them
       // (about 2.7 tiles plus their box), not reach_distance.
       const type = reach.entity.valid ? reach.entity.type : ""
-      if (type === "tree" || type === "simple-entity") return Math.max(0.5, character.resource_reach_distance - 1.2)
+      // The reach counts from the box, so a big rock (2×2) can be reached from farther: aim at its box plus the margin.
+      // With only the margin, every pathfinder end node next to a big rock collided with it and the walk failed
+      // ("no path"; a rock under a planned outpost stayed and its ghosts were never placed, seed 3333).
+      if (type === "tree" || type === "simple-entity") {
+        const box = reach.entity.bounding_box
+        const half = Math.min(box.right_bottom.x - box.left_top.x, box.right_bottom.y - box.left_top.y) / 2
+        return Math.max(0.5, character.resource_reach_distance - 1.2 + half)
+      }
       return Math.max(1, character.reach_distance - 3)
     }
     case "resource":

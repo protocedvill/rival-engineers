@@ -36,6 +36,13 @@ export interface RouterWeights {
   margin: number
   /** Undergrounds may pass under module footprints. */
   underModules: boolean
+  /**
+   * B7: cost factor of a tile next to another route's belt (< 1: routes bundle). Multiplies with `corridorFactor`.
+   * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
+   */
+  bundleFactor?: number
+  /** B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim). */
+  softClaim?: number
 }
 
 export interface PlacementWeights {
@@ -53,6 +60,8 @@ export interface PlacementWeights {
   exactGap: number
   /** Mining modules: penalty per missing fraction of ore coverage. */
   coverage: number
+  /** B9 (D48 (4)): per footprint tile in another module's soft claim (the area it can still grow into). */
+  softClaim?: number
 }
 
 export interface LayoutPolicy {
@@ -68,6 +77,12 @@ export interface LayoutPolicy {
   obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number }
   /** D22: how one producer feeds several consumers. */
   topology: "point-to-point" | "splitter-tap"
+  /**
+   * D35: where smelters go. compact-core: with the rest of the factory (their ore outposts are placed after them, on
+   * the ore nearest them; ore is belted in). near-ore: the ore outpost first (on the ore nearest the cluster centre),
+   * the smelter next to it (plates are belted in). A/B-tested in M6.
+   */
+  smelting: "compact-core" | "near-ore"
   /** Never put a non-mining module on ore (routes over ore pay `router.oreTile`). */
   protectOre: boolean
   /** Mining modules: each drill's mining area must be at least this fraction ore of the module's resource. */
@@ -97,6 +112,8 @@ export interface CandidateFeatures {
   exactGap: number
   /** Mining modules: ore coverage of the mining areas (0..1). */
   coverage: number
+  /** Footprint tiles in other modules' soft claims (B9). */
+  softClaim?: number
 }
 
 export type PackingScorer = (this: void, f: CandidateFeatures, policy: LayoutPolicy) => number
@@ -138,7 +155,8 @@ registerPacking("compact-cluster", (f, p) => {
     w.clear * f.clearCost -
     w.adjacent * f.adjacent -
     w.exactGap * f.exactGap +
-    w.coverage * (1 - f.coverage)
+    w.coverage * (1 - f.coverage) +
+    (w.softClaim ?? 0) * (f.softClaim ?? 0)
   )
 })
 
@@ -152,6 +170,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
   expansion: "expand-first",
   obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400 },
   topology: "point-to-point",
+  smelting: "compact-core",
   protectOre: true,
   minOreCoverage: 0.6,
   searchRadii: [24, 48, 96],
@@ -170,8 +189,10 @@ export const EARLY_COMPACT: LayoutPolicy = {
     maxRipups: 3,
     margin: 24,
     underModules: false,
+    bundleFactor: 0.9,
+    softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.5 },
 }
 registerPolicy(EARLY_COMPACT)
 
@@ -181,6 +202,11 @@ export interface PolicyOverrides {
   corridorPreferred?: number
   topology?: string
   utilization?: number
+  smelting?: string
+  /** D50: soft-claim and bundling weights (settings; absent or negative = keep the policy's value). */
+  placementSoftClaim?: number
+  routerSoftClaim?: number
+  routerBundleFactor?: number
 }
 
 /**
@@ -209,5 +235,9 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (p.corridor.preferred < p.corridor.min) p.corridor.preferred = p.corridor.min
   if (overrides.topology === "point-to-point" || overrides.topology === "splitter-tap") p.topology = overrides.topology
   if (overrides.utilization !== undefined && overrides.utilization > 0) p.utilization = overrides.utilization
+  if (overrides.smelting === "compact-core" || overrides.smelting === "near-ore") p.smelting = overrides.smelting
+  if (overrides.placementSoftClaim !== undefined && overrides.placementSoftClaim >= 0) p.placement = { ...p.placement, softClaim: overrides.placementSoftClaim }
+  if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
+  if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p
 }

@@ -15,6 +15,11 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Determinism rules in SPEC §5.6 are hard constraints. All persistent state goes in `storage`, use no
   `math.random`, and check `.valid` before using an entity.
 - Prefer configurable settings over constants (SPEC §5.7).
+- **Escalate magic numbers to the user.** Every tuning number you introduce (thresholds, distances, counts, timeouts,
+  weights, margins...) is listed in the milestone report's "Magic numbers for the user" table: name, where it lives,
+  current value, why that value, and whether it is already a setting. The user decides which become settings and their
+  values. Guesses and placeholders are fine during development and testing. Numbers that come from game data or
+  mechanics (recipes, prototype values, engine limits like reach or belt speed) are exempt.
 - **Never record a decision as user-approved** unless the user actually approved it. Agent proposals go
   into SPEC §11 Open questions and the milestone report, marked "proposed", until the user decides.
   If the user approves something directly in your session, record it as approved and say in your
@@ -36,6 +41,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `noImplicitSelf` does **not** cover inline arrow functions assigned to a property of a generic options object
   (e.g. `planBatch(..., { isFree: (p) => ... })`): TSTL compiled it with a `self` parameter and the call shifted
   every argument. Declare callback types as `(this: void, ...) => ...`.
+- **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
+  spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
@@ -115,3 +122,56 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   stone and a lake within ~100 tiles). 160 tiles away there may be no iron within 112 tiles: plan near the origin.
 - Builds over trees/rocks are two-phase (`planner/runtime.ts`): clear jobs first, ghosts after, because the controller
   refuses to mine where a ghost is selected.
+- **A player-less character's hand-crafting does not fire `craft-item` research triggers** (`automation-science-pack`:
+  craft a lab). Machine output does (furnace plates fire `steam-power`/`electronics`). The controller emulates the
+  trigger for crew crafts (`character/triggers.ts`); an engine-capabilities test pins the gap.
+- **Hand-crafts with intermediates restart `crafting_queue_progress` at 0 for each queued intermediate.** A stall check
+  on `gained + crafting_queue_progress` fails any craft whose chain takes longer than `action-stall-ticks` (a lab is
+  ~21 s), and the cancel leaves the finished intermediates behind: thousands of circuits piled up in one soak. Progress
+  now also counts finished queue entries.
+- Revived small-pole ghosts (`ghost.revive`) connect their copper wires to poles in reach, like a player's build: the
+  pole network planner only has to put poles within wire reach (T2 "power-up").
+- Plans on top of a faction's base (`newPlanJob(..., base)`) copy the layout; existing modules are `fixed` and existing
+  routes `Route.fixed` (never ripped). A finished plan's layout *becomes* the faction's (`strategy/factory.ts`).
+- Lua 5.3+ (T1) prints `43` and `43.0` differently: keys built from coordinates that went through arithmetic (module
+  expansion) must use `%g`, or equal positions compare unequal (planner/grow.ts).
+- Soak graph dumps go to `script-output/rival-engineers/graphs/<faction>/`, not `frames/`: soak.py renders every
+  `frames/*/*.json` as an entity dump.
+
+- **Saves never happen under `--benchmark`** (`game.auto_save`/`server_save` are silently ignored). Snapshot runs use
+  `--start-server` with a script setting `game.speed = 1000` (about benchmark speed) and `game.server_save(name)`; the
+  write-data `saves/` dir must exist or `server_save` throws a filesystem error. `--benchmark <save>` resumes a save with
+  the current mod build (storage carries over; same mod version, so no `on_configuration_changed`).
+- **A big rock off the tile grid overlaps three tile rows** (box 1.9 tall at y = n.5): the terrain scan and
+  `obstaclesUnder` see it, but a walk to within `resource_reach_distance - 1.2` of its *centre* found no path (every
+  end node next to it collides). Walks to trees/rocks aim at their box plus that margin (`walk.ts`).
+- **Without undergrounds (before `logistics`) a 7-flow production cluster next to fixed modules can be unroutable**:
+  belts can't cross, rip-up cycles forever. After a production/mall goal fails all attempts without undergrounds, the
+  factory makes their technology a prerequisite (`needUndergrounds`). D36 (M5c): a successful plan also reroutes its
+  placement with undergrounds and researches them first when that is ≥ 50 tiles shorter; the no-underground cluster is
+  chaotic (small weight changes flip it between routable and not), so judge planner changes on several replays.
+- **Mining acts on whatever is selected at the mining position**: a tree's selection box over an ore tile makes the
+  crew mine the tree, a built belt on ore gets picked up. The controller mines from a corner of the target's box where
+  the target itself is selected, refuses built entities over ore, and mines trees/rocks first. After the selected
+  entity is mined away, a player-less character's `mining_state` stays idle: set `{mining: false}` once, then resume.
+- **A new game queues chunks ~10 chunks around the origin before `on_init`** and computes their tiles on worker
+  threads; `is_chunk_generated` stays false for them. A starting point appended over them (faction spawns at ~336
+  tiles) gets starting-area ores (placed at a later chunk stage) but **no starting lake**. Soaks (`--create` save, then
+  `--benchmark`) don't show it; the sandbox scenario and new freeplay games do (`world/spawn.ts` repairs the lake).
+- `surface.calculate_tile_properties({"elevation"}, positions)` evaluates the current noise program, already including
+  starting points appended a moment ago. Nauvis water tiles match `elevation < 0` sampled at the tile's integer corner
+  (x, y), not its centre (2–10 shore tiles differ in a 192² area).
+- Starting a headless game from a scenario: `--start-server-load-scenario rival-engineers/sandbox --server-settings S`
+  with `auto_pause: false`, and keep stdin open (`sleep N | factorio ...`) or it exits on EOF.
+- **Trees' selection boxes are tall and overlap in forests**: the tree south of a target covers its centre and its
+  whole collision box, so `update_selected_entity(tree.position)` often selects a neighbour that is out of mining
+  reach, and mining makes no progress. Mine from a point of the target's *selection box* where it is the selected
+  entity (`controller.ts` `selectPoint`); the mining arena (`test/mining-arena.test.ts`) pins it.
+- Several `update_selected_entity` calls in one tick leave the selection on the **last** point: re-select the
+  wanted point right before setting `mining_state`.
+- **Items on belts keep a `unique_id`** (`LuaTransportLine.get_detailed_contents()`) while they move from belt to belt:
+  sampling one belt tile more often than an item takes to cross it and counting new ids measures its flow exactly
+  (15.00/s on a full yellow belt; `strategy/measure.ts` edge probes). A belt entity's transport line covers that tile only.
+- **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
+  electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
+  fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

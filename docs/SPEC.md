@@ -59,6 +59,21 @@ Two layers, by analogy:
 | D33 | Module validation (2026-10-14, user decision on M4a proposals P1 and P3) | Modules are fed **exactly 1.0× their declared input rates** throughout (no over-feeding, no priming) and measured only once they reach a **steady state** (detected automatically, with a generous cap on the warm-up; the detection rule is an implementation parameter, §7). A module that never stabilises is reported as a finding, not papered over. Each output must then reach **≥ 90% of declared**. **Malls** (outputs into chests) are judged on the **plate value of all products together (≥ 90% of declared)** plus a **product-coverage run** (chests capped at one slot, every product appears). Decided by the user via the manager; P1 accepted as proposed, P3 changed from "1.1× after a 3× primed warm-up" to this rule. |
 | D34 | M4b proposals (2026-10-14, user decision via manager) | **Approved: P4** LayoutPolicy fields (`topology`, `protectOre`, `minOreCoverage`, `searchRadii`, `utilization`, `overflow { order, maxParallel }`, `headroom`, router/placement weights; `mod/src/planner/policy.ts`); **P5** every belt port keeps 2 free tiles straight out; **P6** module footprints never cover needed ore (mining modules excepted) but belts may cross ore at a policy cost; **P7** `planner-work-per-tick` default 100 (≈1 ms/tick while planning); **P8** optional `Port.lanes` (1 \| 2, default 2) for edge capacity. |
 | D35 | Smelter placement (2026-10-14, user decision via manager) | "Smelting near its ore patch" vs "compact core" is a **LayoutPolicy option**, not a fixed rule. Both are implemented, and **M6 soak runs A/B them** to pick the early-game default. The M4 real-terrain bar (lab 5 modules + steam block, 5/5 seeds) is accepted. |
+| D36 | Undergrounds (2026-10-15, user decision on P16, changed) | Research `logistics` (hand-fed packs, like the other unblocking techs) **before** a production/mall plan only when a route using underground belts would be **at least 50 tiles shorter** in total than the best plan without them (setting, default 50). Otherwise it waits for the normal research order. A plan that has no routing at all without undergrounds counts as infinitely longer, so the seed-222 case still researches it first. **Same rule for splitters** (user, 2026-10-15): if a plan using splitters (e.g. one producer feeding several consumers through splits instead of separate long belts) is at least n tiles shorter (own setting), research the technology that unlocks them first instead of building the long belts. |
+| D37 | Stage 1 target (2026-10-15, user decision) | P11 approved: default `factory-targets` = 10 red/min, labs sized for the research goal's mean unit time. M6 adds the 30 + 30 stage. |
+| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. |
+| D39 | Crew pace (2026-10-15, user) | No artificial "think time" slowdown: the crews are already slower than a human because they work inefficiently. Efficiency improvements (batching, crafting while walking) are wanted, not throttling. |
+| D40 | Bootstrap sizing (2026-10-15, user) | Bootstrap drill/furnace counts are **settings**, with the current values as defaults. |
+| D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
+| D42 | Buffer depots on modules (2026-10-15, user) | Modules may carry a small **buffer**: an inserter into a chest at the end of a line (e.g. a furnace stack) that the crew treats as a depot to collect from. Not every module gets one; agents use judgement and list each module's choice in the milestone report for the user to verify. A buffer is **not** an extra demand in the factory graph or module rates (it fills up and stops). For throughput validation (D33) the buffer chest starts full or its slots are blocked (chest bar) so it takes nothing. |
+| D43 | Bootstrap depletion (2026-10-15, user; exception to D28) | Bootstrap mining sites that deplete (or are about to) are deconstructed and rebuilt on remaining ore, so runs don't die. D28's static-world assumption still holds for the planned factory. |
+| D44 | Spawn distance (2026-10-15, user decision on P17, changed) | Factions spawn as far out as the config says (`spawn-min-distance`), **default 450+ tiles**, which is beyond the chunks a new game queues around the origin, so starting points get their lakes from normal map generation. The lake repair from M5a.2 stays only as a fallback for configs that spawn inside the queued area. |
+| D45 | Ground claims (2026-10-15, user decision on P18) | P18 approved, **including the 1-tile margins** for other factions, provided it costs no noticeable performance (measure it). |
+| D46 | Ore fields (2026-10-15, user) | **Factions never share an ore field.** A patch (connected ore field) that another faction mines or has claimed is off limits for bootstrap sites, mining modules and growth; spawn placement must give each faction its own fields. |
+| D47 | Conflict repair (2026-10-15, user decision on P19) | P19 approved as built: blocked routes are rerouted, a blocked module or pole moves its whole goal, at most `conflict-max-repairs` (3) per goal. **M6:** relocate only the blocked module (and its routes) instead of the whole goal. |
+| D48 | Growth by belts, upgrades, soft claims (2026-10-15, user direction; later stage) | (1) Plan raw-material modules in **whole belts of I/O** (e.g. 48 stone furnaces fill one yellow belt; ratios as in https://factoriocheatsheet.com/#material-processing): an expandable module (`ModuleDef.expand`) has a full size of N belts. (2) Early on, build only **part** of a module for current needs, and **finish it** later when demand grows. (3) Prefer **in-place upgrades** of existing modules when more is needed (stone → steel furnaces, yellow → red belts, other same-footprint replacements) before building new ones; this extends D24's `upgrade-tier`. (4) **Soft claims:** when an expandable module is placed, the area it can grow into gets a placement/routing cost for anything else (a weight, not a hard block). Schedule: soft claims with the planner work (backlog B9); partial-then-finish and in-place upgrades after M5 (M6 where in v1 scope; steel furnaces need steel, so post-v1 per D20). |
+| D49 | Reconciler remedies (2026-10-15, user decision on P21) | P21 approved, including the D28 exception: the crew re-place missing **belts and poles** (never machines). **Belt capacity** (D24 tier upgrade / parallel route) is decided **only in planning**, and only when adding a consumer or producer would take an edge above its limit (D25); the reconciler never upgrades a belt at runtime. The reconciler **runs from the start**, but nodes supplied by the crew by design (hand-fed labs before automated science) are expected: neither reported as problems nor remedied. |
+| D50 | Planner weights as settings (2026-10-16, user decisions via the manager) | (1) The placement soft-claim weight (B9, D48 (4)) is a setting, **default 0.5** (`planner-placement-soft-claim`); the planner must work at 0.5. (2) Also settings, current values as defaults: the least comparison work `planner-compare-min-work` (5,000), router `planner-router-bundle-factor` (0.9) and router `planner-router-soft-claim` (0.5). The work-count tolerance (15%) and the reference-base size stay tooling, not settings. (3) P23 approved: the D36 / B2 comparison reroutes the same placement. (4) The splitter comparison (B2) gets an enable setting `logistics-splitter-compare`, **default off**; the code stays. |
 
 ## 3. v1 Definition of Done
 
@@ -385,7 +400,7 @@ Default to configurable (D18). Settings live in three places:
 
 - **Map/startup settings** (`settings.lua`, startup or runtime-global): faction count; crew size per faction;
   spawn placement mode (`auto-distance` | `fixed-offsets` | `random-ring` | `scenario-defined`) with a minimum
-  distance from players and between factions (default 300 tiles) and a resource-richness check radius;
+  distance from players and between factions (default 450 tiles, D44) and a resource-richness check radius;
   faction names and colours; diplomacy defaults (neutral in v1); player-parity toggles (debug only:
   teleport-when-stuck, instant-craft, reach multiplier); planner targets (SPM goal, which science packs);
   layout policy per faction (`auto` or a policy id, §5.3) and policy parameters such as corridor widths;
@@ -397,8 +412,23 @@ Default to configurable (D18). Settings live in three places:
   on rings from `spawn-min-distance` becomes a map-gen starting point (D32); otherwise generated regions are
   searched for a spot with iron, copper, coal and stone within `spawn-resource-radius`, 96), `fixed-offsets`
   (`spawn-fixed-offsets`), `scenario-defined` (only the `spawn_faction` remote). `random-ring` is not implemented.
+  With a starting area, a spawn also needs water within `spawn-water-radius` (96), and a starting lake the engine
+  generated before the point existed is repainted from the elevation noise (`spawn-lake-repair`,
+  `spawn-lake-repair-min-tiles` 50; P17).
   Each crew member gets the freeplay starter items (read from the `freeplay` remote interface when present, else
   the freeplay defaults); factions start with no research.
+- **Measurement and reconciler (M5b, §5.8):** `measure-interval-ticks` (300), `measure-window-samples` (12: a 1-min
+  window), `measure-probe-ticks` (600), `reconcile-remedies` (on), `reconcile-warmup-ticks` (18000), `reconcile-confirm`
+  (3), `reconcile-shortfall` (0.25), `reconcile-cooldown-ticks` (18000), `reconcile-max-remedies` (3). **D35:**
+  `layout-smelting` (`compact-core` | `near-ore`; empty = the policy's choice, `compact-core` in `early-compact`).
+- **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
+  `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
+  the plan's own routing work).
+- **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
+  `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+- **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
+  `module-buffer-slots` (1), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
+  = none), `bootstrap-factory-wait-seconds` (60), `crew-background-crafts` (1; 0 = craft standing).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -461,7 +491,9 @@ can be tuned with evidence.
 every few game-seconds (configurable) from machine output counters (`products_finished` deltas), inserter
 and belt sampling at ports, and input/output buffer fullness. Per-faction flow statistics are too coarse;
 we need per-module numbers. The reconciler classifies each node: *ok*, *starved* (input shortfall,
-traced upstream to the root cause), *backed up* (output blocked), *unpowered* or *unfuelled*. It then
+traced upstream to the root cause), *backed up* (output blocked), *unpowered* or *unfuelled*. A node short only of what the crew
+supplies by design (hand-fed labs before their pack is automated) is *expected* (D49): neutral, no root cause, no
+remedy. It then
 emits replanning goals for the root cause, not the symptom.
 
 **Horizon (D27): staged targets with headroom.** Plan and build for the current stage target (e.g.
@@ -554,7 +586,7 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 | M3 | **Burner bootstrap** | From a vanilla start, one faction reaches self-sustaining burner mining of iron, copper, coal and stone plus stone furnaces. Done when the "first electricity" materials have been gathered. |
 | M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). Factory Graph **physical layer** and **capacity math** (§5.8): T1 capacity/overflow tests and a T2 lab with a deliberately undersized belt. |
 | M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. Factory Graph **solver** and **logical layer**, **measurement**, **reconciler** and **in-game overlay** (§5.8): T1 solver ratio tests, and a T2 test where a deliberately starved module is classified *starved* with the right upstream cause. |
-| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
+| M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Conflict repair relocates only the blocked module and its routes (D47). Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
 
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
 oil, blue science and bots (crew switches to construction robots) · **P4** inter-faction diplomacy and war
@@ -580,6 +612,18 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
   it under "Assumptions" in the report and keep going. Stop and wait only for decisions that are hard to
   reverse or that change §2 or §3.
 - Never weaken an acceptance test to make it pass. Changing an acceptance threshold is a spec change.
+- **Finishing a task (user, 2026-10-15).** The working agent runs the full test suite and the single-faction
+  acceptance soak on its final code commit, checks the work-count gate (below), writes its report, pushes and
+  hands off. The **manager** then starts the next agent and, in parallel, does the final validation: GitHub CI on
+  the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
+  agent's work (or a resumed agent if it is small). Wall-clock numbers from runs that overlap are not
+  performance evidence.
+- **Performance gates (user, 2026-10-15).** (1) **Work counts** (planner work units, path requests, entity scans,
+  jobs, candidates scored, per tick and per run) are deterministic per seed and act as a **soft gate** in every
+  validation: a rise beyond a tolerance is flagged in the report, not a hard failure. (2) **Benchmarks** measure AI
+  time as a percentage of the update time of a fixed reference vanilla save, benchmarked in the same session, to
+  confirm whether a flagged regression is real. The manager runs them when there is time, on an idle machine.
+  Absolute ms/tick is informational only.
 - Never use the user's `~/.factorio` directory, saves or blueprint file in place. Copy inputs into
   `/tools/modules/input/` first (ignored by git if it contains personal data).
 
@@ -590,7 +634,127 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
-None open.
+M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-15; details and evidence in `docs/reports/M5-report.md`):
+
+- **P9, crafting triggers for the crew (proposed):** the engine does not fire `craft-item` research triggers for a
+  player-less character's hand-crafting (pinned by a T2 engine test), so `automation-science-pack` (craft a lab) never
+  completes. The controller emulates the trigger for crew crafts, as it already emulates the build action (§5.1).
+- **P10, research before automated science (resolved → D38, changed):** until a pack is automated, the crew hand-craft it and put it
+  into the labs, but only for technologies that unblock a goal (`automation`, `electric-mining-drill`); the rest of the
+  D30 set waits for automated packs (`factory-hand-feed-labs`).
+- **P11, stage 1 target and lab sizing (approved → D37):** default `factory-targets` = 10 red/min; labs sized for the mean
+  unit time of the research goal's pack technologies (4 labs). M6 adds the 30 + 30 stage.
+- **P12, build order of goals (proposed):** power (steam block + its burner-drill coal outpost) → labs → production
+  (gated on the research it needs) → mall → growth; one goal planned at a time on top of the faction's layout, any
+  number building.
+- **P13, material supply (proposed):** the bootstrap economy keeps supplying every build (hand-craft, collect,
+  hand-mine); once science is automated, the curated mall joins the design at `factory-mall-utilization` (0.25) and
+  its output chests become the first collect source.
+- **P14, M5 acceptance milestone (proposed):** "automated red science feeding labs with research progressing" =
+  after hand-feeding stops, the labs complete more research units than the hand-fed packs left in them (+5), and the
+  red producer made ≥ 10 packs (`automated-red-science`).
+- **P15, port approach tiles (proposed, extends D34/P5):** the tile beyond each belt port's outside tile stays reserved
+  for that port's route after placement, so later plans cannot box in an unconnected port of a built module.
+- **P16, undergrounds when boxed in (resolved → D36, changed):** when a production or mall goal fails every plan attempt
+  without undergrounds (belts can't cross; seed 222 rip-up cycled for 2 game-hours), the technology that unlocks the
+  underground belt (`logistics`) becomes a prerequisite of those goals and is researched with hand-fed packs like the
+  other unblocking techs. Alternative: always research it before the first production plan (shorter, simpler routes
+  on every seed, at about 3–5 game-minutes of extra hand-crafting and research).
+
+M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-report.md` "M5a.2"):
+
+- **P17, starting-lake repair (resolved → D44, changed):** a new game queues ~10 chunks around the origin for background
+  generation before any script runs, so a faction starting point appended there gets its starting ores but not its
+  lake. After generating a starting-area spawn, tiles the surface's own elevation noise makes water but that are land
+  are repainted (water/deepwater, as map generation would), only when at least `spawn-lake-repair-min-tiles` (50)
+  disagree. A starting-area spawn also needs water within `spawn-water-radius` (96), else the next spot is tried.
+  Alternative: register starting points only beyond the queued area (spawns ~450+ tiles out instead of ~336).
+- **P18, ground claims (approved → D45):** a faction's reserved tiles (bootstrap sites + 1-tile margin, every adopted plan's
+  modules + 1-tile margin, routes, poles) are its claim; other factions' planners, bootstrap site placement and growth
+  treat them, and other factions' ghosts, as foreign structures. First come, first served. A finished plan whose tiles
+  another faction claimed meanwhile (or a foreign entity stands on) counts as a failed attempt. Open: whether margins
+  should count for other factions (they cost space where two factions share an ore field).
+- **P19, conflict repair (approved → D47):** before a build's retry
+  round and before it counts as built, its parts are checked against the world. A route blocked by another force's
+  entity is rerouted (old pieces the crew picks up first, then new ghosts); a blocked module or pole gives up the whole
+  goal's location (built entities deconstructed, parts dropped from the layout and graph, the design plans it again).
+  At most `conflict-max-repairs` (3) per goal. Refinement left for M6: relocate only the blocked module.
+
+M5a.3 proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5a.3"):
+
+- **P20, mixed-ore drill spots (proposed, B6):** today a drill whose mining area holds a second ore is never placed
+  (mining modules, growth and bootstrap drills; the minimum fix). Proposal for later: allow a mixed spot when the
+  module gets a sorting stage (filter inserters or a splitter filter off the line into a belt to a consumer or a
+  chest) and its placement cost includes that extra belt length; pure spots win otherwise. Not built: no seed in
+  the M5 acceptance set needed a mixed spot.
+
+M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5b"):
+
+- **P21, reconciler remedies (approved → D49):** the reconciler acts on three root causes only: an **undersized producer**
+  (it runs flat out, everything it makes arrives, its consumer still starves) grows by one `expand` unit; a **broken
+  route or pole line** (items pile up at the producer and don't arrive; a consumer without power while the steam block
+  has spare capacity) gets its missing pieces re-placed by the crew (a `repair` goal); a **crew-fuelled burner** without
+  fuel gets an upkeep pass at once. Belts at their capacity, modules whose own inserters limit intake, depleted ore (D28)
+  and low demand are classified and reported but not remedied (D24 remedies stay design-time). Each root cause gets at
+  most `reconcile-max-remedies` (3) remedies, `reconcile-cooldown-ticks` (5 game-min) apart, and only after a warm-up of
+  `reconcile-warmup-ticks` (5 game-min) since the node and its feeders were built. Re-placing missing route pieces
+  touches D28 (no rebuilding destroyed modules in v1): it is limited to belts and poles, never machines.
+- **P22, edge flow probes (proposed, extends D26):** a belt edge's measured rate is the flow arriving at the consumer's
+  port, counted from belt items' unique ids on that tile (one edge probed at a time per faction, 10 s each), not derived
+  from machine counters; node rates come from `products_finished` (crafting machines) or the working share (drills, labs).
+
+M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5d"):
+
+- **P25, which modules get a buffer (proposed, D42 / B5):** only **smelter columns**: an inserter in the column's head
+  takes plates off the west output belt into an iron chest the crew collects from (before hand-mining or hand-crafting),
+  limited to `module-buffer-slots` (1 slot = 100 plates) so it fills up and stops. Not mining outposts (the crew needs
+  ore only to hand-feed bootstrap furnaces), not the red line (its packs go to the labs by belt), not the circuit block,
+  gear rows or the mall (no free tile on the output belt's side without changing their layouts; the mall already outputs
+  to chests), not the steam block or labs. The buffer competes with the column's consumer until it is full (at 1 slot a
+  few minutes of half the west row's output). Later: fill it only from surplus with a priority splitter once `logistics`
+  is researched.
+- **P26, temporary factories (proposed, D38):** a "chest cell" (chest → inserter → assembler → inserter → chest, two
+  small poles, 7×3) per product of `bootstrap-factories` (gears, belts, red packs), planned as a goal of its own once the
+  steam block is built and assemblers are enabled, joined to the power network by the pole planner. The crew fills the
+  input chest and empties the output chest through the bootstrap economy: collect first, then feed the cell (it waits
+  for at most `bootstrap-factory-wait-seconds` of the cell's output), then hand-craft the rest. A cell is deconstructed
+  (its small poles stay, as later pole lines may run through them) once the mall's chest makes its product, or for packs
+  once the pack is automated; it is never rebuilt.
+- **P27, opportunistic crafting (proposed, D38):** a crew member that hauls materials at the depot for a batch also
+  claims up to `crew-background-crafts` open craft jobs, queues them, does the batch and only then waits for the queue
+  (usually empty by then) and delivers the products; a craft job picked first takes the next other work along.
+- **P28, soft claims and partners (proposed, D50):** at placement, a module ignores the soft claims of the modules it
+  connects to (their ports sit at their growing end, and growth reroutes the connection anyway). With it, 0.5 plans both
+  replays that failed in M5c.
+- **P29, D36 per attempt (proposed):** a production or mall plan that fails to route without undergrounds routes the same
+  placement with them; if that works, it counts as infinitely shorter and the goal defers to the technology at once
+  (instead of after four failed attempts; the four-attempt rule stays as a fallback).
+
+M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5c"):
+
+- **P23, how D36 / B2 compare (approved → D50, 2026-10-16):** a production or mall plan made without undergrounds / splitters (their
+  technology not researched) routes its *same placement* again with them (routing only, no new placement: at most
+  `planner-compare-work-factor` × its routing work, at least 5,000 units). Length = entities placed (belt tiles,
+  underground ends, +1 per splitter). Splitter alternative: per item made by several new point-to-point producers, the
+  producer nearest to all their consumers is kept and feeds the others' consumers through splitter taps; the dropped
+  producers and their own supply chains vanish (the kept one is not re-sized: an estimate). The power node's fuel is
+  never tapped (the power goal must not wait for production). When an alternative is at least the setting shorter, the
+  goal is given up as *deferred* (not a failure), the technology becomes a prerequisite of production and mall goals
+  (hand-fed packs), and after it the goal is planned from scratch (with undergrounds; splitter taps for the recorded
+  consumers). A capped or failed alternative counts as no evidence. Alternative: compare full plans (placement too),
+  ~10× the extra work.
+- **P24, bundling and soft-claim weights (decided → D50, 2026-10-16: settings; placement soft-claim default 0.5, not 0.1):** `RouterWeights.bundleFactor` 0.9 (a tile next to
+  another route's belt costs 0.9×); soft claims (D48 (4)) cost 0.5 per tile for routes (a module's own routes are exempt:
+  its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
+  clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
+
+Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
+
+Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
+
+Resolved 2026-10-15 (user, via the manager): P17 → D44 (spawn 450+ tiles out, repair only a fallback), P18 → D45 (margins count if cheap), shared ore fields → D46 (never), P19 → D47 (approved; blocked-module-only relocation in M6).
+
+Resolved 2026-10-15 (user, via the manager): P10 → D38 (changed: temporary chest-fed factories, opportunistic crafting), P11 → D37, P16 → D36 (changed: 50-tile rule), think time → D39 (no slowdown), bootstrap counts → D40 (settings), terminology → D41.
 
 Resolved 2026-10-14 (user, via the manager): M4b proposals P4–P8 → D34; smelter placement question → D35 (policy option, A/B in M6); M4 real-terrain bar accepted.
 
@@ -615,6 +779,19 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
+  crafting, soft claims and partners, D36 per attempt); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
+  node status implemented.
+- v0.17 (2026-10-16, user decisions via the manager): D50 (planner weights as settings, placement soft claim 0.5, splitter
+  comparison off by default); §11 P23 approved, P24 decided.
+- v0.14 (2026-10-15, user): §9 task hand-off (manager runs CI + two-faction soak) and performance gates (work counts soft gate, reference-save benchmarks).
+- v0.16 (2026-10-16, M5c): §11 P23–P24 proposed (D36 / B2 comparison, bundling and soft-claim weights); §5.7
+  logistics-first settings.
+- v0.15 (2026-10-15, M5b): §11 P21–P22 proposed (reconciler remedies, edge flow probes); §5.7 measurement, reconciler
+  and `layout-smelting` (D35) settings.
+- v0.13 (2026-10-15, user decisions on M5a.2 questions): D44–D47; §11 P17–P19 resolved.
+- v0.12 (2026-10-15, M5a.2): §11 P17–P19 proposed (starting-lake repair, ground claims, conflict repair); §5.7 spawn water settings.
+- v0.11 (2026-10-15, user decisions on M5a questions): D36–D41; §11 P10, P11, P16 resolved.
 - v0.10 (2026-10-14, user decisions on M4a proposals): D33 module validation (1.0× feed, steady-state detection,
   mall plate value + coverage); ModuleDef schema additions in §5.4 (chest-out, anchor, upkeep, mirrorable, insertAt,
   Rate.kind, modules carry their own poles); §11 P1–P3 resolved.

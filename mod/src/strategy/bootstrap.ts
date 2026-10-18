@@ -1,13 +1,17 @@
-import { LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
+import { BoundingBox, LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
+import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
+import { mallSources, tempCells } from "./factory"
+import { bufferSources } from "../modules/buffers"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
+import { countEntities, findEntities } from "../work"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -47,6 +51,9 @@ const PRIORITY = { fuel: 100, place: 90, transfer: 60, feed: 55, craft: 50, gath
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
 const EXPLORE_MAX = 3
+/** D43: a new mining site must hold this many times the depletion lead time of ore, or it would be replaced at once. */
+const SITE_MIN_LIFE = 2
+const PRIORITY_RETIRE = 60
 
 type CrewJob = Job<JobPayload>
 
@@ -192,6 +199,8 @@ interface Ctx {
   /** Ore on its way into furnaces (hand-mined, fed from the depot), by ore. */
   oreInbound: Record<string, number>
   gathers: number
+  /** Active gathers from trees (wood), counted apart: they are batched into trips (B3). */
+  woodGathers: number
   depot?: LuaEntity
   waiting: string[]
 }
@@ -210,6 +219,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     order: [],
     oreInbound: {},
     gathers: 0,
+    woodGathers: 0,
     depot: undefined,
     waiting: [],
   }
@@ -219,6 +229,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     brain.badPatches = {}
   }
   updateSites(ctx)
+  checkDepletion(ctx)
   ctx.depot = pickDepot(ctx)
   countStock(ctx)
   advanceGoals(ctx)
@@ -318,15 +329,21 @@ function layout(catalog: Catalog, kind: SiteKind, c: MapPosition, direction: def
   return [drill, out]
 }
 
-function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): boolean {
+/** Whether a site part fits: free, unclaimed tiles, and for a drill every tile on `resource` and no other ore in reach. */
+function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>, resource: string): boolean {
+  const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (let x = part.x1; x < part.x2; x++) {
     for (let y = part.y1; y < part.y2; y++) {
       if (ctx.brain.reserved[tkey(x, y)]) return false
+      // Another faction's claim (M5a.2): its sites, planned modules and routes.
+      if (claimed(others, tkey(x, y))) return false
       if (part.onOre && !ore[tkey(x, y)]) return false
       // Never plan over a tile someone is hand-mining: mining there would deconstruct the ghost.
       if (keyActive(ctx, `res:${x},${y}`)) return false
     }
   }
+  // B6: a drill mines every resource in its mining area. A foreign ore would end up in the furnace or chest.
+  if (part.onOre && foreignOreIn(ctx, part.entity, part.position, resource)) return false
   return ctx.surface.can_place_entity({
     name: part.entity,
     position: part.position,
@@ -334,6 +351,37 @@ function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): bo
     force: ctx.faction.force,
     build_check_type: defines.build_check_type.manual,
   })
+}
+
+/** A drill's mining area (D43, B6): centred on the drill, `mining_drill_radius` each way. */
+function miningArea(drill: string, position: MapPosition): BoundingBox {
+  const r = prototypes.entity[drill].mining_drill_radius ?? 1
+  return { left_top: { x: position.x - r, y: position.y - r }, right_bottom: { x: position.x + r, y: position.y + r } }
+}
+
+/** Whether a resource other than `resource` lies in the drill's mining area. */
+function foreignOreIn(ctx: Ctx, drill: string, position: MapPosition, resource: string): boolean {
+  for (const e of findEntities(ctx.surface, { area: miningArea(drill, position), type: "resource" })) if (e.name !== resource) return true
+  return false
+}
+
+/** Ore of `resource` left in the drill's mining area. */
+function oreLeft(surface: LuaSurface, drill: string, position: MapPosition, resource: string): number {
+  let n = 0
+  for (const e of findEntities(surface, { area: miningArea(drill, position), name: resource })) n += e.amount
+  return n
+}
+
+/** Ore a drill mines per minute from `resource`. */
+function drillRate(drill: string, resource: string): number {
+  const speed = prototypes.entity[drill].mining_speed ?? 0.25
+  const time = prototypes.entity[resource].mineable_properties.mining_time || 1
+  return (speed * 60) / time
+}
+
+/** Minutes of ore a planned or built drill has left. */
+function drillMinutes(surface: LuaSurface, drill: string, position: MapPosition, resource: string): number {
+  return oreLeft(surface, drill, position, resource) / drillRate(drill, resource)
 }
 
 function directionsToward(from: MapPosition, to: MapPosition): defines.direction[] {
@@ -359,7 +407,7 @@ function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { se
   const set: Record<number, boolean> = {}
   const tiles: MapPosition[] = []
   if (x1 >= x2 || y1 >= y2) return { set, tiles }
-  for (const e of ctx.surface.find_entities_filtered({ name: patch.name, area: [[x1, y1], [x2, y2]] })) {
+  for (const e of findEntities(ctx.surface, { name: patch.name, area: [[x1, y1], [x2, y2]] })) {
     const tx = math.floor(e.position.x)
     const ty = math.floor(e.position.y)
     set[tkey(tx, ty)] = true
@@ -390,7 +438,10 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
         if (!parts) continue
         checks++
         let ok = true
-        for (const p of parts) if (!rectFree(ctx, p, set)) ok = false
+        for (const p of parts) if (!rectFree(ctx, p, set, patch.name)) ok = false
+        // D43: enough ore under every drill that the site is not replaced right away.
+        const minLife = SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes
+        for (const p of parts) if (ok && p.onOre && minLife > 0 && drillMinutes(ctx.surface, p.entity, p.position, patch.name) < minLife) ok = false
         if (ok) return parts
       }
     }
@@ -410,13 +461,14 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
         if (math.max(math.abs(dx), math.abs(dy)) !== r) continue
         const part = partAt(catalog.chest, catalog.chestItem, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
         let ok = true
+        const others = otherClaims(ctx.faction.name, ctx.faction.surface)
         for (let x = part.x1 - 2; x < part.x2 + 2 && ok; x++) {
-          for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)]) ok = false
+          for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
         }
         if (!ok) continue
-        if (ctx.surface.count_entities_filtered({ type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue
+        if (countEntities(ctx.surface, { type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue
         // Free ground around it (no trees, rocks or water within a tile).
-        if (ctx.surface.count_entities_filtered({ area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
+        if (countEntities(ctx.surface, { area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
         if (!ctx.surface.can_place_entity({ name: part.entity, position: part.position, force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) continue
         if (!ctx.surface.can_place_entity({ name: "character", position: { x: part.position.x + 1.5, y: part.position.y } })) continue
         return part
@@ -455,6 +507,10 @@ function createSite(ctx: Ctx, kind: SiteKind, parts: PlannedPart[], resource?: s
     ghosts.push(ghost)
   }
   site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1)
+  if (resource !== undefined) {
+    ctx.brain.oreFields ??= {}
+    for (const p of parts) if (p.onOre) claimOreField(ctx.surface, ctx.brain.oreFields, resource, p.x1, p.y1)
+  }
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
     const ghost = ghosts[i]
@@ -525,6 +581,36 @@ function failSite(ctx: Ctx, site: Site, why: string): void {
   log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) failed: ${why}`)
 }
 
+/**
+ * D43 / B4: a built mining site whose drill has less than `bootstrap-depletion-minutes` of ore left (or none) gets a
+ * replacement goal at the front of the goal list. The old site keeps running until the new one is built, then it is
+ * retired (picked up). A pair counts its poorer drill: the two feed each other.
+ */
+function checkDepletion(ctx: Ctx): void {
+  const brain = ctx.brain
+  const lead = ctx.config.bootstrapDepletionMinutes
+  for (const site of brain.sites) {
+    if (site.status !== "built" || site.depleting || site.resource === undefined || site.kind === "depot") continue
+    let minutes = math.huge
+    for (const part of site.parts) {
+      const e = part.built
+      if (e && e.valid && e.type === "mining-drill") minutes = math.min(minutes, drillMinutes(ctx.surface, e.name, e.position, site.resource))
+    }
+    if (minutes === math.huge || (minutes >= lead && minutes > 0)) continue
+    site.depleting = true
+    let first = 0
+    while (first < brain.goals.length && brain.goals[first].done) first++
+    brain.goals.splice(first, 0, { kind: "site", site: site.kind, resource: site.resource, replaces: site.id })
+    log(string.format("[rival-engineers] faction %s: site %d (%s %s) has %.1f min of ore left: planning a replacement", ctx.faction.name, site.id, site.kind, site.resource, minutes))
+  }
+}
+
+/** D43: the replacement is built; the old site stops being maintained and its entities are picked up. */
+function retireSite(ctx: Ctx, site: Site): void {
+  site.status = "retired"
+  log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) retired`)
+}
+
 function pickDepot(ctx: Ctx): LuaEntity | undefined {
   let best: LuaEntity | undefined
   let bestFree = -1
@@ -575,6 +661,8 @@ function advanceGoals(ctx: Ctx): void {
       let site = siteById(brain, goal.siteId)
       if (site && site.status === "built") {
         completeGoal(ctx, goal)
+        const old = siteById(brain, goal.replaces)
+        if (old !== undefined && old.status === "built") retireSite(ctx, old)
         active--
         continue
       }
@@ -698,7 +786,8 @@ function scanJobs(ctx: Ctx): void {
       case "gather":
         if (p.deliverTo && p.deliverTo.valid && p.deliverTo.type === "furnace") ctx.oreInbound[p.item] = (ctx.oreInbound[p.item] ?? 0) + p.count
         else addPending(ctx, p.item, p.count)
-        ctx.gathers++
+        if (p.target.valid && p.target.type === "tree") ctx.woodGathers++
+        else ctx.gathers++
         break
       case "transfer":
         addPending(ctx, p.item, p.count)
@@ -739,6 +828,16 @@ function fuelCount(ctx: Ctx, entity: LuaEntity, minutes: number): number {
 function maintain(ctx: Ctx): void {
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
+    if (site.status === "retired") {
+      // D43: pick up what is left of a replaced site (re-added after a replan dropped the jobs).
+      for (const part of site.parts) {
+        const e = part.built
+        if (!e || !e.valid) continue
+        const key = `retire:${e.unit_number}`
+        if (!keyActive(ctx, key)) addKeyed(ctx, key, { kind: "clear", pos: e.position, priority: PRIORITY_RETIRE, payload: { kind: "clear", target: e } })
+      }
+      continue
+    }
     if (site.status === "failed") continue
     for (const part of site.parts) {
       const e = part.built
@@ -791,7 +890,7 @@ function maintain(ctx: Ctx): void {
 function furnacesFor(ctx: Ctx, ore: string): LuaEntity[] {
   const out: { e: LuaEntity; n: number }[] = []
   for (const site of ctx.brain.sites) {
-    if (site.kind !== "smelt" || site.status === "failed" || !site.resource) continue
+    if (site.kind !== "smelt" || site.status === "failed" || site.status === "retired" || !site.resource) continue
     if (prototypes.entity[site.resource].mineable_properties.products?.[0]?.name !== ore) continue
     for (const part of site.parts) {
       const e = part.built
@@ -819,10 +918,13 @@ interface Source {
 
 /** Machines holding `item` (or anything collectable, if undefined) the crew may take from. */
 function collectSources(ctx: Ctx, item: string | undefined): Source[] {
-  const out: Source[] = []
+  // The factory's mall (M5) supplies buildings: its output chests come first.
+  const out: Source[] = mallSources(ctx.faction.name, item)
+  // D42 / B5: module buffer depots (the end of a smelter column) next.
+  for (const b of bufferSources(ctx.faction.force, item)) out.push(b)
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
-    if (site.status === "failed") continue
+    if (site.status === "failed" || site.status === "retired") continue
     for (const part of site.parts) {
       const e = part.built
       if (!e || !e.valid) continue
@@ -890,6 +992,9 @@ function produce(ctx: Ctx, item: string, short: number): void {
     short -= collect(ctx, src.entity, src.item, src.amount)
   }
   if (short <= 0) return
+  // 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  short = feedTempCells(ctx, item, short)
+  if (short <= 0) return
   // 2. Hand-craft.
   const hr = handRecipe(ctx.force, item)
   if (hr) {
@@ -919,6 +1024,71 @@ function produce(ctx: Ctx, item: string, short: number): void {
   gather(ctx, item, short, ctx.depot)
 }
 
+/**
+ * D38: temporary factory cells making `item` (strategy/factory.ts). What a cell holds (input chest and machine) and what
+ * the crew is bringing it will come out: the economy counts up to `bootstrap-factory-wait-seconds` of the cell's output as
+ * on its way. A cell is fed from the depot's **surplus** only (ingredients in stock beyond what the active jobs need),
+ * so the economy never waits on a chain of cells (belts on gears on plates): what the cells can't cover from stock now
+ * is hand-crafted. Returns what is still short.
+ */
+function feedTempCells(ctx: Ctx, item: string, short: number): number {
+  const cells = tempCells(ctx.faction.name, item)
+  if (cells.length === 0) return short
+  const wait = ctx.config.bootstrapFactoryWaitSeconds
+  for (const cell of cells) {
+    if (short <= 0) break
+    const m = cell.machine
+    // A cell without power makes nothing: don't wait for it.
+    if (m === undefined || !m.valid || m.status === defines.entity_status.no_power || m.to_be_deconstructed()) continue
+    const recipe = prototypes.recipe[cell.recipe]
+    const per = craftYield(cell.recipe, item)
+    const cap = math.max(per, math.floor(cell.rate * wait))
+    const inv = m.get_inventory(defines.inventory.crafter_input)
+    const have: Record<string, number> = {}
+    let queued = math.huge
+    let coming = math.huge
+    let feeding = false
+    for (const ing of recipe.ingredients) {
+      const n = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      let inflight = 0
+      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
+      if (keyActive(ctx, key)) {
+        feeding = true
+        const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]]
+        if (job.payload.kind === "fuel") inflight = job.payload.count
+      }
+      have[ing.name] = n
+      queued = math.min(queued, math.floor(n / ing.amount))
+      coming = math.min(coming, math.floor((n + inflight) / ing.amount))
+    }
+    if (queued === math.huge) continue
+    // What it holds and what the crew is bringing it (fed from surplus, so it is in stock) will come out.
+    short -= math.min(coming * per, cap)
+    if (short <= 0 || feeding) continue
+    // Fill it up to `cap` of output from the depot's surplus.
+    let crafts = math.floor((cap - queued * per) / per)
+    for (const ing of recipe.ingredients) {
+      const surplus = (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)
+      crafts = math.min(crafts, math.floor((surplus + have[ing.name] - queued * ing.amount) / ing.amount))
+    }
+    if (crafts < 1) continue
+    short -= crafts * per
+    for (const ing of recipe.ingredients) {
+      const add = (queued + crafts) * ing.amount - have[ing.name]
+      if (add <= 0) continue
+      addKeyed(ctx, `tempfeed:${cell.input.unit_number}:${ing.name}`, {
+        kind: "fuel",
+        pos: cell.input.position,
+        materials: [{ item: ing.name, count: add }],
+        priority: PRIORITY.feed,
+        payload: { kind: "fuel", item: ing.name, count: add, target: cell.input, partial: true },
+      })
+      addDemand(ctx, ing.name, add)
+    }
+  }
+  return short
+}
+
 function craft(ctx: Ctx, item: string, recipeName: string, short: number): void {
   const recipe = prototypes.recipe[recipeName]
   const per = craftYield(recipeName, item)
@@ -930,7 +1100,11 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   }
   let rawPer = 0
   for (const r in one.raw) rawPer += one.raw[r]
-  const chunk = math.max(1, math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)))
+  // A job is claimed only with all its materials: size chunks to what the stock holds of each raw item (at least one
+  // craft), or one big job on a scarce item (30 wood for small poles) would never start.
+  let affordable = math.huge
+  for (const r in one.raw) affordable = math.min(affordable, math.floor(math.max(0, ctx.stock[r] ?? 0) / one.raw[r]))
+  const chunk = math.max(1, math.min(math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)), affordable))
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n
@@ -966,7 +1140,7 @@ function freeTree(ctx: Ctx, near: MapPosition): LuaEntity | undefined {
 }
 
 function nearestFreeTree(ctx: Ctx, near: MapPosition, radius: number): LuaEntity | undefined {
-  const trees = ctx.surface.find_entities_filtered({ type: "tree", position: near, radius })
+  const trees = findEntities(ctx.surface, { type: "tree", position: near, radius })
   let best: LuaEntity | undefined
   let bestD = 0
   for (const t of trees) {
@@ -986,13 +1160,16 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
   const patch = bestPatch(ctx.brain.patches, name, near, 1)
   if (!patch) return undefined
   const p = { x: math.min(math.max(near.x, patch.x1), patch.x2), y: math.min(math.max(near.y, patch.y1), patch.y2) }
+  const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (const radius of [10, 24, 64]) {
-    const found = ctx.surface.find_entities_filtered({ name, position: p, radius })
+    const found = findEntities(ctx.surface, { name, position: p, radius })
     let best: LuaEntity | undefined
     let bestD = 0
     for (const e of found) {
       if (e.amount < count) continue
       if (ctx.brain.reserved[tkey(math.floor(e.position.x), math.floor(e.position.y))]) continue
+      // D46: never in another faction's field (nor on its claimed ground).
+      if (others.length > 0 && claimed(others, tkey(math.floor(e.position.x), math.floor(e.position.y)))) continue
       const k = `res:${math.floor(e.position.x)},${math.floor(e.position.y)}`
       if (keyActive(ctx, k)) continue
       const d = positionDistance(e.position, near)
@@ -1022,7 +1199,9 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
     return
   }
   const near = into?.position ?? ctx.brain.hub ?? ctx.brain.base
-  while (short > 0 && ctx.gathers < cap) {
+  // Wood: enough tree jobs for every member's trip (B3); ore gathers feed furnaces one job per member.
+  const woodCap = cap * ctx.config.tripMaxJobs
+  while (short > 0 && (isWood ? ctx.woodGathers < woodCap : ctx.gathers < cap)) {
     let target: LuaEntity | undefined
     let count: number
     let key: string
@@ -1050,7 +1229,8 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
       priority: PRIORITY.gather,
       payload: { kind: "gather", item, count, target, deliverTo: into },
     })
-    ctx.gathers++
+    if (isWood) ctx.woodGathers++
+    else ctx.gathers++
     short -= count
     if (into && into.type === "furnace") ctx.oreInbound[item] = (ctx.oreInbound[item] ?? 0) + count
     else addPending(ctx, item, count)
@@ -1197,7 +1377,7 @@ export function replan(ctx: Ctx): void {
       for (const part of site.parts) {
         if (part.built && part.built.valid) continue
         part.job = undefined
-        const ghost = ctx.surface.find_entities_filtered({ type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+        const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
         if (ghost) {
           const job = addJob(
             faction.board,
@@ -1218,7 +1398,7 @@ export function replan(ctx: Ctx): void {
     }
     site.status = "failed"
     for (const part of site.parts) {
-      const ghost = ctx.surface.find_entities_filtered({ type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+      const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
       if (ghost) ghost.destroy()
     }
     for (const k of site.tiles) delete brain.reserved[k]
