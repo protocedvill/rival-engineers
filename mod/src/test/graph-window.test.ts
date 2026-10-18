@@ -1,5 +1,5 @@
 import { LuaGuiElement, PlayerIndex, Tags } from "factorio:runtime"
-import { clearConfigOverrides, getConfig } from "../config"
+import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { addEdge, addNode } from "../planner/logical"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -77,6 +77,9 @@ describe("factory-graph window", () => {
   test("the window lays a graph out by dataflow and opens, renders and closes", () => {
     const lab = createLab(16)
     const faction = createFaction("gw-a", { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    // The factory planner ticks on its own cadence (onFactoryTick() does not look at the brain's nextThink), so a
+    // merged-in planner tries to goal-plan during the tick window and mutates the hand-built graph. Freeze it.
+    setConfigOverride("factoryEnabled", false)
     const brain = startBootstrap(faction, at(lab, 0, 0))
     brain.nextThink = math.huge // the test drives the graph; the brain stays idle
     const f = startFactory(faction)
