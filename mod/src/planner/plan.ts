@@ -126,12 +126,14 @@ export interface PlanJob {
   alias: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number }
   failures: Record<string, string>
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
   expanded: Record<string, { module: string; units: number }>
   /** B23: a shared whole-patch mine that could not be expanded for the request: request id → reason. */
   wholeFail?: Record<string, string>
+  /** B28: comparison branch probe: fail no-path edges the cheap way (the branches cap their work to compare). */
+  compareProbe?: boolean
   /** Modules taken out after a connection could not be routed, to be placed again elsewhere (then routing resumes). */
   replaceQueue: string[]
   replaced: Record<string, number>
@@ -364,7 +366,7 @@ function sameSource(job: PlanJob, from: PortRef): string[] {
   return out
 }
 
-function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>): RouteRequest | string {
+function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
   const tp = tm ? findPort(tm, to.port) : undefined
@@ -380,6 +382,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     tier: (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier,
     own,
     avoid,
+    windowMargin: winScale,
   }
   if (c.from !== undefined) {
     const from = resolve(job, c.from)
@@ -610,7 +613,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   if (st === "running") return used
   const c = connection(job, cur.conn)
   const restart = (rip: boolean): void => {
-    const req = routeRequest(job, c, policy, cur.avoid)
+    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
     if (typeof req === "string") {
       job.failures[cur.conn] = req
       job.current = undefined
@@ -621,6 +624,20 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.stats.searches++
   }
   if (st === "failed") {
+    // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
+    // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
+    // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
+    // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
+    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9) {
+      cur.winScale = (cur.winScale ?? 1) * 3
+      cur.rip = false
+      const req = routeRequest(job, c, policy, {}, cur.winScale)
+      if (typeof req !== "string") {
+        cur.search = newSearch(job.layout, terrain, policy, req, false)
+        job.stats.searches++
+        return used
+      }
+    }
     if (!cur.rip) restart(true)
     else {
       if (!tryReplace(job, c, facts)) job.failures[cur.conn] = cur.search.reason ?? "no path"
@@ -701,6 +718,9 @@ function altJob(job: PlanJob, request: PlanRequest, tier: BeltTier, tiers: BeltT
   r.poles = undefined
   const alt = newRoutingJob(r, tier, layout)
   alt.tiers = tiers
+  // B28: comparison branches stay cheap: the loop-capped branches measure work against each other, so the widened
+  // no-path retries (a real plan's last resort) are off here and the branches fail fast like before.
+  alt.compareProbe = true
   for (const [k, v] of pairs(job.alias)) alt.alias[k as string] = v as string
   alt.baseRoutes = job.baseRoutes
   return alt

@@ -69,6 +69,34 @@ function noProblems(state: LayoutState, terrain: TerrainView, what: string): voi
   if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
 }
 
+// --- Router primitives --------------------------------------------------------------------------------------
+
+// B28: a route's window is the endpoints ± `router.margin` (24); an obstacle filling that whole band walls the
+// pair off even when a detour exists just past it (m6a2-accept2 seed 3333: every feed into the mall failed at
+// every region radius, because placement retries widen the region, never these windows). The route ladder now
+// widens the window (×3, then ×9) before giving up.
+test("router: a wall filling the margin band is detoured with a widened window", () => {
+  const rows = field(80, 200)
+  for (let x = 18; x <= 24; x++) setCol(rows, x, 80, 120, "~")
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 2, 100)
+  place(state, b, 60, 100)
+  const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 200), YELLOW, state), terrain, F, policy())
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  // The path must have left the ±24 band: its tiles pass the water's rows (80..120) somewhere.
+  let detoured = false
+  for (const [, r] of pairs(job.layout.routes)) {
+    for (const t of r.tiles) {
+      const y = keyY(t)
+      if (y < 80 || y > 120) detoured = true
+    }
+  }
+  ok(detoured, "the route detoured around the band")
+})
+
 function field(w: number, h: number, ch = "."): string[] {
   const rows: string[] = []
   for (let y = 0; y < h; y++) rows.push(string.rep(ch, w))

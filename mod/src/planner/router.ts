@@ -35,6 +35,8 @@ export interface RouteRequest {
   own: Record<string, boolean>
   /** Tiles to avoid (extra cost), e.g. after a self-intersecting attempt. */
   avoid?: Record<number, boolean>
+  /** B28: this edge's search window scale (×the policy margin); a retry after "no path" widens the detour room. */
+  windowMargin?: number
 }
 
 interface TapStart {
@@ -253,7 +255,7 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   }
   if (req.start) grow(req.start.x, req.start.y)
   for (const id of req.taps ?? []) for (const k of state.routes[id]?.tiles ?? []) grow(keyX(k), keyY(k))
-  const m = policy.router.margin
+  const m = policy.router.margin * (req.windowMargin ?? 1)
   const w = policy.router
   const maxK = req.tier.maxUnderground
   const s: Search = {
