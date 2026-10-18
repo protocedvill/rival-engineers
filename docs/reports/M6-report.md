@@ -328,7 +328,7 @@ it, and any successful action — a standing craft, a transfer — erased the co
 entities within 3 tiles (big machines, walls, and all neutral trees/rocks were invisible to it), and with nothing to
 pick up it logged and dropped its work, re-triggering every cycle forever.
 
-**Fix (06534e3, `jobs/crew.ts`):**
+**Fix (1b198fd, `jobs/crew.ts`):**
 
 - The trigger now counts `stuck` and `unreachable` walk failures equally, and only a finished *walk* action resets
   the count (a standing action says nothing about mobility).
@@ -344,4 +344,4 @@ pick up it logged and dropped its work, re-triggering every cycle forever.
 **Tests (T2 `jobs.test`):** a member boxed in behind two staggered tree rings (seed-222-style density, 28 trees)
 mines its way out and builds its chest; a member enveloped by its own assembling machines (pitch-3 ring, boxes
 touching in a continuous wall) picks one up, gets out, builds, and the machine is re-placed. Both pass `stats.unboxed`
-matches: the tree case mines (no ghosts), the machine case picks up. Full suite 115/115 at 06534e3.
+matches: the tree case mines (no ghosts), the machine case picks up. Full suite 115/115 at 1b198fd.
