@@ -117,6 +117,25 @@ function awaitBoard(faction: FactionState, timeout: number, check: () => void): 
   })
 }
 
+/** Runs `check` every tick; the test passes when it returns true, and fails (with the board's state) after `timeout` ticks. */
+function awaitEscape(faction: FactionState, timeout: number, check: () => boolean, report: () => void): void {
+  async(timeout)
+  const dead = game.tick + timeout
+  on_tick(() => {
+    const m = storage.crew[faction.crew[0]]
+    if (check()) {
+      report()
+      done()
+      return false
+    }
+    if (game.tick >= dead) {
+      assert(false, `escape did not happen in ${timeout} ticks: ${describeBoard(faction)} unboxed ${m.stats.unboxed ?? 0}`)
+      return false
+    }
+    return undefined
+  })
+}
+
 function describeBoard(faction: FactionState): string {
   const c = faction.board.counters
   const parts = [`added ${c.added} claims ${c.claims} done ${c.completions} released ${c.releases} failed ${c.failures} double ${c.doubleClaims}`]
@@ -443,5 +462,77 @@ describe("job board", () => {
       done()
       return false
     })
+  })
+
+  test("B22: a member boxed in behind trees mines its way out", () => {
+    const lab = createLab(32)
+    const faction = createFaction("b22-trees", { position: at(lab, 4.5, 4.5), crew: 1, starterItems: {} })
+    const names: string[] = []
+    for (const [name, proto] of pairs(prototypes.get_entity_filtered([{ filter: "type", type: "tree" }]))) {
+      if (proto.mineable_properties.minable && proto.autoplace_specification !== undefined) names.push(name as string)
+    }
+    names.sort()
+    // Two staggered rings of trees around the member: together they seal it off, while the nearest trees sit
+    // inside the short hand-mining reach so the member can mine without walking (which is what fails).
+    let planted = 0
+    for (const [r, n, turn] of [[1.7, 12, 0], [2.5, 16, 0.5 / 2.5]] as [number, number, number][]) {
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * 2 * math.pi + turn
+        const tree = lab.surface.create_entity({
+          name: names[(k + (r === 1.7 ? 0 : 1)) % math.min(3, names.length)],
+          position: { x: lab.origin.x + 4.5 + r * math.cos(a), y: lab.origin.y + 4.5 + r * math.sin(a) },
+        })
+        if (tree) planted++
+      }
+    }
+    assert(planted >= 20, `trees planted ${planted}`)
+    stockpile(lab, faction, 14.5, 4.5, { "wooden-chest": 1 })
+    const ghost = lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 14.5, -3.5), force: faction.force })!
+    void ghost
+    planGhosts(faction)
+    awaitEscape(
+      faction,
+      60 * 60 * 5,
+      () =>
+        lab.surface.count_entities_filtered({ name: "wooden-chest", force: faction.force }) === 1 &&
+        lab.surface.count_entities_filtered({ type: "tree", area: [at(lab, 0, 0), at(lab, 9, 9)] }) < planted,
+      () => {
+        const m = storage.crew[faction.crew[0]]
+        const standing = lab.surface.count_entities_filtered({ type: "tree", area: [at(lab, 0, 0), at(lab, 9, 9)] })
+        assert((m.stats.unboxed ?? 0) >= 1, "it did not mine anything to get out")
+        log(`[b22] the member mined ${planted - standing} tree(s) to get out and built the chest at tick ${game.tick}`)
+      },
+    )
+  })
+
+  test("B22: a member enveloped by its own machines picks one up, gets out and the machine is re-placed", () => {
+    const lab = createLab(40)
+    // Eight 3×3 assemblers at a pitch-3 ring around the spawn leave an enclosed 3×3 pocket at its centre: the
+    // member fits there, but the boxes touch in a continuous wall the pathfinder cannot lead out of.
+    const centre = { x: 0.5, y: 0.5 }
+    const faction = createFaction("b22-machines", { position: at(lab, centre.x, centre.y), crew: 1, starterItems: {} })
+    let ring = 0
+    for (const [dx, dy] of [[-3, -3], [0, -3], [3, -3], [-3, 0], [3, 0], [-3, 3], [0, 3], [3, 3]]) {
+      const machine = lab.surface.create_entity({ name: "assembling-machine-1", position: at(lab, centre.x + dx, centre.y + dy), force: faction.force })
+      if (machine) ring++
+    }
+    assert(ring === 8, `assembler ring placed ${ring}`)
+    const stockpileChest = stockpile(lab, faction, 10.5, 0.5, { "wooden-chest": 1 })
+    stockpileChest.insert({ name: "assembling-machine-1", count: 1 })
+    const ghost = lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 10.5, -6.5), force: faction.force })!
+    void ghost
+    planGhosts(faction)
+    awaitEscape(
+      faction,
+      60 * 60 * 5,
+      () =>
+        lab.surface.count_entities_filtered({ name: "wooden-chest", force: faction.force }) === 1 &&
+        lab.surface.count_entities_filtered({ name: "assembling-machine-1", force: faction.force }) === ring,
+      () => {
+        const m = storage.crew[faction.crew[0]]
+        assert((m.stats.unboxed ?? 0) >= 1, "it picked nothing up to get out")
+        log(`[b22] enveloped member got out (${m.stats.unboxed} pick-ups), built the chest and re-placed the machines at tick ${game.tick}`)
+      },
+    )
   })
 })
