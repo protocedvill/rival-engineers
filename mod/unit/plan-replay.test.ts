@@ -5,7 +5,7 @@
 // same scenario, not a bit-exact rerun.)
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
-import { FOREIGN, FREE, OWN, TerrainView, UNKNOWN } from "../src/planner/grid"
+import { FOREIGN, FREE, OWN, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { findModule, LayoutState, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
@@ -302,6 +302,40 @@ test("replay m6a2-seed222-mall-iron: a blocked completion names the shared mine"
     if (job.phase !== "place") break
   }
   ok(false, `the blocked completion was never tried (phase ${job.phase})`)
+})
+
+// B25: the mine's claim only reserves tiles that were free when the mine was placed — earlier own structures (a
+// pole line, a route) standing on its still unbuilt footprint tiles outlive it. In game the completion build picks
+// them up first (clear jobs under the new entities) and the reconcile layer re-routes the broken edge; the plan
+// must still complete the shared mine. In the fixed run the same tiles read as the faction's reserved ground (OWN)
+// under the mine.
+test("replay m6a2-seed222-mall-iron: the shared mine completes over its own pole lines and earlier routes", () => {
+  const fx = load("m6a2-seed222-mall-iron")
+  if (fx.base === undefined) error("the mall-iron fixture has no base layout")
+  // The completion's first unplanned belt (-47,500) and its neighbour stand on the mine's own footprint.
+  const k1 = tkey(-47, 500)
+  const k2 = tkey(-48, 500)
+  fx.base.occ[k1] = "x:poles:9:1"
+  fx.base.occ[k2] = "route:iron-ore>iron-plate>x=>x.in-ore"
+  fx.base.routeOcc[k2] = "route:iron-ore>iron-plate>x=>x.in-ore"
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  const terrain: TerrainView = {
+    block: (x, y) => {
+      if (x >= -86 && x <= -47 && y >= 499 && y <= 535 && view.block(x, y) === OWN) return FREE
+      return view.block(x, y)
+    },
+    ore: (x, y) => view.ore(x, y),
+  }
+  runJob(job, terrain, F, fx.policy, 100000)
+  const why: string[] = []
+  for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
+  print(`  m6a2-seed222-mall-iron (own poles/routes on the footprint): ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups)`)
+  ok(job.phase === "done", `plan done (${why.join("; ")})`)
+  ok((job.alias["n22"] ?? "") === "n16", `n22 completes the shared mine (alias: ${job.alias["n22"]})`)
+  const mine = findModule(job.layout, "n16")
+  ok(mine !== undefined && mine.minePlan !== undefined && mine.minePlan.complete === true, "the shared mine's plan is whole")
 })
 
 run("plan-replay")
