@@ -273,3 +273,46 @@ in `remote.ts`) stay for the acceptance run.
 
 No new settings: the global terrain drain reuses `terrain-chunks-per-tick` (default 2). `GROW_MAX_FAILS` (3) and the
 reroute region padding (±96 tiles) are unchanged.
+
+## M6a.2: B21/D52 whole-patch mines and the mall's iron request, B23 (2026-10-18)
+
+The m6a2-b21l soak (seed 222, the B21 tree) stalled on the mall's iron-plate request (goal g11, attempts at ticks
+299250–403410): every retry died `no feasible position` at placement, and retries at earlier goals (g10, the
+iron-ore request) drifted the base between captures, which is why the g11 capture holds debris the g10 attempt built.
+
+**Diagnosis (raw-Lua replay of the g11 capture, diag17–diag46).** Three original gaps, each sufficient to fail the
+goal:
+
+1. The request could not target the base stage-1 whole-patch iron mine n16 (fixed, 25 of 286 entities built, building
+   area 838 tiles): expansion targeting needs the mine unfixed, so the planner only tried a fresh 4x2 outpost — no
+   room on the claimed field.
+2. Adoption could not complete a fixed mine even if it had targeted one: `wholePatchCandidate` only admitted unfixed
+   mines, and 131 tiles of n16's unbuilt building area were reserved — retired bootstrap sites' entities nobody
+   picks up (the same stale-reservation class the depot-ring fix addressed for `evictable`, here for mine claims).
+3. The failure message described the fresh-mine attempt and said nothing of the real cause.
+
+Fixing these surfaced three more, each fatal in its own right and none observable until a later phase ran (the
+parser died at placement, before routing): (4) the completion check re-verified ore under every planned drill —
+planning already validated the whole patch, and drills legitimately reach across patches, so completion demanded more
+than planning and could never pass; (5) `sameSource` compared raw module ids (`n22`, the request's alias) with
+committed routes' ports (`n16`) — an iron-ore tap of the base mine's own route was never found and died as a
+1-expansion start inside the fixed base route's corridor; (6) a belt-in port's feeder belt must stand on the port's
+outside tile, but that tile carries the module's built interaction perimeter (real g10 build output) reading as hard
+OWN — the goal was unreachable by construction (`router.ts` now admits a tile reserved as one of the searching
+route's own ports).
+
+**Fixes (bec529b):** adoption evicts sites standing on a mine's claim and then completes the built mine — the
+finished shape is planned as a diff of not-yet-built entities, queued as clear jobs over the evicted ground, and
+stamped by `stepBuild` via the new `extraAdd` ghost list after the clear phase; `wholePatchCandidate` admits a fixed,
+not-yet-complete mine (completion adds entities, moves nothing — the out port is identical in both shapes); the ore
+re-check is dropped from completion; `sameSource` takes the alias-resolved port; and a failed completion is recorded
+on the job (`PlanJob.wholeFail`) so the module's failure names the shared mine and the blocking tile
+(`… (shared mine n16: planned mine blocked at -47,500)`) instead of the misleading fresh-mine wording.
+
+**Tests (T2 `plan-replay`, fixture `m6a2-seed222-mall-iron`):** as-is, the plan now works around the debris with a
+fresh mine (a legal outcome — previously it hard-failed); with the evicted sites' pickups freed (what the in-game
+eviction does), the request completes the shared mine: `alias n22→n16`, the mine's plan is whole and the full 838-tile
+claim is occupied; and a sabotaged completion (foreign ground under the first not-yet-built belt at (-47,500)) leaves
+`wholeFail["n22"] = "n16: planned mine blocked at -47,500"` before any fallback, checked step-by-step so it does not
+depend on Lua table order. Codex's B21 work (whole-patch drill plans `mine-plan.ts`, D52, and the rest of the
+uncommitted 25-file tree) landed in the same commit bec529b.
