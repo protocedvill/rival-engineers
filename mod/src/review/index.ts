@@ -1,4 +1,5 @@
-import { LuaPlayer } from "factorio:runtime"
+import { LuaPlayer, Tags } from "factorio:runtime"
+import { GRAPH_INPUT, onGraphClick, onGraphTick, toggleGraphWindow } from "./graph-window"
 import { INSPECTOR_INPUT, onInspectorChecked, onInspectorClick, onInspectorTick, playerState, setInspectorOpen, toggleInspector } from "./inspector"
 import { chartFactions, isSandbox, makeSpectator, onSandboxChunkGenerated, sandboxSetup } from "./sandbox"
 import { onTimeTick } from "./time"
@@ -14,7 +15,7 @@ const CHART_INTERVAL = 600
 function anyInspectorOpen(): boolean {
   const players = storage.review?.players
   if (players === undefined) return false
-  for (const [, player] of game.players) if (players[player.index]?.open) return true
+  for (const [, player] of game.players) if (players[player.index]?.open || players[player.index]?.graphOpen) return true
   return false
 }
 
@@ -42,6 +43,7 @@ export function onReviewTick(): void {
     chartFactions()
   }
   onInspectorTick(tick)
+  onGraphTick(tick)
 }
 
 function onPlayerCreated(player: LuaPlayer): void {
@@ -56,13 +58,18 @@ function onPlayerCreated(player: LuaPlayer): void {
 
 export function registerReview(): void {
   script.on_event(INSPECTOR_INPUT, (e) => toggleInspector(game.get_player(e.player_index)!))
+  script.on_event(GRAPH_INPUT, (e) => toggleGraphWindow(game.get_player(e.player_index)!))
   script.on_event(defines.events.on_lua_shortcut, (e) => {
     if (e.prototype_name === INSPECTOR_INPUT) toggleInspector(game.get_player(e.player_index)!)
+    if (e.prototype_name === GRAPH_INPUT) toggleGraphWindow(game.get_player(e.player_index)!)
   })
   script.on_event(defines.events.on_gui_click, (e) => {
     const element = e.element
     if (!element.valid || element.get_mod() !== "rival-engineers") return
-    onInspectorClick(game.get_player(e.player_index)!, element.tags)
+    const player = game.get_player(e.player_index)!
+    // The graph window answers its own tags first (B16); everything else stays with the inspector.
+    if (onGraphClick(player, element.tags as Tags)) return
+    onInspectorClick(player, element.tags)
   })
   script.on_event(defines.events.on_gui_checked_state_changed, (e) => {
     const element = e.element

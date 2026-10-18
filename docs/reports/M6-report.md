@@ -345,3 +345,33 @@ pick up it logged and dropped its work, re-triggering every cycle forever.
 mines its way out and builds its chest; a member enveloped by its own assembling machines (pitch-3 ring, boxes
 touching in a continuous wall) picks one up, gets out, builds, and the machine is re-placed. Both pass `stats.unboxed`
 matches: the tree case mines (no ghosts), the machine case picks up. Full suite 115/115 at 1b198fd.
+
+## M6b: B16 the factory-graph GUI window (2026-10-19)
+
+The B16 row: a factory-graph window beside the map overlay, like the vanilla production graph — nodes with
+planned vs measured rates and status, edges as plain relationships, laid out to be understood rather than to
+match real positions. The overlay (M5b) needs a spectator in the base and clutters with many modules; the dumps
+leave the game. This window is a per-player screen frame read at the same cadence as the inspector.
+
+**What (`review/graph-window.ts` + `review/graph-layout.ts`, SPEC D29 note):**
+
+- Hotkey `Ctrl+Shift+G` / a shortcut-bar button (own shortcut prototype, same icon scheme as the inspector's);
+  the faction ◀ ▶ buttons share the inspector's per-player faction selection.
+- **Layout by dataflow, not position:** `graph-layout.ts` is pure (no Factorio globals) and computes each
+  node's depth from its belt/crew inputs (power edges are drawn but do not shape the layout; a cycle's leftovers
+  share one level past the deepest resolved node). The window draws one column per depth, one chip (button) per
+  node tinted with the overlay's status colours — grey when `planned`/`building` — with its measured/planned
+  output (power: load %) under it, and the status counts in a header.
+- **Plain edges:** a bordered table — From · To · Item · Plan · Measured · Probe — reusing the reconciler's own
+  `edgeVerdict` (stale/full/intake/broken/sparse), so the window and the remedies language never disagree.
+- Root cause and status reason sit in each chip's tooltip; clicking a chip takes your camera to the module in
+  the base (`findModule` + `goTo`), which is where the map overlay takes over for the real geometry.
+- No factory yet (or an empty graph) prints a note instead of an empty frame; the window never writes to AI
+  state (the `model.ts` rule) and every new number it could have invented was avoided: it reuses the overlay's
+  `MAX_NODES`/`MAX_EDGES` caps and the inspector's refresh cadence and frame sizes.
+
+**Tests:** T1 `unit/graph-layout.test.ts` (4 tests): levels for outpost → smelter → gears with a power edge in,
+cycle leftovers, crew-fed edges, verdict rows, status counts and cause text. T2 `test/graph-window.test.ts`: a
+faction with a hand-built two-node chain (reconciler.test.ts's pattern) — the layout is asserted headless
+(levels, counts, verdict) and, with a player, the window opens, renders 2 chips sharing the faction cycle, and
+closes; a faction without a factory gets the note. Registered in `control.ts`.

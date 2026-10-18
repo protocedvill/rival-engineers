@@ -514,6 +514,10 @@ In v1, a stall caused by depletion just shows up as a starved node in telemetry.
   and status.
 - **In-game overlay:** a debug setting draws module boxes, edges, rates and node status using the
   `rendering` API in the live game.
+- **Factory-graph window (B16):** a per-player GUI screen (`Ctrl+Shift+G`) beside the overlay: the graph laid
+  out by dataflow depth (not real positions), one chip per node with its reconciler status and measured/planned
+  rate, a table of plain edges (item, planned vs measured, probe verdict), status counts, and a cause line in
+  each chip's tooltip. Clicking a chip jumps the camera to the module in the base.
 
 **Testing:** T1 tests cover the solver (ratios for the red/green chain against hand-computed values,
 e.g. 30+30 SPM → 3.75 Fe/s, 1.25 Cu/s), capacity math and overflow decisions. T2 tests cover measurement
