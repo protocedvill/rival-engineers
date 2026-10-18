@@ -270,7 +270,32 @@ in `remote.ts`) stay for the acceptance run.
 
 ### Acceptance results (M6a.2)
 
-(TBD: full 5-seed run after the suite passes; bar ≥ 4/5 seeds at `v1-done`.)
+**Round 1** (`m6a2-accept`, pre-B24): seed 3333 died silently at 21 game-min — the B24 Lua crash inside
+`materializeMinePlan` (whole-patch placement put a pole under the complete stage's belt layer). Killed and relaunched
+fresh on a fixed build as round 2.
+
+**Round 2** (`m6a2-accept2`, at commit `06ed5d` = B23/B24 fixed): launched Sun Oct 18 ~22:57, all 5 seeds
+(11/222/3333/44444/555555), up to 8 game-h each, fail-fast per config. **Finished Mon Oct 19 ~00:20 after 5543 s wall:
+0/5 seeds reached `v1-done` — bar (≥ 4/5) not met.** The four fast deaths decompose into three classes (all diagnosed
+from the harness's `factorio-current.log` / failed-plan captures; evidence in `out/soak/m6a2-accept2/evidence/`,
+scorecard at `out/soak/m6a2-accept2/scorecard.md`):
+
+| Seed | Killed (game min) | Class |
+|---|---|---|
+| 3333 | 86 | B28: every feed into the mall "no path" (copper/iron ore + fuel), all attempts, all regions |
+| 44444 | 179 | B28-family: copper ore feeds to the mall-era smelters "no start"/"no path"; iron request "no feasible position" |
+| 555555 | 201 | B27 (fixed 8bcf577 that evening, too late for this run): shared mine completion blocked by earlier own poles/routes on its unbuilt footprint |
+| 11 | 205 | B29 (open): power short → grow attempts blocked (`ore at`, `blocked at`) → 2 stalls |
+| 222 | 361 | B27-class (shared mine n27 blocked at 18,346) — exactly the shape B27 fixes; died before the fix existed |
+
+Confirmed-side signal: rail-then-soak validation held (B23/B24 fixes verified on capture replays before launch;
+seed-222's whole run ran past its old M6 mall death at ~195 game-min with zero stalls of that kind, seed-555555
+reached `automated logistic-science-pack` (its m6a blocker is gone), and the harness's fail-fast killed every
+wedged seed within one goal cycle — no silent deaths this round).
+
+Acceptance remains **pending**: the fix set needed for a passing run is B27 (landed) + B28 part 2 (open: placement
+route-awareness for feeds boxed in by the infra web) + B29 (power-short growth priority). Relaunch full 5 seeds on a
+build containing them.
 
 ### Magic numbers for the user (M6a.2)
 
