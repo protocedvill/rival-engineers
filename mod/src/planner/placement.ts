@@ -637,10 +637,20 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
         for (let y = m.origin.y + er.y; y < m.origin.y + er.y + er.h; y++) {
           const kk = tkey(x, y)
           const b = terrain.block(x, y)
-          if (b !== FREE && b !== TREE && b !== ROCK) return { ok: false, reason: `planned mine blocked at ${x},${y}`, movedPorts: [], moved: [] }
+          // B24: the mine's own D52 footprint is reserved — the adoption reserves the whole rect plus 1 ring and the
+          // plan's claim is the mine's own — so those tiles read as OWN for a later request, but they are exactly
+          // what the completion builds. Only a ground someone else reserved (or raw obstacles) still blocks.
+          const own = state.mine?.[kk] === m.id || rectContains(m.rect, x, y)
+          if (b !== FREE && b !== TREE && b !== ROCK && !(b === OWN && own)) return { ok: false, reason: `planned mine blocked at ${x},${y}`, movedPorts: [], moved: [] }
           const o = state.occ[kk]
-          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}`) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
-          if (state.routeOcc[kk] !== undefined) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
+          // B25: pole lines placed before the mine's claim, and the faction's own earlier routes, can stand on its
+          // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
+          // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
+          // the rip breaks, so neither blocks a completion.
+          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !(own && (string.sub(o as string, 1, 8) === "x:poles:" || string.sub(o as string, 1, 6) === "route:"))) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
+          // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
+          // belts up and reconcile re-routes the broken edge).
+          if (state.routeOcc[kk] !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
         }
       }
     }

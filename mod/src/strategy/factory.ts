@@ -1115,6 +1115,16 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     for (const s of add) mineTaken[tkey(math.floor(s.x), math.floor(s.y))] = true
     for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
     for (const e of RT.obstaclesUnder(ctx.surface, job.layout, { modules: [ex.module], routes: [], poles: [] })) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+    // B25: the completion's new entities replace the faction's own earlier structures on their tiles (pole lines
+    // and routes placed before the mine's claim): pick them up first, then ghost. The reconcile layer turns the
+    // broken edge into a repair goal.
+    for (const s of add) {
+      const px = math.floor(s.x)
+      const py = math.floor(s.y)
+      for (const e of findEntities(ctx.surface, { type: ["electric-pole", "transport-belt", "underground-belt"], force: ctx.faction.force, area: { left_top: { x: px + 0.05, y: py + 0.05 }, right_bottom: { x: px + 0.95, y: py + 0.95 } }, limit: 4 })) {
+        b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+      }
+    }
     b.extraAdd = add
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${ex.module}: ${add.length} entities to build`)
   }
