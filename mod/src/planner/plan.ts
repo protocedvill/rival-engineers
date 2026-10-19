@@ -445,7 +445,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
     if (s.phase === "done") {
-      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy)
+      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout)
       commitPlacement(job.layout, s.result!, facts, policy)
     }
     else {
@@ -509,7 +509,9 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to
     // squeeze another independent strip into its reserved footprint. B23: a built (fixed) mine that is not complete
     // yet counts too; the plan's adoption builds its completion.
-    const whole = wholePatchCandidate(job.layout, mreq.def)
+    // B33: only a splitter-tap plan can share the mine's one output; a point-to-point request places its own mine on
+    // the part of the field no other mine claims.
+    const whole = policy.topology === "splitter-tap" ? wholePatchCandidate(job.layout, mreq.def) : undefined
     if (whole !== undefined) {
       const r = tryExpand(job.layout, terrain, facts, policy, whole.id, 1)
       if (r.ok) {
@@ -559,7 +561,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
     delete (job.wholeFail ?? {})[id]
-    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy)
+    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout)
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined
     job.placeIdx++

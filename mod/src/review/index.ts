@@ -7,6 +7,7 @@ import { ensureToolbar, onToolbarClick, refreshToolbar } from "./toolbar"
 import { onTimeTick } from "./time"
 import "./overlay"
 import "./graph-overlay"
+import "./growth-overlay"
 
 // Live review tools (README "Watching the AI in game"): per-crew time accounting, the inspector window,
 // world overlays and the sandbox scenario. `registerReview` is called once from control.ts; `onReviewTick` runs

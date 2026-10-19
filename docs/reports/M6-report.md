@@ -812,3 +812,97 @@ fewer iron-ore gathers once smelter modules are built; no new stalls vs the B32 
 |---|---|---|---|---|
 | `supply-module-furnaces` | `settings.ts`, `bootstrap.ts` `registerSupplies` | false | P39 (user, 2026-10-19: keep, default off): taking from a module's furnaces may starve its belt; off until the user decides. | yes (new, proposed P39) |
 | temp-cell top-up stop | `bootstrap.ts` `topUpTempCells` | output chest ≥ `cap` | Reuses `cap` = `bootstrap-factory-wait-seconds` (60) × the cell's rate: the same buffer B18 meant to build. No new number. | no (rule) |
+
+## M6b.9: B33 growth plans that match the module and its ore (2026-10-19)
+
+The B33 row: a mining outpost's planned expansion ran long and off the ore patch, yet did not cover the patch the way
+D52 whole-patch mines should.
+
+**Diagnosis.** D52 whole-patch plans were only made in **splitter-tap** plans (`prepareWholePatchPlacement` returned
+early for any other topology). Most stage-1 mines are point-to-point (one consumer each), so they stayed linear strips.
+A strip's growth area ran to its belt-limited cap regardless of ore: 6 units × 6 tiles = 36 tiles for an electric
+2-row strip, 30 × 2 = 60 for burner drills. D52 (3) makes that area a **hard** claim, so other modules and poles had to
+keep off ground that would never be mined. Its growth also accepted a drill with a single ore tile anywhere in its
+mining area. Shared mines did get whole-patch plans, but those covered the whole patch through one collector and one
+output belt. That is 67-69 electric drills on the captured starting iron patches, while a yellow belt carries 30.
+
+**Audit (T1 `growth-geometry`, every expandable generated module in all 8 orientations, plus the curated red tile):**
+
+| Module type | What was wrong | Fix |
+|---|---|---|
+| Mining outpost, point-to-point (strip) | No whole-patch plan. Its growth claim ran the full cap off the patch (36/60 tiles). Growth needed only one ore tile in a new drill's mining area. | Whole-patch plan in every topology. A point-to-point mine claims **one lane** of the patch grid, up to its template's cap (P40 (b)). A strip that can't take a plan claims growth only while every new drill has ore under it (`oreUnits`, `stripOreUnits`). Growth needs ore under each new drill's body. |
+| Mining outpost, shared (D52 whole-patch) | The plan covered the whole patch through one belt (up to 69 drills for 30 drills of belt). The plan wasn't checked against the layout: belts, poles and the port could land on other modules' ground or claims, water, or facing built structures. | `claimPart`: one belt's worth of drills (`beltDrillCap`, from belt speed and mining rate), whole lanes nearest the consumer first, on the full-coverage grid. Planned against the layout's taken ground. Falls back to the clipped strip when it doesn't fit (P40 (a), (c)). |
+| D52 partial stages | Consistent: the initial stage is a subset of the full plan and the port is fixed. | — |
+| Smelter column (incl. burner, buffered) | Consistent: unit = 2 furnace pairs, 4 tiles at the tail (input end); claims = tryExpand's new ground; cap from the ore lane. | — |
+| Steam block | Consistent: 1 boiler + 2 engines per 4-tile unit, at the east end; cap from the pump. | — |
+| Assembler row (1/2 inputs, buffered), red line, circuit block (buffered), lab array (1/2 packs) | Consistent: the units are the templates' own. The claimed units equal tryExpand's ground, on the same end, and the far end keeps its entities. Caps are from lanes (red line and labs: the existing 10-unit guesses). | — |
+| Curated red tile | Consistent: its unit repeats the slice before `insertAt`. | — |
+| Router (found by the replays) | A route that crossed itself was retried with the crossing tile at an extra cost only (`rip`). With the B33 claims, seed 222's copper feed (with undergrounds) found the same crossing path on every retry. | The tile is blocked on the retry (`router.ts` `tileCost`). |
+
+Not changed: P37 (placement still credits head growth for mines that can't grow at the head). Mines are now whole-patch
+plans and the strip check only gates the site.
+
+**Visualizer.** A new review overlay layer, *Growth plans* (`review/growth-overlay.ts`, off by default: open the inspector
+(Ctrl+Shift+I or its shortcut) and tick *Growth plans* in its Overlays row). It draws:
+- **Expandable module:** footprint in white; planned growth units `+1`, `+2`... in amber (the first two bright), with
+  an arrow to the last one and "grows k/max units".
+- **Strip mine:** its capped units past the ore as dashed red.
+- **Whole-patch mine:** full planned footprint in violet, built drills in green, unbuilt planned drills as dashed
+  violet, and the ore patch outlined in yellow (read from the surface's resources around the plan).
+
+Rendering only, for the inspecting player. Capped at 80 modules and 3,000 outline edges per redraw.
+
+**Tests (each fails on the old code: placement.ts reverted, checked):**
+- T1 `growth-geometry`, 16 template tests and 16 growth-area tests over every type × orientation. These pass on the
+  old code too: they pin that nothing else was wrong.
+- T1, the mine tests:
+  - "a point-to-point mine gets its whole-patch plan" (old: no plan).
+  - "claims one output belt's worth" (old: 384 drills for a 30-drill belt).
+  - "a point-to-point mine claims one lane" (old: no plan).
+  - "a second point-to-point mine takes the unclaimed part" (old: no plans).
+  - "a strip mine that can't take a plan claims growth only over its ore" (old: claim ran to y 52, ore ends at y 30).
+  - "strip growth refuses a drill with no ore under it" (old: grew onto grazed ore).
+  - "a shared mine on a small patch covers the whole patch".
+  - Captured patches from 3 fixtures: whole-patch plans reach 96-100% of the tiles any drill could mine.
+- T2 `review` "B33 growth overlay draws…": a smelter's units, and a whole-patch mine's built and planned drills and its
+  patch outline. Result: 2 modules, 5 units, 2 + 10 drills, 66 ore edges.
+- T2 `B20` now builds its eviction set as the factory's adoption does, adding the mine's D52 claim to its built parts
+  (B23). The stone outpost is a whole-patch mine now, and its first two drills may stand beside the bootstrap site
+  rather than on it.
+
+**Replays** (`plan-replay`, each filter run alone):
+- `seed222-production` with undergrounds: done. Without undergrounds: fails, and the underground alternative routes;
+  this needed the router fix.
+- Logistics comparisons: seed 11 unchanged. Seed 3333's splitter saving fell from 60 to 14 tiles, so its pinned
+  splitter decision is now `false` (the comparison is off by default; undergrounds unchanged).
+- B26 replays (seed 11 / 3333): done.
+- seed11-green-boxed, the m6a2 green-line replays and the four mall-iron replays: as before.
+
+T2 `real terrain` (M4b) failed at first: on all 5 seeds the whole-patch outpost's first two drills sat on the thin edge
+of the patch nearest the consumer (7-9 ore tiles of 25), and the test requires at least 50%. A partial stage now
+starts with drills that meet the placement's own `minOreCoverage` (0.6), in the output lane order, then nearest the
+consumer (`materializeMinePlan`). That passes 5 of 5. Other filtered T2 runs pass: growth overlay, planner-driven
+expansion, B20, P36, routing lab, burner bootstrap (8) and review tools (4).
+
+During the work, a fatter whole-patch part made seed 11 / 3333's second coal outpost unplaceable, which led to the
+one-lane rule (P40 (b)). A port facing the base's built structures broke seed 3333's iron feed, which led to the port
+and approach check (P40 (c)).
+
+**Soak (manager):** after `npm run build` in this worktree:
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 11,222,3333 --hours 4 --name b33-growth --no-build`.
+Look for:
+- Mines with `/partial` ids in point-to-point plans.
+- No `no feasible position` for a second outpost of the same ore.
+- `goal gN (grow) done` for mines and smelters.
+- Fewer `occupied at` / `mine claim of` growth failures.
+- Turn on *Growth plans* in a review run to see each mine's plan against its patch.
+
+### Magic numbers for the user (M6b.9)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Point-to-point mine part: lanes | `placement.ts` `prepareWholePatchPlacement` (`maxLanes`) | 1 lane | Two or more made the second coal outpost of the seed 11 / 3333 clusters unplaceable on one small field. Proposed P40 (b). | no |
+| Point-to-point mine part: drills | same | template rows + cap × drills per unit (14 for a 1-side electric 2-row outpost) | Derived: what the strip could have grown to (its lane cap). | no (derived) |
+| Shared mine part: drills | `mine-plan.ts` `beltDrillCap` | 2 lanes × lane speed ÷ drill rate (30 electric on iron, yellow) | Game data: one collector, one output belt. | no (game-derived) |
+| Overlay caps | `review/growth-overlay.ts` | 80 modules, 3,000 ore edges per redraw; patch margin 8 tiles | Keeps a redraw cheap on a big base; guesses. | no |
+| Captured-patch coverage bound | `mod/unit/growth-geometry.test.ts` | ≥ 95% of the 1-tile-grid upper bound | Test threshold: the lane grid gives up a few edge tiles (96-100% observed). | no (test) |

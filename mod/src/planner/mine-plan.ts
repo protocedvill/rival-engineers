@@ -7,6 +7,7 @@
 
 import { finalizeModule } from "../modules/build"
 import { EntityFacts, ProtoFacts } from "../modules/facts"
+import { laneCapacity } from "../modules/generators"
 import { entityRect, tileKey } from "../modules/geometry"
 import { placePoles } from "../modules/poles"
 import { EAST, ModuleDef, ModuleEntity, NORTH, Port, SOUTH, WEST } from "../modules/types"
@@ -26,6 +27,10 @@ export interface PlannedDrill {
   /** Belt row this drill feeds; vertical rows have a fixed x, horizontal rows a fixed y. */
   lane: number
   side: -1 | 1
+  /** B33: ore tiles of the patch's resource in its mining area (when planned). */
+  ore?: number
+  /** B33: tiles of its mining area. */
+  area?: number
 }
 
 export interface WholePatchMinePlan {
@@ -110,7 +115,7 @@ function miningRect(x: number, y: number, drill: EntityFacts): Rect {
   return { x: x1, y: y1, w: math.ceil(x + r - 0.01) - x1, h: math.ceil(y + r - 0.01) - y1 }
 }
 
-function candidateOk(terrain: TerrainView, resource: string, drill: EntityFacts, x: number, y: number): boolean {
+export function candidateOk(terrain: TerrainView, resource: string, drill: EntityFacts, x: number, y: number): boolean {
   let collisionOre = false
   const er = drillEntityRect(x, y, drill)
   for (let tx = er.x; tx < er.x + er.w; tx++) {
@@ -147,11 +152,16 @@ function addCandidate(
   const x = axis === "y" ? lane + side * away : along
   const y = axis === "y" ? along : lane + side * away
   if (!candidateOk(terrain, patch.resource, drill, x, y)) return
-  drills.push({ x, y, lane, side })
   const mr = miningRect(x, y, drill)
+  let ore = 0
   for (let tx = mr.x; tx < mr.x + mr.w; tx++) {
-    for (let ty = mr.y; ty < mr.y + mr.h; ty++) if (terrain.ore(tx, ty) === patch.resource) covered[tkey(tx, ty)] = true
+    for (let ty = mr.y; ty < mr.y + mr.h; ty++) {
+      if (terrain.ore(tx, ty) !== patch.resource) continue
+      covered[tkey(tx, ty)] = true
+      ore++
+    }
   }
+  drills.push({ x, y, lane, side, ore, area: mr.w * mr.h })
 }
 
 function phasePlan(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, axis: "x" | "y", crossPhase: number, alongPhase: number): WholePatchMinePlan {
@@ -214,6 +224,66 @@ export function planWholePatch(terrain: TerrainView, patch: PatchPlan, drill: En
   return best!
 }
 
+/**
+ * B33: the most drills one whole-patch mine can use. Every lane joins one collector and leaves through one output
+ * belt, so drills past both lanes of that belt only idle (a starting iron patch holds 3-4 belts' worth). Game data:
+ * the belt's lane speed and the drill's mining rate on this resource.
+ */
+export function beltDrillCap(facts: ProtoFacts, belt: string, drill: EntityFacts, resource: string): number {
+  const perDrill = (drill.miningSpeed ?? 0.5) / (facts.resourceMiningTime(resource) ?? 1)
+  return math.max(1, math.floor((2 * laneCapacity(facts, belt)) / perDrill + 1e-9))
+}
+
+/**
+ * B33 / D52 (1) "or the part of it the outpost claims": the part of a whole-patch plan one mine claims when the patch
+ * holds more than `cap` drills. Whole lanes, nearest to `near` across the lanes first (so the part is one contiguous
+ * band of the full plan's grid, at the same maximum coverage), the last lane cut at the drills nearest `near` along
+ * it, at most `maxLanes` lanes. The rest of the patch stays free for the next mine. The patch itself is kept whole
+ * (the overlay outlines it).
+ */
+export function claimPart(plan: WholePatchMinePlan, terrain: TerrainView, drill: EntityFacts, near: Vec, cap: number, maxLanes = math.huge): WholePatchMinePlan {
+  let lanes = 0
+  const seenLane: Record<string, boolean> = {}
+  for (const d of plan.drills) if (!seenLane[tostring(d.lane)]) { seenLane[tostring(d.lane)] = true; lanes++ }
+  if (plan.drills.length <= cap && lanes <= maxLanes) return plan
+  const nearCross = plan.axis === "y" ? near.x : near.y
+  const nearAlong = plan.axis === "y" ? near.y : near.x
+  const order: number[] = []
+  for (let i = 0; i < plan.drills.length; i++) order.push(i)
+  order.sort((a, b) => {
+    const da = plan.drills[a]
+    const db = plan.drills[b]
+    const ca = math.abs(da.lane - nearCross)
+    const cb = math.abs(db.lane - nearCross)
+    if (ca !== cb) return ca - cb
+    if (da.lane !== db.lane) return da.lane - db.lane
+    const aa = math.abs((plan.axis === "y" ? da.y : da.x) - nearAlong)
+    const ab = math.abs((plan.axis === "y" ? db.y : db.x) - nearAlong)
+    return aa !== ab ? aa - ab : a - b
+  })
+  const drills: PlannedDrill[] = []
+  const coveredMap: Record<number, boolean> = {}
+  const taken: Record<string, boolean> = {}
+  let nLanes = 0
+  for (let i = 0; i < math.min(cap, order.length); i++) {
+    const d = plan.drills[order[i]]
+    if (!taken[tostring(d.lane)]) {
+      if (nLanes >= maxLanes) break
+      taken[tostring(d.lane)] = true
+      nLanes++
+    }
+    drills.push(d)
+    const mr = miningRect(d.x, d.y, drill)
+    for (let tx = mr.x; tx < mr.x + mr.w; tx++) {
+      for (let ty = mr.y; ty < mr.y + mr.h; ty++) if (terrain.ore(tx, ty) === plan.patch.resource) coveredMap[tkey(tx, ty)] = true
+    }
+  }
+  drills.sort((a, b) => (a.lane !== b.lane ? a.lane - b.lane : plan.axis === "y" ? a.y - b.y : a.x - b.x))
+  const covered: number[] = []
+  for (const k of plan.patch.tiles) if (coveredMap[k]) covered.push(k)
+  return { patch: plan.patch, axis: plan.axis, drills, covered }
+}
+
 function shifted(e: ModuleEntity, dx: number, dy: number): ModuleEntity {
   return { ...e, x: e.x + dx, y: e.y + dy }
 }
@@ -265,7 +335,7 @@ function occupiedKeys(def: ModuleDef, origin: Vec, facts: ProtoFacts): number[] 
  * only the nearest requested drills are built at first. Completing the plan adds the remaining drills without moving
  * the port, belts, poles, or any existing drill.
  */
-export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, facts: ProtoFacts, near: Vec): MaterializedMinePlan | undefined {
+export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, facts: ProtoFacts, near: Vec, minCoverage = 0): MaterializedMinePlan | undefined {
   const drillName = base.params?.drill
   const belt = base.params?.belt
   if (typeof drillName !== "string" || typeof belt !== "string" || plan.drills.length === 0) return undefined
@@ -354,10 +424,17 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
   const order: number[] = []
   for (let i = 0; i < plan.drills.length; i++) order.push(i)
   // Start at the collector's output lane, then choose the closest positions to the original placement along it.
+  // B33: drills whose mining area holds at least `minCoverage` ore come first (the placement's own site rule), so the
+  // first stage does not start on the thin edge of the patch nearest the consumer.
+  const rich = (i: number): number => {
+    const d = plan.drills[i]
+    return d.ore !== undefined && d.area !== undefined && d.ore < minCoverage * d.area ? 1 : 0
+  }
   order.sort((a, b) => {
     const ca = math.abs(plan.drills[a].lane - outputLane)
     const cb = math.abs(plan.drills[b].lane - outputLane)
     if (ca !== cb) return ca - cb
+    if (rich(a) !== rich(b)) return rich(a) - rich(b)
     const da = math.abs(plan.drills[a].x - near.x) + math.abs(plan.drills[a].y - near.y)
     const db = math.abs(plan.drills[b].x - near.x) + math.abs(plan.drills[b].y - near.y)
     return da !== db ? da - db : a - b

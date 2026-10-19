@@ -33,7 +33,7 @@ export interface RouteRequest {
   tier: BeltTier
   /** Reserved tags this route may use (its own ports' outside tiles). */
   own: Record<string, boolean>
-  /** Tiles to avoid (extra cost), e.g. after a self-intersecting attempt. */
+  /** Tiles to avoid (blocked), e.g. after a self-intersecting attempt. */
   avoid?: Record<number, boolean>
   /** B28: this edge's search window scale (×the policy margin); a retry after "no path" widens the detour room. */
   windowMargin?: number
@@ -136,6 +136,9 @@ function inWindow(s: Search, x: number, y: number): boolean {
 export function tileCost(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, rip: boolean, x: number, y: number): number {
   const k = tkey(x, y)
   if (state.occ[k] !== undefined) return -1
+  // B33: a tile the route used twice is blocked on the retry. As an extra cost (`rip`) the retry found the same
+  // self-crossing path whenever every detour cost more (seed 222's copper feed with undergrounds, three retries).
+  if (req.avoid?.[k]) return -1
   const r = state.reserved[k]
   if (r !== undefined && !req.own[r]) return -1
   // D52 (3): a mining outpost's room to grow takes only its own routes.
@@ -161,7 +164,6 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
     if (b !== OWN || r === undefined || !req.own[r]) return -1
   }
   if (terrain.ore(x, y) !== undefined) extra += w.oreTile
-  if (req.avoid?.[k]) extra += w.rip
   // B9: another module's room to grow (a route there would block its expansion). A module's own routes don't pay: its
   // ports sit at the growing end and move with it, so its routes are rerouted when it grows anyway.
   const soft = w.softClaim ?? 0
