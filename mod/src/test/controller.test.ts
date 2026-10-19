@@ -190,6 +190,58 @@ describe("character controller", () => {
     })
   })
 
+  test("won't hand-mine ore under a built belt (mining there would pick the belt up)", () => {
+    // Seed 77: a mine job planned before the ore route was built ran after it, picked up two of its belts, and the
+    // smelters it fed starved for good.
+    const lab = createLab(16)
+    orePatch(lab, 2, 0, 1, 1, 50)
+    const ore = lab.surface.find_entities_filtered({ type: "resource", position: at(lab, 2.5, 0.5) })[0]
+    const belt = lab.surface.create_entity({ name: "transport-belt", position: at(lab, 2.5, 0.5), force: "player" })!
+    const character = spawnEngineer(lab)
+    const id = enqueue(createController(character), { kind: "mine", target: ore, count: 3 })
+    awaitAction(id, 600, (a) => {
+      assert(a.status === "failed" && a.reason === "not-minable", describeAction(a))
+      assert(belt.valid, "the belt is still there")
+      assert(itemCount(character, "transport-belt") === 0, "no belt picked up")
+    })
+  })
+
+  test("hand-mines ore under a tree (the tree is mined first, as by a player)", () => {
+    // The refusal above is for built entities only: a tree whose box covers an ore tile (seed 555555's coal) must not
+    // make the tile unminable.
+    const lab = createLab(16)
+    orePatch(lab, 2, 0, 1, 1, 50)
+    const ore = lab.surface.find_entities_filtered({ type: "resource", position: at(lab, 2.5, 0.5) })[0]
+    lab.surface.create_entity({ name: "tree-01", position: at(lab, 2.7, 0.8) })
+    const character = spawnEngineer(lab)
+    const id = enqueue(createController(character), { kind: "mine", target: ore, count: 3 })
+    awaitAction(id, 1200, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      assert(itemCount(character, "iron-ore") >= 3, "ore mined")
+    })
+  })
+
+  test("mines a big rock boxed in by another rock and buildings (seed 3333 neighbourhood)", () => {
+    // The M5a seed-3333 stall: a big rock off the tile grid, a second rock north of it and burner sites east. Walking
+    // to within the short reach of its centre failed ("no path": every end node next to the rock collides with it),
+    // so its clear job failed and the outpost ghosts on it were never placed. The walk now aims at its box.
+    const lab = createLab(16)
+    const rock = lab.surface.create_entity({ name: "big-rock", position: at(lab, 0.375, 0.5) })!
+    lab.surface.create_entity({ name: "big-rock", position: at(lab, 1.75, -1.9375) })
+    lab.surface.create_entity({ name: "burner-mining-drill", position: at(lab, 4, -3), force: "player" })
+    lab.surface.create_entity({ name: "burner-mining-drill", position: at(lab, 4, 0), direction: defines.direction.south, force: "player" })
+    lab.surface.create_entity({ name: "stone-furnace", position: at(lab, 4, 2), force: "player" })
+    lab.surface.create_entity({ name: "electric-mining-drill", position: at(lab, -1.5, 5.5), force: "player" })
+    lab.surface.create_entity({ name: "entity-ghost", inner_name: "electric-mining-drill", position: at(lab, -1.5, 2.5), force: "player" })
+    lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, 0.5, 1.5), force: "player" })
+    const character = spawnEngineer(lab, -8, -6)
+    const id = enqueue(createController(character), { kind: "mine", target: rock })
+    awaitAction(id, 1200, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      assert(!rock.valid, "rock mined")
+    })
+  })
+
   test("crafts 10 gears at real speed", () => {
     const lab = createLab(8)
     const character = spawnEngineer(lab)

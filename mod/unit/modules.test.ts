@@ -1,5 +1,5 @@
 import { expandModule, expandMoves, expandTail } from "../src/modules/build"
-import { assemblerRow, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -130,6 +130,41 @@ test("lab array: research units at 1/unitTime per lab, packs merged on one belt"
   near(out(fast, "research-unit"), INS_BELT / 2, 1e-9, "inserter-limited units/s")
 })
 
+test("D42 / B5: a smelter column's buffer depot: an inserter off the west output belt into a chest; rates unchanged", () => {
+  const plain = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
+  eq(def.entities.length, plain.entities.length + 2, "one inserter and one chest more")
+  const chest = def.entities.filter((e) => e.buffer === true)
+  eq(chest.length, 1, "one buffer chest")
+  eq(chest[0].name, "iron-chest", "the configured chest")
+  eq(`${chest[0].x},${chest[0].y}`, "2.5,1.5", "in the gap row")
+  const ins = def.entities.filter((e) => e.x === 1.5 && e.y === 1.5)[0]
+  eq(ins.name, "inserter", "an inserter next to it")
+  eq(ins.dir, WEST, "picks from the west output belt (0.5, 1.5)")
+  const belt = def.entities.filter((e) => e.x === 0.5 && e.y === 1.5)[0]
+  eq(belt.name, "transport-belt", "the output belt it picks from")
+  near(out(def, "iron-plate"), out(plain, "iron-plate"), 1e-9, "the buffer is no demand: same output rate")
+  near(inp(def, "iron-ore"), inp(plain, "iron-ore"), 1e-9, "same input")
+  ok(def.id !== plain.id, "a different module id")
+  eq(def.expand!.unit.entities.length, plain.expand!.unit.entities.length, "units unchanged (the buffer stays at the head)")
+  const burner = smelterColumn(F, { recipe: "iron-plate", furnaces: 4, inserter: "burner-inserter", buffer: "iron-chest" })
+  eq(burner.entities.filter((e) => e.buffer === true).length, 0, "no buffer with burner inserters (it would need fuel)")
+})
+
+test("D38: a chest cell (temporary factory): chest → inserter → assembler → inserter → chest, rates of one assembler", () => {
+  const gear = chestCell(F, { recipe: "iron-gear-wheel" })
+  eq(gear.footprint.w * 10 + gear.footprint.h, 73, "7 × 3")
+  // The assembler could make 1 gear/s; one yellow inserter brings ~0.84 plates/s, so ~0.42 gears/s.
+  ok(out(gear, "iron-gear-wheel") > 0.4 && out(gear, "iron-gear-wheel") < 0.5, `inserter-limited gears ${out(gear, "iron-gear-wheel")}/s`)
+  near(inp(gear, "iron-plate"), 2 * out(gear, "iron-gear-wheel"), 1e-9, "2 plates per gear")
+  const red = chestCell(F, { recipe: "automation-science-pack" })
+  near(out(red, "automation-science-pack"), 0.1, 1e-9, "0.1 red/s")
+  const ins = red.ports.filter((p) => p.kind === "chest-in").map((p) => p.item!).sort()
+  eq(ins.join(","), "copper-plate,iron-gear-wheel", "one chest-in port per ingredient")
+  eq(red.ports.filter((p) => p.kind === "chest-out")[0].item, "automation-science-pack", "chest-out: the product")
+  eq(red.expand, undefined, "not expandable (temporary)")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
@@ -137,6 +172,8 @@ function allGenerated(): ModuleDef[] {
     smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
     smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest" }),
     miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2 }),
     miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1 }),
     miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill" }),
@@ -149,6 +186,9 @@ function allGenerated(): ModuleDef[] {
     circuitBlock(F, { units: 2 }),
     labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
     labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"] }),
+    chestCell(F, { recipe: "iron-gear-wheel" }),
+    chestCell(F, { recipe: "transport-belt" }),
+    chestCell(F, { recipe: "automation-science-pack" }),
   ]
 }
 

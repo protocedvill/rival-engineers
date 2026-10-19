@@ -1,0 +1,626 @@
+// Factory design (SPEC §5.5 goal graph, §5.8): from a stage target ("labs consume R red packs/s") to the module
+// instances and flows that make it, and the diff against what the faction has. Pure: no Factorio globals.
+//
+// 1. The ratio solver (solver.ts, D21) walks the recipe graph down to raw resources; its consumers-first item order
+//    drives the module walk below, and it reports locked recipes (what research must unblock).
+// 2. Module selection (generators first, D34 / LayoutPolicy.moduleSelection): each demanded item gets a producer from
+//    an ordered list of structural rules over prototypes (resource → mining outpost; one-ingredient furnace recipe →
+//    smelter column; a two-ingredient recipe with a one-ingredient intermediate → red line, or a circuit block when
+//    the intermediate yields ≥ 2; otherwise an assembler row). Each module is **sized** to its demand by growing its
+//    generator parameter in steps (the same quanta `ModuleDef.expand` uses) until its output covers it.
+// 3. Topology (D22): point-to-point gives every consumer port its own producer; splitter-tap shares one producer per
+//    item (its consumers tap its belt).
+// 4. Power and fuel last: the electric demand of every module sizes the steam block; the fuel of furnaces and boilers
+//    is then mined (electric drills add power: iterate to a fixed point).
+// 5. Capacity (D24/D25): every flow is checked against the usable capacity of the belt it would ride. Remedies in the
+//    policy's order: a faster researched tier for that edge; otherwise the whole target is split into n production
+//    clusters (parallel routes need parallel port pairs, i.e. module copies). A module that cannot grow big enough
+//    splits the target the same way.
+
+import { ProtoFacts } from "../modules/facts"
+import { GeneratorName } from "../modules/generators"
+import { ModuleDef, Rate } from "../modules/types"
+import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../planner/capacity"
+import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../planner/logical"
+import { LayoutPolicy } from "../planner/policy"
+import { solveNow, SolveResult } from "./solver"
+
+/** A module kind: a generator, or "curated" (params.id names the curated module). */
+export type ModuleKind = GeneratorName | "curated"
+
+export type MakeModule = (this: void, generator: ModuleKind, params: Record<string, unknown>) => ModuleDef
+
+export interface DesignContext {
+  facts: ProtoFacts
+  /** Module factory (runtime: the memoised library; T1: the generators with a facts table). */
+  make: MakeModule
+  /** Technologies researched and recipes enabled for the faction's force. */
+  researched: Record<string, boolean>
+  enabled: Record<string, boolean>
+  /** Technologies the faction can research now or later (the research goal): designs may use what they unlock. */
+  plannable?: Record<string, boolean>
+  /** Resource entities the faction knows about. */
+  resources: string[]
+  /** D42 / B5: the chest for module buffer depots (smelter columns), "" or absent = none. */
+  buffer?: string
+  /** Burner fuel (coal) and entity choices (config defaults, from prototypes). */
+  fuel: string
+  assembler: string
+  furnace: string
+  electricDrill: string
+  burnerDrill: string
+  lab: string
+  boiler: string
+  engine: string
+  /** Science packs the labs take (one belt port each). */
+  packs: string[]
+  /** Seconds per research unit the lab count is sized for. */
+  researchUnitTime: number
+  tiers: BeltTier[]
+  policy: LayoutPolicy
+  /**
+   * B2 (D36): items whose producer feeds these consumer roles through splitter taps (one producer, role `item`), decided
+   * when splitters were worth researching. Other demands for the item stay point-to-point.
+   */
+  taps?: Record<string, string[]>
+}
+
+export interface DesignTarget {
+  /** Science pack consumed by the labs, packs/s. */
+  item: string
+  perSecond: number
+  /**
+   * A mall (material supply for buildings) as a second sink: a curated module whose `chest-out` ports the crew empties,
+   * planned at `utilization` of its full-speed inputs (it only runs while its chests have room).
+   */
+  mall?: { id: string; utilization: number }
+}
+
+export interface DesignPort {
+  port: string
+  item: string
+  /** Planned items/s through the port. */
+  rate: number
+}
+
+export interface DesignNode {
+  role: string
+  kind: NodeKind
+  generator: ModuleKind
+  params: Record<string, unknown>
+  def: ModuleDef
+  /** Main product and its planned rate (packs/s for labs, W for power). */
+  item: string
+  need: number
+  /** Output capacity for `item` at full speed. */
+  capacity: number
+  inputs: DesignPort[]
+  /** Electric demand at full speed (W); power nodes: supply. */
+  powerW: number
+  /** Production cluster (1-based) when the target is split. */
+  cluster: number
+}
+
+export interface DesignEdge {
+  role: string
+  item: string
+  from: string
+  fromPort: string
+  to: string
+  toPort: string
+  rate: number
+  /** Rate at the next stage target (policy headroom, D27). */
+  headroomRate: number
+  belt: string
+  decision: OverflowDecision
+}
+
+export interface Design {
+  target: DesignTarget
+  nodes: DesignNode[]
+  edges: DesignEdge[]
+  electricW: number
+  clusters: number
+  /** Technologies the design's modules need that are not researched (research unblocks these first). */
+  techs: string[]
+  /** D24 remedies applied (edge role → what). */
+  overflow: Record<string, string>
+  errors: string[]
+  solve: SolveResult
+}
+
+const EPS = 1e-9
+
+// ---------------------------------------------------------------------------------------------------------
+// Module rules (generators first)
+
+/**
+ * Electric drills for mining outposts: enabled now, or unlockable by research the faction will do (`plannable`), so
+ * production designs don't change once the research is done.
+ */
+function electricDrills(ctx: DesignContext): boolean {
+  const recipe = ctx.facts.recipeForItem(ctx.electricDrill) ?? ctx.electricDrill
+  if (ctx.enabled[recipe]) return true
+  const tech = ctx.facts.unlockedBy(recipe)
+  return tech !== undefined && ctx.plannable?.[tech] === true
+}
+
+function resourceFor(ctx: DesignContext, item: string): string | undefined {
+  for (const res of ctx.resources) if (ctx.facts.resourceProduct(res) === item) return res
+  return undefined
+}
+
+/** The generator that makes `item`, by structure of its recipe. */
+export function generatorFor(ctx: DesignContext, item: string): GeneratorName | undefined {
+  if (resourceFor(ctx, item) !== undefined) return "mining-outpost"
+  const rn = ctx.facts.recipeForItem(item)
+  const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
+  if (r === undefined) return undefined
+  const furnaceCats = ctx.facts.entity(ctx.furnace)?.craftingCategories ?? []
+  if (furnaceCats.indexOf(r.category) >= 0 && r.ingredients.length === 1) return "smelter-column"
+  if (r.ingredients.length === 2) {
+    for (const ing of r.ingredients) {
+      const sn = ctx.facts.recipeForItem(ing.name)
+      const sub = sn !== undefined ? ctx.facts.recipe(sn) : undefined
+      if (sub === undefined || sub.category !== r.category || sub.ingredients.length !== 1) continue
+      let amount = 1
+      for (const p of sub.products) if (p.name === ing.name) amount = p.amount
+      return amount >= 2 ? "circuit-block" : "red-line"
+    }
+  }
+  if (r.ingredients.length >= 1 && r.ingredients.length <= 2) return "assembler-row"
+  return undefined
+}
+
+/** Candidate parameter sets for a generator, smallest first. */
+function sizes(ctx: DesignContext, gen: GeneratorName, item: string, burnerOnly = false): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = []
+  if (gen === "mining-outpost") {
+    const resource = resourceFor(ctx, item)!
+    const electric = !burnerOnly && electricDrills(ctx)
+    const drill = electric ? ctx.electricDrill : ctx.burnerDrill
+    if (electric) {
+      out.push({ resource, rows: 2, sides: 1, drill })
+      for (let rows = 2; rows <= 24; rows += 2) out.push({ resource, rows, sides: 2, drill })
+    } else {
+      out.push({ resource, rows: 1, sides: 1, drill })
+      for (let rows = 1; rows <= 16; rows++) out.push({ resource, rows, sides: 2, drill })
+    }
+  } else if (gen === "smelter-column") {
+    const recipe = ctx.facts.recipeForItem(item)!
+    for (let n = 4; n <= 48; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
+  } else if (gen === "red-line") {
+    for (let u = 1; u <= 12; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
+  } else if (gen === "circuit-block") {
+    for (let u = 1; u <= 8; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
+  } else if (gen === "assembler-row") {
+    for (let n = 2; n <= 24; n += 2) out.push({ recipe: ctx.facts.recipeForItem(item), count: n, machine: ctx.assembler })
+  } else if (gen === "steam-block") {
+    for (let b = 1; b <= 10; b++) out.push({ boilers: b, fuel: ctx.fuel, boiler: ctx.boiler, engine: ctx.engine })
+  }
+  return out
+}
+
+function kindOf(gen: GeneratorName): NodeKind {
+  if (gen === "mining-outpost") return "outpost"
+  if (gen === "steam-block") return "power"
+  if (gen === "lab-array") return "labs"
+  return "module"
+}
+
+function outputRate(def: ModuleDef, item: string): number {
+  let v = 0
+  for (const r of def.rates.outputs) if (r.item === item) v += r.perSecond
+  return v
+}
+
+function powerOf(rates: Rate[]): number {
+  let w = 0
+  for (const r of rates) if (r.kind === "power" || r.item === "electricity") w += r.perSecond
+  return w
+}
+
+interface Sized {
+  params: Record<string, unknown>
+  def: ModuleDef
+  capacity: number
+  /** Even the biggest size is short of the need. */
+  short: boolean
+}
+
+/** The smallest size of `gen` whose output of `item` covers `need`. */
+function sizeModule(ctx: DesignContext, gen: GeneratorName, item: string, need: number, burnerOnly = false): Sized | undefined {
+  let last: Sized | undefined
+  for (const params of sizes(ctx, gen, item, burnerOnly)) {
+    const [ok, def] = pcall(ctx.make, gen, params)
+    if (!ok) break
+    const d = def as ModuleDef
+    const capacity = outputRate(d, item)
+    last = { params, def: d, capacity, short: capacity + EPS < need }
+    if (!last.short) return last
+    // At its expansion cap: bigger sizes do not exist for this layout (belt lane limits).
+    if (d.expand !== undefined && d.expand.maxUnits <= 0) break
+  }
+  return last
+}
+
+/** Input ports of a module with their planned rates at `utilization` of full speed. */
+function inputPorts(def: ModuleDef, utilization: number): DesignPort[] {
+  const out: DesignPort[] = []
+  const count: Record<string, number> = {}
+  for (const p of def.ports) if (p.kind === "belt-in" && p.item !== undefined) count[p.item] = (count[p.item] ?? 0) + 1
+  for (const p of def.ports) {
+    if (p.kind !== "belt-in" || p.item === undefined) continue
+    let rate = 0
+    for (const r of def.rates.inputs) if (r.item === p.item) rate += r.perSecond
+    out.push({ port: p.id, item: p.item, rate: (rate * utilization) / count[p.item] })
+  }
+  return out
+}
+
+function outPort(def: ModuleDef, item: string): string {
+  for (const p of def.ports) if (p.kind === "belt-out" && p.item === item) return p.id
+  return "out"
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The walk
+
+interface Demand {
+  item: string
+  rate: number
+  to: string
+  toPort: string
+}
+
+interface Walk {
+  ctx: DesignContext
+  cluster: number
+  suffix: string
+  nodes: DesignNode[]
+  edges: DesignEdge[]
+  demands: Demand[]
+  errors: string[]
+  /** A module could not be sized big enough. */
+  short: boolean
+}
+
+function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false): void {
+  const ctx = w.ctx
+  const gen = generatorFor(ctx, item)
+  if (gen === undefined) {
+    w.errors.push(`no module makes ${item}`)
+    return
+  }
+  // The power node's own fuel supply must run before there is any power: burner drills until electric ones are enabled.
+  let forPower = false
+  for (const c of consumers) if (isPowerRole(c.to)) forPower = true
+  const s = sizeModule(ctx, gen, item, rate, forPower && !ctx.enabled[ctx.facts.recipeForItem(ctx.electricDrill) ?? ctx.electricDrill])
+  if (s === undefined) {
+    w.errors.push(`${gen} for ${item}: no valid size`)
+    return
+  }
+  if (s.short) w.short = true
+  const role = ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`
+  const util = s.capacity > EPS ? math.min(1, rate / s.capacity) : 1
+  const node: DesignNode = {
+    role,
+    kind: kindOf(gen),
+    generator: gen,
+    params: s.params,
+    def: s.def,
+    item,
+    need: rate,
+    capacity: s.capacity,
+    inputs: inputPorts(s.def, util),
+    powerW: powerOf(s.def.rates.inputs),
+    cluster: w.cluster,
+  }
+  w.nodes.push(node)
+  const from = outPort(s.def, item)
+  for (const c of consumers) w.edges.push(edge(w, node.role, from, c))
+  for (const p of node.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+}
+
+function edge(w: Walk, from: string, fromPort: string, c: Demand): DesignEdge {
+  return {
+    role: `${from}=>${c.to}.${c.toPort}`,
+    item: c.item,
+    from,
+    fromPort,
+    to: c.to,
+    toPort: c.toPort,
+    rate: c.rate,
+    headroomRate: c.rate * w.ctx.policy.headroom,
+    belt: w.ctx.tiers[0]?.belt ?? "transport-belt",
+    decision: { action: "none" },
+  }
+}
+
+/** Expands every pending demand for `item` (point-to-point: one producer each; splitter-tap: one for all). */
+function expandItem(w: Walk, item: string): void {
+  const mine: Demand[] = []
+  const rest: Demand[] = []
+  for (const d of w.demands) (d.item === item ? mine : rest).push(d)
+  if (mine.length === 0) return
+  w.demands = rest
+  if (w.ctx.policy.topology === "splitter-tap") {
+    let total = 0
+    for (const d of mine) total += d.rate
+    addProducer(w, item, total, mine)
+    return
+  }
+  // B2: the consumers recorded for splitter taps share one producer (the power node's fuel stays its own, so the
+  // power goal never waits for production).
+  const tapped = w.ctx.taps?.[item]
+  const group: Demand[] = []
+  const single: Demand[] = []
+  for (const d of mine) (tapped !== undefined && tapped.indexOf(d.to) >= 0 && !isPowerRole(d.to) ? group : single).push(d)
+  if (group.length >= 2) {
+    let total = 0
+    for (const d of group) total += d.rate
+    addProducer(w, item, total, group, true)
+  } else for (const d of group) single.push(d)
+  for (const d of single) addProducer(w, item, d.rate, [d])
+}
+
+function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number): Walk {
+  const suffix = clusters > 1 ? `#${cluster}` : ""
+  const w: Walk = { ctx, cluster, suffix, nodes: [], edges: [], demands: [], errors: [], short: false }
+  const rate = target.perSecond / clusters
+  // The sink: labs sized to consume the packs at the configured unit time.
+  const speed = ctx.facts.entity(ctx.lab)?.researchSpeed ?? 1
+  const labs = math.max(2, 2 * math.ceil((rate * ctx.researchUnitTime) / speed / 2 - EPS))
+  const packs = ctx.packs.indexOf(target.item) >= 0 ? ctx.packs : [target.item]
+  const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
+  const labDef = ctx.make("lab-array", labParams)
+  const labRole = `labs${suffix}`
+  w.nodes.push({ role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster })
+  let port: string | undefined
+  for (const p of labDef.ports) if (p.kind === "belt-in" && p.item === target.item) port = p.id
+  w.nodes[0].inputs.push({ port: port ?? `in-${target.item}`, item: target.item, rate })
+  w.demands.push({ item: target.item, rate, to: labRole, toPort: port ?? `in-${target.item}` })
+  if (target.mall !== undefined && cluster === 1) {
+    const def = ctx.make("curated", { id: target.mall.id })
+    const inputs = inputPorts(def, target.mall.utilization)
+    w.nodes.push({ role: "mall", kind: "sink", generator: "curated", params: { id: target.mall.id }, def, item: "mall", need: target.mall.utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs), cluster })
+    for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
+  }
+  for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
+  for (const d of w.demands) if (d.item !== ctx.fuel) w.errors.push(`unplanned demand for ${d.item}`)
+  return w
+}
+
+/** Whether a role is the power node or a fuel supply of it ("power", "power#2", "coal>power", ...). */
+export function isPowerRole(role: string): boolean {
+  return string.match(role, "^power#?%d*$")[0] !== undefined || string.match(role, ">power#?%d*$")[0] !== undefined
+}
+
+/**
+ * Power and fuel for everything designed so far: the steam block sized to the electric demand, then every fuel
+ * demand (furnaces and boilers). Electric fuel drills add demand, so this iterates to a fixed point. The steam block's
+ * own fuel supply uses burner drills until electric drills are enabled now (it must run before any power exists).
+ */
+function designPower(ctx: DesignContext, w: Walk): number {
+  const core = [...w.nodes]
+  const coreEdges = [...w.edges]
+  const fuelDemands = [...w.demands]
+  let estimate = 0
+  for (const n of core) estimate += n.powerW
+  for (let iter = 0; iter < 5; iter++) {
+    w.nodes = [...core]
+    w.edges = [...coreEdges]
+    w.demands = [...fuelDemands]
+    if (estimate <= EPS) {
+      expandItem(w, ctx.fuel)
+      return 0
+    }
+    const s = sizeModule(ctx, "steam-block", "electricity", estimate)
+    if (s === undefined) {
+      w.errors.push("steam-block: no valid size")
+      return estimate
+    }
+    if (s.short) w.short = true
+    const util = s.capacity > EPS ? math.min(1, estimate / s.capacity) : 1
+    const steam: DesignNode = {
+      role: `power${w.suffix}`,
+      kind: "power",
+      generator: "steam-block",
+      params: s.params,
+      def: s.def,
+      item: "electricity",
+      need: estimate,
+      capacity: s.capacity,
+      inputs: inputPorts(s.def, util),
+      powerW: s.capacity,
+      cluster: w.cluster,
+    }
+    w.nodes.push(steam)
+    for (const p of steam.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: steam.role, toPort: p.port })
+    expandItem(w, ctx.fuel)
+    let total = 0
+    for (const n of w.nodes) if (n.kind !== "power") total += n.powerW
+    steam.need = total
+    if (total <= s.capacity + EPS || math.abs(total - estimate) < EPS) return total
+    estimate = total
+  }
+  return estimate
+}
+
+function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>): number {
+  const available = availableTiers(ctx.tiers, ctx.researched)
+  let split = 1
+  for (const e of w.edges) {
+    const tier = ctx.tiers[0]
+    if (tier === undefined) break
+    const limits = { tier, lanes: 2, utilization: ctx.policy.utilization }
+    const d = decideOverflow({ demand: e.rate, edge: limits, available, order: ctx.policy.overflow.order, maxParallel: ctx.policy.overflow.maxParallel })
+    e.decision = d
+    if (d.action === "upgrade-tier") {
+      e.belt = d.belt
+      overflow[e.role] = `upgrade-tier → ${d.belt}`
+    } else if (d.action === "parallel-route") {
+      split = math.max(split, d.routes)
+      overflow[e.role] = `parallel-route × ${d.routes} (as production clusters)`
+    } else if (d.action === "new-producer-cluster") {
+      const usable = tier.laneCapacity * 2 * ctx.policy.utilization
+      split = math.max(split, math.ceil(e.rate / usable - EPS))
+      overflow[e.role] = `new-producer-cluster: ${d.reason}`
+    }
+  }
+  return split
+}
+
+/** Solves and designs the factory for a stage target. */
+export function design(ctx: DesignContext, target: DesignTarget): Design {
+  const solveJob = solveNow(
+    {
+      targets: [{ item: target.item, perSecond: target.perSecond }],
+      machines: [ctx.assembler, ctx.furnace],
+      drills: [electricDrills(ctx) ? ctx.electricDrill : ctx.burnerDrill],
+      resources: ctx.resources,
+      fuel: ctx.fuel,
+      boiler: ctx.boiler,
+      engine: ctx.engine,
+      enabled: ctx.enabled,
+    },
+    ctx.facts,
+  )
+  const order = solveJob.order
+  const overflow: Record<string, string> = {}
+  let clusters = 1
+  let walks: Walk[] = []
+  let electric = 0
+  for (let attempt = 0; attempt < 4; attempt++) {
+    walks = []
+    electric = 0
+    let split = clusters
+    let short = false
+    for (let c = 1; c <= clusters; c++) {
+      const w = designCluster(ctx, target, order, c, clusters)
+      electric += designPower(ctx, w)
+      split = math.max(split, clusters * checkEdges(ctx, w, overflow))
+      if (w.short) short = true
+      walks.push(w)
+    }
+    if (short && split === clusters) split = clusters + 1
+    if (split <= clusters) break
+    clusters = split
+  }
+  const nodes: DesignNode[] = []
+  const edges: DesignEdge[] = []
+  const errors: string[] = []
+  for (const w of walks) {
+    for (const n of w.nodes) nodes.push(n)
+    for (const e of w.edges) edges.push(e)
+    for (const x of w.errors) errors.push(x)
+  }
+  const techs: string[] = []
+  for (const n of nodes) for (const t of n.def.requiresTech) if (!ctx.researched[t] && techs.indexOf(t) < 0) techs.push(t)
+  techs.sort()
+  return { target, nodes, edges, electricW: electric, clusters, techs, overflow, errors, solve: solveJob.result }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Goal diff
+
+export interface Growth {
+  role: string
+  /** The existing graph node (module instance) to grow. */
+  node: string
+  units: number
+  need: number
+  have: number
+}
+
+export interface DesignDiff {
+  /** Design nodes with no node of their role in the graph. */
+  missing: DesignNode[]
+  /** Existing nodes short of their design need: grow them (expand-first) by this many units. */
+  grow: Growth[]
+  /** Design edges with no edge of their role in the graph. */
+  missingEdges: DesignEdge[]
+}
+
+/** Units of `def.expand` needed to add `extra` of `item` at full speed. */
+export function unitsFor(def: ModuleDef, item: string, extra: number): number | undefined {
+  const e = def.expand
+  if (e === undefined) return undefined
+  let per = 0
+  for (const r of e.perUnit.rates.outputs) if (r.item === item) per += r.perSecond
+  if (per <= EPS) return undefined
+  const k = math.ceil(extra / per - EPS)
+  return k <= e.maxUnits ? k : undefined
+}
+
+export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, node: string) => ModuleDef | undefined): DesignDiff {
+  const missing: DesignNode[] = []
+  const grow: Growth[] = []
+  for (const n of d.nodes) {
+    const have = nodeByRole(g, n.role)
+    if (have === undefined) {
+      missing.push(n)
+      continue
+    }
+    const cap = n.kind === "labs" ? n.need : rateIn(have.capacity.outputs, n.item)
+    if (cap + 1e-6 >= n.need) continue
+    const def = canonical(have.id)
+    const units = def !== undefined ? unitsFor(def, n.item, n.need - cap) : undefined
+    grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap })
+  }
+  const missingEdges: DesignEdge[] = []
+  for (const e of d.edges) if (edgeByRole(g, e.role) === undefined) missingEdges.push(e)
+  return { missing, grow, missingEdges }
+}
+
+/**
+ * Goal kinds; "repair" comes from the reconciler (M5b): missing pieces of a route or pole line re-placed; "temp" builds
+ * D38 temporary factories (chest cells), outside the design.
+ */
+export type GoalKind = "power" | "labs" | "production" | "mall" | "grow" | "repair" | "temp"
+
+export interface GoalSpec {
+  kind: GoalKind
+  nodes: DesignNode[]
+  edges: DesignEdge[]
+  growth?: Growth
+  /** Unresearched technologies the goal's modules need. */
+  techs: string[]
+}
+
+/**
+ * Build goals from a diff, in build order: power (the steam block and its fuel supply), labs, then the production
+ * chain, then growth of existing modules. An edge belongs to the goal that builds its later end.
+ */
+export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>): GoalSpec[] {
+  const goals: GoalSpec[] = []
+  const byKind: Record<string, GoalSpec> = {}
+  const goalOf: Record<string, GoalSpec> = {}
+  const get = (kind: GoalKind): GoalSpec => {
+    let gs = byKind[kind]
+    if (gs === undefined) {
+      gs = { kind, nodes: [], edges: [], techs: [] }
+      byKind[kind] = gs
+    }
+    return gs
+  }
+  for (const n of diff.missing) {
+    const kind: GoalKind = n.kind === "labs" ? "labs" : isPowerRole(n.role) ? "power" : n.role === "mall" || string.match(n.role, ">mall$")[0] !== undefined ? "mall" : "production"
+    const gs = get(kind)
+    gs.nodes.push(n)
+    goalOf[n.role] = gs
+    for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
+  }
+  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5, repair: 6, temp: 7 }
+  for (const e of diff.missingEdges) {
+    const a = goalOf[e.from]
+    const b = goalOf[e.to]
+    let gs = a ?? b ?? get("production")
+    if (a !== undefined && b !== undefined && rank[b.kind] > rank[a.kind]) gs = b
+    gs.edges.push(e)
+  }
+  for (const k of ["power", "labs", "production", "mall"] as GoalKind[]) if (byKind[k] !== undefined) goals.push(byKind[k])
+  for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
+  for (const gs of goals) gs.techs.sort()
+  return goals
+}

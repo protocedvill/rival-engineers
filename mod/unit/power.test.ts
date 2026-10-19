@@ -1,0 +1,136 @@
+import { labArray, steamBlock } from "../src/modules/generators"
+import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
+import { ModuleDef } from "../src/modules/types"
+import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
+import { commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { newPoleJob, polesNow, powerRoles, stepPoles, unpoweredModules } from "../src/planner/power"
+import { selectPolicy } from "../src/planner/policy"
+import { eq, ok, run, test } from "./harness"
+import { vanillaFacts as F } from "./vanilla-facts"
+
+// T1: the pole network planner (SPEC §5.3 Power): lines of small poles join every consumer module's poles to a
+// generator module's, around obstacles, within wire reach, on free tiles only.
+
+const POLICY = selectPolicy("early-compact", {})
+
+function place(state: LayoutState, id: string, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY): PlacedModule {
+  const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
+  const m: PlacedModule = { id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  commitModule(state, m, F, 1)
+  return m
+}
+
+/** Free terrain w × h with optional per-tile blocks. */
+function terrain(w: number, h: number, blocks: Record<number, number> = {}): TerrainView {
+  return {
+    block: (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? UNKNOWN : (blocks[tkey(x, y)] ?? FREE)),
+    ore: () => undefined,
+  }
+}
+
+/** Checks every planned pole: on a free tile, and the line chains within wire reach. */
+function poleProblems(layout: LayoutState, view: TerrainView): string[] {
+  const out: string[] = []
+  for (const p of layout.poles ?? []) {
+    if (view.block(p.x, p.y) !== FREE) out.push(`pole ${p.id} on blocked terrain`)
+    const occ = layout.occ[tkey(p.x, p.y)]
+    if (occ !== `x:${p.line}`) out.push(`pole ${p.id} tile tagged ${occ}`)
+    if (layout.routeOcc[tkey(p.x, p.y)] !== undefined) out.push(`pole ${p.id} on a route`)
+  }
+  return out
+}
+
+const steam = steamBlock(F, { boilers: 1 })
+const labs = labArray(F, { labs: 2, packs: ["automation-science-pack"] })
+
+test("power roles: the steam block is a source, a lab array a consumer", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, 40, 4)
+  const r = powerRoles(layout, F)
+  eq(r.sources.join(","), "steam", "sources")
+  eq(r.consumers.join(","), "labs", "consumers")
+})
+
+test("a line of small poles joins a lab array 40 tiles from the steam block; each hop within wire reach", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, 50, 4)
+  const view = terrain(80, 30)
+  eq(unpoweredModules(layout, F).join(","), "labs", "unpowered before")
+  const job = polesNow(layout, view, F, POLICY)
+  eq(job.phase, "done", "done")
+  eq(unpoweredModules(layout, F).length, 0, "everything powered after")
+  const n = layout.poles?.length ?? 0
+  // The gap between the two modules' nearest poles is about 41 tiles: at least 5 hops, few more.
+  ok(n >= 5 && n <= 8, `${n} poles`)
+  eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
+  eq(layout.poleLines?.length, 1, "one line")
+  eq(layout.poleLines![0].to, "labs", "joined the labs")
+})
+
+test("poles go around a lake and never stand on water, cliffs or other structures", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 10)
+  place(layout, "labs", labs, 55, 12)
+  const blocks: Record<number, number> = {}
+  // A wall of water 12 wide from y = 0 to y = 34 (open below), and a cliff band.
+  for (let x = 25; x < 37; x++) for (let y = 0; y < 34; y++) blocks[tkey(x, y)] = WATER
+  for (let x = 40; x < 42; x++) for (let y = 0; y < 30; y++) blocks[tkey(x, y)] = CLIFF
+  blocks[tkey(20, 36)] = OWN
+  const view = terrain(80, 50, blocks)
+  const job = polesNow(layout, view, F, POLICY)
+  eq(unpoweredModules(layout, F).length, 0, `powered (failures: ${tostring(job.failures.labs)})`)
+  eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
+  let below = false
+  for (const p of layout.poles!) if (p.y >= 34) below = true
+  ok(below, "the line passes below the lake")
+})
+
+test("no generator yet: nothing to connect, no poles; modules within reach need none", () => {
+  const a = newLayout()
+  place(a, "labs", labs, 2, 2)
+  const j = polesNow(a, terrain(40, 20), F, POLICY)
+  eq(j.phase, "done", "done")
+  eq(a.poles?.length ?? 0, 0, "no poles without a generator")
+  const b = newLayout()
+  place(b, "steam", steam, 2, 2)
+  // The lab array's poles are within 7.5 of the steam block's right-hand poles.
+  place(b, "labs", labs, 8, 2)
+  polesNow(b, terrain(40, 20), F, POLICY)
+  eq(b.poles?.length ?? 0, 0, "adjacent modules join directly")
+  eq(unpoweredModules(b, F).length, 0, "powered")
+})
+
+test("budgeted: stepping 5 units at a time gives the same line", () => {
+  const mk = (): LayoutState => {
+    const l = newLayout()
+    place(l, "steam", steam, 2, 2)
+    place(l, "labs", labs, 50, 4)
+    return l
+  }
+  const a = mk()
+  polesNow(a, terrain(80, 30), F, POLICY)
+  const b = mk()
+  const job = newPoleJob("poles:", "small-electric-pole", F)
+  let steps = 0
+  while (!stepPoles(job, b, terrain(80, 30), F, POLICY, 5)) steps++
+  ok(steps > 3, `${steps} steps`)
+  eq(b.poles!.length, a.poles!.length, "same pole count")
+  for (let i = 0; i < a.poles!.length; i++) eq(`${b.poles![i].x},${b.poles![i].y}`, `${a.poles![i].x},${a.poles![i].y}`, `pole ${i}`)
+})
+
+test("unreachable consumer (walled in by water): reported, not crashing", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, 50, 6)
+  const blocks: Record<number, number> = {}
+  // Wires span water, so the moat is wider than a hop and covers the whole map's height.
+  for (let x = 28; x < 40; x++) for (let y = 0; y < 30; y++) blocks[tkey(x, y)] = WATER
+  const job = polesNow(layout, terrain(80, 30, blocks), F, POLICY)
+  eq(job.phase, "done", "done")
+  ok(job.failures.labs !== undefined, "failure recorded")
+  eq(unpoweredModules(layout, F).join(","), "labs", "still unpowered")
+})
+
+run("power")

@@ -5,6 +5,12 @@ import { ProgressTracker } from "./steering"
 // tables: no class instances, functions or metatables.
 
 /** What a caller asks a controller to do (SPEC §5.1). */
+/**
+ * D38 opportunistic crafting: "start" queues the crafts and finishes at once (they run while the character walks and
+ * works); "await" waits until the crafting queue is empty. Absent: queue and wait (one action).
+ */
+export type CraftMode = "start" | "await"
+
 export type ActionSpec =
   /** Walk until within `radius` (default 1) of `goal`. */
   | { kind: "walk"; goal: MapPosition; radius?: number }
@@ -15,7 +21,7 @@ export type ActionSpec =
    */
   | { kind: "mine"; target?: LuaEntity; position?: MapPosition; count?: number }
   /** Hand-craft `count` crafts of `recipe` at real speed. */
-  | { kind: "craft"; recipe: string; count: number }
+  | { kind: "craft"; recipe: string; count: number; mode?: CraftMode }
   /**
    * Place one `item` at `position` facing `direction` (default north). With `ghost`, fill that ghost like a
    * player building over it: the player's build check runs with the ghost present (ghosts don't collide),
@@ -119,6 +125,13 @@ export interface ActionRecord {
   target?: LuaEntity
   item?: string
   baseline?: number
+  /** Mine: a tree or rock over the ore being mined first, and how many such were cleared (count as progress). */
+  obstacle?: LuaEntity
+  cleared?: number
+  /** Mine: the obstacle is out of reach, so the action walks to it first. */
+  obstacleFar?: boolean
+  /** Mine / pick up: the last point where the target was the selected entity. */
+  minePoint?: MapPosition
   goalCount?: number
   lastProgressTick?: number
   lastProgressValue?: number

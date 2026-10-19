@@ -477,5 +477,70 @@ describe("M4b routing", () => {
       })
     })
   })
-})
 
+  test("D36: a plan without undergrounds compares itself with them in game (river detour), bounded and counted", () => {
+    const lab = createLab(60)
+    const force = labForce()
+    const s = lab.surface
+    // A 3-wide river from the north edge down to y = +20: a source west of it, a sink east of it, both near the top.
+    const tiles = []
+    for (let x = -1; x < 2; x++) for (let y = -60; y < 20; y++) tiles.push({ name: "water", position: at(lab, x, y) })
+    s.set_tiles(tiles)
+    const box = (id: string, kind: "belt-in" | "belt-out"): ModuleDef => ({
+      id,
+      source: "generated",
+      footprint: { w: 1, h: 1 },
+      entities: [],
+      ports: [{ id: kind === "belt-out" ? "out" : "in", kind, pos: { x: 0.5, y: 0.5 }, dir: 4, item: "iron-plate" }],
+      recipes: [],
+      machines: [],
+      rates: { inputs: [], outputs: [] },
+      requiresTech: [],
+      rotatable: false,
+      mirrorable: false,
+    })
+    const a = box("a", "belt-out")
+    const b = box("b", "belt-in")
+    const layout = newLayout()
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const put = (def: ModuleDef, x: number, y: number): void => {
+      commitModule(layout, { id: def.id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } } as PlacedModule, prototypeFacts, 0)
+    }
+    put(a, ox - 20, oy - 40)
+    put(b, ox + 20, oy - 40)
+    const request: PlanRequest = {
+      modules: [],
+      connections: [{ id: "c", from: { module: "a", port: "out" }, to: { module: "b", port: "in" } }],
+      center: { x: ox, y: oy },
+      region: { x: ox - 58, y: oy - 58, w: 116, h: 116 },
+      compare: { undergrounds: { tiers: beltTiers(prototypeFacts) }, workFactor: 2, minWork: 5000 },
+    }
+    // Planned on top of a "base" layout holding the two modules (a plan normally takes its faction's), with
+    // undergrounds clamped to none (logistics not researched).
+    storage.factories ??= {}
+    storage.factories["d36-test"] = { layout } as never
+    const work0 = storage.work?.total.routerExpansions ?? 0
+    if (getPlannerEntry("d36") !== undefined) removePlan("d36")
+    startPlan({ id: "d36", surface: s.name, force: force.name, request, maxUnderground: 1, baseFaction: "d36-test" })
+    async(60 * 60 * 10)
+    on_tick(() => {
+      const e = getPlannerEntry("d36")!
+      if (e.phase === "scan" || e.phase === "plan") return
+      delete storage.factories!["d36-test"]
+      assert(e.phase === "done", `plan failed: ${failures(e)}`)
+      const route = e.job!.layout.routes["route:c"]
+      assert(route.undergrounds === 0, "the plan has no undergrounds")
+      const r = (e.job!.compare?.results ?? [])[0]
+      assert(r !== undefined && r.kind === "undergrounds" && r.status === "done", `comparison: ${serpent.line(r)}`)
+      log(`[d36] in game: without undergrounds ${r.base} tiles, with ${r.alt} (saving ${r.saving}); comparison work ${r.work}, plan routing work ${e.job!.stats.routeWork}`)
+      // The router's window (24 tiles past the endpoints) bounds the detour this lab can force: ~46 tiles. The ≥ 50 cases
+      // and the decision are pinned by T1 (planner-batch, plan-replay); this checks the in-game runtime path.
+      assert(r.saving! >= 40, `saving ${r.saving}`)
+      assert(r.work <= math.max(5000, 2 * e.job!.stats.routeWork) + 200, `bounded work ${r.work}`)
+      assert((storage.work?.total.routerExpansions ?? 0) > work0, "router expansions counted")
+      done()
+      return false
+    })
+  })
+})

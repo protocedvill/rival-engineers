@@ -3,6 +3,7 @@ import { createController, destroyController } from "../character/controller"
 import { getConfig } from "../config"
 import { addJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
+import { findEntities } from "../work"
 
 // Factions (SPEC §2 D4, §5.7): each AI faction is its own LuaForce with its own crew, stockpiles and Job
 // Board. Nothing here is shared between factions, so they cannot take each other's jobs or materials.
@@ -145,7 +146,7 @@ export interface PlanGhostsOptions {
  */
 export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {}): number {
   const surface = factionSurface(faction)
-  const ghosts = surface.find_entities_filtered({ type: "entity-ghost", force: faction.force, area: options.area })
+  const ghosts = findEntities(surface, { type: "entity-ghost", force: faction.force, area: options.area })
   let added = 0
   for (const ghost of ghosts) if (addPlaceJob(faction, ghost, options) !== undefined) added++
   return added

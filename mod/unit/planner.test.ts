@@ -404,6 +404,38 @@ test("placement: mining outpost lands on its patch with its drills over ore", ()
   }
 })
 
+test("placement: mining outpost on a mixed patch keeps every drill area free of the second ore (B6)", () => {
+  // Iron with copper specks every 6 tiles, except a pure corner: only the corner may take the outpost.
+  const rows = field(80, 80)
+  for (let y = 20; y < 70; y++) {
+    let r = string.rep(".", 10)
+    for (let x = 10; x < 70; x++) r += x % 6 === 0 && y % 6 === 0 && !(x >= 48 && y >= 48) ? "c" : "i"
+    rows[y] = r + string.rep(".", 10)
+  }
+  const terrain = asciiTerrain(rows)
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const s = placeNow({ id: "mine", def, targets: {}, center: { x: 20, y: 20 }, region: { x: 0, y: 0, w: 80, h: 80 } }, newLayout(), terrain, policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  const m = s.result!
+  for (const a of m.def.anchor!.miningAreas!) {
+    for (let x = a.x; x < a.x + a.w; x++) {
+      for (let y = a.y; y < a.y + a.h; y++) {
+        const ore = terrain.ore(m.origin.x + x, m.origin.y + y)
+        ok(ore === undefined || ore === "iron-ore", `drill area reaches ${ore} at ${m.origin.x + x},${m.origin.y + y}`)
+      }
+    }
+  }
+  // All mixed: no spot.
+  const mixed = field(80, 80)
+  for (let y = 20; y < 70; y++) {
+    let r = string.rep(".", 10)
+    for (let x = 10; x < 70; x++) r += x % 6 === 0 && y % 6 === 0 ? "c" : "i"
+    mixed[y] = r + string.rep(".", 10)
+  }
+  const none = placeNow({ id: "mine", def, targets: {}, center: { x: 20, y: 20 }, region: { x: 0, y: 0, w: 80, h: 80 } }, newLayout(), asciiTerrain(mixed), policy())
+  eq(none.phase, "failed", "no pure spot on an all-mixed patch")
+})
+
 test("policy: expand-first grows an existing module when there is room, places a new one when blocked", () => {
   const terrain = asciiTerrain(field(80, 80))
   const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
@@ -517,6 +549,42 @@ export function m4Set(): { modules: ModuleDef[]; connections: ConnectionRequest[
     ],
   }
 }
+
+test("policy D35: near-ore smelting puts the smelter next to its ore outpost; compact-core next to its consumer", () => {
+  // Iron 60+ tiles east of the cluster centre; the gear row (the smelter's consumer) clusters at the centre.
+  const rows = field(150, 70)
+  for (let y = 20; y < 50; y++) rows[y] = rows[y].substring(0, 110) + string.rep("i", 30) + rows[y].substring(140)
+  const terrain = asciiTerrain(rows)
+  const outpost = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 }), id: "outpost" }
+  const smelter = { ...smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), id: "smelter" }
+  const gears = { ...assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), id: "gears" }
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const req = (): PlanRequest => ({
+    modules: [gears, smelter, outpost].map((def) => ({ id: def.id, def })),
+    connections: [c("ore", ["outpost", "out"], ["smelter", "in-ore"]), c("plates", ["smelter", "out"], ["gears", "in-iron-plate"]), c("coal", undefined, ["smelter", "in-fuel"])],
+    center: { x: 40, y: 35 },
+    region: { x: 0, y: 0, w: 150, h: 70 },
+  })
+  const dist = (job: ReturnType<typeof planNow>, a: string, b: string): number => {
+    const ma = findModule(job.layout, a)!.rect
+    const mb = findModule(job.layout, b)!.rect
+    return math.abs(ma.x + ma.w / 2 - (mb.x + mb.w / 2)) + math.abs(ma.y + ma.h / 2 - (mb.y + mb.h / 2))
+  }
+  const compact = planNow(req(), YELLOW, terrain, F, policy({ smelting: "compact-core" }), 400)
+  eq(compact.phase, "done", `compact planned (${serpentLine(compact.failures)})`)
+  const near = planNow(req(), YELLOW, terrain, F, policy({ smelting: "near-ore" }), 400)
+  eq(near.phase, "done", `near-ore planned (${serpentLine(near.failures)})`)
+  noProblems(near.layout, terrain, "near-ore")
+  const cs = dist(compact, "smelter", "outpost")
+  const ns = dist(near, "smelter", "outpost")
+  const cg = dist(compact, "smelter", "gears")
+  const ng = dist(near, "smelter", "gears")
+  print(string.format("    [d35] smelter-outpost / smelter-gears: compact %g / %g, near-ore %g / %g", cs, cg, ns, ng))
+  ok(ns < cs, `near-ore smelter closer to the ore (${ns} vs ${cs})`)
+  ok(cg < ng, `compact smelter closer to its consumer (${cg} vs ${ng})`)
+  eq(selectPolicy("early-compact", {}).smelting, "compact-core", "default unchanged")
+  eq(selectPolicy("early-compact", {}, { smelting: "near-ore" }).smelting, "near-ore", "config override")
+})
 
 test("plan: the 5-module set on terrain with a lake, cliffs, trees, ore and structures: valid, graph built", () => {
   const rows = field(120, 100)

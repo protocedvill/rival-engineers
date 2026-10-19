@@ -1,8 +1,10 @@
-import { LuaEntity, LuaProfiler, MapPosition, Product } from "factorio:runtime"
+import { onHandCrafted } from "./triggers"
+import { LuaEntity, LuaForce, LuaProfiler, MapPosition, Product } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { distance } from "./steering"
 import { ActionRecord, ActionSpec, ActionStatus, ControllerState, FailureReason, ReachGoal } from "./types"
 import { newWalk, reachSatisfied, stepWalk, StepResult, stopWalking } from "./walk"
+import { findEntities } from "../work"
 
 // Character Controller (SPEC §5.1): one per character body. Each controller runs a queue of actions;
 // each action is a resumable state machine stepped once per tick from on_tick, under a per-tick budget.
@@ -150,6 +152,9 @@ function finish(ctrl: ControllerState, action: ActionRecord, status: ActionStatu
     stopCharacter(ctrl.character)
     // Crafting runs one action at a time, so every craft still queued was started by this action.
     if (action.spec.kind === "craft" && status !== "succeeded") cancelQueuedCrafts(ctrl.character)
+  } else if (action.spec.kind === "craft" && action.spec.mode === "await" && status !== "succeeded" && ctrl.character.valid) {
+    // D38: a background craft's wait cancelled before it ran: its crafts are still queued; give the ingredients back.
+    cancelQueuedCrafts(ctrl.character)
   }
   action.status = status
   action.reason = reason
@@ -265,21 +270,92 @@ function primaryProduct(entity: LuaEntity): string | undefined {
   return first?.type === "item" ? first.name : undefined
 }
 
-/** Starts or continues mining `target`. False if something else (a ghost) would be mined instead. */
-function mineTick(character: LuaEntity, target: LuaEntity): boolean {
-  character.update_selected_entity(target.position)
-  const selected = character.selected
-  // A player mining here would deconstruct the ghost on top of the ore; don't.
-  if (selected && selected.valid && selected !== target && selected.type === "entity-ghost") return false
-  character.mining_state = { mining: true, position: target.position }
-  return true
+/** Points per side of the grid scanned over an entity's selection box for a spot where it is the one selected. */
+const SELECT_GRID = 5
+
+/**
+ * A point where the character selects `entity` (mining acts on whatever is selected at the mining position), or
+ * undefined. Tries `cached`, the centre, then a grid over the selection box, nearest to the character first. In a
+ * dense forest the next tree's tall selection box covers a tree's centre and its whole collision box (B1). On success
+ * the character's selection is left on `entity`.
+ */
+function selectPoint(character: LuaEntity, entity: LuaEntity, cached?: MapPosition): MapPosition | undefined {
+  if (cached !== undefined) {
+    character.update_selected_entity(cached)
+    if (character.selected === entity) return cached
+  }
+  character.update_selected_entity(entity.position)
+  if (character.selected === entity) return entity.position
+  const box = entity.selection_box
+  const x0 = box.left_top.x + 0.05
+  const y0 = box.left_top.y + 0.05
+  const w = box.right_bottom.x - 0.05 - x0
+  const h = box.right_bottom.y - 0.05 - y0
+  const points: { p: MapPosition; d: number; i: number }[] = []
+  for (let i = 0; i < SELECT_GRID; i++) {
+    for (let j = 0; j < SELECT_GRID; j++) {
+      const p = { x: x0 + (w * i) / (SELECT_GRID - 1), y: y0 + (h * j) / (SELECT_GRID - 1) }
+      points.push({ p, d: distance(character.position, p), i: points.length })
+    }
+  }
+  points.sort((a, b) => (a.d !== b.d ? a.d - b.d : a.i - b.i))
+  for (const c of points) {
+    character.update_selected_entity(c.p)
+    if (character.selected === entity) return c.p
+  }
+  return undefined
+}
+
+/** How deep a chain of trees/rocks covering each other is followed (tree over tree over the target). */
+const MAX_COVER_DEPTH = 3
+
+type MineStep = "mining" | "refused" | { approach: LuaEntity }
+
+/**
+ * Starts or continues mining `target`. Mining acts on whatever is selected at the mining position, so mine from a
+ * point of the target's selection box where the target itself is selected. If there is none, the entity covering it
+ * decides: a ghost (a player would deconstruct it) or, over ore, a built entity (a player would pick it up: seed 77
+ * lost two belts of an ore route to a stale hand-mining job) refuse the mining; a tree or rock is mined first, as by a
+ * player, after walking into its reach if needed (B1: in dense forests the covering tree was often out of reach and
+ * the action stalled).
+ */
+function mineTick(character: LuaEntity, target: LuaEntity, action?: ActionRecord): MineStep {
+  let want = target
+  for (let depth = 0; depth <= MAX_COVER_DEPTH; depth++) {
+    const p = selectPoint(character, want, want === target ? action?.minePoint : undefined)
+    if (p !== undefined) {
+      if (want !== target && !character.can_reach_entity(want)) return { approach: want }
+      if (want === target && action !== undefined) action.minePoint = p
+      if (want !== target && action !== undefined) action.obstacle = want
+      character.mining_state = { mining: true, position: p }
+      return "mining"
+    }
+    character.update_selected_entity(want.position)
+    const selected = character.selected
+    if (!selected || !selected.valid) {
+      character.mining_state = { mining: true, position: want.position }
+      return "mining"
+    }
+    if (selected.type === "entity-ghost") return "refused"
+    if (selected.type === "character") {
+      // Someone stands in the way: wait (the stall check bounds it).
+      character.mining_state = { mining: false }
+      return "mining"
+    }
+    if (selected.type !== "tree" && selected.type !== "simple-entity") {
+      // A built entity covers the whole target: mining would pick it up. Only the faction's own pick-ups may do that.
+      if (target.type === "resource" || selected.force.name !== "neutral") return "refused"
+    }
+    want = selected
+  }
+  return "refused"
 }
 
 function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "mine" }>, config: Config, tick: number): StepResult {
   if (action.phase === "start") {
     let target = spec.target
     if (!target && spec.position) {
-      const found = character.surface.find_entities_filtered({ position: spec.position, type: "resource", limit: 1 })
+      const found = findEntities(character.surface, { position: spec.position, type: "resource", limit: 1 })
       target = found[0]
     }
     if (!target || !target.valid) return fail("target-invalid")
@@ -295,10 +371,19 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
   action.stats.items = gained
   if (action.goalCount !== undefined && gained >= action.goalCount) return "done"
   if (!target.valid) return "done" // depleted or mined away
-  const reach: ReachGoal = target.type === "resource" ? { kind: "resource", entity: target } : { kind: "entity", entity: target }
+  if (action.obstacle !== undefined && !action.obstacle.valid) {
+    // The character's mining stays on the mined-away obstacle: restart it so it picks the target up next tick.
+    action.obstacle = undefined
+    action.cleared = (action.cleared ?? 0) + 1
+    character.mining_state = { mining: false }
+    return "running"
+  }
+  // While a covering tree or rock out of reach is in the way, walk to it instead of the target.
+  const goal = action.obstacle !== undefined && action.obstacleFar ? action.obstacle : target
+  const reach: ReachGoal = goal.type === "resource" ? { kind: "resource", entity: goal } : { kind: "entity", entity: goal }
 
   if (action.phase === "approach") {
-    const result = approach(character, action, reach, target.position, config, tick)
+    const result = approach(character, action, reach, goal.position, config, tick)
     if (result !== "done") return result
     startWork(action, tick)
   }
@@ -306,11 +391,20 @@ function stepMine(character: LuaEntity, action: ActionRecord, spec: Extract<Acti
     action.phase = "approach"
     return "running"
   }
+  action.obstacleFar = undefined
   if (action.item && !character.get_main_inventory()!.can_insert({ name: action.item, count: 1 })) {
     return fail("inventory-full", action.item)
   }
-  if (stalled(action, gained + character.character_mining_progress, config, tick)) return fail("stalled", "mining made no progress")
-  if (!mineTick(character, target)) return fail("not-minable", "a ghost covers the target")
+  if (stalled(action, gained + (action.cleared ?? 0) + character.character_mining_progress, config, tick)) return fail("stalled", "mining made no progress")
+  const step = mineTick(character, target, action)
+  if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
+  if (step !== "mining") {
+    action.obstacle = step.approach
+    action.obstacleFar = true
+    character.mining_state = { mining: false }
+    action.phase = "approach"
+    action.walk = undefined
+  }
   return "running"
 }
 
@@ -333,6 +427,7 @@ function instantCraft(character: LuaEntity, recipeName: string, count: number): 
 }
 
 function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "craft" }>, config: Config, tick: number): StepResult {
+  if (spec.mode === "await") return stepCraftAwait(character, action, spec, config, tick)
   if (action.phase === "start") {
     const recipe = prototypes.recipe[spec.recipe]
     if (!recipe) return fail("unknown-recipe", spec.recipe)
@@ -352,13 +447,43 @@ function stepCraft(character: LuaEntity, action: ActionRecord, spec: Extract<Act
     }
     const started = character.begin_crafting({ recipe: spec.recipe, count: spec.count, silent: true })
     if (started < spec.count) return fail("missing-ingredients", `started ${started} of ${spec.count}`)
+    // D38: queued; the crafts run while the character walks and works (an "await" action collects them).
+    if (spec.mode === "start") return "done"
     startWork(action, tick)
   }
   const gained = itemCount(character, action.item!) - action.baseline!
   action.stats.items = gained
-  if (gained >= action.goalCount!) return "done"
+  if (gained >= action.goalCount!) {
+    onHandCrafted(character.force as LuaForce, action.item!, gained)
+    return "done"
+  }
   if (character.crafting_queue_size === 0) return fail("craft-interrupted", `got ${gained} of ${action.goalCount}`)
-  if (stalled(action, gained + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
+  // Progress counts finished queue entries too: intermediates (a lab's circuits, gears, belts) each restart
+  // crafting_queue_progress at 0, so a long chain of them must not look stalled.
+  let queued = 0
+  for (const q of character.crafting_queue ?? []) queued += q.count
+  if (stalled(action, gained * 1000 - queued + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
+  return "running"
+}
+
+/** D38: waits until the crafting queue (started by "start" crafts) is empty; fires the emulated craft triggers. */
+function stepCraftAwait(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "craft" }>, config: Config, tick: number): StepResult {
+  if (action.phase === "start") {
+    const recipe = prototypes.recipe[spec.recipe]
+    const product = recipe?.main_product ?? recipe?.products[0]
+    if (!recipe || !product || product.type !== "item") return fail("unknown-recipe", spec.recipe)
+    action.item = product.name
+    action.goalCount = productAmount(product) * spec.count
+    startWork(action, tick)
+  }
+  if (character.crafting_queue_size === 0) {
+    action.stats.items = action.goalCount!
+    onHandCrafted(character.force as LuaForce, action.item!, action.goalCount!)
+    return "done"
+  }
+  let queued = 0
+  for (const q of character.crafting_queue ?? []) queued += q.count
+  if (stalled(action, -queued + character.crafting_queue_progress, config, tick)) return fail("stalled", "crafting made no progress")
   return "running"
 }
 
@@ -482,7 +607,15 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
     return "running"
   }
   if (action.item && !character.can_insert({ name: action.item, count: 1 })) return fail("inventory-full", action.item)
-  if (stalled(action, character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
-  if (!mineTick(character, entity)) return fail("not-minable", "a ghost covers the target")
+  if (action.obstacle !== undefined && !action.obstacle.valid) {
+    action.obstacle = undefined
+    action.cleared = (action.cleared ?? 0) + 1
+    character.mining_state = { mining: false }
+    return "running"
+  }
+  if (stalled(action, (action.cleared ?? 0) + character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
+  const step = mineTick(character, entity, action)
+  if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
+  if (step !== "mining") return fail("unreachable", `${step.approach.name} in front of it is out of reach`)
   return "running"
 }

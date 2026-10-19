@@ -1,0 +1,26 @@
+# M5a.2 conflict reproduction: two factions close to one another around the origin's starting lake, so both plan their
+# steam power on the same water and route belts through the same ground (the user's review run, 2026-10-15).
+# Scorecard: python3 tools/harness/m5_scorecard.py out/soak/shared-water
+
+[run]
+name = "shared-water"
+seeds = [11, 222, 3333, 44444, 555555]
+game_hours = 3.0
+stop_when_done = true
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 2
+spawnMode = "fixed-offsets"
+spawnFixedOffsets = "70,10;-70,10"
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 7200
+frameDumpRadius = 160
+soakDoneMilestone = "automated-red-science"

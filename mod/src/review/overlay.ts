@@ -10,10 +10,10 @@ import { PlayerReview } from "./types"
 // Overlays are layers. Each layer draws for one faction at a time. Built-in layers: "crew" (walk paths,
 // targets, the action above each head) and "ghosts" (planned entities outlined in the faction's colour).
 //
-// HOOK for M5b (SPEC §5.8 D29, the in-game Factory Graph overlay): call `registerOverlayLayer("factory-graph",
-// drawGraph)` at file scope in the graph overlay module and import that module from review/index.ts. The layer
-// then gets a checkbox in the inspector and is redrawn with the others. Draw through `ctx.add(...)` so the
-// objects are destroyed on the next redraw or when the layer is switched off.
+// More layers: call `registerOverlayLayer(name, caption, draw)` at file scope in a module imported from
+// review/index.ts (the M5b Factory Graph layer is review/graph-overlay.ts). The layer gets a checkbox in the inspector
+// and is redrawn with the others. Draw through `ctx.add(...)` so the objects are destroyed on the next redraw or
+// when the layer is switched off.
 
 export interface OverlayContext {
   player: LuaPlayer

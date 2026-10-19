@@ -28,6 +28,11 @@ export interface PlacementRequest {
   region: Rect
   /** Rectangles the footprint must not overlap (a module re-placed after its routes failed avoids its old spot). */
   avoid?: Rect[]
+  /**
+   * D50 / B9: modules whose soft claims don't count for this one: its direct partners (it feeds them or they feed it).
+   * Their ports sit at their growing end, where a partner belongs; growth reroutes their connection anyway.
+   */
+  softExempt?: Record<string, boolean>
 }
 
 interface TDef {
@@ -62,11 +67,13 @@ export interface PlacementSearch {
   ri: number
   best?: { score: number; ti: number; ox: number; oy: number; coverage: number; clear: number }
   work: number
+  /** Candidates scored (work counters, SPEC §9). */
+  candidates: number
   reason?: string
   result?: PlacedModule
 }
 
-const LAYERS = ["hard", "ore", "clear", "water", "mods", "res"]
+const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft"]
 
 function transformsOf(def: ModuleDef): Transform[] {
   const out: Transform[] = []
@@ -116,6 +123,7 @@ export function newPlacement(req: PlacementRequest): PlacementSearch {
     refine: [],
     ri: -1,
     work: 0,
+    candidates: 0,
   }
 }
 
@@ -190,6 +198,9 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const aWater = s.sat.water
   const aMods = s.sat.mods
   const aRes = s.sat.res
+  const aSoft = s.sat.soft
+  const softTiles = state.soft
+  const exempt = s.req.softExempt ?? {}
   const occ = state.occ
   const reserved = state.reserved
   const routeOcc = state.routeOcc
@@ -199,6 +210,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   let water = 0
   let mods = 0
   let res = 0
+  let soft = 0
   const base = (s.row + 1) * W
   const prev = base - W
   aHard[base] = 0
@@ -207,6 +219,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   aWater[base] = 0
   aMods[base] = 0
   aRes[base] = 0
+  aSoft[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
@@ -222,6 +235,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     else if (b === ROCK) clear += clearRock
     else if (b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
+    if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard
@@ -230,6 +244,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     aWater[j] = aWater[p] + water
     aMods[j] = aMods[p] + mods
     aRes[j] = aRes[p] + res
+    aSoft[j] = aSoft[p] + soft
   }
   s.row++
 }
@@ -242,6 +257,8 @@ function sum(s: PlacementSearch, layer: string, r: Rect): number | undefined {
   const y2 = y1 + r.h
   if (x1 < 0 || y1 < 0 || x2 > s.ww || y2 > s.wh) return undefined
   const a = s.sat[layer]
+  // A search saved before the layer existed (old storage) has no table for it.
+  if (a === undefined) return 0
   const W = s.ww + 1
   return a[y2 * W + x2] - a[y1 * W + x2] - a[y2 * W + x1] + a[y1 * W + x1]
 }
@@ -268,8 +285,11 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     let have = 0
     let all = 0
     for (const a of def.anchor?.miningAreas ?? []) {
-      const n = sum(s, "res", { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h })
+      const area = { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h }
+      const n = sum(s, "res", area)
       if (n === undefined || n < policy.minOreCoverage * a.w * a.h) return undefined
+      // B6: a drill mines every ore in its area; a second ore would clog the single-item line (D23).
+      if (sum(s, "ore", area)! !== n) return undefined
       have += n
       all += a.w * a.h
     }
@@ -299,6 +319,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     adjacent,
     exactGap: adjacent - inner,
     coverage,
+    softClaim: sum(s, "soft", rect) ?? 0,
   }
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
 }
@@ -356,6 +377,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       } else {
         const c = s.refine[s.ri]
         const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy)
+        s.candidates = (s.candidates ?? 0) + 1
         if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
         s.ri++
         used++
@@ -416,6 +438,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
     const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
     const e = evaluate(s, policy, td, ox, oy)
+    s.candidates = (s.candidates ?? 0) + 1
     if (e !== undefined) {
       if (s.best === undefined || e.score < s.best.score - 1e-9) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
       if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
@@ -515,6 +538,18 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       const r = state.reserved[kk]
       if (r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`) return { ok: false, reason: `reserved at ${x},${y}`, movedPorts: [], moved: [] }
       if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }
+    }
+  }
+  if (mining) {
+    // B6: the grown drills' mining areas must not reach a second ore (or another faction's field, D46).
+    const resource = canon.anchor?.resource
+    for (const a of placed.anchor?.miningAreas ?? []) {
+      for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
+        for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
+          const ore = terrain.ore(x, y)
+          if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
+        }
+      }
     }
   }
   const ring = inflate(rect, policy.corridor.min)

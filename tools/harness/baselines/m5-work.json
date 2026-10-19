@@ -1,0 +1,113 @@
+{
+ "run": "m5d-final",
+ "commit": "98f9b39",
+ "created": "2026-10-16",
+ "tolerance": 0.15,
+ "seeds": {
+  "11": {
+   "tick": 118800,
+   "total": {
+    "plannerWork": 1083814.42,
+    "placementCandidates": 660667,
+    "routerExpansions": 286085,
+    "pathRequests": 760,
+    "entityScans": 65772,
+    "jobsProcessed": 1431,
+    "reconcilerEvaluations": 1951
+   },
+   "peakPerMinute": {
+    "plannerWork": 328437.94,
+    "placementCandidates": 290210,
+    "routerExpansions": 268189,
+    "pathRequests": 64,
+    "entityScans": 3293,
+    "jobsProcessed": 148,
+    "reconcilerEvaluations": 156
+   }
+  },
+  "222": {
+   "tick": 151200,
+   "total": {
+    "plannerWork": 712175.78,
+    "placementCandidates": 180196,
+    "routerExpansions": 410049,
+    "pathRequests": 854,
+    "entityScans": 81795,
+    "jobsProcessed": 1858,
+    "reconcilerEvaluations": 2782
+   },
+   "peakPerMinute": {
+    "plannerWork": 320446.03,
+    "placementCandidates": 46212,
+    "routerExpansions": 268648,
+    "pathRequests": 63,
+    "entityScans": 3054,
+    "jobsProcessed": 240,
+    "reconcilerEvaluations": 156
+   }
+  },
+  "3333": {
+   "tick": 133200,
+   "total": {
+    "plannerWork": 933273.44,
+    "placementCandidates": 239159,
+    "routerExpansions": 550188,
+    "pathRequests": 1027,
+    "entityScans": 68010,
+    "jobsProcessed": 1822,
+    "reconcilerEvaluations": 2923
+   },
+   "peakPerMinute": {
+    "plannerWork": 363607.01,
+    "placementCandidates": 110332,
+    "routerExpansions": 320353,
+    "pathRequests": 51,
+    "entityScans": 3132,
+    "jobsProcessed": 173,
+    "reconcilerEvaluations": 156
+   }
+  },
+  "44444": {
+   "tick": 136800,
+   "total": {
+    "plannerWork": 830856.82,
+    "placementCandidates": 340780,
+    "routerExpansions": 365459,
+    "pathRequests": 911,
+    "entityScans": 73507,
+    "jobsProcessed": 1735,
+    "reconcilerEvaluations": 3008
+   },
+   "peakPerMinute": {
+    "plannerWork": 300160.03,
+    "placementCandidates": 143851,
+    "routerExpansions": 265424,
+    "pathRequests": 55,
+    "entityScans": 3042,
+    "jobsProcessed": 183,
+    "reconcilerEvaluations": 156
+   }
+  },
+  "555555": {
+   "tick": 115200,
+   "total": {
+    "plannerWork": 851625.42,
+    "placementCandidates": 198813,
+    "routerExpansions": 524907,
+    "pathRequests": 702,
+    "entityScans": 64049,
+    "jobsProcessed": 1618,
+    "reconcilerEvaluations": 2447
+   },
+   "peakPerMinute": {
+    "plannerWork": 364490.01,
+    "placementCandidates": 56026,
+    "routerExpansions": 288603,
+    "pathRequests": 42,
+    "entityScans": 3081,
+    "jobsProcessed": 202,
+    "reconcilerEvaluations": 156
+   }
+  }
+ }
+}
