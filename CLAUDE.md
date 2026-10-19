@@ -183,6 +183,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - **Items on belts keep a `unique_id`** (`LuaTransportLine.get_detailed_contents()`) while they move from belt to belt:
   sampling one belt tile more often than an item takes to cross it and counting new ids measures its flow exactly
   (15.00/s on a full yellow belt; `strategy/measure.ts` edge probes). A belt entity's transport line covers that tile only.
+- **Built own entities read as `OWN` in the terrain scan**, whatever the layout says: a growth or plan that may take a
+  built entity's tile needs the planner view (`claimView`) to say so. B37: own pole-line poles read as free there.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

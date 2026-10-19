@@ -942,3 +942,47 @@ These values affect retained evidence and warnings only; they do not alter simul
 | Churn poor-outcome ratio | `diagnostic-events.ts` | worse than 10:1 | Historical B30 was roughly 6,500 claim/releases for two completions, so this catches the demonstrated failure far below its observed severity. Diagnostic guess; no simulation effect. | accepted (user, in-session 2026-10-19) |
 | Rejected job samples | `crew-diagnostics.ts` | 3 ids per reason | Counts retain full magnitude; three ids make the class inspectable without duplicating the Job Board. Diagnostic display bound. | proposed |
 | Fatal log tail | `tools/harness/soak.py` | 200 lines per log | Keeps `failure.json` compact while retaining both Factorio's current log and captured stdout around a fatal exit. Full logs remain beside it. | proposed |
+
+## M6b.11: B37 pole lines give way to growth, placements and routes (2026-10-19)
+
+The user asked whether expansion is blocked by poles. It was, in three ways:
+- `tryExpand` refused a growth tile holding a pole line's pole (`occupied at x,y`), and `planGrowth` never moved poles.
+- Pole placement (`poleCost`) avoided mine claims (D52) but not other modules' growth areas, so lines were laid
+  straight across smelter, lab and power growth bands.
+- A built pole is an own entity in the terrain scan: the planner's view read it as `OWN` (`blocked at x,y` in the
+  soak's power and lab growth failures; the new T2 test reproduces it on a raw scan: `blocked at 53,2005`).
+
+**User decision (in-session, 2026-10-19):** pole lines are evictable like trees, for nearly free, in growth, new
+placements and routes; new lines are regenerated for what they powered. The cost is a setting, default 0.5 per tile.
+
+**Fix:**
+- `layout.ts`: `isPoleTag`, `evictPoleLines(state, keys)` removes every line with a pole on those tiles (whole lines:
+  a line with a gap joins nothing) and lists its poles in `LayoutState.evictedPoles`. `markModule` evicts lines on a
+  module's footprint, interaction tiles, port lanes and mine claim; `commitRoute` on its tiles.
+- `placement.ts`: a pole tile is not hard; it adds `obstacles.poleEvict` to the clear cost. Strip growth, whole-patch
+  fit checks and mine completion accept pole tiles. `router.ts`: a pole tile costs `obstacles.poleEvict`.
+- `runtime.ts` `claimView`: the faction's own pole-line poles (built or ghosts) read as free ground.
+- `power.ts`: new line ids skip ids still in use or just evicted.
+- `grow.ts` `planGrowth`: when it evicted lines, a pole job joins what they powered again (prefix `poles:g<goal>:`);
+  their poles go into `remove`, the new ones into `add` (a pole re-laid on the same tile stays). A module that was
+  powered and can't be joined again fails the growth (`re-pole failed`).
+- Plans: the plan's pole phase already joins every unpowered consumer, so it re-poles after an eviction.
+- `factory.ts`: adoption picks up the evicted poles before ghosts (cancels pole ghosts), growth cancels ghosts of
+  removed entities, and `powerEdges` keeps each power edge's `physical` lines current, so a repair goal never re-places
+  an evicted line.
+
+**Tests:**
+- T1 `pole-eviction` (4): growth over a line (old code: `occupied at 41,22`), a route forced through a pole tile, a
+  module committed on a line (fresh line ids), the placement search on a line (old code: `no feasible position`,
+  certificate `hard`) and its preference for free ground. All pass; the full T1 suite (21 files, replays included)
+  passes.
+- T2 `factory` "B37: a built smelter grows over a built pole line": built steam block, labs, line and smelter; the raw
+  scan blocks the growth; through `claimView` it picks up 9 poles, lays 7 new ones, every entity builds, and the labs
+  and electric inserters stay on the engine's network.
+
+### Magic numbers for the user (M6b.11)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `planner-pole-evict-cost` | `settings.ts`, `policy.ts` `obstacles.poleEvict` | 0.5 per pole tile | User decision (in-session 2026-10-19): nearly free; a tree costs 2. On a tie the planner still keeps off a line. | yes (new) |
+

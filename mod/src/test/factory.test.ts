@@ -12,7 +12,7 @@ import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { stampParts } from "../planner/runtime"
+import { claimView, stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
 import { at, createLab, Lab } from "./lab"
@@ -244,5 +244,72 @@ describe("M5a power and growth", () => {
         done()
       })
     })
+  })
+
+  test("B37: a built smelter grows over a built pole line: the line is picked up and re-laid, the labs stay powered", () => {
+    const lab = createLab(64)
+    const force = labForce()
+    const s = lab.surface
+    const water = []
+    for (let x = -64; x < -50; x++) for (let y = -64; y < 64; y++) water.push({ name: "water", position: at(lab, x, y) })
+    s.set_tiles(water)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const policy = selectPolicy("early-compact", {})
+    const tier = beltTiers(prototypeFacts)[0]
+    const layout = newLayout()
+    const t0 = scan(lab, "b37-before", force.name)
+    const sp = placeNow({ id: "steam", def: generatedModule("steam-block", { boilers: 1 }), targets: {}, center: { x: ox - 50, y: oy + 10 }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, layout, terrainView(t0), policy)
+    assert(sp.phase === "done", `steam placement: ${sp.reason}`)
+    commitPlacement(layout, sp.result!, prototypeFacts, policy)
+    const steam = findModule(layout, "steam")!
+    place(layout, "labs", "lab-array", { labs: 2, packs: ["automation-science-pack"] }, { x: steam.rect.x + steam.rect.w + 60, y: steam.rect.y })
+    polesNow(layout, terrainView(t0), prototypeFacts, policy, "poles:a:")
+    const line = layout.poleLines![0].id
+    // The smelter north of the line's middle pole, its first two growth units (south) over it.
+    const mid = layout.poles!.filter((p) => p.line === line)[math.floor(layout.poles!.length / 2)]
+    place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: mid.x - 5, y: mid.y - 13 })
+    polesNow(layout, terrainView(t0), prototypeFacts, policy, "poles:b:")
+    assert(unpoweredModules(layout, prototypeFacts).length === 0, "everything joined")
+    const r = stampParts(s, force.name, layout, allParts(layout), true)
+    assert(r.failed.length === 0, `ghosts: ${r.failed.join("; ")}`)
+    const built = reviveAll(r.entities)
+    assert(built.length === r.entities.length, `revived ${built.length}/${r.entities.length}`)
+    // The built poles read as own entities in a fresh scan: growth over them used to fail here ("blocked at").
+    const t = scan(lab, "b37", force.name)
+    const raw = planGrowth(layout, terrainView(t), prototypeFacts, policy, tier, "smelt", 2)
+    log(`[b37] growth on the raw scan: ${raw.ok ? "ok" : raw.reason}`)
+    assert(!raw.ok, "the raw scan blocks the growth at a built pole")
+    // The faction's planner view (claimView) reads its own pole-line poles as clearable ground.
+    storage.factories ??= {}
+    storage.factories["b37-test"] = { layout } as never
+    const g = planGrowth(layout, claimView("b37-test", s.name, terrainView(t), false), prototypeFacts, policy, tier, "smelt", 2, "small-electric-pole", "poles:g:")
+    delete storage.factories["b37-test"]
+    assert(g.ok, `growth planned: ${g.reason}`)
+    let polesOut = 0
+    let polesIn = 0
+    for (const e of g.remove) if (e.name === "small-electric-pole") polesOut++
+    for (const e of g.add) if (e.name === "small-electric-pole" && string.sub(e.owner, 1, 8) === "poles:g:") polesIn++
+    log(`[b37] growth: ${g.remove.length} to pick up (${polesOut} poles), ${g.add.length} to build (${polesIn} new line poles)`)
+    assert(polesOut > 0 && polesIn > 0, "the line is picked up and re-laid")
+    // Build the diff as the crew does: pick up, then revive ghosts.
+    for (const e of g.remove) s.find_entities_filtered({ name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]?.destroy()
+    const ghosts: LuaEntity[] = []
+    for (const e of g.add) {
+      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
+      if (e.ioType !== undefined) params.type = e.ioType
+      const gh = s.create_entity(params as never)
+      assert(gh !== undefined, `ghost ${e.name} at ${e.x - ox},${e.y - oy}`)
+      ghosts.push(gh!)
+    }
+    const revived = reviveAll(ghosts)
+    assert(revived.length === g.add.length, `every new entity built (${revived.length}/${g.add.length})`)
+    const engine = s.find_entities_filtered({ type: "generator", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })[0]
+    const net = engine.electric_network_id
+    const off: string[] = []
+    for (const l of s.find_entities_filtered({ type: "lab", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })) if (l.electric_network_id !== net) off.push(`lab at ${l.position.x - ox},${l.position.y - oy}`)
+    for (const i of s.find_entities_filtered({ type: "inserter", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })) if (i.name !== "burner-inserter" && i.electric_network_id !== net) off.push(`inserter at ${i.position.x - ox},${i.position.y - oy}`)
+    render(s, "b37-after", { x: ox, y: oy }, 64)
+    assert(off.length === 0, `on the engine's network: ${off.join("; ")}`)
   })
 })
