@@ -938,7 +938,7 @@ These values affect retained evidence and warnings only; they do not alter simul
 | Name | Where | Value | Why this value | Status |
 |---|---|---|---|---|
 | Decision events retained | `diagnostic-events.ts` | 512 per category | User decision. Independent crew-plan, crew-supply, goal, planner and churn buckets prevent one noisy producer from evicting another subsystem's evidence. | accepted |
-| Churn minimum volume | `diagnostic-events.ts` | 32 observations | Avoid warnings from a handful of ordinary retries. Diagnostic guess; no simulation effect. | proposed, user decision pending |
-| Churn poor-outcome ratio | `diagnostic-events.ts` | worse than 10:1 | Historical B30 was roughly 6,500 claim/releases for two completions, so this catches the demonstrated failure far below its observed severity. Diagnostic guess; no simulation effect. | proposed, user decision pending |
+| Churn minimum volume | `diagnostic-events.ts` | 32 observations | Avoid warnings from a handful of ordinary retries. Diagnostic guess; no simulation effect. | accepted (user, in-session 2026-10-19) |
+| Churn poor-outcome ratio | `diagnostic-events.ts` | worse than 10:1 | Historical B30 was roughly 6,500 claim/releases for two completions, so this catches the demonstrated failure far below its observed severity. Diagnostic guess; no simulation effect. | accepted (user, in-session 2026-10-19) |
 | Rejected job samples | `crew-diagnostics.ts` | 3 ids per reason | Counts retain full magnitude; three ids make the class inspectable without duplicating the Job Board. Diagnostic display bound. | proposed |
 | Fatal log tail | `tools/harness/soak.py` | 200 lines per log | Keeps `failure.json` compact while retaining both Factorio's current log and captured stdout around a fatal exit. Full logs remain beside it. | proposed |
