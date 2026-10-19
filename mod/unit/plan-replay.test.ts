@@ -69,6 +69,8 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     const fx = load(name)
     // Experiments: REPLAY_ROUTER="maxRipups=6,rip=10" overrides router weights of the captured policy.
     for (const [k, v] of string.gmatch(os.getenv("REPLAY_ROUTER") ?? "", "(%w+)=([%d.]+)")) (fx.policy.router as unknown as Record<string, number>)[k] = tonumber(v)!
+    // REPLAY_PLACEMENT="growthBand=4,growthBlocked=8" does the same for placement weights (B26 judged on several replays).
+    for (const [k, v] of string.gmatch(os.getenv("REPLAY_PLACEMENT") ?? "", "(%w+)=([%d.]+)")) (fx.policy.placement as unknown as Record<string, number>)[k] = tonumber(v)!
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     const ug = tonumber(os.getenv("REPLAY_UNDERGROUND") ?? "")
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
@@ -87,6 +89,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+    if (os.getenv("REPLAY_DUMP") !== undefined) for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h} rot ${m.transform.rot}${m.transform.mirror ? " mirror" : ""}`)
     ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
   })
 }
@@ -170,6 +173,13 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
     // Current weights for what the capture's policy lacked (REPLAY_NO_BUNDLE / REPLAY_NO_SOFT leave one out).
     fx.policy.router = { ...EARLY_COMPACT.router, ...fx.policy.router }
     fx.policy.placement = { ...EARLY_COMPACT.placement, ...fx.policy.placement }
+    // B26: these no-underground clusters pin the D36 / B2 decisions at the pre-B26 placement. Any B26 weight changes
+    // the placements and the chaotic no-underground routing then fails (it routes with undergrounds: test below).
+    // REPLAY_B26=1 keeps the current B26 weights.
+    if (os.getenv("REPLAY_B26") === undefined) {
+      fx.policy.placement.growthBand = 0
+      fx.policy.placement.growthBlocked = 0
+    }
     if (os.getenv("REPLAY_NO_BUNDLE") === undefined) fx.policy.router.bundleFactor = EARLY_COMPACT.router.bundleFactor
     else fx.policy.router.bundleFactor = 1
     if (os.getenv("REPLAY_NO_SOFT") === undefined) {
@@ -180,6 +190,7 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
       fx.policy.router.softClaim = 0
       fx.policy.placement.softClaim = 0
     }
+    for (const [k, v] of string.gmatch(os.getenv("REPLAY_PLACEMENT") ?? "", "(%w+)=([%d.]+)")) (fx.policy.placement as unknown as Record<string, number>)[k] = tonumber(v)!
     if (os.getenv("REPLAY_UG") !== undefined) fx.tiers = beltTiers(F)
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
     ok(tier.maxUnderground <= 1 || os.getenv("REPLAY_UG") !== undefined, "captured without undergrounds")
@@ -220,6 +231,30 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
 // comparison is off by default (D50); the underground decision is unchanged (118 / 82 tiles).
 compareReplay("seed11-production-ok", { undergrounds: true, splitters: false })
 compareReplay("seed3333-production-ok", { undergrounds: true, splitters: true })
+
+// B26 (growth bands): with the current placement weights the same two stage-1 clusters fail to route without
+// undergrounds (the smelters' input/growth side now turns away from ore and claims, so feeds wrap around them), and
+// route with them: in game D51 then researches undergrounds first, which these seeds decide anyway (≥ 50 tiles).
+function b26Replay(name: string): void {
+  test(`replay ${name} (B26 weights): plans with undergrounds`, () => {
+    const fx = load(name)
+    fx.policy.router = { ...EARLY_COMPACT.router, ...fx.policy.router }
+    fx.policy.placement = { ...EARLY_COMPACT.placement, ...fx.policy.placement, growthBand: EARLY_COMPACT.placement.growthBand, growthBandUnits: EARLY_COMPACT.placement.growthBandUnits, growthBlocked: EARLY_COMPACT.placement.growthBlocked }
+    fx.policy.router.bundleFactor = EARLY_COMPACT.router.bundleFactor
+    fx.policy.router.softClaim = EARLY_COMPACT.router.softClaim
+    fx.policy.placement.softClaim = EARLY_COMPACT.placement.softClaim
+    fx.tiers = beltTiers(F)
+    const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+    const job = newPlanJob(fx.request, tier, stripPlan(fx.base!, fx.request), fx.tiers)
+    runJob(job, fixtureView(fx), F, fx.policy, 100000)
+    const why: string[] = []
+    for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
+    print(`  ${name} (B26): ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+    ok(job.phase === "done", `plan done (${why.join("; ")})`)
+  })
+}
+b26Replay("seed11-production-ok")
+b26Replay("seed3333-production-ok")
 
 // M6a.2: seed 11's cluster-1 green line (fix11, t211770): the labs' green input is boxed in by fixed routes.
 replay("seed11-green-boxed", { expect: "failed" })
