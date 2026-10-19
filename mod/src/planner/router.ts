@@ -15,7 +15,7 @@
 
 import { BeltTier } from "./capacity"
 import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
-import { LayoutState, lineKey, PortRef, Route, RouteStep, spanConflicts } from "./layout"
+import { isPoleTag, LayoutState, lineKey, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import { LayoutPolicy } from "./policy"
 
 export interface RouteRequest {
@@ -135,7 +135,10 @@ function inWindow(s: Search, x: number, y: number): boolean {
  */
 export function tileCost(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, rip: boolean, x: number, y: number): number {
   const k = tkey(x, y)
-  if (state.occ[k] !== undefined) return -1
+  // B37: a pole line's tile costs `obstacles.poleEvict` (commitRoute evicts the line; the plan's pole step re-poles).
+  const o = state.occ[k]
+  const pole = isPoleTag(o)
+  if (o !== undefined && !pole) return -1
   // B33: a tile the route used twice is blocked on the retry. As an extra cost (`rip`) the retry found the same
   // self-crossing path whenever every detour cost more (seed 222's copper feed with undergrounds, three retries).
   if (req.avoid?.[k]) return -1
@@ -145,7 +148,7 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   const mo = state.mine?.[k]
   if (mo !== undefined && mo !== req.to.module && mo !== req.from?.module) return -1
   const w = policy.router
-  let extra = 0
+  let extra = pole ? policy.obstacles.poleEvict ?? 0 : 0
   const occupant = state.routeOcc[k]
   if (occupant !== undefined) {
     if (!rip || state.routes[occupant]?.fixed) return -1

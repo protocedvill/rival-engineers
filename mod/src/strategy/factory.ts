@@ -618,7 +618,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   const policy = policyFor(ctx.config)
   const tier = RT.tiers()[0]
-  const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
+  const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`)
   if (!plan.ok) {
     f.growthDiagnostics ??= {}
     f.growthDiagnostics[gr.node] = { tick: ctx.tick, reason: plan.reason ?? "unknown", units: gr.units }
@@ -652,6 +652,9 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   f.goals.push(g)
   f.layout = plan.layout
+  // B37: the evicted poles are in `plan.remove`; the new lines join the power edges.
+  f.layout.evictedPoles = undefined
+  powerEdges(f)
   const m = findModule(f.layout, gr.node)!
   node.capacity = { inputs: m.canonical.rates.inputs, outputs: m.canonical.rates.outputs }
   node.module = m.canonical.id
@@ -685,6 +688,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   for (const e of plan.remove) {
     const found = findEntities(ctx.surface, { name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
     if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
+    // B37: an evicted pole line may still be a ghost.
+    else for (const gh of findEntities(ctx.surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
   }
   const reserved = ctx.faction.brain!.reserved
   for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
@@ -1099,6 +1104,24 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     for (const k of m.minePlan.claim) taken[k] = true
   }
   const evicted = evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (${g.kind})`)
+  // B37: pole lines the plan's modules and routes took are picked up first (ghosts cancelled); the plan's pole step
+  // joined what they powered again. A pole the new lines place at the same spot stays.
+  const relaid: Record<string, boolean> = {}
+  for (const p of job.layout.poles ?? []) relaid[`${p.name}@${p.x},${p.y}`] = true
+  const queued: Record<number, boolean> = {}
+  for (const e of evicted) if (e.valid && e.unit_number !== undefined) queued[e.unit_number] = true
+  for (const p of job.layout.evictedPoles ?? []) {
+    if (relaid[`${p.name}@${p.x},${p.y}`]) continue
+    const at = { x: p.x + 0.5, y: p.y + 0.5 }
+    const built = findEntities(ctx.surface, { name: p.name, position: at, force: ctx.faction.force, limit: 1 })[0]
+    if (built !== undefined && !queued[built.unit_number!]) {
+      queued[built.unit_number!] = true
+      evicted.push(built)
+    }
+    for (const gh of findEntities(ctx.surface, { ghost_name: p.name, position: at, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
+  }
+  if ((job.layout.evictedPoles?.length ?? 0) > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${job.layout.evictedPoles!.length} poles (B37)`)
+  f.layout.evictedPoles = undefined
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
   const reserved = ctx.faction.brain!.reserved
   for (const k of partTiles(job.layout, parts)) reserved[k] = true
@@ -1136,6 +1159,9 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
       const px = math.floor(s.x)
       const py = math.floor(s.y)
       for (const e of findEntities(ctx.surface, { type: ["electric-pole", "transport-belt", "underground-belt"], force: ctx.faction.force, area: { left_top: { x: px + 0.05, y: py + 0.05 }, right_bottom: { x: px + 0.95, y: py + 0.95 } }, limit: 4 })) {
+        // B37: an evicted pole is already queued.
+        if (e.unit_number !== undefined && queued[e.unit_number]) continue
+        if (e.unit_number !== undefined) queued[e.unit_number] = true
         b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
       }
     }
@@ -1174,9 +1200,14 @@ function powerEdges(f: FactoryState): void {
     const n = f.graph.nodes[id]
     if (n === undefined) continue
     const role = `power=>${n.role}`
-    if (LG.edgeByRole(f.graph, role) !== undefined) continue
     const lines: string[] = []
     for (const l of f.layout.poleLines ?? []) if (l.to === id) lines.push(l.id)
+    // B37: evicted lines are gone from the layout and new lines may have joined the consumer: keep `physical` current.
+    const existing = LG.edgeByRole(f.graph, role)
+    if (existing !== undefined) {
+      existing.physical = lines
+      continue
+    }
     LG.addEdge(f.graph, { id: `e:${role}`, role, kind: "power", item: "electricity", from: power.id, to: id, plannedRate: n.powerW, physical: lines })
   }
 }

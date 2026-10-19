@@ -12,7 +12,7 @@ import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, growthEnd, growthStrip, LayoutState, markModule, PlacedModule, portApproach, portOutside, portTile, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, markModule, PlacedModule, portApproach, portOutside, portTile, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
@@ -265,6 +265,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const rockHard = policy.obstacles.rocks !== "clear"
   const clearTree = policy.router.clearTree
   const clearRock = policy.router.clearRock
+  const clearPole = policy.obstacles.poleEvict ?? 0
   const aHard = s.sat.hard
   const aOre = s.sat.ore
   const aClear = s.sat.clear
@@ -311,7 +312,9 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const x = s.wx + i
     const k = tkey(x, y)
     const b = terrain.block(x, y)
-    const o = occ[k]
+    // B37: a pole line's tile is clearable ground (the line is evicted and re-poled), at `obstacles.poleEvict`.
+    const pole = isPoleTag(occ[k])
+    const o = pole ? undefined : occ[k]
     if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined || (mine[k] !== undefined && mine[k] !== s.req.id)) hard++
     const ore = terrain.ore(x, y)
     if (ore !== undefined) {
@@ -320,6 +323,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     }
     if (b === TREE) clear += clearTree
     else if (b === ROCK) clear += clearRock
+    if (pole) clear += clearPole
     else if (b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
     if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
@@ -677,7 +681,7 @@ function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainV
     const k = tkey(x, y)
     const b = terrain.block(x, y)
     const mo = state.mine?.[k]
-    return b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || state.occ[k] !== undefined || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined || (mo !== undefined && mo !== s.req.id)
+    return b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || (state.occ[k] !== undefined && !isPoleTag(state.occ[k])) || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined || (mo !== undefined && mo !== s.req.id)
   }
   const isMod = (x: number, y: number): boolean => {
     const o = state.occ[tkey(x, y)]
@@ -807,7 +811,7 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
     if (state === undefined) return false
     const k = tkey(x, y)
     const o = state.occ[k]
-    if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}`) return true
+    if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o)) return true
     if (state.routeOcc[k] !== undefined) return true
     const mo = state.mine?.[k]
     if (mo !== undefined && mo !== m.id) return true
@@ -977,7 +981,8 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
           // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
           // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
           // the rip breaks, so neither blocks a completion.
-          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !(own && (string.sub(o as string, 1, 8) === "x:poles:" || string.sub(o as string, 1, 6) === "route:"))) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
+          // B37: pole lines anywhere on the new ground give way (markModule evicts them; the plan re-poles).
+          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
           // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
           // belts up and reconcile re-routes the broken edge).
           if (state.routeOcc[kk] !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
@@ -1032,7 +1037,8 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       const b = terrain.block(x, y)
       if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return { ok: false, reason: `blocked at ${x},${y}`, movedPorts: [], moved: [] }
       const o = state.occ[kk]
-      if (o !== undefined && !ownTags[o]) return { ok: false, reason: `occupied at ${x},${y}`, movedPorts: [], moved: [] }
+      // B37: a pole line on the new ground gives way (markModule evicts it; the growth re-poles).
+      if (o !== undefined && !ownTags[o] && !isPoleTag(o)) return { ok: false, reason: `occupied at ${x},${y}`, movedPorts: [], moved: [] }
       if (state.routeOcc[kk] !== undefined) return { ok: false, reason: `route at ${x},${y}`, movedPorts: [], moved: [] }
       const mo = state.mine?.[kk]
       if (mo !== undefined && mo !== m.id) return { ok: false, reason: `mine claim of ${mo} at ${x},${y}`, movedPorts: [], moved: [] }
@@ -1092,7 +1098,7 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(grownPlaced, p)
     const occ = state.occ[tkey(o.x, o.y)]
-    if (occ !== undefined && !ownTags[occ]) return { ok: false, reason: `port ${p.id} outside tile occupied`, movedPorts: [], moved: [] }
+    if (occ !== undefined && !ownTags[occ] && !isPoleTag(occ)) return { ok: false, reason: `port ${p.id} outside tile occupied`, movedPorts: [], moved: [] }
     const b = terrain.block(o.x, o.y)
     if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return { ok: false, reason: `port ${p.id} outside tile blocked`, movedPorts: [], moved: [] }
   }

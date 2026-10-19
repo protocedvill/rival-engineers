@@ -675,6 +675,15 @@ data.extend([
     order: "l-k",
   },
   {
+    type: "double-setting",
+    name: Settings.plannerPoleEvictCost,
+    setting_type: "runtime-global",
+    default_value: 0.5,
+    minimum_value: 0,
+    maximum_value: 1000,
+    order: "l-ka",
+  },
+  {
     type: "string-setting",
     name: Settings.moduleBuffer,
     setting_type: "runtime-global",

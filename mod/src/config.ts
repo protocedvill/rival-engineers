@@ -152,6 +152,8 @@ export interface Config {
   plannerPlacementGrowthBandUnits: number
   /** B26: placement cost per growth unit an expandable module's own band would refuse (policy placement.growthBlocked). */
   plannerPlacementGrowthBlocked: number
+  /** B37: placement/routing cost per pole-line tile taken; the line is evicted and re-poled (policy obstacles.poleEvict). */
+  plannerPoleEvictCost: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
   plannerRouterBundleFactor: number
   /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */

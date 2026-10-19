@@ -88,7 +88,8 @@ export interface LayoutPolicy {
   /** Packing strategy: a registered scorer (`registerPacking`). */
   packing: string
   expansion: "expand-first" | "new-module-first"
-  obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number }
+  /** B37 `poleEvict`: placement/routing cost per pole-line tile taken (the line is evicted and re-poled). */
+  obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number; poleEvict?: number }
   /** D22: how one producer feeds several consumers. */
   topology: "point-to-point" | "splitter-tap"
   /**
@@ -210,7 +211,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
   moduleSelection: { preferGenerated: true },
   packing: "compact-cluster",
   expansion: "expand-first",
-  obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400 },
+  obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400, poleEvict: 0.5 },
   topology: "point-to-point",
   smelting: "compact-core",
   protectOre: true,
@@ -253,6 +254,8 @@ export interface PolicyOverrides {
   placementGrowthBand?: number
   placementGrowthBandUnits?: number
   placementGrowthBlocked?: number
+  /** B37: cost per pole-line tile a placement or route takes (negative = keep). */
+  poleEvict?: number
 }
 
 /**
@@ -286,6 +289,7 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.placementGrowthBand !== undefined && overrides.placementGrowthBand >= 0) p.placement = { ...p.placement, growthBand: overrides.placementGrowthBand }
   if (overrides.placementGrowthBandUnits !== undefined && overrides.placementGrowthBandUnits >= 0) p.placement = { ...p.placement, growthBandUnits: overrides.placementGrowthBandUnits }
   if (overrides.placementGrowthBlocked !== undefined && overrides.placementGrowthBlocked >= 0) p.placement = { ...p.placement, growthBlocked: overrides.placementGrowthBlocked }
+  if (overrides.poleEvict !== undefined && overrides.poleEvict >= 0) p.obstacles = { ...p.obstacles, poleEvict: overrides.poleEvict }
   if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
   if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p

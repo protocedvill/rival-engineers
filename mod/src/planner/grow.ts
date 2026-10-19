@@ -13,6 +13,7 @@ import { findModule, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, PlanJob, runJob } from "./plan"
 import { HEAD_GROWTH_OPENS_BELT, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
+import { polesNow, unpoweredModules } from "./power"
 
 export interface GrowthPlan {
   ok: boolean
@@ -41,7 +42,7 @@ function tapGroup(layout: LayoutState, rid: string): string[] {
   return out
 }
 
-export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number): GrowthPlan {
+export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number, pole = "small-electric-pole", polePrefix = "poles:grow:"): GrowthPlan {
   const layout = cloneLayout(base)
   const m = findModule(layout, id)
   if (m === undefined) return { ok: false, reason: `no module ${id}`, layout: base, remove: [], add: [], rerouted: [] }
@@ -133,14 +134,37 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
     if (wanted[rr.conn] && !rr.fixed) routes.push(rid)
   }
   for (const rid of routes) job.layout.routes[rid].fixed = true
-  const parts: BuildParts = { modules: [id], routes, poles: [] }
+  // B37: pole lines the growth or its reroutes took are gone (`evictPoleLines`): pick their poles up and join what
+  // they powered again with new lines. A module that was powered and can't be joined again fails the growth.
+  const evicted = (job.layout.evictedPoles ?? []).slice(base.evictedPoles?.length ?? 0)
+  let newPoles: string[] = []
+  if (evicted.length > 0) {
+    const was: Record<string, boolean> = {}
+    for (const u of unpoweredModules(base, facts)) was[u] = true
+    const pj = polesNow(job.layout, view, facts, policy, polePrefix, pole)
+    for (const u of unpoweredModules(job.layout, facts)) {
+      if (!was[u]) return { ok: false, reason: `re-pole failed: ${u} ${pj.failures[u] ?? "stays unpowered"}`, layout: base, remove: [], add: [], rerouted: [], job }
+    }
+    newPoles = pj.added
+  }
+  const parts: BuildParts = { modules: [id], routes, poles: newPoles }
   const after = partEntities(job.layout, parts)
   const had: Record<string, boolean> = {}
   for (const e of before) had[key(e)] = true
   const has: Record<string, boolean> = {}
   for (const e of after) has[key(e)] = true
   const remove = before.filter((e) => !has[key(e)])
-  const add = after.filter((e) => !had[key(e)])
+  let add = after.filter((e) => !had[key(e)])
+  // An evicted pole the new lines place again where it stands stays (neither picked up nor rebuilt).
+  const added: Record<string, boolean> = {}
+  for (const e of add) added[key(e)] = true
+  const kept: Record<string, boolean> = {}
+  for (const p of evicted) {
+    const e: EntitySpec = { name: p.name, x: p.x + 0.5, y: p.y + 0.5, dir: 0, owner: p.line }
+    if (added[key(e)]) kept[key(e)] = true
+    else remove.push(e)
+  }
+  add = add.filter((e) => !kept[key(e)])
   return { ok: true, layout: job.layout, remove, add, rerouted: conns.map((c) => c.id), job }
 }
 

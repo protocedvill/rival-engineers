@@ -436,7 +436,13 @@ function commitLine(job: PoleJob, layout: LayoutState): void {
     tiles.push(st)
     st = s.par[st]
   }
-  const lineId = `${job.prefix}${layout.poleLines?.length ?? 0}`
+  // B37: evicted lines leave gaps in the numbering; the next free id keeps line ids unique.
+  const used: Record<string, boolean> = {}
+  for (const l of layout.poleLines ?? []) used[l.id] = true
+  for (const p of layout.evictedPoles ?? []) used[p.line] = true
+  let n = layout.poleLines?.length ?? 0
+  while (used[`${job.prefix}${n}`]) n++
+  const lineId = `${job.prefix}${n}`
   layout.poles ??= []
   layout.poleLines ??= []
   const ids: string[] = []

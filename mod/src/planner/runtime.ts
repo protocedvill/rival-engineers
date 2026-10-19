@@ -17,7 +17,7 @@ import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
 import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
-import { LayoutState } from "./layout"
+import { isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
@@ -94,6 +94,7 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     placementGrowthBand: c.plannerPlacementGrowthBand,
     placementGrowthBandUnits: c.plannerPlacementGrowthBandUnits,
     placementGrowthBlocked: c.plannerPlacementGrowthBlocked,
+    poleEvict: c.plannerPoleEvictCost,
   })
 }
 
@@ -171,10 +172,14 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   const fields = name !== undefined ? otherOreFields(name, surface) : []
   // B15 / D51: the faction's own bootstrap mining sites are clearable ground (evicted when a plan takes it).
   const evictable = evictableTiles(faction?.brain)
-  if (reserved === undefined && others.length === 0 && evictable === undefined) return base
   const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
+  const poles = (layout?.poles?.length ?? 0) > 0
+  if (reserved === undefined && others.length === 0 && evictable === undefined && !poles) return base
   return {
     block: (x, y) => {
+      // B37: the faction's own pole-line poles (built or ghosts) are clearable ground: the layout's pole tag carries
+      // the eviction cost, and a plan that takes the tile evicts the line.
+      if (poles && isPoleTag(layout!.occ[tkey(x, y)]) && base.block(x, y) === OWN) return FREE
       if (evictable !== undefined && evictable[tkey(x, y)] && (layout === undefined || (layout.occ[tkey(x, y)] === undefined && layout.routeOcc[tkey(x, y)] === undefined))) {
         const raw = base.block(x, y)
         if (raw === FREE || raw === TREE || raw === ROCK || raw === OWN) return TREE

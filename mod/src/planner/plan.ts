@@ -256,6 +256,7 @@ export function cloneLayout(l: LayoutState): LayoutState {
     routeOrder: [...l.routeOrder],
     poles: l.poles !== undefined ? l.poles.map((p) => ({ ...p })) : undefined,
     poleLines: l.poleLines !== undefined ? l.poleLines.map((x) => ({ ...x, poles: [...x.poles] })) : undefined,
+    evictedPoles: l.evictedPoles !== undefined ? l.evictedPoles.map((p) => ({ ...p })) : undefined,
   }
 }
 

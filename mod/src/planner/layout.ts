@@ -132,6 +132,49 @@ export interface LayoutState {
   /** Poles between modules (power.ts), occupying `occ` tiles tagged "x:<line>". */
   poles?: PlannedPole[]
   poleLines?: PoleLine[]
+  /**
+   * B37: poles of lines that a module, route or growth took the ground of (`evictPoleLines`). The adoption picks them
+   * up; the plan's pole step (or the growth's) joins what they powered again.
+   */
+  evictedPoles?: PlannedPole[]
+}
+
+/** B37: an `occ` tag of a pole line's pole ("x:<line id>", line ids start with "poles:"). Poles give way like trees. */
+export function isPoleTag(o: string | undefined): boolean {
+  return o !== undefined && string.sub(o, 1, 8) === "x:poles:"
+}
+
+/**
+ * B37: removes every pole line with a pole on one of `keys` (the whole line: a line with a gap joins nothing). Its poles
+ * go to `evictedPoles`. Returns the removed line ids.
+ */
+export function evictPoleLines(state: LayoutState, keys: number[]): string[] {
+  if (state.poles === undefined || state.poles.length === 0) return []
+  const drop: Record<string, boolean> = {}
+  const lines: string[] = []
+  for (const k of keys) {
+    const o = state.occ[k]
+    if (!isPoleTag(o)) continue
+    const line = string.sub(o!, 3)
+    if (drop[line]) continue
+    drop[line] = true
+    lines.push(line)
+  }
+  if (lines.length === 0) return []
+  const kept: PlannedPole[] = []
+  state.evictedPoles ??= []
+  for (const p of state.poles) {
+    if (!drop[p.line]) {
+      kept.push(p)
+      continue
+    }
+    const k = tkey(p.x, p.y)
+    if (state.occ[k] === `x:${p.line}`) delete state.occ[k]
+    state.evictedPoles.push(p)
+  }
+  state.poles = kept
+  state.poleLines = (state.poleLines ?? []).filter((l) => !drop[l.id])
+  return lines
 }
 
 export function newLayout(): LayoutState {
@@ -245,6 +288,21 @@ export function commitModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
 
 export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {
   const tag = `m:${m.id}`
+  // B37: pole lines on the module's ground (footprint, interaction tiles, port lanes, a mine's claim) give way.
+  if ((state.poles?.length ?? 0) > 0) {
+    const keys = [...moduleTiles(m)]
+    for (const t of interactionTiles(m.def, facts)) keys.push(tkey(m.origin.x + t.x, m.origin.y + t.y))
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      const a = portApproach(m, p)
+      keys.push(tkey(o.x, o.y), tkey(a.x, a.y))
+    }
+    if (m.minePlan !== undefined) for (const k of m.minePlan.claim) keys.push(k)
+    const ga = m.canonical.anchor?.resource !== undefined ? growthArea(m) : undefined
+    if (ga !== undefined) for (let x = ga.x; x < ga.x + ga.w; x++) for (let y = ga.y; y < ga.y + ga.h; y++) keys.push(tkey(x, y))
+    evictPoleLines(state, keys)
+  }
   for (const k of moduleTiles(m)) {
     state.occ[k] = tag
     delete state.corridor[k]
@@ -394,6 +452,8 @@ export function lineKey(x: number, y: number, dir: number): string {
 }
 
 export function commitRoute(state: LayoutState, route: Route): void {
+  // B37: pole lines on the route's tiles give way.
+  evictPoleLines(state, route.tiles)
   state.routes[route.id] = route
   state.routeOrder.push(route.id)
   for (const k of route.tiles) state.routeOcc[k] = route.id
