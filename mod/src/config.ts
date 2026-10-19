@@ -160,6 +160,8 @@ export interface Config {
   bootstrapFactories: string
   /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */
   bootstrapFactoryWaitSeconds: number
+  /** B18: priority of the crew jobs that keep temporary cells stocked proactively (0 = never stock). */
+  bootstrapTempCellFeedPriority: number
   /** D38: craft jobs a member queues in the background of a batch (0 = craft standing). */
   crewBackgroundCrafts: number
   /** M6: the design plans every stage target times this (headroom so the measured rate reaches the target). */
@@ -267,6 +269,7 @@ export function getConfig(): Config {
     moduleBufferSlots: setting(Settings.moduleBufferSlots),
     bootstrapFactories: setting(Settings.bootstrapFactories),
     bootstrapFactoryWaitSeconds: setting(Settings.bootstrapFactoryWaitSeconds),
+    bootstrapTempCellFeedPriority: setting(Settings.bootstrapTempCellFeedPriority),
     crewBackgroundCrafts: setting(Settings.crewBackgroundCrafts),
     factoryDesignMargin: setting(Settings.factoryDesignMargin),
     factoryLabSizing: setting(Settings.factoryLabSizing),

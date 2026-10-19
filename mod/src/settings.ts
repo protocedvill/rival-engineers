@@ -683,6 +683,15 @@ data.extend([
   },
   {
     type: "int-setting",
+    name: Settings.bootstrapTempCellFeedPriority,
+    setting_type: "runtime-global",
+    default_value: 40,
+    minimum_value: 0,
+    maximum_value: 100,
+    order: "m-f",
+  },
+  {
+    type: "int-setting",
     name: Settings.crewBackgroundCrafts,
     setting_type: "runtime-global",
     default_value: 1,
