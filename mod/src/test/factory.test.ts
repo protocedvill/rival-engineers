@@ -312,4 +312,28 @@ describe("M5a power and growth", () => {
     render(s, "b37-after", { x: ox, y: oy }, 64)
     assert(off.length === 0, `on the engine's network: ${off.join("; ")}`)
   })
+
+  test("B41: a re-laid pole line reuses a live pole instead of ghosting over it", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: "kept", name: "small-electric-pole", x, y, line: "poles:b41:0" },
+      { id: "new", name: "small-electric-pole", x: x + 6, y, line: "poles:b41:0" },
+    ]
+    layout.poleLines = [{ id: "poles:b41:0", from: "power", to: "consumer", poles: ["kept", "new"] }]
+    const built = lab.surface.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })
+    assert(built !== undefined, "the old line's pole was built")
+
+    const r = stampParts(lab.surface, force.name, layout, { modules: [], routes: [], poles: ["kept", "new"] }, true)
+    assert(r.failed.length === 0, `ghost failures: ${r.failed.join("; ")}`)
+    assert(r.entities.length === 1, `only the new pole gets a ghost (${r.entities.length})`)
+    assert(r.entities[0].type === "entity-ghost" && r.entities[0].ghost_name === "small-electric-pole", "the new pole is ghosted")
+    assert(r.entities[0].position.x === x + 6.5 && r.entities[0].position.y === y + 0.5, "the ghost is at the new tile")
+    assert(built!.valid, "the re-used pole stays built")
+    const overlaid = lab.surface.find_entities_filtered({ ghost_name: "small-electric-pole", position: built!.position, force })
+    assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
+  })
 })

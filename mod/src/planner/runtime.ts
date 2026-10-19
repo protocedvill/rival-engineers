@@ -304,8 +304,18 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
       else entities.push(e)
     }
   }
-  const only: BuildParts = { modules: [], routes: parts.routes, poles: parts.poles }
-  for (const spec of partEntities(layout, only)) {
+  const routes: BuildParts = { modules: [], routes: parts.routes, poles: [] }
+  for (const spec of partEntities(layout, routes)) {
+    const e = createSpec(surface, force, spec, ghost)
+    if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
+    else entities.push(e)
+  }
+  const poles: BuildParts = { modules: [], routes: [], poles: parts.poles }
+  for (const spec of partEntities(layout, poles)) {
+    // B41: B37 can re-plan an evicted line through some of the same tiles. Those poles deliberately stay built;
+    // Factorio nevertheless permits a pole ghost on top of a live pole, and that ghost can never be revived.
+    // Reuse the live pole instead of creating an impossible ghost/place job for it.
+    if (ghost && findEntities(surface, { name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
     else entities.push(e)

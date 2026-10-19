@@ -1020,3 +1020,15 @@ the plan's pole step joins them. `unpoweredModules` reports an unjoined later ge
 
 No new magic numbers.
 
+## M6b.13: B41 replacement pole lines reuse live poles (2026-10-19)
+
+The user's review report `132592-repeatedly-the-planner-keeps-pla` captured production goal g5 with 10
+small-electric-pole ghosts exactly over 10 live poles. B37 had evicted a 15-pole line and planned its replacement;
+the new line reused those 10 coordinates, so adoption deliberately kept the live entities. Factorio permits a ghost
+over the same live entity, however, and every later `ghost.revive` failed `cannot-place`. The goal requeued the same
+impossible placements each leftover-ghost round and eventually stalled.
+
+`stampParts` now treats an exact same-force live pole as the already-built realization of that planned pole: it emits
+no ghost and no place job, while genuinely new poles in the same replacement line are still ghosted. T2 `factory`
+"B41: a re-laid pole line reuses a live pole instead of ghosting over it" pins both cases. No new magic numbers.
+
