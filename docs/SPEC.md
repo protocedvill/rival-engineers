@@ -76,6 +76,7 @@ Two layers, by analogy:
 | D50 | Planner weights as settings (2026-10-16, user decisions via the manager) | (1) The placement soft-claim weight (B9, D48 (4)) is a setting, **default 0.5** (`planner-placement-soft-claim`); the planner must work at 0.5. (2) Also settings, current values as defaults: the least comparison work `planner-compare-min-work` (5,000), router `planner-router-bundle-factor` (0.9) and router `planner-router-soft-claim` (0.5). The work-count tolerance (15%) and the reference-base size stay tooling, not settings. (3) P23 approved: the D36 / B2 comparison reroutes the same placement. (4) The splitter comparison (B2) gets an enable setting `logistics-splitter-compare`, **default off**; the code stays. |
 | D51 | Buffers, D36 per attempt, bootstrap on production patches (2026-10-16, user decisions via the manager) | (1) P25 changed: module buffer depots hold **2 slots** (`module-buffer-slots` default 2) and go on **smelter columns, circuit blocks and gear rows** (change their layouts as needed). (2) P29 approved: a plan that fails to route without undergrounds but routes the same placement with them defers to `logistics` at once. (3) Bootstrap mining sites **may be placed on a production outpost's ore patch**, as long as they can be deconstructed when something more important needs that ground (as D43 does for depleted sites). P26 (temporary factories on by default?) is pending: the user is checking it in game. |
 | D52 | Whole-patch mines (2026-10-17, user decision via the manager; approved) | User: "mines should be designed in a way to be maximally efficient, covering the entire patch, always. its still fine to only build a part of it first, but it should be expamdable. sometimes I see power poles blocking mine expansion". (1) Every mining outpost's planned layout covers the whole ore patch (or the part of it the outpost claims) at maximum drill coverage. (2) It may be built partially first, then expanded in place. (3) Nothing else may be placed on the unbuilt part of that planned footprint: no poles, no routes, no other modules, no bootstrap sites (D51 (3) eviction still applies to bootstrap sites). Poles must avoid the reserved footprint, or be moved when expansion needs the ground (a user-observed bug). Supersedes L3 (now B21). |
+| D53 | Factory-graph navigation (2026-10-19, user decision) | The in-game factory graph is an **exact module-to-module topology**, not an item-level aggregate. Every logical node remains individually identifiable even when several nodes have the same role or output item, and every displayed relationship preserves its actual `from` and `to`; the GUI must never imply a shared stream or all-to-all connectivity that is absent from the logical graph. The primary view is a deterministic left-to-right topology with explicit fan-in/fan-out, plus selection-based focus: selecting a node highlights only that node, its direct neighbours and their exact edges, while an inspector lists each incoming and outgoing edge separately and lets the user traverse to the neighbour. “Show all” restores the full topology; “Locate selected” opens the physical base context. Initial implementation does not collapse nodes. Any later collapsing may combine only structurally equivalent nodes with identical neighbour sets and must remain expandable. See B40. |
 
 ## 3. v1 Definition of Done
 
@@ -521,10 +522,13 @@ In v1, a stall caused by depletion just shows up as a starved node in telemetry.
   and status.
 - **In-game overlay:** a debug setting draws module boxes, edges, rates and node status using the
   `rendering` API in the live game.
-- **Factory-graph window (B16):** a per-player GUI screen (`Ctrl+Shift+G`) beside the overlay: the graph laid
-  out by dataflow depth (not real positions), one chip per node with its reconciler status and measured/planned
-  rate, a table of plain edges (item, planned vs measured, probe verdict), status counts, and a cause line in
-  each chip's tooltip. Clicking a chip jumps the camera to the module in the base.
+- **Factory-graph window (B16, B40, D53):** a per-player GUI screen (`Ctrl+Shift+G`) beside the overlay: an exact
+  module-to-module topology laid out by dataflow depth (not real positions). Distinct logical nodes and their
+  actual directed edges remain distinct even when their roles or items match. Explicit fan-in/fan-out shows which
+  providers feed which consumers. Selecting a node focuses its immediate neighbourhood and fills an exact
+  incoming/outgoing edge inspector; neighbour rows traverse the graph, “Show all” restores the full topology and
+  “Locate selected” jumps to the module in the physical base. Nodes and edges retain reconciler status,
+  measured/planned rates, probe verdicts and cause information.
 - **Review toolbar and reports (B35, B34):** the review hotkeys (Ctrl+Shift+I/G/R) are enabled while spectating;
   a top-left toolbar (sandbox and spectators) opens the inspector, the graph window, the overlay with one toggle per
   registered layer, and the report dialog, which writes a diagnostic bundle (`script-output/rival-engineers/reports/`)
