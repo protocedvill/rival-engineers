@@ -91,6 +91,9 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     placementSoftClaim: c.plannerPlacementSoftClaim,
     routerSoftClaim: c.plannerRouterSoftClaim,
     routerBundleFactor: c.plannerRouterBundleFactor,
+    placementGrowthBand: c.plannerPlacementGrowthBand,
+    placementGrowthBandUnits: c.plannerPlacementGrowthBandUnits,
+    placementGrowthBlocked: c.plannerPlacementGrowthBlocked,
   })
 }
 

@@ -501,3 +501,191 @@ the library can produce. The T2 validation lab still stamps the changed modules.
 placement and needs replays, so it is left for a decision.
 
 No new magic numbers.
+
+## M6b.4: B31 preemptions only for urgent refuels, one member each (2026-10-19)
+
+The B31 row: after B30, a 10-game-min 2-faction soak (seed 11) still logged 608 preemptions (~15 per member and
+game-minute), 82% wasted: every busy member preempted for the same new job (88 lost the race), and 439 re-plans
+started with a deposit (brain factions empty the pocket before any job), so the interrupted trip went to the depot
+first. Most triggers were routine (ore feeds p55, collect transfers p60, refuels p100), firing on the job's creation.
+
+**Fix (`jobs/crew.ts` `preemptForUrgent`, run once per faction tick after the members):**
+1. **One member per job:** no preemption while any member is idle (idle members plan every tick, so one takes the
+   job, or none can). Otherwise only the nearest eligible busy member preempts, and it re-plans in the same tick
+   with the job as its forced anchor (`CrewMember.preemptFor`, in storage). The others keep working.
+2. **Urgency gate:** only a refuel (fuel job of an item with a fuel value) whose *running* target has less than
+   `preempt-fuel-seconds` of fuel left (burning remainder plus the fuel inventory, at max consumption). A machine
+   already out of fuel is not urgent (it has stopped; the priority-100 job is taken at the next plan). Ore and lab
+   feeds and **collect transfers never preempt**: the user clarified in-session (2026-10-19) that crew should not walk
+   off work to shuffle part stacks from supply points to the depot, while refuelling a machine about to run out
+   should win. So the collect-fill threshold first drafted for transfers was dropped. (The user's broader intent,
+   taking from supply points directly when a craft or a machine needs the item, is a sourcing change outside B31.)
+3. **No deposit first:** the forced re-plan skips the between-jobs deposit (the pocket goes along and is deposited
+   at the next plan). Only a member with a free inventory slot is eligible, so the pocket never blocks the job.
+   Since every preemption is urgent now, I chose to skip the deposit rather than refuse to preempt.
+
+B17's priority rule and B30's "became ready since the plan, materials available" rule are kept.
+`CrewStats.preemptTaken` (telemetry dumps member stats) counts preemptions whose re-plan claimed the job.
+
+**Tests:** T2 "B30 preemption livelock" now bounds preemptions at 10 per member and game-hour (at least 1 in the
+window) and requires ≥ 75% taken. Old code: 27 and 23 preemptions per member in 3 min, 0 taken (fails). New: 1 and 1,
+both taken, 40 non-haul jobs done (45 before, which included churn). B17 test 2 now asserts a collect does **not**
+preempt and the busy crew still brings the plates at its next plan. New T2 test "an urgent refuel pulls only the
+nearest busy member off its work, and it takes the job": 3 members busy hand-mining, a furnace with ~22 s of fuel
+left gets a refuel job: exactly one preemption, taken.
+
+### Magic numbers for the user (M6b.4)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `preempt-fuel-seconds` | `settings.ts`, `jobs/crew.ts` `isUrgent` | 30 | Refuels are queued at 2 min of fuel left (`FUEL_LOW_MINUTES`). 30 s leaves a member most of a walk to arrive before the machine stops, and only refuels nobody took for ~90 s preempt. Guess. 0 = refuels never preempt. | yes (new) |
+| `MAX_PREEMPTIONS_PER_HOUR` | `test/preempt-loop.test.ts` | 10 | Test bound: "a handful per member and game-hour". | test only |
+| `MIN_TAKEN_RATIO` | `test/preempt-loop.test.ts` | 0.75 | Test bound: most preemptions must lead to taking the job (was 18%). | test only |
+| free slots to preempt | `jobs/crew.ts` `canPreemptMember` | 1 | A member with a full pocket would have to deposit first (point 3). One slot covers the coal for a refuel. | no |
+
+## M6b.5: B32 crew take parts directly from supply points (2026-10-19)
+
+The B32 row (user, in-session 2026-10-19, the intent of B17): when a member needs an item for a job, it takes it
+straight from where the faction holds it, instead of the brain creating collect transfers that shuffle furnace
+output stacks to the depot (B17's fix) and crew walking off work to do them.
+
+**Design:**
+1. **Supply points** (`jobs/supply.ts`, a leaf module). Every think the brain registers the faction's supply points in
+   `FactionState.supplies` (storage): the factory's chest-out chests (mall and temporary cells, `supplyChests`), module
+   buffer chests (`bufferChests`), and the bootstrap sites' furnace outputs, chest-site chests and pair drills' coal
+   above `PAIR_KEEP` (10). Only those within `supply-radius` of the hub (0 = any). The crew reads their live contents
+   (cached per tick: idle members plan every tick; the controller, which moves items, steps after the crew).
+2. **Availability.** `availableItems` (crew) counts held items + stockpiles + supply points, each source minus the
+   takes reserved **at that source** (`FactionState.reservedAt`, by unit number and item), so two members never count
+   the same stack. A supply point holding fewer than `supply-min-take` of an item is not worth the walk and does not
+   count. The brain's `ctx.stock` adds the same supply holdings (`supplyStock`), so `reconcile` only hand-crafts or
+   hand-mines what neither the depot nor a supply point in range holds. Ore-in-depot feeds and the smelting inbound
+   count still use the depot and pockets only (`ctx.depotStock`).
+3. **The haul** takes the batch's missing materials from several sources in one trip: greedy from the member's
+   position, preferring a source that holds the whole remaining need of an item (one stop beats several), then the
+   smallest detour on the way to where the batch is worked (the standing spot; a craft: where the member is), ties by
+   unit number. Each take is reserved at its source until it finishes. Batch planning for place/fuel jobs plans from
+   the nearest source of the first missing item (was: nearest stockpile).
+
+**Collect transfers: removed.** `produce` no longer creates them (`collect`/`collectSources` are gone, and the
+`transfer` priority with them). None was needed to keep a machine running: a full furnace, chest site or pair drill
+just pauses its drill (H5 already accepted that, since collecting everything filled depot after depot), and the next
+job needing the items takes them from there, which un-blocks it. The `transfer` payload kind stays so jobs in older
+saves finish. B18 top-ups and D38 feeds are unchanged fuel jobs; their materials now come from supply points too
+(a cell's input chest can be filled straight from a furnace), and a cell's output chest counts as stock.
+
+**Tests (T2 `test/bootstrap-sources_test.ts`, describe "B17 material sources"):**
+- "B32: a craft needing iron plates is fed straight from a furnace holding plates": empty depot, a furnace with 100
+  plates; the 20-gear craft completes with **no plate ever in the depot, no transfer job and no hand-mining**, 40
+  plates left in the furnace. Old code (9644eab + this test): fails, "depot plates max 100, transfers 1".
+- "B32: two crafts take from different furnaces, never counting the same stack": two furnaces of 60 plates, two
+  50-plate crafts: both complete, no job released, 20 plates left (old code fails: transfers 2, depot plates 70).
+- "B32: with the furnaces empty, the brain falls back to hand-mining" (passes on old code too: the fallback).
+- "B32: a furnace outside supply-radius is not taken from" (`supplyRadius` 5: hand-mining, the furnace keeps 100).
+- The B17 busy-crew test now injects the craft into a crew busy hand-mining: no preemption, the plates go straight
+  from the furnace to the craft (old code: depot plates max 100). The B31 urgent-refuel test is unchanged.
+
+Filtered T2 runs: "B17 material sources", "B30 preemption livelock", "D38 temporary factories", "D42 buffer depots",
+"job board", "burner bootstrap": all green. T1 green. No soak run (manager):
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 222,11 --hours 0.6 --name b32-check --no-build -j 2`
+from the branch after building. Look for: no `transfer` jobs; `byKind.haul` share not much above B31's; fewer ore
+gathers while furnaces hold plates; preemption stats as in B31; no new stalls (milestones on time vs B31's run).
+
+### Magic numbers for the user (M6b.5)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `supply-radius` | `settings.ts`, `strategy/bootstrap.ts` `registerSupplies` | 384 | Tiles from the hub: `scan-radius` (128) × `EXPLORE_MAX` (3), the farthest the brain places sites by default, so every own site counts. 0 = any distance. Guess. | yes (new) |
+| `supply-min-take` | `settings.ts`, `jobs/supply.ts` `takeable`/`supplyStock` | 5 | A supply point holding fewer is not worth the walk (B17's collect skipped sources under min(need, 8)). Stockpiles always count. Guess. | yes (new) |
+| `PAIR_KEEP` | `strategy/bootstrap.ts` | 10 | Coal a pair drill keeps for its partner when the crew takes its surplus (unchanged from M3; `PAIR_COLLECT_AT` is gone). | no (existing) |
+| haul source order | `jobs/crew.ts` `haul` | — | Rule, no number: whole-need sources first, then smallest detour. | no |
+
+## M6b.6: B26 growth bands kept clear at placement (2026-10-19)
+
+The B26 row: smelter columns never grew in place. Their growth band (on the tail end, which is also the ore/fuel input
+side) was blocked by modules placed there, by ore, and by other modules' claims and reservations, so after 3 failed
+expansions the design built a parallel cluster instead. Placement only had a 0.5/tile soft claim against other
+modules, and only mines had a growth check of their own (D52).
+
+**Fix (987553b, `planner/placement.ts`, `planner/policy.ts`):**
+1. **Near band (fix direction 1).** A new placement layer marks each other expandable non-mine module's first
+   `growthBandUnits` growth units, on the end `tryExpand` grows. A candidate pays `growthBand` per footprint tile there,
+   on top of the soft claim. The D50 soft-claim default (0.5) is unchanged. Direct partners are exempt, as from the soft
+   claim (P28). Without that exemption the ore outposts and feeders were pushed off the smelter's input side, and the
+   seed 11 replay failed.
+2. **Own band (fix direction 2).** For an expandable non-mining module, a second layer marks every tile `tryExpand`
+   would refuse: non-free terrain (trees and rocks only when they can't be cleared), ore under `protectOre`, any `occ`
+   (other modules, interaction tiles, poles), routes, port reservations, other modules' mine claims and soft claims.
+   Each candidate counts the near units its band can grow into, checking both this layer and the other modules'
+   corridor ring (`too close`). It pays `growthBlocked` per near unit that would be refused. This generalises D52's
+   mining-only `growthCoverage`. The window margin grows by the module's growth length so the band is always inside
+   the window.
+3. **Failure reasons.** `tryExpand` and `planGrowth` already log distinct reasons, and they are unchanged: `occupied at`,
+   `ore at`, `mine claim of`, `reserved at`, `route at`, `blocked at`, `too close to`, `reroute failed`.
+
+**Judged on six replays** (new `REPLAY_PLACEMENT` / `UNIT_FILTER` / `REPLAY_DUMP` env vars):
+
+| Replay | Result with the B26 defaults |
+|---|---|
+| seed222-production (undergrounds) | done |
+| seed11-green-boxed (×2) | as expected |
+| m6a2-seed222-green-line (×2) | as expected |
+| green-line-dev11 | as expected |
+| m6a2-seed222-mall-iron | done |
+| seed11-production-ok, without undergrounds | fails |
+| seed11-production-ok, with undergrounds | done |
+| seed3333-production-ok, without undergrounds | fails |
+| seed3333-production-ok, with undergrounds | done |
+
+Dropped variants:
+- **The own band over every unit up to the cap** (a smelter's band is 20 tiles deep), at 8 per unit: it moved the
+  seed 222 red line and both smelters, its coal outpost went about 100 tiles out, and the iron feed failed "no path"
+  even with undergrounds.
+- **Own band at 8 per near unit:** still failed on seed 222.
+- **Near band applied to partners:** failed on seed 11.
+
+The no-underground failures are the trade-off of fix direction 2. A smelter's growth end is its input side. Keeping it
+clear of ore and claims turns it away from the ore, so the feeds wrap round the column. Without undergrounds the
+chaotic stage-1 routing then fails. In game, D51 reroutes the same placement with undergrounds and researches them
+first, which both seeds decide anyway (saves 118 / 82 tiles). The D36 / B2 comparison replays now pin the pre-B26
+placement weights, because their numbers document those decisions. New `b26Replay` tests pin that both clusters plan
+with undergrounds under the B26 weights.
+
+**Tests:**
+- **T1 `planner-batch` "B26 (a)":** a non-partner module pulled into the first growth unit (by its cluster centre and
+  its input's source) sits there under the old weights and keeps off it now. When cliffs leave only the near band free,
+  it is placed there anyway, and `tryExpand` then fails with `occupied at`.
+- **T1 `planner-batch` "B26 (b)":** a 4-furnace smelter between an ore patch (south) and a neighbouring column growing
+  toward it. With the old weights it faces the ore and its near growth fails (`ore at 65,74`). Now it turns
+  (rot 1, at 58,61), grows by its 2 near units, and the neighbour still grows fully.
+- **T1 `planner` expand-first test:** with B26's check the module would avoid the walled spot, so the "places a copy"
+  case runs with `growthBlocked: 0`, plus a case at weight 20 where it grows instead.
+- **T2:** `planner%-driven expansion` and `soft claim` passed.
+
+Not run: the full T1 and T2 suites (each over 5 min). Run per file, every T1 file passes.
+
+**Fix direction (c), "a smelter column actually grows in place".** No replay or T2 test runs a factory to a grow goal
+(the T2 expansion test calls `planGrowth` directly), so it needs a soak:
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 11,222,3333 --hours 4 --name b26-growth --no-build`
+(after `npm run build` in this worktree). Look for:
+- `goal gN (grow) done` for the iron-plate and copper-plate smelter roles.
+- Fewer `cannot grow by … units` lines, and which reasons remain.
+- No new parallel clusters for smelters.
+
+**B29:** the steam block and labs are expandable non-mining modules, so their near bands are protected and their own
+placement is scored the same way. The `ore at` / `blocked at` growth failures in B29's evidence are the cases fix
+direction 2 scores against. B29's demand/supply diagnosis is not touched.
+
+**Not covered:**
+- Pole lines are still planned without regard to growth bands (`occupied at x:poles:`).
+- Routes only pay the router soft claim (0.5).
+- Head-end growth is not scored.
+
+### Magic numbers for the user (M6b.6)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `planner-placement-growth-band` | `settings.ts`, `policy.ts` `placement.growthBand` | 4 per tile | About 8× the 0.5 soft claim. A 4×4 module overlapping a full near band pays about 64, so it moves rather than block a growth unless nothing else fits. Guess; passed six replays. | yes (new, proposed P38) |
+| `planner-placement-growth-band-units` | `settings.ts`, `policy.ts` `placement.growthBandUnits` | 2 | The units a growth goal usually needs first (8 tiles for a smelter); also the depth of the own-band check. The full depth (5 units for a smelter) broke the seed 222 replay. | yes (new, proposed P38) |
+| `planner-placement-growth-blocked` | `settings.ts`, `policy.ts` `placement.growthBlocked` | 3 per near unit | 8 broke seed 222 even with undergrounds; 3 passes it. At 3, the walled-in spot of the planner test still wins over moving. Guess. | yes (new, proposed P38) |
+| Window margin + growth length | `placement.ts` `startWindow` | footprint + corridor + 4 + growth length + corridor.min | Derived: the own band must lie inside the scoring window. | no (derived) |

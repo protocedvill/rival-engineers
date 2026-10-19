@@ -55,6 +55,22 @@ export function onBufferBuilt(entity: LuaEntity | undefined): void {
   limitBuffer(entity, getConfig().moduleBufferSlots)
 }
 
+/** B32: built buffer chests of a force, in key order (supply points the crew takes from). */
+export function bufferChests(force: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const all = storage.buffers
+  if (all === undefined) return out
+  const keys: string[] = []
+  for (const [k, e] of pairs(all)) if (e.force === force && e.entity !== undefined) keys.push(k as string)
+  keys.sort()
+  for (const k of keys) {
+    const chest = all[k].entity!
+    if (chest.valid) out.push(chest)
+    else delete all[k]
+  }
+  return out
+}
+
 /** Built buffer chests of a force holding `item` (or anything), with amounts: a collect source for the crew. */
 export function bufferSources(force: string, item: string | undefined): { entity: LuaEntity; item: string; amount: number }[] {
   const out: { entity: LuaEntity; item: string; amount: number }[] = []

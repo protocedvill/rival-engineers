@@ -24,6 +24,7 @@ import {
   addJob,
 } from "./board"
 import { addPlaceJob, factionSurface } from "./faction"
+import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
 
 declare global {
   interface RivalEngineersStorage {
@@ -37,7 +38,8 @@ import { countWork, findEntities } from "../work"
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
 // job (nearest first) plus every same-kind job it can reach from one standing spot, hauls the missing
-// materials from the faction's stockpiles, walks to the spot and works through the batch.
+// materials from the faction's stockpiles and supply points (B32: straight from furnace outputs, buffers, the mall...),
+// walks to the spot and works through the batch.
 //
 // Factions never share anything: each has its own board, stockpiles and crew, and a member only ever
 // looks at its own faction.
@@ -73,44 +75,101 @@ export function onCrewTick(): void {
 
 /**
  * B17: like a player who abandons their ore trip to fetch the plates a furnace has been holding out, a member
- * with work in flight preempts itself for a *strictly higher-priority* ready job (the brain's collect transfers
- * outrank the batch it was claimed into), drops the whole batch — `resetMember` releases the claims without
- * penalty — and plans again on the next tick, where priority sends it to the preempting job first. Only a ready
- * job can do it: a back-off or claimed one never pulls a member off work it has already started.
+ * with work in flight preempts itself for a *strictly higher-priority* ready job (B17 did it for the brain's
+ * collect transfers; since B31 only for urgent refuels), drops the whole batch — `resetMember` releases the claims without
+ * penalty — and plans again at once, with the preempting job as its anchor. Only a ready job can do it: a back-off
+ * or claimed one never pulls a member off work it has already started.
  *
  * B30: only a job the member had no chance to take when it planned (not in `planSeen`: it became ready since)
  * and whose materials it can get. A job that was ready at plan time and not chosen (no coal for a fuel job, say)
  * would be passed over again by the next plan, and preempting for it every tick livelocked the crew.
+ *
+ * B31: preemption is for emergencies only, and one member per job:
+ * - the job must be an urgent refuel (`isUrgent`): a running burner about to run out of fuel. Routine refuels, ore
+ *   feeds and collect transfers (moving a furnace's plates to the depot) wait for the next normal plan: walking off
+ *   work to shuffle part stacks to the depot wastes the walk (user, in-session 2026-10-19).
+ * - no preemption while a member is idle (idle members plan every tick: one would take the job, or none can).
+ * - only the nearest eligible busy member preempts, and its re-plan takes the job (`preemptFor`), so the others
+ *   keep working.
+ * - the re-plan skips the deposit brain factions do between jobs (the pocket goes along and is deposited after),
+ *   so an interrupted trip goes straight to the job. Only a member with a free inventory slot is eligible.
  */
-function preemptForPriority(faction: FactionState, member: CrewMember, tick: number): void {
+function preemptForUrgent(faction: FactionState, config: Config, tick: number): void {
   const board = faction.board
-  const anchor = board.jobs[member.claims[0] ?? -1]
-  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return
-  const seen = member.planSeen ?? []
-  let avail: Record<string, number> | undefined
-  let higher: CrewJob | undefined
+  const busy: CrewMember[] = []
+  for (const id of faction.crew) {
+    const m = storage.crew[id]
+    if (m.dead || !m.character.valid) continue
+    if (m.actions.length === 0) return
+    busy.push(m)
+  }
+  if (busy.length === 0) return
+  let jobs: CrewJob[] | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!isReady(board, job, tick) || !isPreemptable(anchor, job) || seen.indexOf(id) >= 0) continue
-    avail ??= availableItems(faction, heldItems(member.character))
-    if (!hasMaterials(job, avail)) continue
-    if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) continue
-    higher = job
-    break
+    if (!canPreempt(job) || !isReady(board, job, tick) || !isUrgent(faction, job, config)) continue
+    jobs ??= []
+    jobs.push(job)
   }
-  if (higher === undefined) return
-  resetMember(faction, member, tick)
-  member.stats.preemptions = (member.stats.preemptions ?? 0) + 1
+  if (jobs === undefined) return
+  for (const job of jobs) {
+    if (!isReady(board, job, tick)) continue
+    let best: CrewMember | undefined
+    let bestD = 0
+    for (const m of busy) {
+      if (m.actions.length === 0 || !canPreemptMember(faction, m, job, config)) continue
+      const d = distance(m.character.position, job.pos)
+      if (best === undefined || d < bestD) {
+        best = m
+        bestD = d
+      }
+    }
+    if (best === undefined) continue
+    resetMember(faction, best, tick)
+    best.stats.preemptions = (best.stats.preemptions ?? 0) + 1
+    best.preemptFor = job.id
+    planNext(faction, best, config, tick)
+  }
 }
 
-/** Jobs that could ever preempt a batch, whatever its priority. */
+/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
+function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
+  const board = faction.board
+  const anchor = board.jobs[member.claims[0] ?? -1]
+  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return false
+  if (!isPreemptable(anchor, job) || (member.planSeen ?? []).indexOf(job.id) >= 0) return false
+  const inv = member.character.get_main_inventory()
+  if (!inv || inv.count_empty_stacks() < 1) return false
+  if (!hasMaterials(job, availableItems(faction, heldItems(member.character), config))) return false
+  return job.kind !== "fuel" || fuelTarget(faction, job) !== undefined
+}
+
+/**
+ * B31: a refuel worth pulling a member off its work for: its running target has less than `preemptFuelSeconds` of
+ * fuel left. A machine already out of fuel has stopped (no moment left to save; the job keeps its priority for the
+ * next plan). Ore and lab feeds (fuel jobs of non-fuel items) never are.
+ */
+function isUrgent(faction: FactionState, job: CrewJob, config: Config): boolean {
+  const p = job.payload
+  if (p.kind !== "fuel" || (prototypes.item[p.item]?.fuel_value ?? 0) <= 0) return false
+  const target = fuelTarget(faction, job)
+  const burner = target?.burner
+  if (target === undefined || burner === undefined) return false
+  const perTick = target.prototype.get_max_energy_usage() ?? 0
+  if (perTick <= 0) return false
+  let energy = burner.remaining_burning_fuel
+  for (const c of burner.inventory.get_contents()) energy += c.count * (prototypes.item[c.name]?.fuel_value ?? 0)
+  return energy > 0 && energy < config.preemptFuelSeconds * 60 * perTick
+}
+
+/** Jobs that could ever preempt a batch, whatever its priority (B31: refuels only, never collect transfers). */
 function canPreempt(job: CrewJob): boolean {
-  return job.kind === "fuel" || job.payload.kind === "transfer"
+  return job.kind === "fuel" && job.payload.kind === "fuel"
 }
 
 /** Which jobs are worth abandoning a member's current batch for. */
 function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
-  // A strictly higher priority. Fuel jobs (refuelling drills, keeping the burners burning) may preempt freely.
+  // A strictly higher priority.
   if (job.priority <= anchor.priority) return false
   return canPreempt(job)
 }
@@ -147,10 +206,9 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       }
       member.spot = undefined
       if (!faction.paused) planNext(faction, member, config, tick)
-    } else if (!faction.paused) {
-      preemptForPriority(faction, member, tick)
     }
   }
+  if (!faction.paused) preemptForUrgent(faction, config, tick)
   // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
   const ready = countReady(faction.board, tick)
   for (const id of faction.crew) {
@@ -471,11 +529,16 @@ function validStockpiles(faction: FactionState): LuaEntity[] {
   return valid
 }
 
-/** What the member can work with: its own inventory plus the stockpiles minus what others are about to take. */
-function availableItems(faction: FactionState, held: Record<string, number>): Record<string, number> {
+/**
+ * What the member can work with: its own inventory plus what the stockpiles and supply points hold (B32), minus what
+ * others are about to take from each source.
+ */
+function availableItems(faction: FactionState, held: Record<string, number>, config: Config): Record<string, number> {
   const avail: Record<string, number> = {}
   for (const item in held) avail[item] = held[item]
-  for (const chest of validStockpiles(faction)) addContents(avail, chest.get_inventory(defines.inventory.chest) ?? undefined, 1)
+  validStockpiles(faction)
+  for (const h of takeable(faction, config.supplyMinTake)) avail[h.item] = (avail[h.item] ?? 0) + h.amount
+  // Reservations from before B32 carry no source.
   for (const item in faction.reserved) avail[item] = (avail[item] ?? 0) - faction.reserved[item]
   return avail
 }
@@ -485,12 +548,12 @@ function hasMaterials(job: CrewJob, avail: Record<string, number>): boolean {
   return true
 }
 
-function reserve(faction: FactionState, item: ItemCount): void {
-  faction.reserved[item.item] = (faction.reserved[item.item] ?? 0) + item.count
-}
-
-function unreserve(faction: FactionState, item: ItemCount | undefined): void {
+function unreserve(faction: FactionState, item: (ItemCount & { from?: number }) | undefined): void {
   if (!item) return
+  if (item.from !== undefined) {
+    unreserveAt(faction, item.from, item.item, item.count)
+    return
+  }
   const left = (faction.reserved[item.item] ?? 0) - item.count
   if (left > 0) faction.reserved[item.item] = left
   else delete faction.reserved[item.item]
@@ -538,14 +601,15 @@ function otherSpots(faction: FactionState, member: CrewMember): Rect[] {
   return rects
 }
 
-function nearestStockpile(faction: FactionState, from: Pos, item: string): LuaEntity | undefined {
+/** The nearest stockpile or supply point the crew can take `item` from (B32). */
+function nearestSource(faction: FactionState, from: Pos, item: string, config: Config): LuaEntity | undefined {
   let best: LuaEntity | undefined
   let bestD = 0
-  for (const chest of validStockpiles(faction)) {
-    if (chest.get_item_count(item) <= 0) continue
-    const d = distance(from, chest.position)
+  for (const h of takeable(faction, config.supplyMinTake)) {
+    if (h.item !== item) continue
+    const d = distance(from, h.entity.position)
     if (best === undefined || d < bestD) {
-      best = chest
+      best = h.entity
       bestD = d
     }
   }
@@ -559,15 +623,18 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   dropDeadJobs(faction, tick)
   notePlanSeen(faction, member, tick)
   const held = heldItems(character)
-  let avail = availableItems(faction, held)
+  let avail = availableItems(faction, held, config)
+  // B31: the urgent job this member just dropped its batch for (taken first, without depositing first).
+  const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
+  member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if ((faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job) || !hasMaterials(job, avail)) return false
     if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
     return true
   }
-  let anchor = selectJob(board, pos, tick, accept)
+  let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)
   if (!anchor) return
   member.stats.plans++
   // D38 opportunistic crafting: a craft job is queued and runs while the member does other work, like a player who
@@ -592,7 +659,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     // materials first, since that is where it will walk from.
     let from: Pos = pos
     const missing = missingMaterials([anchor], held)
-    if (missing.length > 0) from = nearestStockpile(faction, pos, missing[0].item)?.position ?? pos
+    if (missing.length > 0) from = nearestSource(faction, pos, missing[0].item, config)?.position ?? pos
     const reach = (anchor.kind === "place" ? character.build_distance : character.reach_distance) - 1.5
     const surface = character.surface
     const batch = planBatch(board, anchor, from, tick, {
@@ -636,9 +703,11 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (!claim(board, ids, member.id, tick)) return
   member.claims = ids
   member.stats.batches++
+  if (forced !== undefined && ids.indexOf(forced.id) >= 0) member.stats.preemptTaken = (member.stats.preemptTaken ?? 0) + 1
 
   const missing = missingMaterials([...jobs, ...crafts], held)
-  if (missing.length > 0) haul(faction, member, missing, tick)
+  // B32: the haul's sources are chosen for the detour on the way to where the batch is worked (a craft: anywhere).
+  if (missing.length > 0) haul(faction, member, missing, spot ?? (anchor.kind === "craft" ? pos : anchor.pos), config, tick)
   for (const c of crafts) startCraft(member, c)
   if (spot && distance(pos, spot) > 0.5) {
     member.spot = spot
@@ -768,33 +837,78 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
   return true
 }
 
-function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], tick: number): void {
+/**
+ * B32: takes the batch's missing materials straight from wherever the faction holds them (stockpiles and supply
+ * points), possibly from several sources in one trip. Sources are picked greedily from where the member is: first
+ * one that holds the whole remaining need of an item it has (one stop beats several), the smallest detour on the way
+ * to `toward` among those (or among all, if none covers a whole need); ties by unit number. Each take is reserved at
+ * its source until it finishes, so other members don't count the same stack.
+ */
+function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], toward: Pos, config: Config, tick: number): void {
   const board = faction.board
-  const from = member.character.position
-  const first = nearestStockpile(faction, from, missing[0].item)
-  const job = addJob(board, { kind: "haul", pos: first?.position ?? from, payload: { kind: "haul", forMember: member.id } }, tick)
-  claim(board, [job.id], member.id, tick)
-  member.claims.push(job.id)
-  member.stats.hauls++
-  const piles = validStockpiles(faction)
-  for (const need of missing) {
-    let left = need.count
-    for (const chest of piles) {
-      if (left <= 0) break
-      const there = chest.get_item_count(need.item)
-      if (there <= 0) continue
-      const count = math.min(there, left)
-      left -= count
-      const take = { item: need.item, count }
-      reserve(faction, take)
-      // Partial: grab what is there when we arrive, like a player.
-      const action = enqueue(member.controller, { kind: "take", entity: chest, item: need.item, count, allowPartial: true })
-      member.actions.push({ action, job: job.id, reserve: take })
+  const left: Record<string, number> = {}
+  for (const need of missing) left[need.item] = (left[need.item] ?? 0) + need.count
+  // Sources by entity, in the deterministic holdings order.
+  const groups: { entity: LuaEntity; items: Holding[] }[] = []
+  const byId: Record<number, number> = {}
+  for (const h of takeable(faction, config.supplyMinTake)) {
+    if ((left[h.item] ?? 0) <= 0) continue
+    const id = h.entity.unit_number ?? -1
+    let g = byId[id]
+    if (g === undefined) {
+      g = groups.length
+      byId[id] = g
+      groups.push({ entity: h.entity, items: [] })
     }
+    groups[g].items.push(h)
   }
-  if (!hasMoreActionsFor(member, job.id)) {
-    complete(board, job.id, member.id, tick)
-    removeClaim(member, job.id)
+  let cur: Pos = member.character.position
+  const used: Record<number, boolean> = {}
+  let job: CrewJob | undefined
+  for (;;) {
+    let best = -1
+    let bestFull = false
+    let bestCost = 0
+    for (let i = 0; i < groups.length; i++) {
+      if (used[i]) continue
+      const g = groups[i]
+      let covers = false
+      let full = false
+      for (const h of g.items) {
+        const want = left[h.item] ?? 0
+        if (want <= 0) continue
+        covers = true
+        if (h.amount >= want) full = true
+      }
+      if (!covers) continue
+      const p = g.entity.position
+      const cost = distance(cur, p) + distance(p, toward) - distance(cur, toward)
+      if (best < 0 || (full && !bestFull) || (full === bestFull && cost < bestCost - 1e-9)) {
+        best = i
+        bestFull = full
+        bestCost = cost
+      }
+    }
+    if (best < 0) break
+    used[best] = true
+    const g = groups[best]
+    if (job === undefined) {
+      job = addJob(board, { kind: "haul", pos: g.entity.position, payload: { kind: "haul", forMember: member.id } }, tick)
+      claim(board, [job.id], member.id, tick)
+      member.claims.push(job.id)
+      member.stats.hauls++
+    }
+    for (const h of g.items) {
+      const want = left[h.item] ?? 0
+      if (want <= 0) continue
+      const count = math.min(h.amount, want)
+      left[h.item] = want - count
+      reserveAt(faction, g.entity, h.item, count)
+      // Partial: grab what is there when we arrive, like a player.
+      const action = enqueue(member.controller, { kind: "take", entity: g.entity, item: h.item, count, allowPartial: true })
+      member.actions.push({ action, job: job.id, reserve: { item: h.item, count, from: g.entity.unit_number } })
+    }
+    cur = g.entity.position
   }
 }
 

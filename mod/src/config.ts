@@ -146,6 +146,12 @@ export interface Config {
   plannerPlacementSoftClaim: number
   /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
   plannerRouterSoftClaim: number
+  /** B26: placement cost per footprint tile on the near part of another module's growth area (policy placement.growthBand). */
+  plannerPlacementGrowthBand: number
+  /** B26: growth units next to a module that count as its near band (policy placement.growthBandUnits). */
+  plannerPlacementGrowthBandUnits: number
+  /** B26: placement cost per growth unit an expandable module's own band would refuse (policy placement.growthBlocked). */
+  plannerPlacementGrowthBlocked: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
   plannerRouterBundleFactor: number
   /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */
@@ -180,6 +186,12 @@ export interface Config {
   factoryPowerFuelMinutes: number
   /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
   factoryFuelFallback: boolean
+  /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
+  preemptFuelSeconds: number
+  /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */
+  supplyRadius: number
+  /** B32: a supply point holding fewer of an item than this is not worth the walk (stockpiles always count). */
+  supplyMinTake: number
 }
 
 export type ConfigKey = keyof Config
@@ -263,6 +275,9 @@ export function getConfig(): Config {
     plannerPlacementSoftClaim: setting(Settings.plannerPlacementSoftClaim),
     plannerRouterSoftClaim: setting(Settings.plannerRouterSoftClaim),
     plannerRouterBundleFactor: setting(Settings.plannerRouterBundleFactor),
+    plannerPlacementGrowthBand: setting(Settings.plannerPlacementGrowthBand),
+    plannerPlacementGrowthBandUnits: setting(Settings.plannerPlacementGrowthBandUnits),
+    plannerPlacementGrowthBlocked: setting(Settings.plannerPlacementGrowthBlocked),
     plannerCompareMinWork: setting(Settings.plannerCompareMinWork),
     logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
     moduleBuffer: setting(Settings.moduleBuffer),
@@ -279,6 +294,9 @@ export function getConfig(): Config {
     buildStuckRounds: setting(Settings.buildStuckRounds),
     factoryPowerFuelMinutes: setting(Settings.factoryPowerFuelMinutes),
     factoryFuelFallback: setting(Settings.factoryFuelFallback),
+    preemptFuelSeconds: setting(Settings.preemptFuelSeconds),
+    supplyRadius: setting(Settings.supplyRadius),
+    supplyMinTake: setting(Settings.supplyMinTake),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

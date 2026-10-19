@@ -8,6 +8,8 @@ interface UnitTest {
 
 const tests: UnitTest[] = []
 
+declare const os: { getenv(this: void, name: string): string | undefined; exit(this: void, code: number): never }
+
 export function test(name: string, fn: (this: void) => void): void {
   tests.push({ name, fn })
 }
@@ -29,7 +31,8 @@ export function ok(condition: boolean, what = "condition"): void {
  * `npm run test:unit -- -t <text>` and `replay:sweep`) runs only the tests whose name contains that text.
  */
 export function run(suite: string): void {
-  const filter = os.getenv("UNIT_TEST_FILTER")
+  // UNIT_FILTER is the older name (B26), still accepted.
+  const filter = os.getenv("UNIT_TEST_FILTER") ?? os.getenv("UNIT_FILTER")
   let failed = 0
   let skipped = 0
   for (const t of tests) {

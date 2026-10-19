@@ -178,7 +178,10 @@ reach multiplier (scales build, reach and resource reach through the character's
   reserved so crew members don't plan with the same items.
 - (M3) Haul jobs come in three payloads: a member's own **haul** of materials for its batch, a **deposit** of what
   it carries into the depot (brain-driven factions empty their pockets between jobs), and a **transfer** that
-  collects output from a machine (furnace plates, a stone chest, a coal pair's surplus) into the depot. Fuel jobs
+  moves items from one entity to another. B32 (user, 2026-10-19): a haul takes the batch's materials straight from
+  the depot and the faction's **supply points** (bootstrap furnace outputs and chests, a coal pair's surplus, the
+  factory's output chests, module buffers), several in one trip, reserved per source; the brain no longer creates
+  transfers that shuffle machine output to the depot. Fuel jobs
   also feed ore into furnaces. Deliveries (gather → furnace, craft → depot) insert what fits; leftovers are
   deposited.
 
@@ -372,12 +375,13 @@ tag → filter → in-game validation gate.
     **chest**. The first-electricity kit (`first-electricity-items`, default offshore pump, boiler, steam engine,
     10 small poles) comes once every resource has half its sites; the remaining sites follow.
   - **H2** at most 2 goals in progress, so materials go to the earliest goals.
-  - **H3** everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
+  - **H3** everything gathered or crafted goes to the depot; crew empty their pockets there between
     jobs. Craft jobs take raw materials; the crafting queue makes intermediates.
   - **H4 demand-driven production:** the materials of active jobs and the goal's items are the demand. A
-    shortfall is met by collecting from the faction's machines, then hand-crafting, then hand-mining (ore goes
+    shortfall beyond what the depot and the supply points hold (B32: the crew takes from them directly) is met by
+    temporary cells, then hand-crafting, then hand-mining (ore goes
     straight into a furnace of its kind), with at most one hand-mining job per crew member.
-  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are collected on demand only.
+  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are taken by the jobs that need them (B32), never moved to the depot.
   - **H6** sites go on the patch chosen by distance and size from the depot, on the patch tiles nearest it,
     facing it, one tile apart, on tiles free of trees, rocks and active hand-mining.
   - **H7 exploration:** when a needed resource (or trees) has no known patch, the area around the base is
@@ -428,6 +432,8 @@ Default to configurable (D18). Settings live in three places:
   the plan's own routing work).
 - **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+  B26 (proposed, P38): `planner-placement-growth-band` (4), `planner-placement-growth-band-units` (2),
+  `planner-placement-growth-blocked` (3).
 - **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
   `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
@@ -809,6 +815,18 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   D52 site check (`firstGrowthCoverage`) still accepts a mine whose only ore-bearing growth unit is at the head.
   Proposed: count the tail only for modules that can't grow at the head. This changes mine placement, so it needs
   replays first. Not implemented (M6 report, M6b.3).
+- **P38, growth bands at placement (proposed, B26; M6 report M6b.6):** (a) a module placed in the **near band** of another
+  expandable module (its first `planner-placement-growth-band-units` = **2** growth units, on the end `tryExpand` grows)
+  pays `planner-placement-growth-band` = **4** per footprint tile on top of the 0.5 soft claim (D50 unchanged); a direct
+  partner stays exempt, as from the soft claim (P28): applying it to partners pushed feeders off the smelter's input side
+  and broke the seed 11 replay. (b) An expandable non-mining module scores each candidate site by its own near band:
+  `planner-placement-growth-blocked` = **3** per near unit that `tryExpand` would refuse there (terrain, ore, other
+  modules and their corridor ring, routes, port reservations, interaction tiles, mine and soft claims; units past the
+  first refused one count too). Only the near band counts: checking every unit up to the cap (a smelter's band is 20
+  tiles deep) and 8 per unit pulled the seed 222 cluster apart and its iron feed failed even with undergrounds. Cost:
+  with (b) on, the seed 11 and 3333 stage-1 clusters no longer route **without** undergrounds (a smelter's growth end is
+  its input side, which now turns away from ore, so feeds wrap round it); they do route with them, and both seeds decide
+  "undergrounds first" under D36 / D51 anyway. Values are guesses tuned on six replays; a soak decides.
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

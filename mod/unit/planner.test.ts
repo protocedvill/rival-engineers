@@ -526,8 +526,13 @@ test("policy: expand-first grows an existing module when there is room, places a
     const o = { x: s1.origin.x + math.floor(p.pos.x), y: s1.origin.y + math.floor(p.pos.y) + (p.kind === "belt-in" ? 1 : -1) }
     rows[o.y] = rows[o.y].substring(0, o.x) + "." + rows[o.y].substring(o.x + 1)
   }
-  const walled = planNow(req, YELLOW, asciiTerrain(rows), F, pol)
+  // Without B26's own-band check s1 takes the walled-in spot again (it is still the best one by distance).
+  const walled = planNow(req, YELLOW, asciiTerrain(rows), F, { ...pol, placement: { ...pol.placement, growthBlocked: 0 } })
   eq(walled.layout.modules.length, 2, "blocked growth → a new module")
+  // B26: weighted enough, s1 avoids the spot where it could not grow, and grows. (At the default 3 per blocked near
+  // unit the walled spot still wins: moving costs more than the 6 the two blocked near units add.)
+  const b26 = planNow(req, YELLOW, asciiTerrain(rows), F, { ...pol, placement: { ...pol.placement, growthBlocked: 20 } })
+  eq(b26.layout.modules.length, 1, "B26: s1 is placed where it can grow, and grows")
 })
 
 test("policy: selection by config and by applies(); new policies register without touching the planner", () => {
