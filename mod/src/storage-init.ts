@@ -1,5 +1,9 @@
-// All persistent state lives in `storage` (SPEC §5.6). Every key is initialised here.
+import { migrateStorage } from "./storage-schema"
+
+// All persistent state lives in `storage` (SPEC §5.6). Every base key is initialised here; subsystem-owned optional
+// tables initialize lazily. Migrations run before defaults so they can distinguish an absent legacy field.
 export function initStorage(): void {
+  migrateStorage(storage)
   storage.pathRequests ??= {}
   storage.configOverrides ??= {}
   storage.controllers ??= {}

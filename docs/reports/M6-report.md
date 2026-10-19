@@ -906,3 +906,39 @@ Look for:
 | Shared mine part: drills | `mine-plan.ts` `beltDrillCap` | 2 lanes × lane speed ÷ drill rate (30 electric on iron, yellow) | Game data: one collector, one output belt. | no (game-derived) |
 | Overlay caps | `review/growth-overlay.ts` | 80 modules, 3,000 ore edges per redraw; patch margin 8 tiles | Keeps a redraw cheap on a big base; guesses. | no |
 | Captured-patch coverage bound | `mod/unit/growth-geometry.test.ts` | ≥ 95% of the 1-tile-grid upper bound | Test threshold: the lane grid gives up a few edge tiles (96-100% observed). | no (test) |
+
+## M6b.10: agent workflow refactor and diagnostics (2026-10-19, Codex session, merged by the manager)
+
+Branch `refactor/agent-phase1` (user-requested review of where agents get stuck; phases checked in with the user in
+that session):
+- **Phase 1:** `AGENTS.md` as the tool-neutral entry point with routed guides in `docs/agent/` (when to read which
+  guide, and what goes wrong without it); `docs/HANDOFF.md` archived (`docs/archive/`), replaced by `npm run status`;
+  `npm run doctor`, `npm run diagnose -- <run> [seed] [faction]`; `run.json` soak manifests (commit, dirty state, build
+  hash, per-seed status); structured goal → planner → job blocker diagnostics in telemetry.
+- **Phase 2:** factory goal scheduling extracted as pure `strategy/goal-selection.ts`, replayable from a live
+  `goal_selection_snapshot` (T1 `goal-selection`).
+- **Phase 3:** `storage-schema.ts` (current saves adopted as schema 1, newer schemas fail closed); the runtime config
+  map is built from the settings name registry; `npm run check:architecture` checks settings alignment and keeps the
+  pure modules free of Factorio globals.
+- **Phase 4 (diagnostics the user picked: 1, 2, 4, 5, 6, 7):** bounded decision history per category
+  (`diagnostic-events.ts`: crew plan rejections, haul sources with raw/reserved/takeable and detour, growth failures);
+  placement rejection certificates and route-failure evidence on `PlanJob.evidence`; churn warnings; more cross-layer
+  invariants (dependency cycles, missing plans/jobs/layout modules, invalid supply entities); the last failed growth
+  reason on B33's *Growth plans* overlay; `seed-N/failure.json` on an unexpected Factorio exit.
+
+Merge notes (manager): Codex's own growth overlay overlapped B33's; B33's was kept, with Codex's failure label added.
+Placement certificates reuse the plan trace's rejection codes (`region`, `hard`, `coverage`, `foreign-ore`, ...), so
+one vocabulary serves both. Phase 4 was finished by the manager: identical idle crew-plan observations still coalesce,
+but batch events no longer do (a repeat would hide its job ids). Simulation decisions are unchanged.
+
+### Diagnostic observability values (agent refactor)
+
+These values affect retained evidence and warnings only; they do not alter simulation decisions.
+
+| Name | Where | Value | Why this value | Status |
+|---|---|---|---|---|
+| Decision events retained | `diagnostic-events.ts` | 512 per category | User decision. Independent crew-plan, crew-supply, goal, planner and churn buckets prevent one noisy producer from evicting another subsystem's evidence. | accepted |
+| Churn minimum volume | `diagnostic-events.ts` | 32 observations | Avoid warnings from a handful of ordinary retries. Diagnostic guess; no simulation effect. | proposed, user decision pending |
+| Churn poor-outcome ratio | `diagnostic-events.ts` | worse than 10:1 | Historical B30 was roughly 6,500 claim/releases for two completions, so this catches the demonstrated failure far below its observed severity. Diagnostic guess; no simulation effect. | proposed, user decision pending |
+| Rejected job samples | `crew-diagnostics.ts` | 3 ids per reason | Counts retain full magnitude; three ids make the class inspectable without duplicating the Job Board. Diagnostic display bound. | proposed |
+| Fatal log tail | `tools/harness/soak.py` | 200 lines per log | Keeps `failure.json` compact while retaining both Factorio's current log and captured stdout around a fatal exit. Full logs remain beside it. | proposed |

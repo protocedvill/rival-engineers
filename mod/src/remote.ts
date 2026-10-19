@@ -6,7 +6,7 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
-import { getFactory, startFactory } from "./strategy/factory"
+import { factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
 import { tkey } from "./planner/grid"
@@ -14,6 +14,7 @@ import { planGrowth } from "./planner/grow"
 import { prototypeFacts } from "./modules/prototype-facts"
 import { getTerrain, terrainView } from "./planner/terrain"
 import { dumpEntities, writeTelemetry } from "./telemetry"
+import { factionDiagnostics } from "./diagnostics"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
@@ -63,6 +64,10 @@ export function registerRemoteInterface(): void {
       const events = mustFaction(name).board.claimLog
       return events.map((e) => ({ ...e }))
     },
+    /** Cross-layer goal → planner → build → Job Board links plus stable blocker codes and invariant violations. */
+    diagnostics: (name: string) => factionDiagnostics(name),
+    /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
+    goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
     /** dump_entities(file, center, radius, surface?, water?) */
     dump_entities: (file: string, center: MapPosition, radius: number, surface?: string, water?: boolean) =>
       dumpEntities(file, center, radius, surface !== undefined ? game.surfaces[surface] : undefined, water),

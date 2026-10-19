@@ -25,6 +25,7 @@ import {
 } from "./board"
 import { addPlaceJob, factionSurface } from "./faction"
 import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
+import { recordCrewPlan, recordCrewSupply } from "./crew-diagnostics"
 
 declare global {
   interface RivalEngineersStorage {
@@ -633,13 +634,25 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
   if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  const rejected: Record<number, string> = {}
   const accept = (job: CrewJob): boolean => {
-    if (isSelfJob(job) || !hasMaterials(job, avail)) return false
-    if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
+    if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
+    if (!hasMaterials(job, avail)) { rejected[job.id] = "materials"; return false }
+    if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) { rejected[job.id] = "fuel-target"; return false }
     return true
   }
   let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)
-  if (!anchor) return
+  if (!anchor) {
+    let claimed = 0
+    let waiting = 0
+    for (const id of board.active) {
+      const job = board.jobs[id]
+      if (job.status === "claimed") claimed++
+      else if (!isReady(board, job, tick)) waiting++
+    }
+    recordCrewPlan(faction, member, tick, "idle", rejected, { forced: forced?.id, active: board.active.length, claimed, waiting })
+    return
+  }
   member.stats.plans++
   // D38 opportunistic crafting: a craft job is queued and runs while the member does other work, like a player who
   // queues crafts and walks on. A craft anchor takes the next other work along; other work takes open crafts along
@@ -710,6 +723,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (forced !== undefined && ids.indexOf(forced.id) >= 0) member.stats.preemptTaken = (member.stats.preemptTaken ?? 0) + 1
 
   const missing = missingMaterials([...jobs, ...crafts], held)
+  recordCrewPlan(faction, member, tick, "batch", rejected, { forced: forced?.id, anchor: anchor.id, jobs: ids, missing })
   // B32: the haul's sources are chosen for the detour on the way to where the batch is worked (a craft: anywhere).
   if (missing.length > 0) haul(faction, member, missing, spot ?? (anchor.kind === "craft" ? pos : anchor.pos), config, tick)
   for (const c of crafts) startCraft(member, c)
@@ -868,6 +882,7 @@ function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], t
   }
   let cur: Pos = member.character.position
   const used: Record<number, boolean> = {}
+  const selected: { unit: number; depot: boolean; item: string; available: number; taken: number; detour: number }[] = []
   let job: CrewJob | undefined
   for (;;) {
     let best = -1
@@ -911,9 +926,13 @@ function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], t
       // Partial: grab what is there when we arrive, like a player.
       const action = enqueue(member.controller, { kind: "take", entity: g.entity, item: h.item, count, allowPartial: true })
       member.actions.push({ action, job: job.id, reserve: { item: h.item, count, from: g.entity.unit_number }, src: h.kind })
+      selected.push({ unit: g.entity.unit_number ?? -1, depot: h.depot, item: h.item, available: h.amount, taken: count, detour: bestCost })
     }
     cur = g.entity.position
   }
+  const unfilled: Record<string, number> = {}
+  for (const [item, count] of pairs(left)) if ((count as number) > 0) unfilled[item as string] = count as number
+  recordCrewSupply(faction, member, tick, { missing, candidateSources: groups.length, selected, unfilled, toward })
 }
 
 function enqueueWork(faction: FactionState, member: CrewMember, job: CrewJob): void {

@@ -30,12 +30,15 @@ works as long as the storage layout is compatible, and it only shows the fix's e
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -57,6 +60,129 @@ PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
 GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
+FAILURE_LOG_TAIL_LINES = 200
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_json(path, value):
+    """Write a diagnostic artifact without leaving a plausible-looking partial file."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def log_tail(path, lines=FAILURE_LOG_TAIL_LINES):
+    if not path.exists():
+        return []
+    return path.read_text(errors="replace").splitlines()[-lines:]
+
+
+def write_failure_artifact(out_dir, seed, *, reason, command=None, return_code=None,
+                           exit_reason=None, failed_fast=None, telemetry=None, error=None):
+    """Self-contained first stop for a crashed run; paths point to bulk evidence beside it."""
+    artifact = {
+        "schema": 1,
+        "capturedAt": utc_now(),
+        "seed": seed,
+        "reason": reason,
+        "error": error,
+        "command": command,
+        "returnCode": return_code,
+        "exitReason": exit_reason,
+        "failedFast": failed_fast,
+        "lastTick": (telemetry or {}).get("tick"),
+        "diagnostics": {name: faction.get("diagnostics")
+                        for name, faction in (telemetry or {}).get("factions", {}).items()},
+        "logs": {
+            "factorio-current.log": log_tail(out_dir / "factorio-current.log"),
+            "factorio-stdout.log": log_tail(out_dir / "factorio-stdout.log"),
+        },
+        "evidence": {
+            name: sorted(str(path.relative_to(out_dir)) for path in (out_dir / name).rglob("*") if path.is_file())[-1:]
+            for name in ("frames", "graphs", "failed-plans", "plans") if (out_dir / name).exists()
+        },
+    }
+    atomic_json(out_dir / "failure.json", artifact)
+
+
+def git_output(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+
+
+def build_digest():
+    """Content identity of the exact generated mod loaded by Factorio (not an mtime proxy)."""
+    build = ROOT / "mod" / "build"
+    if not build.exists():
+        return None
+    digest = hashlib.sha256()
+    for path in sorted(p for p in build.rglob("*") if p.is_file()):
+        digest.update(str(path.relative_to(build)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+class RunManifest:
+    """Atomically updated experiment provenance. Scorecards remain backward-compatible result summaries."""
+
+    def __init__(self, path, cfg, jobs):
+        self.path = path
+        self.lock = threading.Lock()
+        changed = git_output("status", "--short").splitlines()
+        self.data = {
+            "schema": 1,
+            "status": "running",
+            "startedAt": utc_now(),
+            "completedAt": None,
+            "invocation": sys.argv,
+            "repo": {
+                "commit": git_output("rev-parse", "HEAD"),
+                "branch": git_output("rev-parse", "--abbrev-ref", "HEAD"),
+                "dirty": bool(changed),
+                "changed": changed,
+            },
+            "build": {"sha256": build_digest()},
+            "configSha256": hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest(),
+            "jobs": jobs,
+            "seeds": {str(seed): {"status": "pending"} for seed in cfg["run"]["seeds"]},
+        }
+        self.write()
+
+    def write(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.data, indent=2) + "\n")
+        os.replace(tmp, self.path)
+
+    def seed(self, seed, status, **fields):
+        with self.lock:
+            item = self.data["seeds"][str(seed)]
+            item.update(fields)
+            item["status"] = status
+            item["updatedAt"] = utc_now()
+            self.write()
+
+    def finish(self):
+        with self.lock:
+            self.data["status"] = "complete"
+            self.data["completedAt"] = utc_now()
+            self.write()
+
+    def scorecard_meta(self):
+        with self.lock:
+            finished = sum(1 for seed in self.data["seeds"].values()
+                           if seed["status"] not in ("pending", "running"))
+            return {
+                "partial": finished != len(self.data["seeds"]),
+                "finishedSeeds": finished,
+                "totalSeeds": len(self.data["seeds"]),
+                "manifest": "run.json",
+                "commit": self.data["repo"]["commit"],
+                "buildSha256": self.data["build"]["sha256"],
+            }
 
 
 def load_config(path, args):
@@ -199,7 +325,7 @@ class FailFast:
         return reason
 
 
-def run_seed(cfg, seed, out_dir, port=None, from_save=None):
+def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
     run = cfg["run"]
     run_dir = setup_dir(cfg, seed)
     data = run_dir / "data"
@@ -233,14 +359,20 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     started = time.time()
     stopped_early = False
     failed_fast = None
+    done = False
+    capped = False
+    exit_reason = "process-exit"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        if status:
+            status("running", pid=proc.pid, startedAt=utc_now())
         while proc.poll() is None:
             time.sleep(1)
             failed_fast = watch.poll()
             done = run["stop_when_done"] and (script_out / "done.json").exists()
             capped = snapshots and watch.tick >= ticks
             if done or failed_fast or capped:
+                exit_reason = "milestone" if done else "fail-fast" if failed_fast else "game-time-cap"
                 time.sleep(0.5 if done else 0)
                 proc.kill()  # --benchmark ignores SIGTERM
                 stopped_early = bool(done or failed_fast)
@@ -265,6 +397,13 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     r = summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early, done_milestone(cfg))
     r["failed_fast"] = failed_fast
     r["saves"] = sorted(str(p) for p in (data / "saves").glob("min-*.zip")) if snapshots else []
+    fatal = exit_reason == "process-exit" and proc.returncode != 0
+    if fatal:
+        write_failure_artifact(out_dir, seed, reason="Factorio exited unexpectedly", command=cmd,
+                               return_code=proc.returncode, exit_reason=exit_reason,
+                               failed_fast=failed_fast, telemetry=telemetry)
+    r["_manifest"] = {"pid": proc.pid, "returnCode": proc.returncode, "exitReason": exit_reason,
+                      "failureArtifact": f"seed-{seed}/failure.json" if fatal else None}
     return r
 
 
@@ -274,13 +413,15 @@ BENCH = re.compile(r"Performed (\d+) updates in ([0-9.]+) ms")
 
 def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_ms=DEFAULT_DONE_MILESTONE):
     text = log_file.read_text(errors="replace")
+    stdout_text = stdout_file.read_text(errors="replace")
     intervals = [(int(t), int(n), float(ms)) for t, n, ms in DURATION.findall(text) if int(n) > 0]
     per_tick = [ms / n for _, n, ms in intervals]
     ai_total_ms = sum(ms for _, _, ms in intervals)
     ai_ticks = sum(n for _, n, _ in intervals)
     final_tick = telemetry.get("tick", 0)
-    bench = BENCH.search(stdout_file.read_text(errors="replace"))
-    errors = [l for l in text.splitlines() if "Error" in l and "rival-engineers" in l][:5]
+    bench = BENCH.search(stdout_text)
+    errors = [l for l in (text + "\n" + stdout_text).splitlines()
+              if "Error" in l and ("rival-engineers" in l or "Lua" in l)][:5]
     factions = {}
     for name, f in telemetry.get("factions", {}).items():
         brain = f.get("brain") or {}
@@ -450,6 +591,8 @@ def main():
         cfg["run"]["jobs"] = jobs  # recorded in scorecard.json: wall times depend on it
         out_dirs[cfg["run"]["name"]] = ROOT / "out" / "soak" / cfg["run"]["name"]
         out_dirs[cfg["run"]["name"]].mkdir(parents=True, exist_ok=True)
+    manifests = {cfg["run"]["name"]: RunManifest(out_dirs[cfg["run"]["name"]] / "run.json", cfg, jobs)
+                 for cfg in cfgs}
     results = {name: {} for name in names}
     started = time.time()
     print(f"{len(tasks)} run(s), {jobs} at a time", flush=True)
@@ -457,9 +600,23 @@ def main():
     ports = {(c["run"]["name"], s): 34200 + i for i, (c, s) in enumerate(tasks)}
 
     def task(cfg, seed):
-        print(f"{cfg['run']['name']} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
-        return run_seed(cfg, seed, out_dirs[cfg["run"]["name"]] / f"seed-{seed}", ports[(cfg["run"]["name"], seed)],
-                        args.from_save and str(Path(args.from_save).resolve()))
+        name = cfg["run"]["name"]
+        manifest = manifests[name]
+        print(f"{name} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
+        try:
+            r = run_seed(cfg, seed, out_dirs[name] / f"seed-{seed}", ports[(name, seed)],
+                         args.from_save and str(Path(args.from_save).resolve()),
+                         lambda state, **fields: manifest.seed(seed, state, **fields))
+            meta = r.pop("_manifest")
+            state = "passed" if r["pass"] else "failed-fast" if r.get("failed_fast") else "failed"
+            manifest.seed(seed, state, **meta, gameMinutes=r["game_minutes"], wallSeconds=r["wall_seconds"])
+            return r
+        except BaseException as e:
+            seed_dir = out_dirs[name] / f"seed-{seed}"
+            seed_dir.mkdir(parents=True, exist_ok=True)
+            write_failure_artifact(seed_dir, seed, reason="Harness exception", error=repr(e))
+            manifest.seed(seed, "crashed", error=repr(e))
+            raise
 
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {pool.submit(task, cfg, seed): (cfg, seed) for cfg, seed in tasks}
@@ -484,10 +641,13 @@ def main():
             print("\n".join(lines), flush=True)
             # The scorecard so far, in config seed order.
             ordered = [results[name][s] for s in cfg["run"]["seeds"] if s in results[name]]
-            (out_dirs[name] / "scorecard.json").write_text(json.dumps({"config": cfg, "results": ordered}, indent=1))
-            (out_dirs[name] / "scorecard.md").write_text(markdown(cfg, ordered))
+            meta = manifests[name].scorecard_meta()
+            (out_dirs[name] / "scorecard.json").write_text(json.dumps({"meta": meta, "config": cfg, "results": ordered}, indent=1))
+            warning = f"> **PARTIAL:** {meta['finishedSeeds']}/{meta['totalSeeds']} seeds finished. See `run.json`.\n\n" if meta["partial"] else ""
+            (out_dirs[name] / "scorecard.md").write_text(warning + markdown(cfg, ordered))
     for cfg in cfgs:
         name = cfg["run"]["name"]
+        manifests[name].finish()
         ordered = [results[name][s] for s in cfg["run"]["seeds"]]
         if args.gif:
             render_gifs(out_dirs[name], ordered)

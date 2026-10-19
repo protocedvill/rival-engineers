@@ -492,6 +492,8 @@ test("placement: mining outpost on a mixed patch keeps every drill area free of 
   }
   const none = placeNow({ id: "mine", def, targets: {}, center: { x: 20, y: 20 }, region: { x: 0, y: 0, w: 80, h: 80 } }, newLayout(), asciiTerrain(mixed), policy())
   eq(none.phase, "failed", "no pure spot on an all-mixed patch")
+  ok((none.rejections?.["foreign-ore"]?.count ?? 0) > 0, "failure certificate identifies mixed ore")
+  ok(none.rejections?.["foreign-ore"]?.sample !== undefined, "failure certificate retains a representative tile")
 })
 
 test("policy: expand-first grows an existing module when there is room, places a new one when blocked", () => {

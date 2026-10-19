@@ -8,7 +8,7 @@ import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitPlacement, expansionCandidate, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
@@ -106,6 +106,10 @@ export interface PlanStats {
   maxStepWork: number
 }
 
+export type PlanEvidence =
+  | { kind: "placement"; subject: string; reason: string; candidates: number; rejections: Record<string, { count: number; sample: Vec }> }
+  | { kind: "route"; subject: string; reason: string; rip: boolean; windowScale: number; expansions: number }
+
 export interface PlanJob {
   request: PlanRequest
   tier: BeltTier
@@ -129,6 +133,8 @@ export interface PlanJob {
   ripCount: Record<string, number>
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number }
   failures: Record<string, string>
+  /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
+  evidence?: PlanEvidence[]
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
   expanded: Record<string, { module: string; units: number }>
   /** B23: a shared whole-patch mine that could not be expanded for the request: request id → reason. */
@@ -298,6 +304,16 @@ function moduleRequest(job: PlanJob, id: string): ModuleRequest {
   error(`unknown module request ${id}`)
 }
 
+function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): void {
+  job.evidence ??= []
+  job.evidence.push({ kind: "placement", subject: id, reason: search.reason ?? "placement failed", candidates: search.candidates, rejections: placementFailureCertificate(search) })
+}
+
+function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
+  job.evidence ??= []
+  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions })
+}
+
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
   return { module: job.alias[ref.module] ?? ref.module, port: ref.port }
 }
@@ -449,6 +465,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
       commitPlacement(job.layout, s.result!, facts, policy)
     }
     else {
+      placementEvidence(job, id, s)
       job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
     }
@@ -577,6 +594,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       }
     }
     if (!grown) {
+      placementEvidence(job, id, s)
       // B23: a request that wanted the shared mine says so in its failure.
       const wf = job.wholeFail?.[id]
       job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
@@ -639,6 +657,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.stats.searches++
   }
   if (st === "failed") {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
     // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
     // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
     // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
@@ -666,6 +685,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   }
   const res = searchResult(cur.search, job.layout, policy)
   if (res.selfCross !== undefined) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `route crosses itself at ${res.selfCross}`)
     if (cur.retries < 3) {
       cur.retries++
       cur.avoid[res.selfCross] = true
@@ -683,6 +703,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
     if (n >= policy.router.maxRipups) {
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
       if (!tryReplace(job, c, facts)) {
         job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
         traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")

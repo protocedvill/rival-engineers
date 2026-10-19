@@ -4,6 +4,7 @@ import { brainReport } from "./strategy/bootstrap"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { setAiProfiler } from "./profiling"
 import { workReport } from "./work"
+import { factionDiagnostics } from "./diagnostics"
 
 // Telemetry (SPEC §5.6, §7 T3): JSON written through helpers.write_file (server-side only, no gameplay
 // effect) for the soak harness, plus entity frame dumps for tools/render. Off unless the intervals are set.
@@ -113,7 +114,7 @@ export function factionTelemetry() {
       const p = j.payload as { item?: string; recipe?: string }
       open.push({ id, kind: j.payload.kind, item: p.item ?? p.recipe, materials: j.materials, attempts: j.attempts, retryAt: j.retryAt, reason: j.reason, pos: j.pos })
     }
-    out[name] = { openJobs: open, depot, force: f.force, brain: brainReport(f), factory: factoryReport(name), research: researchState(f.force), counters: board.counters, activeJobs: jobs, crew }
+    out[name] = { openJobs: open, depot, force: f.force, brain: brainReport(f), factory: factoryReport(name), diagnostics: factionDiagnostics(name), research: researchState(f.force), counters: board.counters, activeJobs: jobs, crew }
   }
   return out
 }

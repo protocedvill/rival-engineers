@@ -74,6 +74,8 @@ export interface PlacementSearch {
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
+  /** Machine-readable certificate explaining why candidates were rejected. */
+  rejections?: Record<string, { count: number; sample: Vec }>
   result?: PlacedModule
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
@@ -366,43 +368,50 @@ function sum(s: PlacementSearch, layer: string, r: Rect): number | undefined {
 let why = ""
 let lastF: CandidateFeatures | undefined
 
+/** Rejects a candidate: the trace's `why` and the search's failure certificate (counts and one sample per reason). */
+function reject(s: PlacementSearch, reason: string, ox: number, oy: number): undefined {
+  why = reason
+  s.rejections ??= {}
+  const finding = s.rejections[reason]
+  if (finding === undefined) s.rejections[reason] = { count: 1, sample: { x: ox, y: oy } }
+  else finding.count++
+  return undefined
+}
+
+export function placementFailureCertificate(s: PlacementSearch): Record<string, { count: number; sample: Vec }> {
+  return s.rejections ?? {}
+}
+
 function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number): { score: number; coverage: number; clear: number } | undefined {
   const def = td.def
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
   if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) {
-    why = "region"
-    return undefined
+    return reject(s, "region", ox, oy)
   }
   if (sum(s, "hard", rect) !== 0) {
-    why = "hard"
-    return undefined
+    return reject(s, "hard", ox, oy)
   }
   for (const a of s.req.avoid ?? []) {
     if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) {
-      why = "avoid"
-      return undefined
+      return reject(s, "avoid", ox, oy)
     }
   }
   const mining = isMining(def)
   if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) {
-    why = "ore"
-    return undefined
+    return reject(s, "ore", ox, oy)
   }
   if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) {
-    why = "corridor"
-    return undefined
+    return reject(s, "corridor", ox, oy)
   }
   const clear = sum(s, "clear", rect)!
   if (clear > policy.obstacles.maxClearCost) {
-    why = "clear-cost"
-    return undefined
+    return reject(s, "clear-cost", ox, oy)
   }
   if (def.site === "shore") {
     for (const w of def.anchor?.water ?? []) {
       const wr = { x: ox + w.x, y: oy + w.y, w: w.w, h: w.h }
       if (sum(s, "water", wr) !== w.w * w.h) {
-        why = "shore"
-        return undefined
+        return reject(s, "shore", ox, oy)
       }
     }
   }
@@ -414,13 +423,11 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
       const area = { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h }
       const n = sum(s, "res", area)
       if (n === undefined || n < policy.minOreCoverage * a.w * a.h) {
-        why = "coverage"
-        return undefined
+        return reject(s, "coverage", ox, oy)
       }
       // B6: a drill mines every ore in its area; a second ore would clog the single-item line (D23).
       if (sum(s, "ore", area)! !== n) {
-        why = "foreign-ore"
-        return undefined
+        return reject(s, "foreign-ore", ox, oy)
       }
       have += n
       all += a.w * a.h
@@ -440,8 +447,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     if (cands.length > 0) {
       growthCoverage = Math.max(...cands)
       if ((s.req.def.expand?.maxUnits ?? 0) > 0 && growthCoverage === 0) {
-        why = "no-growth-ore"
-        return undefined
+        return reject(s, "no-growth-ore", ox, oy)
       }
     }
   }
@@ -472,13 +478,11 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     const x = ox + p.ox
     const y = oy + p.oy
     if (sum(s, "hard", { x, y, w: 1, h: 1 }) !== 0) {
-      why = "port-blocked"
-      return undefined
+      return reject(s, "port-blocked", ox, oy)
     }
     // Port clearance: the tile beyond the outside tile is not another module or blocked, so the port has a lane out.
     if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) {
-      why = "port-lane"
-      return undefined
+      return reject(s, "port-lane", ox, oy)
     }
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]

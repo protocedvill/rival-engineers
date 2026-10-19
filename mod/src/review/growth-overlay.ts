@@ -13,7 +13,8 @@ import { OverlayContext, registerOverlayLayer } from "./overlay"
 //   units its cap would allow past the end of its ore (red, not claimed);
 // - D52 whole-patch mines: the full planned footprint (violet), built drills (green), still unbuilt planned drills
 //   (violet, thin), and the outline of the ore patch around them (yellow, read from the surface's resources).
-// Rendering only: nothing is stored besides the render objects the overlay framework already tracks.
+// Rendering only: nothing is stored besides the render objects the overlay framework already tracks. Read this
+// overlay before debugging growth placement: it shows the space the planner plans to use, not only what is built.
 
 const WHITE: Color = { r: 0.9, g: 0.9, b: 0.9, a: 0.8 }
 const AMBER: Color = { r: 1, g: 0.65, b: 0.1 }
@@ -153,6 +154,16 @@ function drawGrowth(ctx: OverlayContext): void {
   const surface = game.get_surface(ctx.faction.surface)
   if (surface === undefined) return
   drawGrowthLayout(f.layout, surface, [ctx.player], ctx.ttl, ctx.add)
+  // The last failed in-place growth plan per module: the reason a grow goal gave up, next to the module.
+  for (const m of f.layout.modules) {
+    const fail = f.growthDiagnostics?.[m.id]
+    if (fail === undefined) continue
+    add(ctx, `growth failed t${fail.tick} (${fail.units} units): ${fail.reason}`, { x: m.rect.x + 0.2, y: m.rect.y + m.rect.h + 0.3 })
+  }
+}
+
+function add(ctx: OverlayContext, text: string, target: { x: number; y: number }): void {
+  ctx.add(rendering.draw_text({ text, surface: ctx.faction.surface, target, color: RED, scale: 1, players: [ctx.player], time_to_live: ctx.ttl }))
 }
 
 registerOverlayLayer("growth", "Growth plans (next units, mine plans, ore)", drawGrowth, false)
