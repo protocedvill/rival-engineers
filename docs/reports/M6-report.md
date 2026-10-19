@@ -400,3 +400,36 @@ cycle leftovers, crew-fed edges, verdict rows, status counts and cause text. T2 
 faction with a hand-built two-node chain (reconciler.test.ts's pattern) — the layout is asserted headless
 (levels, counts, verdict) and, with a player, the window opens, renders 2 chips sharing the faction cycle, and
 closes; a faction without a factory gets the note. Registered in `control.ts`.
+
+## M6b.1: B17 preemption — collect-first material sourcing (2026-10-19)
+
+The B17 row: a soak (`faction b17-a`/`b17-b` labs, the `B17 probe:` log lines during development) showed the crew
+hand-mining ore while bootstrap furnaces held full plate stacks. The brain's collect transfer jobs were open and
+ready the whole time — root cause is on the crew side: `planNext` only fires between batches (when a member's
+actions empty), and `selectJob` never interrupts work already in flight, so an open high-priority transfer had to
+wait for every busy member to finish a whole low-priority gather batch first.
+
+**Fix (951e1da, `jobs/crew.ts`):** crew preemption. `stepFaction` checks each member with work in flight
+(claims + queued actions) against the open board first; when a **strictly higher-priority ready** job exists and is
+worth the drop (`isPreemptable`: fuel jobs or a transfer payload — a back-off or claimed job never pulls a member
+off started work), the member preempts itself: `resetMember` drops the whole batch (claim release without the
+failure penalty) and it re-plans on the next tick, where plain priority ordering sends it to the preempting job.
+`CrewStats.preemptions` accounts the drops. No new setting or constant: it reuses the existing priority table
+(fuel 100 > place 90 > transfer 60 > gather 20), so a preempt only ever moves work *forward*.
+
+**Tests (T2 `test/bootstrap-sources_test.ts`):** two labs, empty depot chest, a plated furnace with 100 plates.
+1. The basic collect round trip on an idle crew (plates reach the depot; no ore patches in the lab, so the
+   collect is the only plate source).
+2. Preempt-over-hand-mining: `tripMaxJobs=1` (test-only override — otherwise `planTrip` chains the row of 12
+   neighbouring trees into two members' trips and the third never gets work, so the crew can't be saturated),
+   wait until all three members are provably in flight on gather jobs, then inject a craft demand and force a
+   think; the collect transfer appears into a saturated crew where only a preemption can claim it. Asserts
+   `preemptions > 0`, the depot empty at inject, and the trees surviving the dropped batch.
+
+Both pass in-tick (~0.5 s). The soak probe code itself (the `B17 probe` diagnostics) was never committed —
+stripped from the fix. Full suite (119 tests, 12 shards) green.
+
+### Magic numbers for the user (M6b.1)
+
+None new: preemption uses the existing priority table, and the engine-capability numbers it relies on (reach 10,
+character speed) were already measured in `engine-capabilities_test`.
