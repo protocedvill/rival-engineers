@@ -1032,3 +1032,22 @@ impossible placements each leftover-ghost round and eventually stalled.
 no ghost and no place job, while genuinely new poles in the same replacement line are still ghosted. T2 `factory`
 "B41: a re-laid pole line reuses a live pole instead of ghosting over it" pins both cases. No new magic numbers.
 
+## M6b.14: B42 escape pick-ups don't restore entities scheduled for removal (2026-10-19)
+
+The user's review report `125521-the-underground-belt-is-schedule` showed an underground belt left between steam
+engines in faction 2's power plant, on the tile of growth g6's last small-pole ghost. g6 had scheduled the belt for
+removal (a clear job; the coal route was rerouted). Crew members boxed in during the build used the M6/B22 escape,
+which picks up an own entity and always queues a ghost to re-place it: the review log shows three pick-ups of that belt
+(members 4 and 3, 684–711 s). Each pick-up made the clear job fail `target-invalid`, which the growth's clear phase
+accepts as finished, and then the escape ghost's priority-90 place job rebuilt the belt. Nothing was left to remove
+it; once the engines stood on both sides it blocked the pole, and g6 hit BUILD STUCK after 10 rounds.
+
+`unbox` (`jobs/crew.ts`) now checks for an active clear job on the entity it picks up. If there is one, the pick-up
+does that job: it claims the job when it is open, so the job ends done, and queues no ghost. T2 `jobs` "B42: a boxed-in
+member that picks up an entity scheduled for removal…" boxes a member in a ring of chests with a pipe that has a clear
+job; on the old code the clear job fails `target-invalid` and the pipe is ghosted back, with the fix the job is done
+by the member and the pipe stays gone. Targeted runs: T2 "job board" (11 tests) and all T1 pass; full suite and soaks
+not run by this change.
+
+Proposed, not done: a growth ghost that can't be placed because an own entity outside the layout sits under it could
+clear that entity rather than retry for 10 rounds (another way an obsolete entity can come back). No new magic numbers.

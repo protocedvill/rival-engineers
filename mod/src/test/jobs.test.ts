@@ -2,7 +2,7 @@ import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob } from "../jobs/board"
-import { addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
+import { addClearJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { setAiProfiler } from "../profiling"
 import { at, createLab, itemCount, Lab } from "./lab"
@@ -462,6 +462,48 @@ describe("job board", () => {
       done()
       return false
     })
+  })
+
+  test("B42: a boxed-in member that picks up an entity scheduled for removal does its clear job and does not re-place it", () => {
+    const lab = createLab(24)
+    const faction = createFaction("b42-cleared", { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    // A closed ring of iron chests with one pipe in it: the escape picks up the pipe first (pipes rank before
+    // containers), and the pipe is what the planner wants gone (an obsolete route piece in report 125521).
+    let pipe: LuaEntity | undefined
+    for (let x = -2; x <= 2; x++) {
+      for (let y = -2; y <= 2; y++) {
+        if (math.abs(x) !== 2 && math.abs(y) !== 2) continue
+        const name = x === 2 && y === 0 ? "pipe" : "iron-chest"
+        const e = lab.surface.create_entity({ name, position: at(lab, x, y), force: faction.force })!
+        if (name === "pipe") pipe = e
+      }
+    }
+    const pipePos = pipe!.position
+    // Below the place jobs' priority: the member tries the three chest ghosts outside first, fails to walk to each
+    // and is boxed in before it would do the clear job from inside (the pipe is in reach).
+    const clearId = addClearJob(faction, pipe!, -1)
+    const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 10.5, 0.5), force: faction.force })!
+    chest.insert({ name: "wooden-chest", count: 3 })
+    addStockpile(faction, chest)
+    for (const [x, y] of [[10.5, 8.5], [-9.5, 8.5], [0.5, -9.5]]) {
+      lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, x, y), force: faction.force })
+    }
+    planGhosts(faction)
+    awaitEscape(
+      faction,
+      60 * 60 * 5,
+      () => lab.surface.count_entities_filtered({ name: "wooden-chest", force: faction.force }) === 3,
+      () => {
+        const m = storage.crew[faction.crew[0]]
+        const job = faction.board.jobs[clearId]
+        assert((m.stats.unboxed ?? 0) >= 1, `it picked nothing up to get out: pipe ${lab.surface.count_entities_filtered({ name: "pipe", position: pipePos })}, ${describeBoard(faction)}`)
+        assert(job.status === "done" && job.doneBy === m.id, `clear job ${job.status} by ${tostring(job.doneBy)}: ${describeBoard(faction)}`)
+        const back = lab.surface.count_entities_filtered({ name: "pipe", position: pipePos })
+        const ghost = lab.surface.count_entities_filtered({ ghost_name: "pipe", position: pipePos })
+        assert(back === 0 && ghost === 0, `the cleared pipe came back: ${back} entity, ${ghost} ghost`)
+        log(`[b42] boxed-in member did clear job ${clearId} on its way out, no ghost, built the chests at tick ${game.tick}`)
+      },
+    )
   })
 
   test("B22: a member boxed in behind trees mines its way out", () => {

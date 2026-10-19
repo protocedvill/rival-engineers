@@ -400,6 +400,18 @@ function unbox(faction: FactionState, member: CrewMember, tick: number): void {
     return
   }
   const e = plan[0].entity
+  // B42: an entity the planner already wants gone (an obsolete route piece, a growth's pick-up) is not re-placed: the
+  // pick-up does its clear job — claimed here when it is open, so it ends done — and no ghost brings it back.
+  const clearId = clearJobFor(faction, e)
+  if (clearId !== undefined) {
+    const board = faction.board
+    const job = board.jobs[clearId]
+    const ownJob = job.status === "open" && claim(board, [clearId], member.id, tick)
+    if (ownJob) member.claims.push(clearId)
+    member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: e }), job: ownJob ? clearId : undefined })
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (cleared for job ${clearId}, not re-placed)`)
+    return
+  }
   const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: e.position, direction: e.direction, force: faction.force }
   if (e.type === "underground-belt") params.type = e.belt_to_ground_type
   if (e.type === "assembling-machine") params.recipe = e.get_recipe()[0]?.name
@@ -408,6 +420,17 @@ function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   storage.unboxGhosts ??= []
   storage.unboxGhosts.push({ faction: faction.name, params, tick })
   log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (re-placed from a ghost)`)
+}
+
+/** B42: the active clear job that removes `e`, if the planner already scheduled it. */
+function clearJobFor(faction: FactionState, e: LuaEntity): number | undefined {
+  const board = faction.board
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (job.payload.kind !== "clear" || job.status === "done" || job.status === "failed") continue
+    if (job.payload.target.valid && job.payload.target === e) return id
+  }
+  return undefined
 }
 
 /** M6: ghosts for what boxed-in members picked up, once the entity is gone; each gets a place job. */
