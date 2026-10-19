@@ -12,7 +12,7 @@ import { PlayerReview } from "./types"
 //
 // More layers: call `registerOverlayLayer(name, caption, draw)` at file scope in a module imported from
 // review/index.ts (the M5b Factory Graph layer is review/graph-overlay.ts). The layer gets a checkbox in the inspector
-// and is redrawn with the others. Draw through `ctx.add(...)` so the objects are destroyed on the next redraw or
+// and a toggle on the review toolbar (review/toolbar.ts), and is redrawn with the others. Draw through `ctx.add(...)` so the objects are destroyed on the next redraw or
 // when the layer is switched off.
 
 export interface OverlayContext {
@@ -74,10 +74,15 @@ export function clearOverlays(state: PlayerReview): void {
   state.renders = []
 }
 
+/** Overlays show while the inspector is open, or with the toolbar's Overlay button on (B35). */
+export function overlaysVisible(state: PlayerReview): boolean {
+  return state.open || state.overlay === true
+}
+
 /** Redraws every enabled layer for every faction for this player. */
 export function drawOverlays(player: LuaPlayer, state: PlayerReview, ttl: number): void {
   clearOverlays(state)
-  if (!state.open) return
+  if (!overlaysVisible(state)) return
   const add = (obj: LuaRenderObject): void => {
     state.renders.push(obj)
   }

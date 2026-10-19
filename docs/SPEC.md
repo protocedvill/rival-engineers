@@ -525,6 +525,10 @@ In v1, a stall caused by depletion just shows up as a starved node in telemetry.
   out by dataflow depth (not real positions), one chip per node with its reconciler status and measured/planned
   rate, a table of plain edges (item, planned vs measured, probe verdict), status counts, and a cause line in
   each chip's tooltip. Clicking a chip jumps the camera to the module in the base.
+- **Review toolbar and reports (B35, B34):** the review hotkeys (Ctrl+Shift+I/G/R) are enabled while spectating;
+  a top-left toolbar (sandbox and spectators) opens the inspector, the graph window, the overlay with one toggle per
+  registered layer, and the report dialog, which writes a diagnostic bundle (`script-output/rival-engineers/reports/`)
+  and saves the game (`_autosave-re-report-*`) for a later diagnosis.
 
 **Testing:** T1 tests cover the solver (ratios for the red/green chain against hand-computed values,
 e.g. 30+30 SPM → 3.75 Fe/s, 1.25 Cu/s), capacity math and overflow decisions. T2 tests cover measurement

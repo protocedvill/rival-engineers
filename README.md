@@ -158,7 +158,25 @@ spawns. Factions spawn on the first tick per the mod settings (faction count, cr
 starting areas, SPEC §5.7 / D32). In a normal freeplay game with the mod, the inspector works the same way; its
 **Spectate / Take body** button switches between your character and a spectator camera.
 
-**Inspector** (Ctrl+Shift+I, or the magnifier button on the shortcut bar):
+**Review toolbar** (top left, in the sandbox and for any spectator; a spectator has no shortcut bar): *Inspector*,
+*Graph* (the factory-graph window), *Overlay* (draws the overlay layers with the inspector closed) with one toggle per
+overlay layer, and *Report…*. Hotkeys: **Ctrl+Shift+I** inspector, **Ctrl+Shift+G** factory graph, **Ctrl+Shift+R**
+report (they work while spectating; a character player also has them as shortcut-bar buttons).
+
+**Reports** (B34): *Report…* asks what you see, then writes a diagnostic bundle to
+`.factorio-review/script-output/rival-engineers/reports/<tick>-<slug>/` and saves the game as
+`.factorio-review/saves/_autosave-re-report-<tick>-<slug>.zip` (the chat line names both). The bundle:
+`message.txt`; `report.json` (message, tick, save name, surface, your camera position and zoom, controller, the
+inspector's selected faction/crew, game speed, mod version, and per faction the soak telemetry: brain, board job
+counts and open jobs, depot, research, each crew member's pocket, stats, last action and position, plus the work
+report); `entities.json` (a frame dump around the camera, `frame-dump-radius` tiles, `tools/render` format) and
+`graph-<faction>.json` (each Factory Graph). An agent diagnosing one: read `message.txt` and `report.json`, render
+`entities.json` with `tools/render` (with `--graph` for a graph), then reproduce from the save:
+`npm run review -- --load _autosave-re-report-<tick>-<slug>` to watch it, or copy the zip and
+`python3 tools/harness/soak.py --seeds 1 --name repro --from-save <copy>` to resume it headless with the current
+build. The mod's log lines from that session are in `.factorio-review/factorio-current.log` (until the next start).
+
+**Inspector** (Ctrl+Shift+I, the toolbar, or the magnifier button on the shortcut bar):
 - Top row: game speed ×1–×16, Pause/Resume, Step (one tick), Spectate. Overlay checkboxes: *Crew paths and
   actions* (each crew member's walk path, its target, and "#id action · category Ns" above its head) and *Planned
   entities* (ghosts outlined in the faction's colour, brighter when claimed). Overlays are drawn only for you.

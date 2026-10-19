@@ -1,7 +1,7 @@
 import { LuaGuiElement, LuaPlayer, Tags } from "factorio:runtime"
 import { categoryHelp, describeCategory } from "./labels"
 import { crewView, CrewView, factionNames, factionView, FactionView } from "./model"
-import { clearOverlays, drawOverlays, factionColor, layerOn, overlayLayers } from "./overlay"
+import { drawOverlays, factionColor, layerOn, overlayLayers } from "./overlay"
 import { follow, goTo, toggleSpectator, unfollow } from "./sandbox"
 import { TimeBreakdown } from "./time"
 import { PlayerReview, reviewStorage, TIME_CATEGORIES } from "./types"
@@ -41,7 +41,8 @@ export function setInspectorOpen(player: LuaPlayer, open: boolean): void {
   const existing = player.gui.screen[ROOT]
   if (!open) {
     if (existing) existing.destroy()
-    clearOverlays(state)
+    // Clears the overlays, or keeps them when the toolbar's Overlay button is on.
+    drawOverlays(player, state, refreshInterval() + 10)
     return
   }
   if (!existing) {
@@ -63,6 +64,29 @@ export function setInspectorOpen(player: LuaPlayer, open: boolean): void {
 
 export function toggleInspector(player: LuaPlayer): void {
   setInspectorOpen(player, !playerState(player.index).open)
+}
+
+/** Redraws what this player sees after a review setting changed: the inspector (and overlays), or just the overlays. */
+export function redrawReview(player: LuaPlayer): void {
+  const state = playerState(player.index)
+  if (state.open) refreshInspector(player)
+  else {
+    drawOverlays(player, state, refreshInterval() + 10)
+    state.lastRefresh = game.tick
+  }
+}
+
+/** The toolbar's Overlay button: overlays without the inspector window (B35). */
+export function setOverlayOn(player: LuaPlayer, on: boolean): void {
+  playerState(player.index).overlay = on
+  redrawReview(player)
+}
+
+/** The toolbar's layer buttons: the same switch as the inspector's checkboxes. */
+export function toggleLayer(player: LuaPlayer, name: string): void {
+  const state = playerState(player.index)
+  state.layers[name] = !layerOn(state, name)
+  redrawReview(player)
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -342,7 +366,12 @@ export function onInspectorTick(tick: number): void {
   const interval = refreshInterval()
   for (const player of game.connected_players) {
     const state = storage.review?.players[player.index]
-    if (state === undefined || !state.open) continue
+    if (state === undefined) continue
+    if (!state.open) {
+      // Overlays alone (toolbar Overlay button), same cadence.
+      if (state.overlay === true && tick - state.lastRefresh >= interval) redrawReview(player)
+      continue
+    }
     if (state.follow !== undefined) {
       // Stop following a crew member that died (the remote view stays where it was).
       const m = storage.crew[state.follow]

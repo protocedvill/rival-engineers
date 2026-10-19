@@ -43,6 +43,8 @@ export interface PlayerReview {
   crew?: number
   /** Crew member the camera follows (remote view centred on it). */
   follow?: number
+  /** Overlays drawn with the inspector closed (the review toolbar's Overlay button, B35). */
+  overlay?: boolean
   /** Overlay layer name → on. */
   layers: Record<string, boolean>
   /** Rendering objects drawn for this player (destroyed before each redraw). */

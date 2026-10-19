@@ -689,3 +689,68 @@ direction 2 scores against. B29's demand/supply diagnosis is not touched.
 | `planner-placement-growth-band-units` | `settings.ts`, `policy.ts` `placement.growthBandUnits` | 2 | The units a growth goal usually needs first (8 tiles for a smelter); also the depth of the own-band check. The full depth (5 units for a smelter) broke the seed 222 replay. | yes (new, proposed P38) |
 | `planner-placement-growth-blocked` | `settings.ts`, `policy.ts` `placement.growthBlocked` | 3 per near unit | 8 broke seed 222 even with undergrounds; 3 passes it. At 3, the walled-in spot of the planner test still wins over moving. Guess. | yes (new, proposed P38) |
 | Window margin + growth length | `placement.ts` `startWindow` | footprint + corridor + 4 + growth length + corridor.min | Derived: the own band must lie inside the scoring window. | no (derived) |
+
+## M6b.7: B35 review hotkeys for spectators, review toolbar, B34 reports (2026-10-19)
+
+**B35 root cause:** `CustomInputPrototype.enabled_while_spectating` defaults to `false`. The sandbox makes every
+player a spectator, so the engine never raised Ctrl+Shift+I / Ctrl+Shift+G. The handlers, key sequences and
+config were fine: the review profile's `config.ini` rebinds neither, and no vanilla control uses them. The shortcut
+bar is not shown to a spectator, so the shortcut buttons were out of reach as well.
+
+**Fix (`mod/static/data.lua`, `review/toolbar.ts`, `review/index.ts`):**
+- Every review custom input sets `enabled_while_spectating = true`. A third input, Ctrl+Shift+R, opens the report
+  dialog. Each input has a shortcut of the same name. One table in `index.ts` maps the name to its action for both
+  `CustomInputEvent` and `on_lua_shortcut`.
+- **Review toolbar** (`player.gui.top`): appears in the sandbox (`sandboxReady`) and for any spectating player.
+  It is checked every review tick, which also covers saves made before the toolbar existed, and on
+  `on_player_controller_changed`. Buttons: Inspector, Graph, Overlay, one toggle per `overlayLayers()` entry (so B33's
+  growth layer shows up without changes), and Report…. Buttons show their window's state and are rebuilt after
+  every review click, hotkey or checkbox.
+- **Overlay without the inspector:** `PlayerReview.overlay`. Overlays draw while the inspector is open *or* the
+  toolbar's Overlay switch is on, at the inspector's refresh cadence. Closing the inspector now keeps them if the
+  switch is on.
+
+**B34 (`review/report.ts`):** a dialog with a text box. Submitting it writes
+`script-output/rival-engineers/reports/<tick>-<slug>/` and calls `game.auto_save("re-report-<tick>-<slug>")`, which
+saves `_autosave-re-report-<tick>-<slug>.zip`. In single player it saves locally, in multiplayer only the server
+saves, and under `--benchmark` it is a no-op. The bundle holds `message.txt` and `report.json`. `report.json` has the
+message, tick, save name, surface, camera position and zoom, the controller, the physical position, the inspector's
+selection, game speed, mod version, `factionTelemetry()` (the soak serializer, now exported) and `workReport()`. The
+bundle also has `entities.json` (`dumpEntities` around the camera, radius `frame-dump-radius`, with water) and
+`graph-<faction>.json` (`exportFactoryGraph`). In multiplayer only the reporter's machine writes files (`for_player`).
+Mod log lines are not in the bundle: Lua cannot read the log. The README points to `factorio-current.log` instead.
+README "Reports" says how an agent reads a bundle and loads the save (`npm run review -- --load ...` or
+`soak.py --from-save`).
+
+**Tests (T2 `test/review-tools.test.ts`, 4 tests):** (1) every review input is a Lua input enabled while
+spectating, with a shortcut. **On the old data (the `enabled_while_spectating` lines removed) it fails:
+"rival-engineers-toggle-inspector is enabled while spectating".** (2) For a spectating player, the mod's registered
+handlers (`script.get_event_handler`) for each hotkey and each shortcut open and close the right window.
+(3) A spectator gets the toolbar. Its buttons open and close the inspector, graph and report windows, Overlay draws
+with the inspector closed, every registered layer has a toggle, and the graph window's own close button un-toggles
+the toolbar. (4) The dialog submit writes a report, and a direct `writeReport` returns the expected dir, save name,
+camera, zoom, controller, entity count and faction telemetry. The bundle files were checked in the shard's
+`script-output`.
+
+Limits: under `--benchmark` the save is skipped, so the save itself is untested. A spectating player who stays one
+tick ends the headless test run, so tests 2–4 run within one tick and restore the character. The toolbar tests
+dispatch `on_player_controller_changed` themselves. Filtered T2 runs: `"review tools %(B34"` gave 4/4, and
+`"review" "graph" "inspector" "overlay"` gave 10/10. T1 `graph-layout` gave 4/4. The full `test:unit` exceeds the
+5-minute limit and was not run; no T1-tested module changed.
+
+**Manual check (user, review game):** run `npm run review`. Then check: (1) The toolbar shows at the top left.
+(2) Ctrl+Shift+I and Ctrl+Shift+G toggle the inspector and the graph window, and the matching toolbar buttons do the
+same. (3) Overlay with the inspector closed draws crew paths, and the layer buttons toggle them. (4) Report… or
+Ctrl+Shift+R, type a line, then Save report. The chat line names the folder and the save. Check that
+`.factorio-review/script-output/rival-engineers/reports/<tick>-*/` and
+`.factorio-review/saves/_autosave-re-report-*.zip` exist, then `npm run review -- --load _autosave-re-report-...`.
+
+### Magic numbers for the user (M6b.7)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `SLUG_CHARS` | `review/report.ts` | 32 | Longest slug cut from the message for the folder and save names. Long enough to recognise the report, short enough for file names. | no |
+| Report text box size | `review/report.ts` `openReportDialog` | 420 × 110 px | Room for a few lines. GUI layout. | no |
+| Toolbar button height / padding | `review/toolbar.ts` | 28 px, [0, 6] | Compact top-bar buttons. GUI layout. | no |
+| Report hotkey | `mod/static/data.lua` | Ctrl+Shift+R | Free in vanilla and in the review config, next to I/G. Rebindable in Controls. | rebindable |
+

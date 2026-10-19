@@ -151,9 +151,9 @@ export function factoryGraph(name: string): FactoryGraph | undefined {
   return g
 }
 
-export function exportFactoryGraph(name: string, file: string): boolean {
+export function exportFactoryGraph(name: string, file: string, forPlayer?: number): boolean {
   const g = factoryGraph(name)
   if (g === undefined) return false
-  helpers.write_file(file, helpers.table_to_json(g as never), false)
+  helpers.write_file(file, helpers.table_to_json(g as never), false, forPlayer)
   return true
 }

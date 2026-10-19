@@ -1,43 +1,40 @@
--- Data stage: the live inspector's hotkey and shortcut-bar button (mod/src/review/inspector.ts).
+-- Data stage: the review tools' hotkeys and shortcut-bar buttons (mod/src/review/: inspector.ts, graph-window.ts,
+-- report.ts). B35: custom inputs default to `enabled_while_spectating = false`, so in the sandbox (players are
+-- spectators) the hotkeys never fired. Every review input sets it. The shortcut bar is not shown to a spectator:
+-- the review toolbar (mod/src/review/toolbar.ts, top-left) has the same buttons.
+
+local function review_input(name, keys, order)
+  return {
+    type = "custom-input",
+    name = name,
+    key_sequence = keys,
+    action = "lua",
+    consuming = "none",
+    enabled_while_spectating = true,
+    order = order,
+  }
+end
+
+local function review_shortcut(name, order, icon, toggleable)
+  return {
+    type = "shortcut",
+    name = name,
+    order = order,
+    action = "lua",
+    toggleable = toggleable,
+    associated_control_input = name,
+    icon = icon,
+    icon_size = 32,
+    small_icon = icon,
+    small_icon_size = 32,
+  }
+end
+
 data:extend({
-  {
-    type = "custom-input",
-    name = "rival-engineers-toggle-inspector",
-    key_sequence = "CONTROL + SHIFT + I",
-    action = "lua",
-    consuming = "none",
-    order = "a",
-  },
-  {
-    type = "shortcut",
-    name = "rival-engineers-toggle-inspector",
-    order = "z[rival-engineers]",
-    action = "lua",
-    toggleable = true,
-    associated_control_input = "rival-engineers-toggle-inspector",
-    icon = "__core__/graphics/icons/search.png",
-    icon_size = 32,
-    small_icon = "__core__/graphics/icons/search.png",
-    small_icon_size = 32,
-  },
-  {
-    type = "custom-input",
-    name = "rival-engineers-toggle-graph",
-    key_sequence = "CONTROL + SHIFT + G",
-    action = "lua",
-    consuming = "none",
-    order = "b",
-  },
-  {
-    type = "shortcut",
-    name = "rival-engineers-toggle-graph",
-    order = "z[rival-engineers-2]",
-    action = "lua",
-    toggleable = true,
-    associated_control_input = "rival-engineers-toggle-graph",
-    icon = "__core__/graphics/icons/search.png",
-    icon_size = 32,
-    small_icon = "__core__/graphics/icons/search.png",
-    small_icon_size = 32,
-  },
+  review_input("rival-engineers-toggle-inspector", "CONTROL + SHIFT + I", "a"),
+  review_shortcut("rival-engineers-toggle-inspector", "z[rival-engineers]-a", "__core__/graphics/icons/search.png", true),
+  review_input("rival-engineers-toggle-graph", "CONTROL + SHIFT + G", "b"),
+  review_shortcut("rival-engineers-toggle-graph", "z[rival-engineers]-b", "__core__/graphics/icons/search.png", true),
+  review_input("rival-engineers-report", "CONTROL + SHIFT + R", "c"),
+  review_shortcut("rival-engineers-report", "z[rival-engineers]-c", "__core__/graphics/icons/tip.png", false),
 })

@@ -28,9 +28,10 @@ interface DumpedEntity {
 
 /**
  * Writes all entities in a square area to script-output/<file> as JSON, for tools/render. With `water`,
- * also lists the water tiles ([x, y] of their top-left corners).
+ * also lists the water tiles ([x, y] of their top-left corners). With `forPlayer`, only that player's machine writes it
+ * (helpers.write_file's for_player: the review report bundle, B34).
  */
-export function dumpEntities(file: string, center: MapPosition, radius: number, surface?: LuaSurface, water?: boolean): number {
+export function dumpEntities(file: string, center: MapPosition, radius: number, surface?: LuaSurface, water?: boolean, forPlayer?: number): number {
   const s = surface ?? game.surfaces[1]
   const area = {
     left_top: { x: center.x - radius, y: center.y - radius },
@@ -64,7 +65,7 @@ export function dumpEntities(file: string, center: MapPosition, radius: number, 
     tiles = []
     for (const t of s.find_tiles_filtered({ area, collision_mask: "water_tile" })) tiles.push([t.position.x, t.position.y])
   }
-  helpers.write_file(file, helpers.table_to_json({ tick: game.tick, center, radius, entities: out, water: tiles }), false)
+  helpers.write_file(file, helpers.table_to_json({ tick: game.tick, center, radius, entities: out, water: tiles }), false, forPlayer)
   return out.length
 }
 
@@ -79,7 +80,8 @@ function researchState(forceName: string) {
 let profiler: LuaProfiler | undefined
 let profiledFrom = 0
 
-function factionTelemetry() {
+/** Each faction's brain, board, depot, research and crew state (the soak telemetry; also the B34 report bundle). */
+export function factionTelemetry() {
   const out: Record<string, unknown> = {}
   for (const name of storage.factionOrder) {
     const f = storage.factions[name]
