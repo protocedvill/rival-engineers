@@ -33,6 +33,9 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 - Use fail-fast rules to stop known-dead runs.
 - Use `--snapshots N`, then `--from-save`, for bugs that appear late. `--benchmark` cannot save.
 - Failed plans already emit `.input.lua`; copy a minimal reproducer into `mod/unit/fixtures/` and replay it.
+- If the factory chooses the wrong next goal, call the remote probe `goal_selection_snapshot(faction)`. It returns
+  only plain data: paste the `specs` and `state` into a `goal-selection` T1 regression, then change the pure policy.
+  Do not try to load a `LuaEntity` or an entire save into a unit test.
 - Use helper probes or `npm run diagnose -- <run> [seed] [faction]` to connect the current factory goal to planner and
   Job Board blockers before reading thousands of log lines.
 - Preserve the failing artifact until its regression exists. A new full soak is confirmation, not the first debugger.

@@ -33,6 +33,7 @@ import * as MS from "./measure"
 import type { MeterState } from "./measure"
 import * as DS from "./design"
 import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKind, GoalSpec } from "./design"
+import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
 export { parseStages } from "./stage"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
@@ -471,11 +472,62 @@ function built(f: FactoryState, kind: GoalKind): boolean {
   return g !== undefined && g.status === "done"
 }
 
-/** A grow spec that cannot start: no expand units fit, or its expansion failed `ST.GROW_MAX_FAILS` times. */
-function growBlocked(f: FactoryState, spec: GoalSpec): boolean {
-  if (spec.kind !== "grow") return false
-  const gr = spec.growth!
-  return gr.units < 1 || (f.growFails?.[gr.role] ?? 0) >= ST.GROW_MAX_FAILS
+export interface FactoryGoalSelectionSnapshot {
+  version: 1
+  faction: string
+  stage: number
+  specs: GoalSelectionSpec[]
+  state: GoalSelectionState
+}
+
+/**
+ * Plain-data input to the goal scheduler. Capture this through the remote interface when a live game chooses the
+ * wrong next goal, then paste it into a T1 fixture: replay does not need the save or any Factorio object.
+ */
+function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
+  const active: Partial<Record<GoalKind, boolean>> = {}
+  const completed: Partial<Record<GoalKind, boolean>> = {}
+  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp"] as GoalKind[]) {
+    active[kind] = activeGoal(f, kind) !== undefined
+    completed[kind] = built(f, kind)
+  }
+  const activeGrowth = activeGoal(f, "grow")
+  return {
+    version: 1,
+    faction,
+    stage: f.stage,
+    specs: specs.map((spec) => ({
+      kind: spec.kind,
+      cluster: spec.cluster,
+      techs: spec.techs,
+      growth: spec.growth === undefined ? undefined : {
+        role: spec.growth.role,
+        have: spec.growth.have,
+        need: spec.growth.need,
+        units: spec.growth.units,
+        power: DS.isPowerRole(spec.growth.role),
+        failed: f.growFails?.[spec.growth.role] ?? 0,
+      },
+    })),
+    state: {
+      active,
+      built: completed,
+      planning: planning(f) !== undefined,
+      powerNodeExists: LG.nodeByRole(f.graph, "power") !== undefined,
+      growingPower: DS.isPowerRole(f.graph.nodes[activeGrowth?.growth?.node ?? ""]?.role ?? ""),
+      researched,
+      growMaxFails: ST.GROW_MAX_FAILS,
+    },
+  }
+}
+
+/** Latest live scheduler input, for turning a Factorio-only failure into a cheap deterministic replay. */
+export function factoryGoalSelectionSnapshot(name: string): FactoryGoalSelectionSnapshot | undefined {
+  const faction = storage.factions[name]
+  const f = storage.factories?.[name]
+  const design = designCache[name]?.design as (Design & { goals?: GoalSpec[] }) | undefined
+  if (faction === undefined || f === undefined || design === undefined) return undefined
+  return selectionSnapshot(name, f, design.goals ?? [], researchedTechs(factionForce(faction)))
 }
 
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
@@ -486,11 +538,11 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   }
   const specs = (d as Design & { goals?: GoalSpec[] }).goals ?? []
   if (d.errors.length > 0) ctx.waiting.push(`design: ${d.errors.join("; ")}`)
-  // Grows that cannot happen don't hold the stage (their shortfall stays a waiting reason).
-  const pending = specs.filter((s) => !growBlocked(f, s))
-  for (const s of specs) if (growBlocked(f, s)) ctx.waiting.push(`${s.growth!.role} short (${string.format("%.3g", s.growth!.have)}/${string.format("%.3g", s.growth!.need)}): cannot grow${(f.growFails?.[s.growth!.role] ?? 0) > 0 ? ` (${f.growFails![s.growth!.role]} failed expansions)` : ""}`)
+  const snapshot = selectionSnapshot(ctx.faction.name, f, specs, researchedTechs(ctx.force))
+  const selection = selectGoals(snapshot.specs, snapshot.state)
+  for (const reason of selection.waiting) ctx.waiting.push(reason)
   f.idle = false
-  if (pending.length === 0) {
+  if (selection.pending === 0) {
     // The stage is fully planned: once everything is built, move to the next stage.
     let allBuilt = true
     for (const n of LG.nodesOf(f.graph)) if (n.lifecycle !== "built") allBuilt = false
@@ -505,55 +557,11 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     }
     return
   }
-  if (planning(f) !== undefined) return
-  // Grows that can start: the steam block's first (production and the mall wait for power), then the others before a
-  // later cluster's labs and production (M6: cluster 1 is the previous stage's factory, grown in place).
-  let powerGrow = false
-  let anyGrow = false
-  for (const s of pending) {
-    if (s.kind !== "grow") continue
-    anyGrow = true
-    if (DS.isPowerRole(s.growth!.role)) powerGrow = true
-  }
-  const growing = activeGoal(f, "grow") !== undefined
-  let earlierProduction = math.huge
-  for (const s of pending) if (s.kind === "production") earlierProduction = math.min(earlierProduction, s.cluster ?? 1)
-  for (const spec of pending) {
-    if (activeGoal(f, spec.kind) !== undefined) continue
-    const cluster = spec.cluster ?? 1
-    // Order: power, labs, then production (it needs research the labs do), then growth.
-    if (spec.kind === "labs" && !built(f, "power") && activeGoal(f, "power") === undefined && LG.nodeByRole(f.graph, "power") === undefined) {
-      ctx.waiting.push("labs wait for power")
-      continue
-    }
-    if (cluster > 1 && (spec.kind === "labs" || spec.kind === "production")) {
-      const blocked: string[] = []
-      if (spec.kind === "labs" && (activeGoal(f, "production") !== undefined || earlierProduction < cluster)) blocked.push("the previous cluster's production")
-      if (anyGrow || growing) blocked.push("growth of the built modules")
-      if (blocked.length > 0) {
-        ctx.waiting.push(`${spec.kind} #${cluster} waits for ${blocked.join(", ")}`)
-        continue
-      }
-    }
-    if (spec.kind === "production" || spec.kind === "grow" || spec.kind === "mall") {
-      const blocked: string[] = []
-      const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : ["power", "labs", "production"]
-      for (const k of before) if (activeGoal(f, k) !== undefined) blocked.push(k)
-      if (spec.kind !== "grow" && (powerGrow || (growing && DS.isPowerRole(f.graph.nodes[activeGoal(f, "grow")!.growth?.node ?? ""]?.role ?? "")))) blocked.push("the steam block's growth")
-      if (blocked.length > 0) {
-        ctx.waiting.push(`${spec.kind} waits for ${blocked.join(", ")}`)
-        continue
-      }
-      const researched = researchedTechs(ctx.force)
-      const missing = spec.techs.filter((t) => !researched[t])
-      if (missing.length > 0) {
-        ctx.waiting.push(`${spec.kind} waits for research: ${missing.join(", ")}`)
-        continue
-      }
-    }
+  for (const decision of selection.decisions) {
+    if (decision.waiting !== undefined) ctx.waiting.push(decision.waiting)
+    if (decision.action === "skip") continue
+    const spec = specs[decision.index]
     if (spec.kind === "grow") {
-      // The steam block grows first.
-      if (powerGrow && !DS.isPowerRole(spec.growth!.role)) continue
       if (startGrow(ctx, spec)) return
       continue
     }
