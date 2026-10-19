@@ -1,4 +1,4 @@
-import { LuaEntity, LuaSurface } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
@@ -14,9 +14,8 @@ import type { FactoryState } from "./factory"
 // producer (a coal outpost feeding a power node) whose drills have less than `factory-power-fuel-minutes` of ore left at
 // its planned rate is given up: its entities are deconstructed, its module and routes (with their splitter taps) leave
 // the layout and its node and edges the graph. The design then misses the steam block's fuel producer and plans a new
-// one (a power goal) on fresh ore; consumers that tapped the old one get new producers the same way. While a steam block
-// has no built fuel supply, the crew keeps its boilers fuelled (factory.ts upkeep), so electric drills on a dark network
-// can't deadlock the rebuild.
+// one (a power goal) on fresh ore; consumers that tapped the old one get new producers the same way. The crew hand-feeds
+// any empty boiler (D54, factory.ts upkeep), so electric drills on a dark network can't deadlock the rebuild.
 
 /** How often the ore under steam-block fuel producers is counted (find_entities per drill). */
 const FUEL_CHECK_TICKS = 3600
@@ -30,22 +29,6 @@ function feedsPower(g: LogicalGraph, n: LogicalNode): boolean {
 /** Whether a power node has a fuel belt from a built producer. */
 export function powerFuelled(g: LogicalGraph, power: LogicalNode): boolean {
   for (const e of LG.edgesInto(g, power.id)) if (e.kind === "belt" && e.from !== undefined && g.nodes[e.from]?.lifecycle === "built") return true
-  return false
-}
-
-/**
- * Whether a growth goal is currently expanding one of `power`'s fuel producers. A producer being grown still
- * feeds the steam block (its built drills run through the growth), so the crew's hand-fuelling is redundant —
- * and at priority 100 it starves the growth's own craft jobs, which never get claimed (M6a.2, seed 222). A
- * brand-new producer built alongside an existing steam block is not a growth goal, so it still hand-fuels.
- */
-export function producerGrowing(f: FactoryState, power: LogicalNode): boolean {
-  for (const e of LG.edgesInto(f.graph, power.id)) {
-    if (e.kind !== "belt" || e.from === undefined) continue
-    const from = f.graph.nodes[e.from]
-    if (from === undefined || from.lifecycle !== "building") continue
-    for (const g of f.goals) if (g.kind === "grow" && (g.status === "building" || g.status === "planning") && g.growth?.node === from.id) return true
-  }
   return false
 }
 
@@ -71,7 +54,7 @@ function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { 
  * ore runs low. `busy`: a plan or growth works on a copy of the layout now (relocate after it). Returns the role given
  * up, if any.
  */
-export function checkPowerFuel(ctx: { faction: FactionState; f: FactoryState; config: Config; surface: LuaSurface; tick: number }, busy: boolean): string | undefined {
+export function checkPowerFuel(ctx: FuelCtx, busy: boolean): string | undefined {
   const { f, config } = ctx
   const lead = config.factoryPowerFuelMinutes
   if (lead <= 0 || busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
@@ -94,13 +77,45 @@ export function checkPowerFuel(ctx: { faction: FactionState; f: FactoryState; co
     const left = oreLeft(ctx.surface, drills, resource)
     const minutes = rate > 0 ? left.amount / rate / 60 : math.huge
     if (!left.dry && minutes >= lead) continue
-    relocate(ctx, n, string.format("%.1f min of %s left at %.2f/s%s", minutes, resource, rate, left.dry ? ", every drill dry" : ""))
+    relocate(ctx, n, `P36 ${n.role}`, string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : ""))
     return n.role
   }
   return undefined
 }
 
-function relocate(ctx: { faction: FactionState; f: FactoryState; config: Config; surface: LuaSurface }, n: LogicalNode, why: string): void {
+/**
+ * D54 (user, 2026-10-19): once electric drills can be built, a built factory outpost still on burner drills (one that
+ * can't grow, like the steam block's old coal mine) is given up like a P36 relocation, one at a time; the design plans
+ * it again with electric drills. Bootstrap sites are not factory outposts and stay. Returns the role given up, if any.
+ */
+export function replaceBurnerOutposts(ctx: FuelCtx & { force: LuaForce; electricDrill: string }, busy: boolean): string | undefined {
+  const { f, config } = ctx
+  if (busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
+  if (ctx.force.recipes[ctx.electricDrill]?.enabled !== true) return undefined
+  for (const id of [...f.graph.nodeOrder]) {
+    const n = f.graph.nodes[id]
+    if (n === undefined || n.lifecycle !== "built") continue
+    const drill = findModule(f.layout, id)?.canonical.params?.drill
+    if (typeof drill !== "string" || drill === ctx.electricDrill || prototypes.entity[drill]?.burner_prototype === undefined) continue
+    // A goal still building a connection from it finishes first.
+    let used = false
+    for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true
+    if (used) continue
+    relocate(ctx, n, `D54 ${n.role}`, `uses ${drill}: electric drills are researched`)
+    return n.role
+  }
+  return undefined
+}
+
+interface FuelCtx {
+  faction: FactionState
+  f: FactoryState
+  config: Config
+  surface: LuaSurface
+  tick: number
+}
+
+function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string): void {
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)
@@ -123,5 +138,5 @@ function relocate(ctx: { faction: FactionState; f: FactoryState; config: Config;
   resyncReserved(ctx.faction, f.layout)
   // Its ore tiles are worked out: the terrain is scanned again before the next plan.
   markDirty(ctx.faction.surface, { x: m.rect.x - 8, y: m.rect.y - 8 }, { x: m.rect.x + m.rect.w + 8, y: m.rect.y + m.rect.h + 8 })
-  log(`[rival-engineers] faction ${ctx.faction.name}: P36 ${n.role} (${n.id}) runs out (${why}): ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped; the design plans a new one`)
+  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped; the design plans a new one`)
 }

@@ -25,7 +25,7 @@ import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
-import { checkPowerFuel, powerFuelled, producerGrowing } from "./fuel"
+import { checkPowerFuel, replaceBurnerOutposts } from "./fuel"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import * as RT from "../planner/runtime"
@@ -288,7 +288,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
-  checkPowerFuel(ctx, planning(f) !== undefined)
+  if (checkPowerFuel(ctx, planning(f) !== undefined) === undefined) replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
@@ -1708,7 +1708,7 @@ function labEntities(ctx: Ctx, node: LogicalNode): LuaEntity[] {
   return findEntities(ctx.surface, { type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
-function keyActive(ctx: Ctx, key: string): boolean {
+function keyActive(ctx: Pick<Ctx, "faction" | "f">, key: string): boolean {
   const id = ctx.f.jobKeys[key]
   if (id === undefined) return false
   const job = ctx.faction.board.jobs[id]
@@ -1717,7 +1717,7 @@ function keyActive(ctx: Ctx, key: string): boolean {
   return false
 }
 
-function addKeyed(ctx: Ctx, key: string, spec: JobSpec<JobPayload>): void {
+function addKeyed(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string, spec: JobSpec<JobPayload>): void {
   const job = addJob(ctx.faction.board, spec, ctx.tick)
   ctx.f.jobKeys[key] = job.id
 }
@@ -1851,13 +1851,12 @@ function upkeep(ctx: Ctx): void {
   if (fuelValue <= 0) return
   for (const id of f.graph.nodeOrder) {
     const n = f.graph.nodes[id]
+    // D54: a steam block's boilers are hand-fed whatever feeds them, also while it grows: before electric drills it
+    // has no coal belt at all, and later an outage stops the electric coal mine that would refuel it.
+    if (n.kind === "power" && n.lifecycle !== "planned") refuelBoilers(ctx, id, fuel)
     if (n.lifecycle !== "built") continue
     const m = findModule(f.layout, id)
     const names = m?.canonical.upkeep?.fuel.map((x) => x.name) ?? []
-    // P36 (a): a steam block without a built fuel supply (its outpost being replaced) gets coal by hand. A fuel
-    // producer that is being grown still feeds (its built drills run through the growth), so skip the hand-fuelling
-    // that would otherwise starve the growth's own craft jobs (M6a.2, seed 222).
-    if (n.kind === "power" && !powerFuelled(f.graph, n) && !producerGrowing(f, n)) names.push(ctx.entities.boiler ?? "boiler")
     if (m === undefined || names.length === 0) continue
     const found = findEntities(ctx.surface, { name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
     for (const e of found) {
@@ -1872,6 +1871,21 @@ function upkeep(ctx: Ctx): void {
       const count = math.min(top - have, prototypes.item[fuel].stack_size)
       addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
     }
+  }
+}
+
+/** D54 (user, 2026-10-19): a boiler whose fuel slot is empty gets a whole stack of fuel by hand. */
+export function refuelBoilers(ctx: Pick<Ctx, "faction" | "f" | "surface" | "tick" | "entities">, id: string, fuel: string): void {
+  const m = findModule(ctx.f.layout, id)
+  if (m === undefined) return
+  const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+  const count = prototypes.item[fuel].stack_size
+  for (const e of findEntities(ctx.surface, { name: ctx.entities.boiler ?? "boiler", force: ctx.faction.force, area })) {
+    const inv = e.get_fuel_inventory()
+    if (inv === undefined || inv.get_item_count(fuel) > 0) continue
+    const key = `upkeep:${e.unit_number}`
+    if (keyActive(ctx, key)) continue
+    addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
   }
 }
 

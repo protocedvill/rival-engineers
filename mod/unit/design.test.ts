@@ -36,6 +36,9 @@ function ctx(changes: Partial<DesignContext> = {}, policy: Partial<LayoutPolicy>
   }
 }
 
+/** After `electric-mining-drill` is researched (D54: the steam block gets its coal from an electric mine only then). */
+const ELECTRIC = { "iron-plate": true, "copper-plate": true, "iron-gear-wheel": true, "transport-belt": true, "electric-mining-drill": true }
+
 function byRole(nodes: DesignNode[], role: string): DesignNode | undefined {
   for (const n of nodes) if (n.role === role) return n
   return undefined
@@ -54,7 +57,7 @@ test("module selection by recipe structure: outposts, smelters, red line, circui
   eq(tostring(generatorFor(c, "inserter")), "nil", "3 ingredients: no generator (curated, M6)")
 })
 
-test("10 red/min to labs: 4 labs, a red line, two smelters fed by ore and coal outposts, a steam block and its coal", () => {
+test("10 red/min to labs: 4 labs, a red line, two smelters fed by ore and coal outposts, a hand-fed steam block", () => {
   const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
   eq(d.clusters, 1, "one cluster")
@@ -72,10 +75,10 @@ test("10 red/min to labs: 4 labs, a red line, two smelters fed by ore and coal o
   const steam = byRole(d.nodes, "power")!
   eq(steam.params.boilers, 1, "one boiler")
   ok(d.electricW > 0 && d.electricW <= steam.capacity, `electric ${d.electricW} W within ${steam.capacity}`)
-  const steamCoal = byRole(d.nodes, "coal>power")!
-  eq(steamCoal.params.drill, "burner-mining-drill", "the steam block's own coal: burner drills (no power yet)")
-  eq(d.nodes.length, 10, `10 modules: ${d.nodes.map((n) => `${n.role}:${n.generator}`).join(" | ")}`)
-  eq(d.edges.length, 8, "8 flows")
+  // D54: before electric drills the crew hand-feeds the boilers: no burner coal mine, no belt to the steam block.
+  eq(byRole(d.nodes, "coal>power"), undefined, "no coal supply for the steam block yet")
+  eq(d.nodes.length, 9, `9 modules: ${d.nodes.map((n) => `${n.role}:${n.generator}`).join(" | ")}`)
+  eq(d.edges.length, 7, "7 flows")
   // The plate flows agree with the solver: 1/3 Fe/s and 1/6 Cu/s for 10 red/min.
   for (const e of d.edges) {
     if (e.to === `${RED}>labs` && e.item === "iron-plate") near(e.rate, 1 / 3, 1e-9, "iron plate flow")
@@ -84,6 +87,20 @@ test("10 red/min to labs: 4 labs, a red line, two smelters fed by ore and coal o
   }
   near(d.solve.items["iron-plate"].produced, 1 / 3, 1e-9, "solver iron")
   ok(d.techs.indexOf("automation") >= 0, "needs automation")
+})
+
+test("D54: once electric drills are researched the steam block's coal comes from an electric mine", () => {
+  const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const steamCoal = byRole(d.nodes, "coal>power")!
+  eq(steamCoal.params.drill, "electric-mining-drill", "electric drills")
+  ok(d.edges.some((e) => e.from === "coal>power" && e.to === "power"), "a belt to the steam block")
+  // A built steam block without its coal: the diff plans the mine and its belt as a power goal.
+  const g = graphWith(d, ["power", "labs"])
+  const goals = goalsFrom(diffDesign(d, g, () => undefined), {})
+  eq(goals[0].kind, "power", "a power goal first")
+  eq(goals[0].nodes.map((n) => n.role).join(","), "coal>power", "for the coal mine")
+  eq(goals[0].edges.length, 1, "and its belt")
 })
 
 test("power roles: the steam block and its fuel supply", () => {
@@ -112,14 +129,14 @@ function graphWith(d: ReturnType<typeof design>, roles: string[], capacity: Reco
   return g
 }
 
-test("goal diff: from nothing, power first (steam + its coal), then labs, then the production chain", () => {
+test("goal diff: from nothing, power first (the steam block, hand-fed), then labs, then the production chain", () => {
   const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
   const diff = diffDesign(d, newGraph(), () => undefined)
-  eq(diff.missing.length, 10, "all missing")
+  eq(diff.missing.length, 9, "all missing")
   const goals = goalsFrom(diff, {})
   eq(goals.map((gs) => gs.kind).join(","), "power,labs,production", "order")
-  eq(goals[0].nodes.map((n) => n.role).sort().join(","), "coal>power,power", "power goal")
-  eq(goals[0].edges.length, 1, "coal → steam")
+  eq(goals[0].nodes.map((n) => n.role).sort().join(","), "power", "power goal (D54: no coal mine yet)")
+  eq(goals[0].edges.length, 0, "no coal belt")
   eq(goals[2].nodes.length, 7, "production modules")
   ok(goals[2].techs.indexOf("automation") >= 0, "production needs automation")
   eq(goals[2].edges.length, 7, "every other flow, including red → labs")
@@ -184,7 +201,7 @@ test("a module that cannot grow big enough splits the target into clusters", () 
 })
 
 test("splitter-tap topology: one producer per item, sized for every consumer", () => {
-  const d = design(ctx({}, { topology: "splitter-tap" }), { item: RED, perSecond: 10 / 60 })
+  const d = design(ctx({ enabled: ELECTRIC }, { topology: "splitter-tap" }), { item: RED, perSecond: 10 / 60 })
   let coal = 0
   for (const n of d.nodes) if (n.item === "coal") coal++
   eq(coal, 1, "one coal outpost")
@@ -194,7 +211,7 @@ test("splitter-tap topology: one producer per item, sized for every consumer", (
 })
 
 test("B2: recorded splitter taps: one coal producer feeds both smelters; the power node keeps its own coal", () => {
-  const d = design(ctx({ taps: { coal: [SMELT_FE, SMELT_CU] } }), { item: RED, perSecond: 10 / 60 })
+  const d = design(ctx({ enabled: ELECTRIC, taps: { coal: [SMELT_FE, SMELT_CU] } }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
   const coal = byRole(d.nodes, "coal")
   ok(coal !== undefined, "one shared coal producer")
@@ -204,7 +221,7 @@ test("B2: recorded splitter taps: one coal producer feeds both smelters; the pow
   let edges = 0
   for (const e of d.edges) if (e.from === "coal") edges++
   eq(edges, 2, "two edges from the shared producer")
-  const p2p = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const p2p = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   near(coal!.need, byRole(p2p.nodes, `coal>${SMELT_FE}`)!.need + byRole(p2p.nodes, `coal>${SMELT_CU}`)!.need, 1e-9, "sized for both")
 })
 
@@ -239,7 +256,7 @@ function greenStub(): ModuleDef {
 
 function greenCtx(changes: Partial<DesignContext> = {}): DesignContext {
   const make = (gen: string, params: Record<string, unknown>): ModuleDef => (gen === "curated" ? greenStub() : (generate(F, gen as GeneratorName, params) as ModuleDef))
-  return ctx({ curated: { [GREEN]: GREEN_ID }, researchUnitTime: 30, make, ...changes })
+  return ctx({ curated: { [GREEN]: GREEN_ID }, researchUnitTime: 30, make, enabled: ELECTRIC, ...changes })
 }
 
 const STAGE2 = { item: RED, perSecond: 0.55, also: [{ item: GREEN, perSecond: 0.55 }] }
@@ -324,14 +341,14 @@ test("B19: shared providers: new smelters share one coal outpost per cluster; st
 
 test("B19: one coal outpost feeds both smelter columns and the power block (power's outpost has room)", () => {
   // Power and its coal outpost are built (point-to-point, before splitters); production comes with splitters.
-  const s0 = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const s0 = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   const powerCoal = byRole(s0.nodes, "coal>power")!
   const keep = { "coal@power": "coal>power" }
   let used = 0
   for (const e of s0.edges) if (e.from === "coal>power") used += e.rate
   const room = powerCoal.capacity - used
   ok(room > 0.1, `the steam block's coal outpost has room (${room}/s)`)
-  const d = design(ctx({ sharing: { keep, spare: { coal: { "coal>power": room } } } }), { item: RED, perSecond: 10 / 60 })
+  const d = design(ctx({ enabled: ELECTRIC, sharing: { keep, spare: { coal: { "coal>power": room } } } }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
   const coal = d.nodes.filter((n) => n.item === "coal")
   eq(coal.length, 1, `one coal producer: ${coal.map((n) => n.role).join(" | ")}`)
@@ -340,7 +357,7 @@ test("B19: one coal outpost feeds both smelter columns and the power block (powe
   eq(fed.join(","), [SMELT_CU, SMELT_FE, "power"].sort().join(","), "feeds both smelters and the steam block")
   near(coal[0].need, used + d.edges.filter((e) => e.from === "coal>power" && e.to !== "power").reduce((a, e) => a + e.rate, 0), 1e-9, "sized for all three")
   // Without room the smelters share one new outpost: 2 mines instead of 3.
-  const tight = design(ctx({ sharing: { keep, spare: {} } }), { item: RED, perSecond: 10 / 60 })
+  const tight = design(ctx({ enabled: ELECTRIC, sharing: { keep, spare: {} } }), { item: RED, perSecond: 10 / 60 })
   eq(tight.nodes.filter((n) => n.item === "coal").length, 2, "power's own + one shared")
 })
 

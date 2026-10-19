@@ -171,6 +171,11 @@ function electricDrills(ctx: DesignContext): boolean {
   return tech !== undefined && ctx.plannable?.[tech] === true
 }
 
+/** Electric drills can be built now (their recipe is enabled), not only planned for. */
+function electricDrillsNow(ctx: DesignContext): boolean {
+  return ctx.enabled[ctx.facts.recipeForItem(ctx.electricDrill) ?? ctx.electricDrill] === true
+}
+
 function resourceFor(ctx: DesignContext, item: string): string | undefined {
   for (const res of ctx.resources) if (ctx.facts.resourceProduct(res) === item) return res
   return undefined
@@ -227,11 +232,11 @@ function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefi
 }
 
 /** Candidate parameter sets for a generator, smallest first. */
-function sizes(ctx: DesignContext, gen: GeneratorName, item: string, burnerOnly = false): Record<string, unknown>[] {
+function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = []
   if (gen === "mining-outpost") {
     const resource = resourceFor(ctx, item)!
-    const electric = !burnerOnly && electricDrills(ctx)
+    const electric = electricDrills(ctx)
     const drill = electric ? ctx.electricDrill : ctx.burnerDrill
     if (electric) {
       out.push({ resource, rows: 2, sides: 1, drill })
@@ -283,7 +288,7 @@ interface Sized {
 }
 
 /** The smallest size of `gen` whose output of `item` covers `need`. */
-function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: number, burnerOnly = false): Sized | undefined {
+function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: number): Sized | undefined {
   if (gen === "curated") {
     const id = ctx.curated?.[item]
     if (id === undefined) return undefined
@@ -295,7 +300,7 @@ function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: num
     return { params: { id }, def: d, capacity, short: capacity + EPS < need }
   }
   let last: Sized | undefined
-  for (const params of sizes(ctx, gen, item, burnerOnly)) {
+  for (const params of sizes(ctx, gen, item)) {
     const [ok, def] = pcall(ctx.make, gen, params)
     if (!ok) break
     const d = def as ModuleDef
@@ -356,10 +361,8 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     w.errors.push(`no module makes ${item}`)
     return
   }
-  // The power node's own fuel supply must run before there is any power: burner drills until electric ones are enabled.
-  let forPower = false
-  for (const c of consumers) if (isPowerRole(c.to)) forPower = true
-  const s = sizeModule(ctx, gen, item, rate, forPower && !ctx.enabled[ctx.facts.recipeForItem(ctx.electricDrill) ?? ctx.electricDrill])
+  // D54: a steam block only asks for coal once electric drills are enabled, so no producer here needs burner drills.
+  const s = sizeModule(ctx, gen, item, rate)
   if (s === undefined) {
     w.errors.push(`${gen} for ${item}: no valid size`)
     return
@@ -560,8 +563,9 @@ export function isPowerRole(role: string): boolean {
 
 /**
  * Power and fuel for everything designed so far: the steam block sized to the electric demand, then every fuel
- * demand (furnaces and boilers). Electric fuel drills add demand, so this iterates to a fixed point. The steam block's
- * own fuel supply uses burner drills until electric drills are enabled now (it must run before any power exists).
+ * demand (furnaces and boilers). Electric fuel drills add demand, so this iterates to a fixed point. D54 (user,
+ * 2026-10-19): until electric drills are enabled now, the steam block has no fuel supply (no burner mine, no belt): the
+ * crew hand-feeds its boilers (factory.ts upkeep). Once they are, its coal comes from an electric mine that can grow.
  */
 function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: boolean }): number {
   const core = [...w.nodes]
@@ -599,7 +603,7 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
       cluster: w.cluster,
     }
     w.nodes.push(steam)
-    for (const p of steam.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: steam.role, toPort: p.port })
+    if (electricDrillsNow(ctx)) for (const p of steam.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: steam.role, toPort: p.port })
     expandItem(w, ctx.fuel)
     let total = extraW
     for (const n of w.nodes) if (n.kind !== "power") total += n.powerW
@@ -620,7 +624,7 @@ function secondSteam(ctx: DesignContext, w: Walk, extraW: number): void {
   const util = s.capacity > EPS ? math.min(1, extraW / s.capacity) : 1
   const role = "power#2"
   w.nodes.push({ role, kind: "power", generator: "steam-block", params: s.params, def: s.def, item: "electricity", need: extraW, capacity: s.capacity, inputs: inputPorts(s.def, util), powerW: s.capacity, cluster: w.cluster })
-  for (const p of inputPorts(s.def, util)) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+  if (electricDrillsNow(ctx)) for (const p of inputPorts(s.def, util)) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
   expandItem(w, ctx.fuel)
 }
 

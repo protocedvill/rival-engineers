@@ -1110,3 +1110,30 @@ L-shaped patch through every x offset across the pitch (and three y offsets) and
 fails on the old code at a 4-tile shift. Both failing T2 combinations now pass. Mines whose plans tied now consistently
 take the lower lane, so soak layouts can differ from earlier runs for those patches. No new magic numbers.
 
+
+## M6b.17: D54 steam-block coal is hand-fed, then mined electrically (2026-10-19)
+
+Soaks of 55e7cad (m6.toml) failed 0/3. Two of the failures (seeds 222 and 3333, and seed 3333 on the pre-session base
+b666577) were the same stall: the steam block's burner coal outpost (`coal>power`) can't grow and power stops growing.
+The user decided the fix in-session (2026-10-19; SPEC §2 D54, approved):
+
+- **Before electric mining drills are researched**, a steam block gets no coal outpost and no fuel belt
+  (`design.ts` `designPower` adds its input demands only once `electricDrillsNow`). The crew hand-feed its boilers.
+- **Hand-feeding is also the backup afterwards.** In the user's words, an outage would otherwise "create a spiral" (no
+  power, so the electric coal mine stops, so no power). `factory.ts` `refuelBoilers` runs for every steam block that is
+  not just planned, growing included. A boiler whose fuel slot is **empty** gets one priority-100 fuel job for a
+  **whole stack** (the stack size comes from game data). Coal comes from the existing haul sourcing. The old P36
+  hand-fuel gating (`powerFuelled` / `producerGrowing`, plus FUEL_LOW/TOP for boilers) is gone.
+- **Factory burner outposts are replaced once electric drills are researched** (bootstrap sites are out of scope).
+  `fuel.ts` `replaceBurnerOutposts` runs at the fuel-check cadence and only while no plan runs. It gives up the first
+  built burner-drill outpost that no active goal uses, through P36's `relocate`, and the design then re-plans it as an
+  electric mine. Burner drills no longer size producers for power (`sizes` / `sizeModule` lost `burnerOnly`).
+
+Tests:
+- T1 `design`: the 10-red design has no `coal>power`. A new test checks that with electric drills researched the
+  power goal brings an electric coal mine and its belt. The goal-diff and one-outpost tests were updated, and
+  `fuel.test.ts` (which only tested `producerGrowing`) was removed.
+- T2 `reconciler`: new test "D54: an empty boiler gets a whole stack of coal by hand, once". P36, "unfuelled",
+  power-up and M5a pass.
+
+No new magic numbers. Soak comparison against m6-b44-55e7cad and m6-base-b666577 follows.

@@ -15,7 +15,7 @@ import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
 import { checkPowerFuel, powerFuelled } from "../strategy/fuel"
-import { FactoryState, getFactory, reconcileNow, startFactory } from "../strategy/factory"
+import { FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
 import { feed, followRoute } from "./route-lab"
@@ -420,5 +420,33 @@ describe("M5b reconciler", () => {
     assert(faction.brain!.reserved[tkey(poor.rect.x + 1, poor.rect.y + 1)] === undefined, "its tiles are no longer reserved")
     assert(f.fuelRelocations === 1, "counted")
     assert(checkPowerFuel(ctx, false) === undefined, "the rich one is kept")
+  })
+  test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const s = lab.surface
+    const layout = newLayout()
+    const steam = placeDef(layout, "pw", generatedModule("steam-block", { boilers: 2 }), { x: math.floor(lab.origin.x) - 10, y: math.floor(lab.origin.y) - 10 })
+    const r = stampParts(s, faction.force, layout, { modules: ["pw"], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const boilers = s.find_entities_filtered({ name: "boiler", force: faction.force, area: [{ x: steam.rect.x, y: steam.rect.y }, { x: steam.rect.x + steam.rect.w, y: steam.rect.y + steam.rect.h }] })
+    assert(boilers.length === 2, `two boilers (${boilers.length})`)
+    boilers[1].insert({ name: "coal", count: 1 })
+    const ctx = { faction, f, surface: s, tick: game.tick, entities: {} }
+    const fuelJobs = () => {
+      const out: { count: number; target: unknown }[] = []
+      for (const id of faction.board.active) {
+        const p = faction.board.jobs[id].payload
+        if (p.kind === "fuel") out.push({ count: p.count, target: p.target })
+      }
+      return out
+    }
+    refuelBoilers(ctx, "pw", "coal")
+    const jobs = fuelJobs()
+    assert(jobs.length === 1, `one fuel job (${jobs.length})`)
+    assert(jobs[0].target === boilers[0] && jobs[0].count === prototypes.item["coal"].stack_size, `a whole stack for the empty boiler (${jobs[0].count})`)
+    refuelBoilers(ctx, "pw", "coal")
+    assert(fuelJobs().length === 1, "not queued twice")
   })
 })
