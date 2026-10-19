@@ -8,6 +8,7 @@
  "replace": {"assembling-machine-2": "assembling-machine-1"},
  "remove": ["constant-combinator"],
  "remove_at": [[4.5, 17.5]],
+ "set": [{"at": [5.5, 17.5], "dir": 12}, {"at": [6.5, 17.5], "dir": 4}],
  "crop": [0, 3, 11, 18],
  "ports": [
   {"id": "out", "kind": "belt-out", "pos": {"x": 4.5, "y": 0.5}, "dir": 0, "item": "automation-science-pack"},
@@ -20,6 +21,7 @@
   "assembling-machine-2 -> assembling-machine-1 (v1 tier, D20); constant combinators (labels) removed",
   "the bus connection (undergrounds above the tile) is cropped; the belts' top tiles are the ports",
   "the pass-through underground from the tile below (bottom of the output chain) is removed",
+  "B25: the copper and gear belts no longer run off the bottom edge (they would spill onto belts passing the module): their last tiles turn west (into an empty tile) and east (into the inserter that picks from it)",
   "expand: the tile repeats every 6 rows (4 science assemblers); units are copies of rows 2-7"
  ]
 }

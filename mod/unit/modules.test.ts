@@ -1,11 +1,16 @@
-import { expandModule, expandMoves, expandTail } from "../src/modules/build"
+import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
 import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
-import { occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
+import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
-import { EAST, ModuleDef, ModuleEntity, NORTH, SOUTH, WEST } from "../src/modules/types"
+import { CuratedModuleFile, EAST, ModuleDef, ModuleEntity, NORTH, SOUTH, WEST } from "../src/modules/types"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
+
+/** @noSelf */
+declare function require(this: void, module: string): unknown
+// Written next to the compiled tests by tools/run-unit-tests.mjs, exactly as the mod build ships it.
+const curatedFiles = require("modules.curated_data") as Record<string, CuratedModuleFile>
 
 // Inserter throughput used by the rate engine: one item per full turn (yellow: 0.014 rev/tick).
 const INS_BELT = 60 * 0.014 * INSERTER_EFFICIENCY_FROM_BELT
@@ -237,6 +242,73 @@ test("every generated module: no overlaps, inside its footprint, all powered on 
     }
     ok(powerPort === pc.networks > 0, `${def.id} power port iff it has poles`)
   }
+})
+
+// --- B25: belts never run out of a module except at a belt-out port -------------------------------------------
+
+/** Every module layout the library can produce: generated (base, grown at the tail by 1–2 units) and curated. */
+function everyLayout(): ModuleDef[] {
+  const out: ModuleDef[] = []
+  for (const def of allGenerated()) {
+    out.push(def)
+    const max = def.expand?.maxUnits ?? 0
+    for (let k = 1; k <= math.min(2, max); k++) out.push(expandModule(def, k, F))
+  }
+  for (const [, f] of pairs(curatedFiles)) {
+    // Geometry only: the curated recipes need prototypes the T1 facts table doesn't have (the T2 lab finalizes them).
+    out.push({ ...f, source: "curated", recipes: [], machines: [], rates: { inputs: [], outputs: [] }, requiresTech: [], rotatable: f.rotatable ?? true, mirrorable: f.mirrorable ?? true, expand: undefined } as ModuleDef)
+  }
+  return out
+}
+
+test("B25: no module belt feeds out of its footprint except at a belt-out port, in every orientation", () => {
+  let curated = 0
+  for (const def of everyLayout()) {
+    if (def.source === "curated") curated++
+    for (let rot = 0; rot < 4; rot++) {
+      for (const mirror of [false, true]) {
+        if ((rot > 0 && !def.rotatable) || (mirror && !def.mirrorable)) continue
+        const t = transformModule(def, { rot, mirror })
+        const leaks = beltLeaks(t, F)
+        eq(leaks.length, 0, `${def.id} rot ${rot} mirror ${tostring(mirror)}: ${leaks.join("; ")}`)
+      }
+    }
+  }
+  ok(curated >= 3, `curated modules checked (${curated})`)
+})
+
+test("B25: beltLeaks flags a belt, an underground exit or a splitter half pointing out with no port; finalize refuses it", () => {
+  const box = { w: 4, h: 4 }
+  const leaks = (entities: ModuleEntity[], ports: ModuleDef["ports"] = []): number => beltLeaks({ footprint: box, entities, ports }, F).length
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }]), 1, "belt out of the north edge")
+  eq(leaks([{ name: "transport-belt", x: 0.5, y: 2.5, dir: WEST }]), 1, "belt out of the west edge")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: EAST }]), 0, "belt along the edge")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 1.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 0, "belt-out port")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "in", kind: "belt-in", pos: { x: 1.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 1, "a belt-in port doesn't excuse it")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 1.5, y: 0.5 }, dir: WEST, item: "iron-plate" }]), 1, "port pointing elsewhere")
+  eq(leaks([{ name: "underground-belt", x: 1.5, y: 0.5, dir: NORTH, ioType: "output" }]), 1, "underground exit")
+  eq(leaks([{ name: "underground-belt", x: 1.5, y: 0.5, dir: NORTH, ioType: "input" }]), 0, "underground entrance (goes under)")
+  eq(leaks([{ name: "splitter", x: 2, y: 0.5, dir: NORTH }]), 2, "both splitter halves")
+  eq(leaks([{ name: "splitter", x: 2, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 2.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 1, "one splitter half has a port")
+  eq(leaks([{ name: "splitter", x: 3.5, y: 2, dir: EAST }]), 2, "east splitter halves")
+  const [built, err] = pcall(() =>
+    finalizeModule({ id: "leaky", source: "generated", footprint: box, entities: [{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], ports: [], rotatable: true, mirrorable: true }, F),
+  )
+  ok(!built && string.find(tostring(err), "no belt-out port", 1, true)[0] !== undefined, `finalize refuses a leaking layout: ${tostring(err)}`)
+})
+
+test("B25: row modules' input belts end at the first machine's inserter; head growth that would open a belt is refused", () => {
+  const row = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  let head: ModuleEntity | undefined
+  for (const e of row.entities) if (e.name === "transport-belt" && e.y === 6.5 && (head === undefined || e.x < head.x)) head = e
+  eq(head?.x, 1.5, "the input belt's last tile is under the first input inserter")
+  // Growing at the head puts new units' belts at the west edge, where nothing closes them.
+  for (const def of allGenerated()) {
+    if ((def.expand?.maxUnits ?? 0) < 1) continue
+    const grown = expandHeadModule(def, 1, F)
+    if (grown !== undefined) eq(beltLeaks(grown, F).length, 0, `${def.id} grown at the head`)
+  }
+  eq(expandHeadModule(labArray(F, { labs: 2, packs: ["automation-science-pack"] }), 1, F), undefined, "lab array head growth refused")
 })
 
 test("expandModule(gen(n), k) is exactly gen(n + k): growth never moves a unit", () => {

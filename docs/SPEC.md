@@ -804,6 +804,11 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   (or the cluster waits) instead of failing the goal. Not implemented. M6a.2 (seed 222): (a)'s hand-fuelling skips a
   steam block whose fuel producer is currently being grown (the built drills run through the growth) — at the build
   priority it starved the growth's own craft jobs and stalled the stage.
+- **P37, no mine-site credit for head growth (proposed, B25):** since B25, `tryExpand(..., "head")` refuses growth that
+  would run a belt out of the module, and that covers every mining outpost: its head holds the output port. Placement's
+  D52 site check (`firstGrowthCoverage`) still accepts a mine whose only ore-bearing growth unit is at the head.
+  Proposed: count the tail only for modules that can't grow at the head. This changes mine placement, so it needs
+  replays first. Not implemented (M6 report, M6b.3).
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

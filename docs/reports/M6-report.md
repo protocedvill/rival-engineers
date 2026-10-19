@@ -462,3 +462,42 @@ to the target with **nothing anywhere asking for the cell's product**; the setti
 | Name | Where | Value | Why this value | Setting? |
 |---|---|---|---|---|
 | `bootstrap-temp-cell-feed-priority` | `settings.ts`, `strategy/bootstrap.ts` | 40 | Between gather (20) and craft (50): refills beat hand-mining but never pre-empt the §5.5 collects/fuel; 0 = off (P26 pending). Guess. | yes (new) |
+
+## M6b.3: B25 belts spilling off module edges (2026-10-19)
+
+The B25 row: a mall belt ran to the module edge and dropped iron plates onto a neighbour's belt. **Root cause: module
+templates, not transforms or placement.** A geometric check over every module showed the same defect in seven
+places: the curated mall's two-belt trunk ended on row 0 pointing out of the north edge (the source blueprint's
+magazine assemblers it once fed were cropped away); `green-line-hellpet`'s copper, iron and row-7 pass-throughs ran
+out of the west edge (noted as "tileable pass-throughs" when curated); `red-tile-ramqvist`'s copper and gear belts ran
+out of the bottom edge; and every non-buffered row generator (assembler row, red line, circuit block, lab array)
+let its input belt's head tile flow west off the module — so a gear row's iron plates spilled onto whatever ran
+past, typically its own output route leaving the west port. Transforms preserve inside/outside, so every orientation
+had the same leaks. (The planner already reserved the outward tile as an interaction tile, but that only keeps
+routes off it while the layout state holds; any belt there still received the items.)
+
+**Fix:** curated specs edited and rebuilt with `curate.py` (mall: trunk row 0 removed, the trunk now ends at the
+pipe-to-ground assembler's inserter; green line: copper end turns south into its inserter, the unused west tiles of
+rows 5 and 7 removed; red tile: the last copper/gear tiles turn west/east into an empty tile and the picking
+inserter). Row generators drop the input belt's head tile after slicing the growth unit (`dropBelt`): nothing picks
+from it. **Validation:** `geometry.ts` `beltLeaks` (a belt, an underground exit or a splitter half whose output tile
+is outside the footprint, with no `belt-out` port there pointing the same way) and `finalizeModule` errors on any
+leak. Growing a module that already leaks (an old save's stored layout) skips the check, and head growth
+(`expandHeadModule`) that would open a belt returns undefined, so `tryExpand(..., "head")` refuses it
+(`HEAD_GROWTH_OPENS_BELT`). That refusal covers every module with a port or belt end at its head, mining outposts
+included: their head growth used to bury the output port and run the ore off the new north edge. `planGrowth` keeps
+the usual end's failure reason in that case. T1 now also loads the curated data (`tools/curated-lua.mjs`, shared
+with the mod build).
+
+**Tests (T1 `modules`):** "B25: no module belt feeds out of its footprint …" (every generated module at base size
+and grown by 1–2 units, plus every curated module, in every allowed rotation and mirror); `beltLeaks` cases (belt,
+underground exit vs entrance, splitter halves, a port pointing elsewhere or a belt-in port doesn't excuse it) and
+`finalizeModule` refusing a leaking draft; row-module input belts end under the first inserter, and head growth is
+either leak-free or refused. No new T2 test: the leak is purely geometric, and the T1 check covers every template
+the library can produce. The T2 validation lab still stamps the changed modules.
+
+**Proposed (not approved):** placement's D52 mine-site check still counts head-growth ore (`firstGrowthCoverage`
+"head"), although mining outposts can no longer grow at the head (SPEC §11 P37). The scorer should drop it, but it changes mine
+placement and needs replays, so it is left for a decision.
+
+No new magic numbers.

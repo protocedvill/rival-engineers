@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from "node:child_process"
 import { readdirSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { writeCuratedLua } from "./curated-lua.mjs"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const mod = join(root, "mod")
@@ -20,6 +21,8 @@ function findLua() {
 
 rmSync(out, { recursive: true, force: true })
 execFileSync(join(root, "node_modules", ".bin", "tstl"), ["-p", join(mod, "tsconfig.unit.json")], { stdio: "inherit" })
+// The curated module data, as the mod build ships it (`require("modules.curated_data")`).
+writeCuratedLua(root, join(out, "modules", "curated_data.lua"))
 
 const lua = findLua()
 const filter = process.argv[2]

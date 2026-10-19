@@ -11,7 +11,7 @@
    "name": "transport-belt",
    "x": 0.5,
    "y": 0.5,
-   "dir": 12
+   "dir": 8
   },
   {
    "name": "transport-belt",
@@ -300,12 +300,6 @@
    "dir": 8
   },
   {
-   "name": "transport-belt",
-   "x": 0.5,
-   "y": 5.5,
-   "dir": 12
-  },
-  {
    "name": "underground-belt",
    "x": 1.5,
    "y": 5.5,
@@ -503,12 +497,6 @@
    "name": "splitter",
    "x": 15.5,
    "y": 7.0,
-   "dir": 12
-  },
-  {
-   "name": "transport-belt",
-   "x": 0.5,
-   "y": 7.5,
    "dir": 12
   },
   {
@@ -771,7 +759,7 @@
  "notes": [
   "assembling-machine-2 -> assembling-machine-1 and fast-inserter -> inserter (v1 tier, D20)",
   "the two inserters that picked from the neighbouring tile's bus (east edge) became belt ports: copper (row 0) and iron (row 5)",
-  "tileable pass-throughs (west edge) end at the module edge; the science belt (row 6) is the output port",
+  "B25: the tileable pass-throughs no longer run off the west edge (they would spill copper and iron onto belts passing the module): the copper belt (row 0) turns south into the cable inserter at its end, and the west end tiles of rows 5 and 7 (nothing picks from them) are removed; the science belt (row 6) is the output port",
   "not expandable: the feeder block (cable, circuit, gear, inserter, belt assemblers) is not periodic and every cut through it breaks a direct-insertion link; grow by placing another copy"
  ],
  "recipe": "logistic-science-pack"

@@ -7,7 +7,7 @@
  "recipes": {"fast-inserter": "iron-chest", "assembling-machine-2": "iron-gear-wheel", "gun-turret": "burner-inserter"},
  "remove": ["small-lamp"],
  "remove_rects": [[0, 0, 6, 7], [0, 39, 18, 45]],
- "remove_at": [[17.5, 28.5], [16.5, 28.5], [11.5, 28.5], [11.5, 27.5], [4.5, 15.5], [4.5, 23.5]],
+ "remove_at": [[6.5, 0.5], [7.5, 0.5], [17.5, 28.5], [16.5, 28.5], [11.5, 28.5], [11.5, 27.5], [4.5, 15.5], [4.5, 23.5]],
  "add": [
   {"name": "transport-belt", "x": 7.5, "y": 39.5},
   {"name": "transport-belt", "x": 8.5, "y": 39.5},
@@ -36,6 +36,7 @@
   "recipes: fast-inserter -> iron-chest, assembling-machine-2 (needs steel) -> iron-gear-wheel, gun-turret -> burner-inserter (copper feed removed); the direct-insertion inserters that fed them were removed",
   "the two firearm-magazine assemblers (top left) were removed",
   "the chest buffer below the input splitter is replaced by two input belt ports (iron, copper)",
-  "the assembling-machine-1 assembler got an output inserter and chest (it fed the removed assembling-machine-2)"
+  "the assembling-machine-1 assembler got an output inserter and chest (it fed the removed assembling-machine-2)",
+  "B25: the trunk's top tiles (row 0) are removed: they pointed out of the north edge with no port and spilled iron plates onto belts passing the module; the trunk now ends at the pipe-to-ground assembler's inserter"
  ]
 }

@@ -11,7 +11,7 @@ import { BuildParts, EntitySpec, partEntities } from "./build-list"
 import { FREE, TerrainView, tkey } from "./grid"
 import { findModule, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, PlanJob, runJob } from "./plan"
-import { tryExpand } from "./placement"
+import { HEAD_GROWTH_OPENS_BELT, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
 
 export interface GrowthPlan {
@@ -90,7 +90,12 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   const moves = expandMoves(m.canonical, units)
   const other = moves.originShift.x !== 0 || moves.originShift.y !== 0 ? "tail" : "head"
   let r = tryExpand(layout, view, facts, policy, id, units, "auto")
-  if (!r.ok) r = tryExpand(layout, view, facts, policy, id, units, other)
+  if (!r.ok) {
+    const first = r
+    r = tryExpand(layout, view, facts, policy, id, units, other)
+    // B25: a module that can't grow at its head at all says why its usual end failed.
+    if (!r.ok && r.reason === HEAD_GROWTH_OPENS_BELT) r = first
+  }
   m.fixed = true
   if (!r.ok) return { ok: false, reason: r.reason, layout: base, remove: [], add: [], rerouted: [] }
   // Reroute the ripped connections on the grown layout. The region must reach every module a rerouted connection

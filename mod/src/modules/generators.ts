@@ -91,6 +91,17 @@ function sliceUnit(entities: ModuleEntity[], axis: "x" | "y", a: number, b: numb
   )
 }
 
+/**
+ * B25: removes the belt tile at (x, y) once the expansion unit has been sliced (the unit keeps it: between units the
+ * belt must run on). Row generators use it for the head tile of their input belt: it flows west out of the footprint
+ * with nothing picking from it, and would drop its items onto whatever belt runs past the module's west edge.
+ */
+function dropBelt(entities: ModuleEntity[], belt: string, x: number, y: number): ModuleEntity[] {
+  const out = entities.filter((e) => !(e.name === belt && e.x === x && e.y === y))
+  if (out.length !== entities.length - 1) error(`generator: no ${belt} at ${x},${y} to drop`)
+  return out
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Smelter column
 
@@ -516,6 +527,8 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
       maxUnits: Math.max(0, Math.floor(maxMachines / 2 + 1e-9) - units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
+  if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -594,6 +607,8 @@ export function redLine(facts: ProtoFacts, p: RedLineParams): ModuleDef {
       maxUnits: Math.max(0, 10 - p.units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters.
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -691,6 +706,8 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
       maxUnits: Math.max(0, Math.floor(lane / ((3 * machineSpeed(facts, machine)) / mid.energy) + 1e-9) - p.units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
+  if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -747,6 +764,8 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
       maxUnits: Math.max(0, 10 - units),
     },
   }
+  // B25: the pack belt ends at the first lab's inserter.
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 4.5)
   return finalizeModule(draft, facts)
 }
 

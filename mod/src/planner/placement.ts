@@ -603,6 +603,9 @@ function axisCoord(e: ModuleEntity, axis: "x" | "y"): number {
   return axis === "x" ? e.x : e.y
 }
 
+/** B25: `tryExpand(..., "head")` refused because the grown layout would run a belt out of the module (`expandHeadModule`). */
+export const HEAD_GROWTH_OPENS_BELT = "head growth would leave a belt open at the module edge (B25)"
+
 export interface ExpansionResult {
   ok: boolean
   reason?: string
@@ -666,6 +669,7 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
   const spec = canon.expand
   if (spec === undefined || k < 1 || k > spec.maxUnits) return { ok: false, reason: "cannot expand by that much", movedPorts: [], moved: [] }
   const grown = end === "head" ? expandHeadModule(canon, k, facts) : expandModule(canon, k, facts)
+  if (grown === undefined) return { ok: false, reason: HEAD_GROWTH_OPENS_BELT, movedPorts: [], moved: [] }
   const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
   // Which end stays put. "head" growth keeps the far end (largest coordinate) in place; otherwise `expandMoves` decides.
   let headMoves: boolean
