@@ -180,6 +180,8 @@ export interface Config {
   factoryPowerFuelMinutes: number
   /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
   factoryFuelFallback: boolean
+  /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
+  preemptFuelSeconds: number
 }
 
 export type ConfigKey = keyof Config
@@ -279,6 +281,7 @@ export function getConfig(): Config {
     buildStuckRounds: setting(Settings.buildStuckRounds),
     factoryPowerFuelMinutes: setting(Settings.factoryPowerFuelMinutes),
     factoryFuelFallback: setting(Settings.factoryFuelFallback),
+    preemptFuelSeconds: setting(Settings.preemptFuelSeconds),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

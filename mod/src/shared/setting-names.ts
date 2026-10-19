@@ -89,4 +89,5 @@ export const Settings = {
   buildStuckRounds: "rival-engineers-build-stuck-rounds",
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",
   factoryFuelFallback: "rival-engineers-factory-fuel-fallback",
+  preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",
 } as const

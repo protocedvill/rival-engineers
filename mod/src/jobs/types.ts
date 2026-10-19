@@ -81,6 +81,8 @@ export interface CrewStats {
   trips?: number
   /** B17: batches dropped to work a strictly higher-priority job first (a collect transfer on furnaces, a fuel refill). */
   preemptions?: number
+  /** B31: preemptions whose re-plan claimed the job the member dropped its batch for. */
+  preemptTaken?: number
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */
@@ -110,4 +112,6 @@ export interface CrewMember {
   unboxRetryAt?: number
   /** B30: ready fuel/transfer jobs when the member last planned; only jobs not in it can preempt its batch. */
   planSeen?: number[]
+  /** B31: the urgent job this member just dropped its batch for; its next plan takes it first. */
+  preemptFor?: number
 }
