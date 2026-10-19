@@ -58,6 +58,8 @@ export interface PlacementSearch {
   wh: number
   row: number
   sat: Record<string, number[]>
+  /** B26: tiles of the window in the near band of other modules' growth areas (built with the window). */
+  band?: Record<number, boolean>
   /** Candidate cursor: transform index and origin offset index (on a grid of `stride`). */
   ti: number
   ci: number
@@ -74,7 +76,7 @@ export interface PlacementSearch {
   result?: PlacedModule
 }
 
-const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft"]
+const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
 
 function transformsOf(def: ModuleDef): Transform[] {
   const out: Transform[] = []
@@ -201,9 +203,42 @@ function maxDim(s: PlacementSearch): number {
   return m
 }
 
-function startWindow(s: PlacementSearch, policy: LayoutPolicy): void {
+/** B26: an expandable non-mining module: the length of its whole growth band (0 if it can't grow or is a mine). */
+function ownGrowthLength(def: ModuleDef): number {
+  const spec = def.expand
+  if (spec === undefined || spec.maxUnits < 1 || isMining(def)) return 0
+  return spec.maxUnits * (spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h)
+}
+
+/**
+ * B26: the near band of every other expandable module (its first `growthBandUnits` growth units, on the end
+ * `tryExpand` grows), inside the window. Mines are left out: their room to grow is already a hard claim (D52 (3)).
+ */
+function nearBandTiles(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): Record<number, boolean> {
+  const out: Record<number, boolean> = {}
+  const units = policy.placement.growthBandUnits ?? 0
+  if (units <= 0 || (policy.placement.growthBand ?? 0) <= 0) return out
+  for (const m of state.modules) {
+    const c = m.canonical
+    // Partners (P28) are exempt as from the soft claim: their feed ports sit at this growing end.
+    if (m.id === s.req.id || (s.req.softExempt ?? {})[m.id] || m.minePlan !== undefined || c.expand === undefined || c.expand.maxUnits < 1) continue
+    const n = math.min(units, c.expand.maxUnits)
+    for (let i = 0; i < n; i++) {
+      const r = transformRect(growthStrip(c, i, "auto"), c.footprint.w, c.footprint.h, m.transform)
+      const x1 = math.max(m.origin.x + r.x, s.wx)
+      const y1 = math.max(m.origin.y + r.y, s.wy)
+      const x2 = math.min(m.origin.x + r.x + r.w, s.wx + s.ww)
+      const y2 = math.min(m.origin.y + r.y + r.h, s.wy + s.wh)
+      for (let x = x1; x < x2; x++) for (let y = y1; y < y2; y++) out[tkey(x, y)] = true
+    }
+  }
+  return out
+}
+
+function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
   const R = radii(s, policy)[s.radiusIdx]
-  const M = maxDim(s) + policy.corridor.preferred + 4
+  // B26: an expandable module's own growth band (and its corridor ring) must fit in the window to be scored.
+  const M = maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
   const t = s.target!
   s.wx = math.max(t.x - R - M, s.req.region.x)
   s.wy = math.max(t.y - R - M, s.req.region.y)
@@ -211,6 +246,7 @@ function startWindow(s: PlacementSearch, policy: LayoutPolicy): void {
   s.wh = math.min(t.y + R + M, s.req.region.y + s.req.region.h) - s.wy
   s.row = 0
   s.sat = {}
+  s.band = nearBandTiles(s, state, policy)
   for (const l of LAYERS) {
     const a: number[] = []
     for (let i = 0; i < s.ww + 1; i++) a.push(0)
@@ -252,6 +288,15 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const aMods = s.sat.mods
   const aRes = s.sat.res
   const aSoft = s.sat.soft
+  const aBand = s.sat.band
+  const aGblock = s.sat.gblock
+  const band = s.band ?? {}
+  // B26: tiles where this module's own growth would be refused (`tryExpand`'s checks), for expandable non-mining modules.
+  const ownGrowth = ownGrowthLength(s.req.def) > 0
+  const oreBlocks = policy.protectOre && !isMining(s.req.def)
+  const treeBlocks = policy.obstacles.trees !== "clear"
+  const rockBlocks = policy.obstacles.rocks !== "clear"
+  const self = s.req.id
   const softTiles = state.soft
   const exempt = s.req.softExempt ?? {}
   const occ = state.occ
@@ -265,6 +310,8 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   let mods = 0
   let res = 0
   let soft = 0
+  let nearBand = 0
+  let gblock = 0
   const base = (s.row + 1) * W
   const prev = base - W
   aHard[base] = 0
@@ -274,6 +321,8 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   aMods[base] = 0
   aRes[base] = 0
   aSoft[base] = 0
+  aBand[base] = 0
+  aGblock[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
@@ -290,6 +339,18 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     else if (b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
     if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
+    if (band[k]) nearBand++
+    if (
+      ownGrowth &&
+      ((b !== FREE && !(b === TREE && !treeBlocks) && !(b === ROCK && !rockBlocks)) ||
+        o !== undefined ||
+        routeOcc[k] !== undefined ||
+        reserved[k] !== undefined ||
+        (mine[k] !== undefined && mine[k] !== self) ||
+        (softTiles !== undefined && softTiles[k] !== undefined && softTiles[k] !== self) ||
+        (oreBlocks && ore !== undefined))
+    )
+      gblock++
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard
@@ -299,6 +360,8 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     aMods[j] = aMods[p] + mods
     aRes[j] = aRes[p] + res
     aSoft[j] = aSoft[p] + soft
+    aBand[j] = aBand[p] + nearBand
+    aGblock[j] = aGblock[p] + gblock
   }
   s.row++
 }
@@ -364,6 +427,27 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
       if ((s.req.def.expand?.maxUnits ?? 0) > 0 && growthCoverage === 0) return undefined
     }
   }
+  // B26: the same for any expandable module that is not a mine: how many units of its own growth band (on the end
+  // `tryExpand` grows) are clear of what `tryExpand` refuses — terrain, ore, other modules and their corridor ring,
+  // routes, port reservations, interaction tiles, mine and soft claims. Near units past the first refused one count too.
+  let growthBlocked: number | undefined
+  const spec = s.req.def.expand
+  if (!mining && spec !== undefined && spec.maxUnits > 0 && (policy.placement.growthBlocked ?? 0) > 0) {
+    const cdef = s.req.def
+    // Only the near band counts (the units growth needs first, `growthBandUnits`): asking every unit up to the cap
+    // to be clear (a smelter's is 20 tiles deep) pulled whole clusters apart on the plan replays.
+    const want = math.min(spec.maxUnits, policy.placement.growthBandUnits ?? spec.maxUnits)
+    let clearUnits = 0
+    for (let i = 0; i < want; i++) {
+      const r = transformRect(growthStrip(cdef, i, "auto"), cdef.footprint.w, cdef.footprint.h, td.t)
+      const wr = { x: ox + r.x, y: oy + r.y, w: r.w, h: r.h }
+      const g = sum(s, "gblock", wr)
+      const near = sum(s, "mods", inflate(wr, policy.corridor.min))
+      if (g === undefined || g > 0 || near === undefined || near > 0) break
+      clearUnits++
+    }
+    growthBlocked = want - clearUnits
+  }
   let portDist = 0
   let facingAway = 0
   for (const p of td.ports) {
@@ -390,6 +474,8 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     coverage,
     growthCoverage,
     softClaim: sum(s, "soft", rect) ?? 0,
+    growthBand: sum(s, "band", rect) ?? 0,
+    growthBlocked,
   }
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
 }
@@ -419,12 +505,12 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       s.ring++
       if (found !== undefined) {
         s.target = found
-        startWindow(s, policy)
+        startWindow(s, state, policy)
       }
       continue
     }
     if (s.phase === "sat") {
-      if (s.ww <= 0 && s.row === 0 && s.sat.hard === undefined) startWindow(s, policy)
+      if (s.ww <= 0 && s.row === 0 && s.sat.hard === undefined) startWindow(s, state, policy)
       if (s.row >= s.wh) {
         s.phase = "scan"
         continue
@@ -494,7 +580,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         s.phase = "done"
       } else if (s.radiusIdx + 1 < radii(s, policy).length) {
         s.radiusIdx++
-        startWindow(s, policy)
+        startWindow(s, state, policy)
       } else {
         s.phase = "failed"
         s.reason = "no feasible position"

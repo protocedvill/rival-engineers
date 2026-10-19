@@ -64,6 +64,18 @@ export interface PlacementWeights {
   growthCoverage?: number
   /** B9 (D48 (4)): per footprint tile in another module's soft claim (the area it can still grow into). */
   softClaim?: number
+  /**
+   * B26: per footprint tile in the near part (the first `growthBandUnits` units) of another expandable module's growth
+   * area, on top of `softClaim` and for partners too: the growth corridor that `tryExpand` needs first stays clear.
+   */
+  growthBand?: number
+  /** B26: how many growth units, next to the module, count as its near band (`growthBand`). */
+  growthBandUnits?: number
+  /**
+   * B26: an expandable non-mining module, per growth unit it could not grow by at this site: `tryExpand`'s checks
+   * (terrain, ore, other modules and their corridor, routes, reservations, mine and soft claims) over its own band.
+   */
+  growthBlocked?: number
 }
 
 export interface LayoutPolicy {
@@ -118,6 +130,10 @@ export interface CandidateFeatures {
   growthCoverage?: number
   /** Footprint tiles in other modules' soft claims (B9). */
   softClaim?: number
+  /** B26: footprint tiles in the near band of another module's growth area (partners included). */
+  growthBand?: number
+  /** B26: growth units this module's own band would refuse (0 = it can grow by every unit it may). */
+  growthBlocked?: number
 }
 
 export type PackingScorer = (this: void, f: CandidateFeatures, policy: LayoutPolicy) => number
@@ -161,7 +177,9 @@ registerPacking("compact-cluster", (f, p) => {
     w.exactGap * f.exactGap +
     w.coverage * (1 - f.coverage) +
     (w.growthCoverage ?? 0) * (f.growthCoverage !== undefined && f.growthCoverage < 0.3 ? 1 : 0) +
-    (w.softClaim ?? 0) * (f.softClaim ?? 0)
+    (w.softClaim ?? 0) * (f.softClaim ?? 0) +
+    (w.growthBand ?? 0) * (f.growthBand ?? 0) +
+    (w.growthBlocked ?? 0) * (f.growthBlocked ?? 0)
   )
 })
 
@@ -197,7 +215,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     bundleFactor: 0.9,
     softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3 },
 }
 registerPolicy(EARLY_COMPACT)
 
@@ -212,6 +230,10 @@ export interface PolicyOverrides {
   placementSoftClaim?: number
   routerSoftClaim?: number
   routerBundleFactor?: number
+  /** B26: near growth band weight, its depth in units, and the per-unit cost of a blocked own band (negative = keep). */
+  placementGrowthBand?: number
+  placementGrowthBandUnits?: number
+  placementGrowthBlocked?: number
 }
 
 /**
@@ -242,6 +264,9 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.utilization !== undefined && overrides.utilization > 0) p.utilization = overrides.utilization
   if (overrides.smelting === "compact-core" || overrides.smelting === "near-ore") p.smelting = overrides.smelting
   if (overrides.placementSoftClaim !== undefined && overrides.placementSoftClaim >= 0) p.placement = { ...p.placement, softClaim: overrides.placementSoftClaim }
+  if (overrides.placementGrowthBand !== undefined && overrides.placementGrowthBand >= 0) p.placement = { ...p.placement, growthBand: overrides.placementGrowthBand }
+  if (overrides.placementGrowthBandUnits !== undefined && overrides.placementGrowthBandUnits >= 0) p.placement = { ...p.placement, growthBandUnits: overrides.placementGrowthBandUnits }
+  if (overrides.placementGrowthBlocked !== undefined && overrides.placementGrowthBlocked >= 0) p.placement = { ...p.placement, growthBlocked: overrides.placementGrowthBlocked }
   if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
   if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p

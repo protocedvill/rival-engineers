@@ -146,6 +146,12 @@ export interface Config {
   plannerPlacementSoftClaim: number
   /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
   plannerRouterSoftClaim: number
+  /** B26: placement cost per footprint tile on the near part of another module's growth area (policy placement.growthBand). */
+  plannerPlacementGrowthBand: number
+  /** B26: growth units next to a module that count as its near band (policy placement.growthBandUnits). */
+  plannerPlacementGrowthBandUnits: number
+  /** B26: placement cost per growth unit an expandable module's own band would refuse (policy placement.growthBlocked). */
+  plannerPlacementGrowthBlocked: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
   plannerRouterBundleFactor: number
   /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */
@@ -269,6 +275,9 @@ export function getConfig(): Config {
     plannerPlacementSoftClaim: setting(Settings.plannerPlacementSoftClaim),
     plannerRouterSoftClaim: setting(Settings.plannerRouterSoftClaim),
     plannerRouterBundleFactor: setting(Settings.plannerRouterBundleFactor),
+    plannerPlacementGrowthBand: setting(Settings.plannerPlacementGrowthBand),
+    plannerPlacementGrowthBandUnits: setting(Settings.plannerPlacementGrowthBandUnits),
+    plannerPlacementGrowthBlocked: setting(Settings.plannerPlacementGrowthBlocked),
     plannerCompareMinWork: setting(Settings.plannerCompareMinWork),
     logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
     moduleBuffer: setting(Settings.moduleBuffer),

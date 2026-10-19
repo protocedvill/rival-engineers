@@ -432,6 +432,8 @@ Default to configurable (D18). Settings live in three places:
   the plan's own routing work).
 - **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+  B26 (proposed, P38): `planner-placement-growth-band` (4), `planner-placement-growth-band-units` (2),
+  `planner-placement-growth-blocked` (3).
 - **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
   `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
@@ -813,6 +815,18 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   D52 site check (`firstGrowthCoverage`) still accepts a mine whose only ore-bearing growth unit is at the head.
   Proposed: count the tail only for modules that can't grow at the head. This changes mine placement, so it needs
   replays first. Not implemented (M6 report, M6b.3).
+- **P38, growth bands at placement (proposed, B26; M6 report M6b.6):** (a) a module placed in the **near band** of another
+  expandable module (its first `planner-placement-growth-band-units` = **2** growth units, on the end `tryExpand` grows)
+  pays `planner-placement-growth-band` = **4** per footprint tile on top of the 0.5 soft claim (D50 unchanged); a direct
+  partner stays exempt, as from the soft claim (P28): applying it to partners pushed feeders off the smelter's input side
+  and broke the seed 11 replay. (b) An expandable non-mining module scores each candidate site by its own near band:
+  `planner-placement-growth-blocked` = **3** per near unit that `tryExpand` would refuse there (terrain, ore, other
+  modules and their corridor ring, routes, port reservations, interaction tiles, mine and soft claims; units past the
+  first refused one count too). Only the near band counts: checking every unit up to the cap (a smelter's band is 20
+  tiles deep) and 8 per unit pulled the seed 222 cluster apart and its iron feed failed even with undergrounds. Cost:
+  with (b) on, the seed 11 and 3333 stage-1 clusters no longer route **without** undergrounds (a smelter's growth end is
+  its input side, which now turns away from ore, so feeds wrap round it); they do route with them, and both seeds decide
+  "undergrounds first" under D36 / D51 anyway. Values are guesses tuned on six replays; a soak decides.
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

@@ -8,6 +8,8 @@ interface UnitTest {
 
 const tests: UnitTest[] = []
 
+declare const os: { getenv(this: void, name: string): string | undefined; exit(this: void, code: number): never }
+
 export function test(name: string, fn: (this: void) => void): void {
   tests.push({ name, fn })
 }
@@ -27,7 +29,14 @@ export function ok(condition: boolean, what = "condition"): void {
 /** Runs every registered test, prints results and exits non-zero on any failure. */
 export function run(suite: string): void {
   let failed = 0
+  // UNIT_FILTER="text": run only the tests whose name contains it (plain text, not a pattern).
+  const filter = os.getenv("UNIT_FILTER")
+  let skipped = 0
   for (const t of tests) {
+    if (filter !== undefined && string.find(t.name, filter, 1, true)[0] === undefined) {
+      skipped++
+      continue
+    }
     const [success, err] = pcall(t.fn)
     if (success) {
       print(`PASS ${suite} > ${t.name}`)
@@ -36,6 +45,6 @@ export function run(suite: string): void {
       print(`FAIL ${suite} > ${t.name}\n    ${tostring(err)}`)
     }
   }
-  print(`${suite}: ${tests.length - failed} passed, ${failed} failed`)
+  print(`${suite}: ${tests.length - failed - skipped} passed, ${failed} failed${skipped > 0 ? `, ${skipped} filtered out` : ""}`)
   if (failed > 0) os.exit(1)
 }
