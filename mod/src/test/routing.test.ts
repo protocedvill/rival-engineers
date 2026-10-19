@@ -26,8 +26,8 @@ const SPEED = 100
 const SEEDS = [123456, 987654, 555555, 31337, 2718281]
 
 function surfaceFor(seed: number, name = `m4b-${seed}`): LuaSurface {
-  const existing = game.surfaces[name]
-  if (existing) return existing
+  const existing: LuaSurface | undefined = game.surfaces[name]
+  if (existing !== undefined) return existing
   // Default Nauvis generation (cliffs, water, trees, starting area at the origin) with no enemy bases (D6).
   return game.create_surface(name, { seed, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
 }

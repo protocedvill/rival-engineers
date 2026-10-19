@@ -1452,8 +1452,8 @@ export function replan(ctx: Ctx): void {
       for (const part of site.parts) {
         if (part.built && part.built.valid) continue
         part.job = undefined
-        const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-        if (ghost) {
+        const ghost: LuaEntity | undefined = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+        if (ghost !== undefined) {
           const job = addJob(
             faction.board,
             {
@@ -1473,8 +1473,8 @@ export function replan(ctx: Ctx): void {
     }
     site.status = "failed"
     for (const part of site.parts) {
-      const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-      if (ghost) destroyEntity(ghost)
+      const ghost: LuaEntity | undefined = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+      if (ghost !== undefined) destroyEntity(ghost)
     }
     for (const k of site.tiles) delete brain.reserved[k]
   }

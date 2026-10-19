@@ -45,8 +45,8 @@ function until(timeout: number, check: () => boolean): void {
 }
 
 function realSurface(name: string, seed: number): LuaSurface {
-  const existing = game.surfaces[name]
-  if (existing) return existing
+  const existing: LuaSurface | undefined = game.surfaces[name]
+  if (existing !== undefined) return existing
   // Default Nauvis-like generation with no enemy bases (D6).
   return game.create_surface(name, { seed, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
 }
