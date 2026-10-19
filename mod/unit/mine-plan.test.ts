@@ -46,6 +46,32 @@ test("D52 plans a wide irregular patch in both dimensions", () => {
   ok(plan.covered.length >= math.floor(patch.tiles.length * 0.9), `${plan.covered.length}/${patch.tiles.length} patch tiles covered`)
 })
 
+test("B44: a whole-patch plan does not depend on where the patch lies (shifts across the lane pitch)", () => {
+  // The B33 review test's 18x15 patch and an irregular one; the lane pitch is 9 tiles for a 3-wide drill.
+  const shapes: [string, (this: void, x: number, y: number) => boolean][] = [
+    ["rect", (x, y) => x >= 0 && x < 18 && y >= 0 && y < 15],
+    ["L", (x, y) => (x >= 0 && x < 20 && y >= 0 && y < 9) || (x >= 11 && x < 20 && y >= 0 && y < 23)],
+  ]
+  for (const [name, inside] of shapes) {
+    let first: string | undefined
+    for (let dx = 0; dx < 9; dx++) {
+      for (const dy of [0, 4, 7]) {
+        const ox = 400 + dx
+        const oy = 2000 + dy
+        const region = { x: ox - 40, y: oy - 40, w: 100, h: 100 }
+        const view = terrain(region, (x, y) => (inside(x - ox, y - oy) ? "iron-ore" : undefined))
+        const patch = connectedPatch(view, "iron-ore", [{ x: ox, y: oy }], region)!
+        const plan = planWholePatch(view, patch, DRILL)
+        const rel: string[] = [plan.axis]
+        for (const d of plan.drills) rel.push(string.format("%g,%g/%g", d.x - ox, d.y - oy, d.lane - (plan.axis === "y" ? ox : oy)))
+        const key = rel.join(" ")
+        if (first === undefined) first = key
+        eq(key, first, `${name} shifted by ${dx},${dy}`)
+      }
+    }
+  }
+})
+
 test("D52 touching copper is neither joined nor put under an iron drill", () => {
   const region = { x: 0, y: 0, w: 70, h: 50 }
   const view = terrain(region, (x, y) => {

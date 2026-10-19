@@ -1088,3 +1088,25 @@ flight in the save) plans on attempt 2, evicting 6 poles, and the second plant i
 plans the mall (g16). That run stopped at tick 410400 with the mall still building, before any stage change, so the
 move to green science is not yet shown. No new magic numbers.
 
+## M6b.16: B44 whole-patch mine plans no longer depend on where the patch lies (2026-10-19)
+
+While validating B42/B43, the full T2 suite failed once per run in T2 `review` "B33 growth overlay draws a smelter's
+next units and a whole-patch mine's plan…" ("patch outline 58 edges", expected 66), only when a fast module-validation
+test (`circuit-block 1` or `assembler-row belt 2`) ran earlier in the same shard; the pre-session commit b666577 fails
+the same way. The user asked to track it down (in-session, 2026-10-19).
+
+It is not a leak between tests. Those tests advance the shared lab allocator, so the B33 lab's origin moves from x 400
+to x 496, and `planWholePatch` (`planner/mine-plan.ts`) then chooses a different plan: the mine shifts 5 tiles and its
+outline area (plan footprint plus a margin) crops the test patch. Two grid phases tie on every criterion `better`
+compares (covered tiles, drill count, axis, the first drill's tile): lane -2.5 with its drill on the east side and lane
+1.5 with its drill on the west side put the first drill on the same tile. On a full tie the first phase tried won,
+and the phases count from absolute coordinates, so the chosen plan depended on the patch's position mod the lane pitch
+(9 tiles for the electric drill). That affects the game too: two identical patches at different places got different
+mines. `better` now breaks the remaining tie on the first drill's lane, which makes the choice depend only on the
+patch's shape.
+
+Tests: T1 `mine-plan` "B44: a whole-patch plan does not depend on where the patch lies" shifts a rectangular and an
+L-shaped patch through every x offset across the pitch (and three y offsets) and requires the same relative plan; it
+fails on the old code at a 4-tile shift. Both failing T2 combinations now pass. Mines whose plans tied now consistently
+take the lower lane, so soak layouts can differ from earlier runs for those patches. No new magic numbers.
+

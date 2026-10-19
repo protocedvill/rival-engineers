@@ -201,7 +201,11 @@ function better(a: WholePatchMinePlan, b: WholePatchMinePlan | undefined): boole
   const bd = b.drills[0]
   if (ad === undefined) return false
   if (bd === undefined) return true
-  return ad.x !== bd.x ? ad.x < bd.x : ad.y < bd.y
+  if (ad.x !== bd.x) return ad.x < bd.x
+  if (ad.y !== bd.y) return ad.y < bd.y
+  // B44: two grid phases can put the same first drill on either side of a different lane. Without this the first
+  // phase tried won, and phases count from absolute coordinates: the plan depended on the patch's x mod lane pitch.
+  return ad.lane < bd.lane
 }
 
 /**
