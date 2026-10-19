@@ -4,17 +4,18 @@ import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { addJob } from "../jobs/board"
 import { startBootstrap } from "../strategy/bootstrap"
 import { Site, SitePart } from "../strategy/types"
+import { FactionState } from "../jobs/types"
 import { at, createLab, Lab } from "./lab"
 
-// B17 (SPEC §5.5 collect-first): material sourcing must collect from bootstrap furnaces (and buffers) before it
-// hand-mines or hand-smelts. The soak watched a saturated crew hand-mine ore while furnaces held full plate stacks:
-// the collect transfer jobs sat open because planNext only fires between batches, and nothing interrupted an
-// in-flight low-priority batch. These tests pin the collect: the basic round trip on an idle crew, and the collect
-// on a crew already busy mid-batch.
+// B17 (SPEC §5.5 collect-first): material sourcing must take from bootstrap furnaces (and buffers) before it
+// hand-mines or hand-smelts.
 //
-// B31 (user, in-session 2026-10-19): a collect no longer preempts a batch (walking off work to shuffle stacks to the
-// depot wastes the walk); the busy crew takes it at its next plan, since it outranks their hand-mining. Only a
+// B31 (user, in-session 2026-10-19): walking off work to shuffle part stacks to the depot wastes the walk; only a
 // running burner about to run out of fuel pulls the nearest busy member off its work (and only that one).
+//
+// B32 (user, in-session 2026-10-19, the intent of B17): no stack shuffling to the depot at all. When a member needs
+// an item for a job, its haul takes it straight from the supply points (furnace outputs, chests, buffers, the mall)
+// and the depot; hand-sourcing happens only when no supply point in range holds it.
 
 let testSeq = 0
 let setupTick = 0
@@ -66,35 +67,117 @@ describe("B17 material sources", () => {
     testSeq++
   })
 
-  test("the crew collects plates from a bootstrap furnace in range before it hand-mines", () => {
+  test("B32: a craft needing iron plates is fed straight from a furnace holding plates", () => {
     const lab = createLab(32)
-    const faction = createFaction("b17-a", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const faction = createFaction("b32-a", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
     const brain = startBootstrap(faction, at(lab, 0, 0))
-    // The depot chest: empty, with room (the soak showed insertable stacks are not the limit).
+    // The depot chest: empty. The furnace (a bootstrap smelt site) holds 100 plates.
     const depot = chest(lab, at(lab, 2, 0), faction.force)
     addStockpile(faction, depot)
     const furnace = platedFurnace(lab, faction, at(lab, 10, 0))
-    const site = smeltSite(brain, furnace)
-    brain.sites = [site]
+    brain.sites = [smeltSite(brain, furnace)]
     brain.goals = []
     brain.rescanAt = undefined
-    // Demand: an active craft job's materials are the economy's demand (reconcile adds each active job's materials).
+    brain.nextThink = game.tick
+    // An active craft job needing 60 plates (20 gears into the depot).
     addJob(faction.board, {
       kind: "craft",
       pos: depot.position,
       materials: [{ item: "iron-plate", count: 60 }],
       payload: { kind: "craft", recipe: "iron-gear-wheel", count: 20, item: "iron-gear-wheel", deliverTo: depot },
     }, game.tick)
-    // Plates must reach the depot from the furnace: outside the collect, nothing in this lab supplies plates
-    // (no ore patches either, so hand-mining plates is physically impossible — the collect is the only source).
-    let plates = 0
+    const watch = watchSourcing(faction, depot)
     waitFor(1800, () => {
-      plates = depot.get_item_count("iron-plate")
-      return plates >= 60
-    }, () => "plates at the depot", () => {})
+      watch.sample()
+      return depot.get_item_count("iron-gear-wheel") >= 20
+    }, () => `the gears at the depot (${watch.describe()})`, () => {
+      const msg = watch.describe()
+      assert(watch.maxDepotPlates === 0, `the plates never went through the depot (${msg})`)
+      assert(watch.shuffles === 0, `no job moved plates to the depot (${msg})`)
+      assert(watch.handSourcing === 0, `nothing was hand-mined (${msg})`)
+      assert(furnace.get_item_count("iron-plate") === 40, `the craft's 60 plates came out of the furnace (${furnace.get_item_count("iron-plate")} left)`)
+    })
   })
 
-  test("a busy crew collects the furnace's plates at its next plan, without preempting", () => {
+  test("B32: two crafts take from different furnaces, never counting the same stack", () => {
+    const lab = createLab(32)
+    const faction = createFaction("b32-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    // Two furnaces of 60 plates on the same side: the nearer one can't feed both 50-plate crafts.
+    const near = platedFurnace(lab, faction, at(lab, 6, 0), 60)
+    const far = platedFurnace(lab, faction, at(lab, 12, 0), 60)
+    brain.sites = [smeltSite(brain, near), smeltSite(brain, far)]
+    brain.goals = []
+    brain.rescanAt = undefined
+    brain.nextThink = game.tick
+    for (let i = 0; i < 2; i++) {
+      addJob(faction.board, {
+        kind: "craft",
+        pos: depot.position,
+        materials: [{ item: "iron-plate", count: 50 }],
+        payload: { kind: "craft", recipe: "iron-gear-wheel", count: 25, item: "iron-gear-wheel", deliverTo: depot },
+      }, game.tick)
+    }
+    const watch = watchSourcing(faction, depot)
+    waitFor(2400, () => {
+      watch.sample()
+      return depot.get_item_count("iron-gear-wheel") >= 50
+    }, () => `both crafts' gears (${watch.describe()})`, () => {
+      let released = 0
+      for (const id of faction.crew) released += storage.crew[id].stats.jobsReleased
+      const msg = `${watch.describe()}, released ${released}, near ${near.get_item_count("iron-plate")}, far ${far.get_item_count("iron-plate")}`
+      assert(released === 0, `no craft came up short (${msg})`)
+      assert(near.get_item_count("iron-plate") + far.get_item_count("iron-plate") === 20, `100 plates came out of the furnaces (${msg})`)
+      assert(watch.maxDepotPlates === 0 && watch.shuffles === 0 && watch.handSourcing === 0, `taken directly (${msg})`)
+    })
+  })
+
+  test("B32: with the furnaces empty, the brain falls back to hand-mining", () => {
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b32-c", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    const furnace = platedFurnace(lab, faction, at(lab, 10, 0), 0)
+    brain.sites = [smeltSite(brain, furnace)]
+    brain.goals = []
+    brain.rescanAt = undefined
+    brain.nextThink = game.tick
+    addCraft(faction, depot)
+    const watch = watchSourcing(faction, depot)
+    waitFor(600, () => {
+      watch.sample()
+      return watch.handSourcing > 0
+    }, () => `a hand-mining job (${watch.describe()})`, () => {})
+  })
+
+  test("B32: a furnace outside supply-radius is not taken from", () => {
+    setConfigOverride("supplyRadius", 5)
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b32-d", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    const furnace = platedFurnace(lab, faction, at(lab, 10, 0))
+    brain.sites = [smeltSite(brain, furnace)]
+    brain.goals = []
+    brain.rescanAt = undefined
+    brain.nextThink = game.tick
+    addCraft(faction, depot)
+    const watch = watchSourcing(faction, depot)
+    waitFor(600, () => {
+      watch.sample()
+      return watch.handSourcing > 0
+    }, () => `a hand-mining job (${watch.describe()})`, () => {
+      assert(furnace.get_item_count("iron-plate") === 100, `the far furnace keeps its plates (${furnace.get_item_count("iron-plate")})`)
+    })
+  })
+
+  test("a busy crew takes the furnace's plates for a new craft at its next plan, without preempting", () => {
     const lab = createLab(48)
     const faction = createFaction("b17-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
     const brain = startBootstrap(faction, at(lab, 0, 0))
@@ -105,13 +188,10 @@ describe("B17 material sources", () => {
     brain.sites = [smeltSite(brain, furnace)]
     brain.goals = []
     brain.rescanAt = undefined
-    // Keep the whole crew busy on low-priority hand-mining: gather jobs (wood into the depot) claimed the moment
-    // the crew plans (priority 0, no materials), spread over a long row so no member's trip batches them all.
-    // The craft job (the collect's demand) is staged: it is injected only once every member is provably in
-    // flight, so the collect transfer appears into a saturated crew and only a preemption can claim it.
+    // Keep the whole crew busy on low-priority hand-mining (wood into the depot), one tree per member's trip, then
+    // add a craft needing the furnace's plates: nobody walks off its work for it, and the first member to plan
+    // again takes the plates straight from the furnace for the craft.
     const mills = treeRow(lab, faction, 12, 3, at(lab, 22, 4))
-    // Without this, planTrip chains all 12 nearby trees into two members' trips and a third member stays idle,
-    // so the crew can never be saturated on hand-mining. One job per trip: every member claims a tree.
     setConfigOverride("tripMaxJobs", 1)
     for (const tree of mills) {
       addJob(faction.board, {
@@ -120,12 +200,10 @@ describe("B17 material sources", () => {
         payload: { kind: "gather", target: tree, count: 2, item: "wood", deliverTo: depot },
       }, game.tick)
     }
-    // Stage machine: 0 = wait for the crew busy on hand-mining; 1 = collect is live, wait for the plates.
     let stage = 0
-    let plates0 = -1
-    let plates = 0
+    const watch = watchSourcing(faction, depot)
     waitFor(2400, () => {
-      plates = depot.get_item_count("iron-plate")
+      watch.sample()
       if (stage === 0) {
         let busy = 0
         for (const id of faction.crew) {
@@ -133,27 +211,19 @@ describe("B17 material sources", () => {
           if (!m?.dead && m.claims.length > 0 && m.actions.length > 0) busy++
         }
         if (busy >= 3) {
-          // The crew is in flight: only now introduce the demand and force the brain's think, so the collect
-          // transfer is created into a saturated crew (an idle claimer would win it without any preemption).
           stage = 1
-          plates0 = plates
-          addJob(faction.board, {
-            kind: "craft",
-            pos: depot.position,
-            materials: [{ item: "iron-plate", count: 60 }],
-            payload: { kind: "craft", recipe: "iron-gear-wheel", count: 20, item: "iron-gear-wheel", deliverTo: depot },
-          }, game.tick)
+          addCraft(faction, depot)
           brain.nextThink = game.tick + 1
         }
         return false
       }
-      return plates >= 60
-    }, () => `the crew busy on hand-mining (tick ${game.tick}, setup ${setupTick}, plates ${plates}, ${preemptedTotal(faction)} preemptions)`, () => {
+      return depot.get_item_count("iron-gear-wheel") >= 20
+    }, () => `the crew busy on hand-mining, then the gears (stage ${stage}, tick ${game.tick}, setup ${setupTick}, ${watch.describe()}, ${preemptedTotal(faction)} preemptions)`, () => {
       const preempted = preemptedTotal(faction)
-      const standing = mills.filter((t) => t.valid).length
-      const msg = `preemptions ${preempted}, ${standing}/${mills.length} trees, plates ${plates0} at inject → ${plates}, tick ${game.tick} (setup ${setupTick})`
-      assert(plates0 === 0, `the depot must be empty when the collect goes live (${msg})`)
-      assert(preempted === 0, `a collect must not preempt a batch (${msg})`)
+      const msg = `preemptions ${preempted}, ${watch.describe()}, tick ${game.tick} (setup ${setupTick})`
+      assert(preempted === 0, `a craft's sourcing must not preempt a batch (${msg})`)
+      assert(watch.maxDepotPlates === 0 && watch.shuffles === 0, `the plates went straight from the furnace to the craft (${msg})`)
+      assert(furnace.get_item_count("iron-plate") === 40, `the craft's plates came out of the furnace (${furnace.get_item_count("iron-plate")} left)`)
     })
   })
 
@@ -212,13 +282,64 @@ function chest(lab: Lab, position: MapPosition, force: string): LuaEntity {
   return c!
 }
 
-/** A furnace holding a full stack of plates (no feed, so it never smelts more; checkDepletion only counts drills). */
-function platedFurnace(lab: Lab, faction: { force: string }, position: MapPosition): LuaEntity {
+/**
+ * A furnace holding `plates` plates (default a full stack) and, unless empty, 50 ore (no fuel, so it never smelts more;
+ * checkDepletion only counts drills).
+ */
+function platedFurnace(lab: Lab, faction: { force: string }, position: MapPosition, plates = 100): LuaEntity {
   const furnace = lab.surface.create_entity({ name: "stone-furnace", position, force: faction.force })
   assert(furnace !== undefined && furnace.valid, "furnace placed")
-  furnace!.get_inventory(defines.inventory.furnace_source)!.insert({ name: "iron-ore", count: 50 })
-  furnace!.get_inventory(defines.inventory.furnace_result)!.insert({ name: "iron-plate", count: 100 })
+  if (plates > 0) {
+    furnace!.get_inventory(defines.inventory.furnace_source)!.insert({ name: "iron-ore", count: 50 })
+    furnace!.get_inventory(defines.inventory.furnace_result)!.insert({ name: "iron-plate", count: plates })
+  }
   return furnace!
+}
+
+/** A craft job needing 60 plates (20 gears into the depot). */
+function addCraft(faction: FactionState, depot: LuaEntity): void {
+  addJob(faction.board, {
+    kind: "craft",
+    pos: depot.position,
+    materials: [{ item: "iron-plate", count: 60 }],
+    payload: { kind: "craft", recipe: "iron-gear-wheel", count: 20, item: "iron-gear-wheel", deliverTo: depot },
+  }, game.tick)
+}
+
+/** A 3x3 iron ore patch (created before startBootstrap, whose scan must see it). */
+function orePatch(lab: Lab, origin: MapPosition): void {
+  for (let x = 0; x < 3; x++) for (let y = 0; y < 3; y++) lab.surface.create_entity({ name: "iron-ore", position: { x: origin.x + x, y: origin.y + y }, amount: 500 })
+}
+
+/**
+ * B32 sourcing watch: the most plates the depot ever held, jobs that move items to the depot (transfers) and
+ * hand-sourcing jobs (gathers of ore or plates) seen on the board.
+ */
+function watchSourcing(faction: FactionState, depot: LuaEntity) {
+  const seen: Record<number, boolean> = {}
+  const w = {
+    maxDepotPlates: 0,
+    shuffles: 0,
+    handSourcing: 0,
+    sample(): void {
+      w.maxDepotPlates = math.max(w.maxDepotPlates, depot.valid ? depot.get_item_count("iron-plate") : 0)
+      for (const [id, job] of pairs(faction.board.jobs)) {
+        if (seen[id]) continue
+        const p = job.payload
+        if (p.kind === "transfer") {
+          seen[id] = true
+          w.shuffles++
+        } else if (p.kind === "gather" && (p.item === "iron-ore" || p.item === "iron-plate")) {
+          seen[id] = true
+          w.handSourcing++
+        }
+      }
+    },
+    describe(): string {
+      return `depot plates max ${w.maxDepotPlates}, transfers ${w.shuffles}, hand-sourcing ${w.handSourcing}`
+    },
+  }
+  return w
 }
 
 /** A built furnace SitePart for a custom site (updateSites only touches planned sites, so it stays built). */

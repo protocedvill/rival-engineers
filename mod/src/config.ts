@@ -182,6 +182,10 @@ export interface Config {
   factoryFuelFallback: boolean
   /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
   preemptFuelSeconds: number
+  /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */
+  supplyRadius: number
+  /** B32: a supply point holding fewer of an item than this is not worth the walk (stockpiles always count). */
+  supplyMinTake: number
 }
 
 export type ConfigKey = keyof Config
@@ -282,6 +286,8 @@ export function getConfig(): Config {
     factoryPowerFuelMinutes: setting(Settings.factoryPowerFuelMinutes),
     factoryFuelFallback: setting(Settings.factoryFuelFallback),
     preemptFuelSeconds: setting(Settings.preemptFuelSeconds),
+    supplyRadius: setting(Settings.supplyRadius),
+    supplyMinTake: setting(Settings.supplyMinTake),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

@@ -90,4 +90,6 @@ export const Settings = {
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",
   factoryFuelFallback: "rival-engineers-factory-fuel-fallback",
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",
+  supplyRadius: "rival-engineers-supply-radius",
+  supplyMinTake: "rival-engineers-supply-min-take",
 } as const

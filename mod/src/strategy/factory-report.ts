@@ -72,11 +72,12 @@ export function tempCells(factionName: string, item?: string): TempCell[] {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Material supply: the mall's output chests are a source for the bootstrap economy (H4 collect before hand-craft).
+// Material supply (B32): the factory's output chests (the mall's and the temporary cells') are supply points the crew
+// takes from directly when a job needs their items.
 
-/** Built mall chests holding `item` (or anything, if undefined), with amounts. */
-export function mallSources(factionName: string, item: string | undefined): { entity: LuaEntity; item: string; amount: number }[] {
-  const out: { entity: LuaEntity; item: string; amount: number }[] = []
+/** Built chest-out port chests of the factory's sink modules (mall, temporary cells), in node order. */
+export function supplyChests(factionName: string): LuaEntity[] {
+  const out: LuaEntity[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
@@ -86,10 +87,9 @@ export function mallSources(factionName: string, item: string | undefined): { en
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     for (const p of m.def.ports) {
-      if (p.kind !== "chest-out" || (item !== undefined && p.item !== item)) continue
+      if (p.kind !== "chest-out") continue
       const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
-      if (chest === undefined) continue
-      for (const c of chest.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: chest, item: c.name, amount: c.count })
+      if (chest !== undefined) out.push(chest)
     }
   }
   return out
