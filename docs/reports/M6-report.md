@@ -433,3 +433,32 @@ stripped from the fix. Full suite (119 tests, 12 shards) green.
 
 None new: preemption uses the existing priority table, and the engine-capability numbers it relies on (reach 10,
 character speed) were already measured in `engine-capabilities_test`.
+
+## M6b.2: B18 proactive temp-cell stocking (2026-10-19)
+
+The B18 row: temporary factory cells (D38 "chest cells") were fed only when an order asked for their product
+(`feedTempCells` runs inside the produce pass) — with no request in flight the input chest drained, the cell
+stopped, and there was no buffered output to serve a later request. The user's P26 check in game kept tripping
+over dry cells.
+
+**Fix (32076d2, `strategy/bootstrap.ts` `topUpTempCells`):** every think (after `reconcile`), each **built** cell's
+input chest is topped up to the same buffer the demand feed uses (`bootstrap-factory-wait-seconds` of the cell's
+output; a powered, non-marked machine only) from the depot's surplus — requests win, what they leave stocks the
+cells. Each ingredient is one keyed `tempfeed:` **fuel** job, the same keys the on-demand feed uses, so the two
+passes never double-book (what a refill is already bringing counts across thinks), and only enough to reach the
+buffer is reserved (`addDemand`). The refills' competition with other work is the new
+`bootstrap-temp-cell-feed-priority` (default **40**: above gather 20, below the collect transfers 60, so a furnace
+collect still preempts an in-flight refill — §5.5 collect-first holds; **0 = never stock proactively**). The D38
+feeds stay at `feed` (55). `tempCells` now takes an optional item (so the pass sees every cell) and carries the
+cell's product.
+
+**Tests (T2 `test/temp-factory.test.ts`, sharing the extracted cell builder):** a quiet economy (no goals, no
+sites, replan held off by a `stallTicks` override) with a depot of 200 plates: the input chest is topped up exactly
+to the target with **nothing anywhere asking for the cell's product**; the setting steers the refill job's priority
+(65) and **0** queues no refill. Full suite (122 tests, 12 shards) green.
+
+### Magic numbers for the user (M6b.2)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `bootstrap-temp-cell-feed-priority` | `settings.ts`, `strategy/bootstrap.ts` | 40 | Between gather (20) and craft (50): refills beat hand-mining but never pre-empt the §5.5 collects/fuel; 0 = off (P26 pending). Guess. | yes (new) |
