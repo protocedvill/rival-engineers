@@ -17,6 +17,7 @@ import {
   planTrip,
   Pos,
   Rect,
+  isReady,
   release,
   releaseAllOf,
   selectJob,
@@ -70,6 +71,36 @@ export function onCrewTick(): void {
   if (tick % 60 === 0) placeUnboxGhosts(tick)
 }
 
+/**
+ * B17: like a player who abandons their ore trip to fetch the plates a furnace has been holding out, a member
+ * with work in flight preempts itself for a *strictly higher-priority* ready job (the brain's collect transfers
+ * outrank the batch it was claimed into), drops the whole batch — `resetMember` releases the claims without
+ * penalty — and plans again on the next tick, where priority sends it to the preempting job first. Only a ready
+ * job can do it: a back-off or claimed one never pulls a member off work it has already started.
+ */
+function preemptForPriority(faction: FactionState, member: CrewMember, tick: number): void {
+  const board = faction.board
+  const anchor = board.jobs[member.claims[0] ?? -1]
+  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return
+  let higher: CrewJob | undefined
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (!isReady(board, job, tick) || !isPreemptable(anchor, job)) continue
+    higher = job
+    break
+  }
+  if (higher === undefined) return
+  resetMember(faction, member, tick)
+  member.stats.preemptions = (member.stats.preemptions ?? 0) + 1
+}
+
+/** Which jobs are worth abandoning a member's current batch for. */
+function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
+  // A strictly higher priority. Fuel jobs (refuelling drills, keeping the burners burning) may preempt freely.
+  if (job.priority <= anchor.priority) return false
+  return job.kind === "fuel" || job.payload.kind === "transfer"
+}
+
 function stepFaction(faction: FactionState, config: Config, tick: number): void {
   for (const id of faction.crew) {
     const member = storage.crew[id]
@@ -91,6 +122,8 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       }
       member.spot = undefined
       if (!faction.paused) planNext(faction, member, config, tick)
+    } else if (!faction.paused) {
+      preemptForPriority(faction, member, tick)
     }
   }
   // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.

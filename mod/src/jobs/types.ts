@@ -79,6 +79,8 @@ export interface CrewStats {
   unboxed?: number
   /** Mining trips of more than one job (B3). */
   trips?: number
+  /** B17: batches dropped to work a strictly higher-priority job first (a collect transfer on furnaces, a fuel refill). */
+  preemptions?: number
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */
