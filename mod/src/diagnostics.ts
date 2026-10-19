@@ -1,6 +1,9 @@
 import { getConfig } from "./config"
-import { rawHoldings, takeable } from "./jobs/supply"
+import { rawHoldings, reservedAt, takeable } from "./jobs/supply"
 import { boardDiagnostics, DiagnosticCrew, DiagnosticJob, DiagnosticViolation } from "./diagnostics-core"
+import { detectChurn, DiagnosticEventBuckets, recentDiagnosticBuckets, ChurnFinding } from "./diagnostic-events"
+import { findModule } from "./planner/layout"
+import { PlanEvidence, PlanStats } from "./planner/plan"
 
 // Read-only causal views and invariant checks. These deliberately do not participate in decisions: telemetry and
 // remote probes may call them without changing the simulation. Reason codes are stable so host-side tools do not have
@@ -13,12 +16,17 @@ export interface DiagnosticGoal {
   plannerPhase?: string
   buildPhase?: string
   jobs: number[]
+  failures?: Record<string, string>
+  evidence?: PlanEvidence[]
+  stats?: PlanStats
 }
 
 export interface FactionDiagnostics {
   invariants: DiagnosticViolation[]
   jobs: DiagnosticJob[]
   goals: DiagnosticGoal[]
+  events: DiagnosticEventBuckets
+  churn: ChurnFinding[]
 }
 
 function addUnique(into: number[], ids: number[]): void {
@@ -41,7 +49,7 @@ function goals(name: string): DiagnosticGoal[] {
       addUnique(jobs, goal.growBuild.clearJobs)
       addUnique(jobs, goal.growBuild.placeJobs)
     }
-    out.push({ id: goal.id, status: goal.status, plan: goal.plan, plannerPhase: entry?.phase, buildPhase: entry?.build?.phase ?? goal.growBuild?.phase, jobs })
+    out.push({ id: goal.id, status: goal.status, plan: goal.plan, plannerPhase: entry?.phase, buildPhase: entry?.build?.phase ?? goal.growBuild?.phase, jobs, failures: entry?.job?.failures, evidence: entry?.job?.evidence, stats: entry?.job?.stats })
   }
   return out
 }
@@ -59,22 +67,53 @@ export function factionDiagnostics(name: string, maxJobs = 64): FactionDiagnosti
     } else crew[memberId] = { claims: member.claims }
   }
   const diagnosed = boardDiagnostics(board, crew, game.tick, maxJobs)
-  const raw: Record<string, { amount: number; sources: number }> = {}
+  const config = getConfig()
+  const raw: Record<string, { amount: number; sources: number; detail: { unit: number; depot: boolean; raw: number; reserved: number; takeable: number; excluded?: string }[] }> = {}
   for (const holding of rawHoldings(faction)) {
-    const item = (raw[holding.item] ??= { amount: 0, sources: 0 })
+    const item = (raw[holding.item] ??= { amount: 0, sources: 0, detail: [] })
     item.amount += holding.amount
     item.sources++
+    const reserved = reservedAt(faction, holding.entity, holding.item)
+    const available = math.max(0, holding.amount - reserved)
+    const excluded = available <= 0 ? "reserved" : !holding.depot && available < config.supplyMinTake ? `below minimum ${config.supplyMinTake}` : undefined
+    item.detail.push({ unit: holding.entity.unit_number ?? -1, depot: holding.depot, raw: holding.amount, reserved, takeable: excluded === undefined ? available : 0, excluded })
   }
   const available: Record<string, number> = {}
-  for (const holding of takeable(faction, getConfig().supplyMinTake)) available[holding.item] = (available[holding.item] ?? 0) + holding.amount
+  for (const holding of takeable(faction, config.supplyMinTake)) available[holding.item] = (available[holding.item] ?? 0) + holding.amount
   for (const job of diagnosed.jobs) {
     if (job.materials === undefined) continue
     for (const item of job.materials) {
       item.raw = raw[item.item]?.amount ?? 0
       item.sources = raw[item.item]?.sources ?? 0
       item.takeable = available[item.item] ?? 0
+      item.sourceDetail = raw[item.item]?.detail ?? []
     }
   }
   for (const memberId of faction.crew) if (storage.crew[memberId] === undefined) diagnosed.invariants.push({ code: "crew-member-missing", detail: `faction lists absent crew ${memberId}` })
-  return { invariants: diagnosed.invariants, jobs: diagnosed.jobs, goals: goals(name) }
+  for (const point of faction.supplies ?? []) if (!point.entity.valid) diagnosed.invariants.push({ code: "supply-entity-invalid", detail: `registered supply entity is invalid` })
+  const factory = storage.factories?.[name]
+  if (factory !== undefined) {
+    for (const goal of factory.goals) {
+      const entry = goal.plan !== undefined ? storage.planner?.entries[goal.plan] : undefined
+      if ((goal.status === "planning" || (goal.status === "building" && goal.growBuild === undefined)) && goal.plan !== undefined && entry === undefined) diagnosed.invariants.push({ code: "goal-plan-missing", detail: `goal ${goal.id} references absent plan ${goal.plan}` })
+      if (entry?.faction !== undefined && entry.faction !== name) diagnosed.invariants.push({ code: "goal-plan-faction", detail: `goal ${goal.id} plan ${entry.id} belongs to ${entry.faction}` })
+      for (const id of [...(entry?.build?.clearJobs ?? []), ...(entry?.build?.placeJobs ?? []), ...(goal.growBuild?.clearJobs ?? []), ...(goal.growBuild?.placeJobs ?? [])]) if (faction.board.jobs[id] === undefined) diagnosed.invariants.push({ code: "build-job-missing", detail: `goal ${goal.id} references absent job ${id}` })
+    }
+    for (const [, node] of pairs(factory.graph.nodes)) if ((node.lifecycle === "building" || node.lifecycle === "built") && node.module !== undefined && findModule(factory.layout, node.id) === undefined) diagnosed.invariants.push({ code: "logical-module-missing", detail: `node ${node.id} (${node.role}) is ${node.lifecycle} without layout module` })
+  }
+  let preemptions = 0
+  let preemptTaken = 0
+  for (const memberId of faction.crew) {
+    const member = storage.crew[memberId]
+    preemptions += member?.stats.preemptions ?? 0
+    preemptTaken += member?.stats.preemptTaken ?? 0
+  }
+  let planFailures = 0
+  let planSuccesses = 0
+  for (const goal of factory?.goals ?? []) {
+    if (goal.status === "failed") planFailures += goal.attempts
+    else if (goal.status === "done") planSuccesses++
+  }
+  const churn = detectChurn({ claims: faction.board.counters.claims, releases: faction.board.counters.releases, completions: faction.board.counters.completions, preemptions, preemptTaken, planFailures, planSuccesses })
+  return { invariants: diagnosed.invariants, jobs: diagnosed.jobs, goals: goals(name), events: recentDiagnosticBuckets(faction), churn }
 }

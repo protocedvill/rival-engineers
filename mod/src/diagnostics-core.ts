@@ -15,7 +15,7 @@ export interface DiagnosticJob {
   blocker: "claimed" | "backoff" | "dependency-missing" | "dependency-open" | "dependency-failed" | "board-ready"
   relatedJob?: number
   detail?: string
-  materials?: { item: string; needed: number; raw?: number; takeable?: number; sources?: number }[]
+  materials?: { item: string; needed: number; raw?: number; takeable?: number; sources?: number; sourceDetail?: { unit: number; depot: boolean; raw: number; reserved: number; takeable: number; excluded?: string }[] }[]
 }
 
 export interface DiagnosticCrew {
@@ -75,5 +75,37 @@ export function boardDiagnostics(board: Board<unknown>, crew: Record<number, Dia
       else if (job.status !== "claimed" || job.claimedBy !== memberId) invariants.push({ code: "member-claim-not-reciprocal", detail: `crew ${memberId} holds job ${jobId}, which is ${job.status} by ${job.claimedBy}` })
     }
   }
+  // Dependency cycles can never become ready. Report each cycle once at its lowest job id.
+  const visiting: Record<number, boolean> = {}
+  const visited: Record<number, boolean> = {}
+  const cycleKeys: Record<string, boolean> = {}
+  const path: number[] = []
+  const walk = (id: number): void => {
+    if (visiting[id]) {
+      const at = path.indexOf(id)
+      const cycle = path.slice(at).concat(id)
+      const body = cycle.slice(0, cycle.length - 1)
+      let lowestAt = 0
+      for (let i = 1; i < body.length; i++) if (body[i] < body[lowestAt]) lowestAt = i
+      const normalized = body.slice(lowestAt).concat(body.slice(0, lowestAt))
+      normalized.push(normalized[0])
+      const key = normalized.join(":")
+      if (!cycleKeys[key]) {
+        cycleKeys[key] = true
+        invariants.push({ code: "dependency-cycle", detail: normalized.join(" -> ") })
+      }
+      return
+    }
+    if (visited[id]) return
+    const job = board.jobs[id]
+    if (job === undefined) return
+    visiting[id] = true
+    path.push(id)
+    for (const dep of job.deps) walk(dep)
+    path.pop()
+    delete visiting[id]
+    visited[id] = true
+  }
+  for (const id of board.active) walk(id)
   return { invariants, jobs }
 }

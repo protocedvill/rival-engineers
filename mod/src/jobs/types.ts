@@ -2,6 +2,7 @@ import { LuaEntity, MapPosition } from "factorio:runtime"
 import { BrainState } from "../strategy/types"
 import { Board, ItemCount, Pos } from "./board"
 import type { SupplyPoint } from "./supply"
+import type { DiagnosticEventStore } from "../diagnostic-events"
 
 // Runtime shapes for factions, crew and the per-job data the board carries. All of it lives in
 // `storage`, so plain tables only.
@@ -62,6 +63,8 @@ export interface FactionState {
   depositBetweenJobs?: boolean
   /** The strategy layer (M3 burner bootstrap). Factions without one only work jobs added from outside. */
   brain?: BrainState
+  /** Bounded structured history for explaining why the crew and planners chose or rejected work. */
+  diagnosticEvents?: DiagnosticEventStore
 }
 
 export interface CrewStats {

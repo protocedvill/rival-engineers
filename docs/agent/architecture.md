@@ -17,6 +17,10 @@ control.ts events
 `review/` and `telemetry.ts` observe the simulation and must not change decisions. `tools/` builds, tests, replays,
 renders and runs long acceptance experiments.
 
+`diagnostic-events.ts` is the save-safe decision-history boundary. Before adding ad-hoc `log()` calls to crew,
+supply, goal or planner code, use its category bucket and stable reason fields. Events must remain plain data—never
+store a `LuaEntity`—because telemetry, saves and host-side diagnosis all consume the same record.
+
 ## Choose the lowest valid layer
 
 - A fact about recipes, entities or module geometry belongs in `modules/`.
@@ -32,6 +36,9 @@ renders and runs long acceptance experiments.
 Factorio saves retain `storage` across code changes. Storage interfaces are augmented from several modules. A new
 persistent field therefore needs a deterministic default, save/reload consideration, and usually an optional read
 until a migration boundary exists. Never retain a `LuaEntity` without checking `.valid` on later use.
+
+Diagnostic history is optional compatible state and is retained independently per category. A noisy crew-planning
+stream therefore cannot evict the last planner failure; new categories need their own explicit bucket.
 
 The migration boundary now lives in `storage-schema.ts`. **Before adding or changing a persisted field**, decide
 whether old saves can use an optional/defaulted read or need the next numbered migration. Never edit an old migration

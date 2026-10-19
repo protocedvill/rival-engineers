@@ -27,4 +27,15 @@ test("diagnostics catch one-sided claims", () => {
   eq(out.invariants[0].code, "claim-not-reciprocal")
 })
 
+test("diagnostics report a dependency cycle once from its lowest id", () => {
+  const board = newBoard<unknown>()
+  const a = addJob(board, { kind: "craft", pos: { x: 0, y: 0 }, payload: {} }, 0)
+  const b = addJob(board, { kind: "craft", pos: { x: 0, y: 0 }, deps: [a.id], payload: {} }, 0)
+  const c = addJob(board, { kind: "craft", pos: { x: 0, y: 0 }, deps: [b.id], payload: {} }, 0)
+  a.deps = [c.id]
+  const cycles = boardDiagnostics(board, {}, 0).invariants.filter((item) => item.code === "dependency-cycle")
+  eq(cycles.length, 1)
+  eq(cycles[0].detail, "1 -> 3 -> 2 -> 1")
+})
+
 run("diagnostics")

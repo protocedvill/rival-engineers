@@ -60,10 +60,52 @@ PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
 GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
+FAILURE_LOG_TAIL_LINES = 200
 
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_json(path, value):
+    """Write a diagnostic artifact without leaving a plausible-looking partial file."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def log_tail(path, lines=FAILURE_LOG_TAIL_LINES):
+    if not path.exists():
+        return []
+    return path.read_text(errors="replace").splitlines()[-lines:]
+
+
+def write_failure_artifact(out_dir, seed, *, reason, command=None, return_code=None,
+                           exit_reason=None, failed_fast=None, telemetry=None, error=None):
+    """Self-contained first stop for a crashed run; paths point to bulk evidence beside it."""
+    artifact = {
+        "schema": 1,
+        "capturedAt": utc_now(),
+        "seed": seed,
+        "reason": reason,
+        "error": error,
+        "command": command,
+        "returnCode": return_code,
+        "exitReason": exit_reason,
+        "failedFast": failed_fast,
+        "lastTick": (telemetry or {}).get("tick"),
+        "diagnostics": {name: faction.get("diagnostics")
+                        for name, faction in (telemetry or {}).get("factions", {}).items()},
+        "logs": {
+            "factorio-current.log": log_tail(out_dir / "factorio-current.log"),
+            "factorio-stdout.log": log_tail(out_dir / "factorio-stdout.log"),
+        },
+        "evidence": {
+            name: sorted(str(path.relative_to(out_dir)) for path in (out_dir / name).rglob("*") if path.is_file())[-1:]
+            for name in ("frames", "graphs", "failed-plans", "plans") if (out_dir / name).exists()
+        },
+    }
+    atomic_json(out_dir / "failure.json", artifact)
 
 
 def git_output(*args):
@@ -355,7 +397,13 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
     r = summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early, done_milestone(cfg))
     r["failed_fast"] = failed_fast
     r["saves"] = sorted(str(p) for p in (data / "saves").glob("min-*.zip")) if snapshots else []
-    r["_manifest"] = {"pid": proc.pid, "returnCode": proc.returncode, "exitReason": exit_reason}
+    fatal = exit_reason == "process-exit" and proc.returncode != 0
+    if fatal:
+        write_failure_artifact(out_dir, seed, reason="Factorio exited unexpectedly", command=cmd,
+                               return_code=proc.returncode, exit_reason=exit_reason,
+                               failed_fast=failed_fast, telemetry=telemetry)
+    r["_manifest"] = {"pid": proc.pid, "returnCode": proc.returncode, "exitReason": exit_reason,
+                      "failureArtifact": f"seed-{seed}/failure.json" if fatal else None}
     return r
 
 
@@ -365,13 +413,15 @@ BENCH = re.compile(r"Performed (\d+) updates in ([0-9.]+) ms")
 
 def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_ms=DEFAULT_DONE_MILESTONE):
     text = log_file.read_text(errors="replace")
+    stdout_text = stdout_file.read_text(errors="replace")
     intervals = [(int(t), int(n), float(ms)) for t, n, ms in DURATION.findall(text) if int(n) > 0]
     per_tick = [ms / n for _, n, ms in intervals]
     ai_total_ms = sum(ms for _, _, ms in intervals)
     ai_ticks = sum(n for _, n, _ in intervals)
     final_tick = telemetry.get("tick", 0)
-    bench = BENCH.search(stdout_file.read_text(errors="replace"))
-    errors = [l for l in text.splitlines() if "Error" in l and "rival-engineers" in l][:5]
+    bench = BENCH.search(stdout_text)
+    errors = [l for l in (text + "\n" + stdout_text).splitlines()
+              if "Error" in l and ("rival-engineers" in l or "Lua" in l)][:5]
     factions = {}
     for name, f in telemetry.get("factions", {}).items():
         brain = f.get("brain") or {}
@@ -552,6 +602,9 @@ def main():
             manifest.seed(seed, state, **meta, gameMinutes=r["game_minutes"], wallSeconds=r["wall_seconds"])
             return r
         except BaseException as e:
+            seed_dir = out_dirs[name] / f"seed-{seed}"
+            seed_dir.mkdir(parents=True, exist_ok=True)
+            write_failure_artifact(seed_dir, seed, reason="Harness exception", error=repr(e))
             manifest.seed(seed, "crashed", error=repr(e))
             raise
 

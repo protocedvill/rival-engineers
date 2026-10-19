@@ -71,6 +71,8 @@ python3 tools/harness/soak.py -j 1                        # one at a time (for p
 Every new soak also writes `out/soak/<name>/run.json` atomically. It records the commit and dirty state, generated-mod
 content hash, invocation, per-seed PID/status/exit reason and whether the experiment completed. Incremental scorecards
 are marked partial until every seed finishes; use the manifest instead of inferring process state from file mtimes.
+An unexpected Factorio exit also writes `seed-N/failure.json`. Start there: it bundles both log tails, last structured
+diagnostics, and pointers to the newest visual/planner evidence so a fatal error is not stranded in terminal output.
 
 Seeds and configs run concurrently, `-j` at a time (default `$SOAK_JOBS`, else half the cores), each in its own
 write-data directory `.factorio-test/soak/<name>/seed-N/`. Concurrent runs slow each other: compare wall and AI

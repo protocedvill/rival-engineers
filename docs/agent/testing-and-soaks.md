@@ -30,6 +30,19 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 
 ## Fast soak debugging
 
+**Stop before opening the coordinator code.** Run `npm run diagnose -- <run> [seed] [faction]` first. It now prints
+the evidence agents previously spent hours reconstructing by hand:
+
+- crew-plan rejection counts and representative job ids (why an apparently ready job was skipped);
+- supply-source raw/reserved/takeable counts and the chosen haul detour;
+- placement rejection certificates by cause and representative tile, plus every failed routing retry;
+- cross-layer invariant violations and churn warnings.
+
+These are facts from the exact failing run. Reading `crew.ts`, `factory.ts`, or planner scoring first invites a
+plausible but wrong theory because Factorio inventory, reservation, terrain and ghost state are not visible in code.
+If the process crashed, open `seed-N/failure.json` before either log: it contains both log tails, the last telemetry
+diagnostics, and paths to the newest frame/graph/plan artifact.
+
 - Use fail-fast rules to stop known-dead runs.
 - Use `--snapshots N`, then `--from-save`, for bugs that appear late. `--benchmark` cannot save.
 - Failed plans already emit `.input.lua`; copy a minimal reproducer into `mod/unit/fixtures/` and replay it.
@@ -38,6 +51,9 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
   Do not try to load a `LuaEntity` or an entire save into a unit test.
 - Use helper probes or `npm run diagnose -- <run> [seed] [faction]` to connect the current factory goal to planner and
   Job Board blockers before reading thousands of log lines.
+- In the live inspector, enable **Growth reserves and mine claims** before changing expansion logic. The green box is
+  the built footprint, orange is non-mine growth room, and blue is the whole-patch mine claim; the label includes the
+  latest failed growth reason. Looking only at entities hides the reservation that often caused the failure.
 - Preserve the failing artifact until its regression exists. A new full soak is confirmation, not the first debugger.
 
 ## Test placement

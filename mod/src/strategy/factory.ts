@@ -12,6 +12,7 @@ import { maxExpandable, planGrowth } from "../planner/grow"
 import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import { findModule, growthArea, LayoutState, modulesOnTiles, newLayout, PlacedModule } from "../planner/layout"
+import { recordDiagnostic } from "../diagnostic-events"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
@@ -116,6 +117,8 @@ export interface FactoryState {
   graph: LogicalGraph
   stage: number
   goals: FactoryGoal[]
+  /** Last failed in-place growth plan by layout node, for diagnostics and the growth overlay. */
+  growthDiagnostics?: Record<string, { tick: number; reason: string; units: number }>
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
   design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
@@ -617,6 +620,9 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   const tier = RT.tiers()[0]
   const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
   if (!plan.ok) {
+    f.growthDiagnostics ??= {}
+    f.growthDiagnostics[gr.node] = { tick: ctx.tick, reason: plan.reason ?? "unknown", units: gr.units }
+    recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", decision: "growth-rejected", reason: plan.reason, data: { node: gr.node, role: gr.role, units: gr.units } })
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
     f.growFails ??= {}
     f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1

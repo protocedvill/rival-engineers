@@ -689,3 +689,15 @@ direction 2 scores against. B29's demand/supply diagnosis is not touched.
 | `planner-placement-growth-band-units` | `settings.ts`, `policy.ts` `placement.growthBandUnits` | 2 | The units a growth goal usually needs first (8 tiles for a smelter); also the depth of the own-band check. The full depth (5 units for a smelter) broke the seed 222 replay. | yes (new, proposed P38) |
 | `planner-placement-growth-blocked` | `settings.ts`, `policy.ts` `placement.growthBlocked` | 3 per near unit | 8 broke seed 222 even with undergrounds; 3 passes it. At 3, the walled-in spot of the planner test still wins over moving. Guess. | yes (new, proposed P38) |
 | Window margin + growth length | `placement.ts` `startWindow` | footprint + corridor + 4 + growth length + corridor.min | Derived: the own band must lie inside the scoring window. | no (derived) |
+
+### Diagnostic observability values (agent refactor)
+
+These values affect retained evidence and warnings only; they do not alter simulation decisions.
+
+| Name | Where | Value | Why this value | Status |
+|---|---|---|---|---|
+| Decision events retained | `diagnostic-events.ts` | 512 per category | User decision. Independent crew-plan, crew-supply, goal, planner and churn buckets prevent one noisy producer from evicting another subsystem's evidence. | accepted |
+| Churn minimum volume | `diagnostic-events.ts` | 32 observations | Avoid warnings from a handful of ordinary retries. Diagnostic guess; no simulation effect. | proposed, user decision pending |
+| Churn poor-outcome ratio | `diagnostic-events.ts` | worse than 10:1 | Historical B30 was roughly 6,500 claim/releases for two completions, so this catches the demonstrated failure far below its observed severity. Diagnostic guess; no simulation effect. | proposed, user decision pending |
+| Rejected job samples | `crew-diagnostics.ts` | 3 ids per reason | Counts retain full magnitude; three ids make the class inspectable without duplicating the Job Board. Diagnostic display bound. | proposed |
+| Fatal log tail | `tools/harness/soak.py` | 200 lines per log | Keeps `failure.json` compact while retaining both Factorio's current log and captured stdout around a fatal exit. Full logs remain beside it. | proposed |
