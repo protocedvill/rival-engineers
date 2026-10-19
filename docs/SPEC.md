@@ -623,12 +623,12 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
 - Never weaken an acceptance test to make it pass. Changing an acceptance threshold is a spec change.
 - **Long runs belong to the manager (user, 2026-10-19).** A subagent's prompt cache expires after 5 minutes, the
   manager's after an hour, so a subagent never runs or waits on anything that can take longer than about 5 minutes:
-  soaks, acceptance rounds, the serial suite, benchmarks. It may run unit tests, filtered T2 tests and the parallel
-  suite (~2.5 min). For a longer run it commits, returns the exact command and what to look for, and the manager runs
+  soaks, acceptance rounds, the full T2 suite (parallel or serial, over 5 min since 2026-10-19), benchmarks. It may
+  run unit tests and filtered T2 tests (`npm test -- "pattern"`) covering what it changed. For a longer run it commits, returns the exact command and what to look for, and the manager runs
   it and briefs a **new** agent with the result. The manager never resumes a finished agent (user, 2026-10-19).
-- **Finishing a task (user, 2026-10-15; amended 2026-10-19).** The working agent runs the parallel test suite on its
-  final code commit, writes its report, pushes and hands off. The **manager** then runs the single-faction
-  acceptance soak, checks the work-count gate (below), starts the next agent and, in parallel, does the final
+- **Finishing a task (user, 2026-10-15; amended 2026-10-19).** The working agent runs the unit tests and the filtered T2 tests for
+  what it changed on its final code commit, writes its report, pushes and hands off. The **manager** then runs the
+  full T2 suite and the single-faction acceptance soak, checks the work-count gate (below), starts the next agent and, in parallel, does the final
   validation: GitHub CI on the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
   agent's work (or a new agent if it is small). Wall-clock numbers from runs that overlap are not
   performance evidence.
