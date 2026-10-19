@@ -625,12 +625,12 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
   manager's after an hour, so a subagent never runs or waits on anything that can take longer than about 5 minutes:
   soaks, acceptance rounds, the serial suite, benchmarks. It may run unit tests, filtered T2 tests and the parallel
   suite (~2.5 min). For a longer run it commits, returns the exact command and what to look for, and the manager runs
-  it and resumes the agent (or the next one) with the result.
+  it and briefs a **new** agent with the result. The manager never resumes a finished agent (user, 2026-10-19).
 - **Finishing a task (user, 2026-10-15; amended 2026-10-19).** The working agent runs the parallel test suite on its
   final code commit, writes its report, pushes and hands off. The **manager** then runs the single-faction
   acceptance soak, checks the work-count gate (below), starts the next agent and, in parallel, does the final
   validation: GitHub CI on the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
-  agent's work (or a resumed agent if it is small). Wall-clock numbers from runs that overlap are not
+  agent's work (or a new agent if it is small). Wall-clock numbers from runs that overlap are not
   performance evidence.
 - **Performance gates (user, 2026-10-15).** (1) **Work counts** (planner work units, path requests, entity scans,
   jobs, candidates scored, per tick and per run) are deterministic per seed and act as a **soft gate** in every
