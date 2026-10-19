@@ -769,4 +769,14 @@ data.extend([
     default_value: true,
     order: "j-bh",
   },
+  // B31: when an urgent job may pull a busy crew member off its batch.
+  {
+    type: "double-setting",
+    name: Settings.preemptFuelSeconds,
+    setting_type: "runtime-global",
+    default_value: 30,
+    minimum_value: 0,
+    maximum_value: 3600,
+    order: "m-g",
+  },
 ])

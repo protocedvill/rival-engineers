@@ -501,3 +501,44 @@ the library can produce. The T2 validation lab still stamps the changed modules.
 placement and needs replays, so it is left for a decision.
 
 No new magic numbers.
+
+## M6b.4: B31 preemptions only for urgent refuels, one member each (2026-10-19)
+
+The B31 row: after B30, a 10-game-min 2-faction soak (seed 11) still logged 608 preemptions (~15 per member and
+game-minute), 82% wasted: every busy member preempted for the same new job (88 lost the race), and 439 re-plans
+started with a deposit (brain factions empty the pocket before any job), so the interrupted trip went to the depot
+first. Most triggers were routine (ore feeds p55, collect transfers p60, refuels p100), firing on the job's creation.
+
+**Fix (`jobs/crew.ts` `preemptForUrgent`, run once per faction tick after the members):**
+1. **One member per job:** no preemption while any member is idle (idle members plan every tick, so one takes the
+   job, or none can). Otherwise only the nearest eligible busy member preempts, and it re-plans in the same tick
+   with the job as its forced anchor (`CrewMember.preemptFor`, in storage). The others keep working.
+2. **Urgency gate:** only a refuel (fuel job of an item with a fuel value) whose *running* target has less than
+   `preempt-fuel-seconds` of fuel left (burning remainder plus the fuel inventory, at max consumption). A machine
+   already out of fuel is not urgent (it has stopped; the priority-100 job is taken at the next plan). Ore and lab
+   feeds and **collect transfers never preempt**: the user clarified in-session (2026-10-19) that crew should not walk
+   off work to shuffle part stacks from supply points to the depot, while refuelling a machine about to run out
+   should win. So the collect-fill threshold first drafted for transfers was dropped. (The user's broader intent,
+   taking from supply points directly when a craft or a machine needs the item, is a sourcing change outside B31.)
+3. **No deposit first:** the forced re-plan skips the between-jobs deposit (the pocket goes along and is deposited
+   at the next plan). Only a member with a free inventory slot is eligible, so the pocket never blocks the job.
+   Since every preemption is urgent now, I chose to skip the deposit rather than refuse to preempt.
+
+B17's priority rule and B30's "became ready since the plan, materials available" rule are kept.
+`CrewStats.preemptTaken` (telemetry dumps member stats) counts preemptions whose re-plan claimed the job.
+
+**Tests:** T2 "B30 preemption livelock" now bounds preemptions at 10 per member and game-hour (at least 1 in the
+window) and requires ≥ 75% taken. Old code: 27 and 23 preemptions per member in 3 min, 0 taken (fails). New: 1 and 1,
+both taken, 40 non-haul jobs done (45 before, which included churn). B17 test 2 now asserts a collect does **not**
+preempt and the busy crew still brings the plates at its next plan. New T2 test "an urgent refuel pulls only the
+nearest busy member off its work, and it takes the job": 3 members busy hand-mining, a furnace with ~22 s of fuel
+left gets a refuel job: exactly one preemption, taken.
+
+### Magic numbers for the user (M6b.4)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `preempt-fuel-seconds` | `settings.ts`, `jobs/crew.ts` `isUrgent` | 30 | Refuels are queued at 2 min of fuel left (`FUEL_LOW_MINUTES`). 30 s leaves a member most of a walk to arrive before the machine stops, and only refuels nobody took for ~90 s preempt. Guess. 0 = refuels never preempt. | yes (new) |
+| `MAX_PREEMPTIONS_PER_HOUR` | `test/preempt-loop.test.ts` | 10 | Test bound: "a handful per member and game-hour". | test only |
+| `MIN_TAKEN_RATIO` | `test/preempt-loop.test.ts` | 0.75 | Test bound: most preemptions must lead to taking the job (was 18%). | test only |
+| free slots to preempt | `jobs/crew.ts` `canPreemptMember` | 1 | A member with a full pocket would have to deposit first (point 3). One slot covers the coal for a refuel. | no |

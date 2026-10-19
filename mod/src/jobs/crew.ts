@@ -73,44 +73,101 @@ export function onCrewTick(): void {
 
 /**
  * B17: like a player who abandons their ore trip to fetch the plates a furnace has been holding out, a member
- * with work in flight preempts itself for a *strictly higher-priority* ready job (the brain's collect transfers
- * outrank the batch it was claimed into), drops the whole batch — `resetMember` releases the claims without
- * penalty — and plans again on the next tick, where priority sends it to the preempting job first. Only a ready
- * job can do it: a back-off or claimed one never pulls a member off work it has already started.
+ * with work in flight preempts itself for a *strictly higher-priority* ready job (B17 did it for the brain's
+ * collect transfers; since B31 only for urgent refuels), drops the whole batch — `resetMember` releases the claims without
+ * penalty — and plans again at once, with the preempting job as its anchor. Only a ready job can do it: a back-off
+ * or claimed one never pulls a member off work it has already started.
  *
  * B30: only a job the member had no chance to take when it planned (not in `planSeen`: it became ready since)
  * and whose materials it can get. A job that was ready at plan time and not chosen (no coal for a fuel job, say)
  * would be passed over again by the next plan, and preempting for it every tick livelocked the crew.
+ *
+ * B31: preemption is for emergencies only, and one member per job:
+ * - the job must be an urgent refuel (`isUrgent`): a running burner about to run out of fuel. Routine refuels, ore
+ *   feeds and collect transfers (moving a furnace's plates to the depot) wait for the next normal plan: walking off
+ *   work to shuffle part stacks to the depot wastes the walk (user, in-session 2026-10-19).
+ * - no preemption while a member is idle (idle members plan every tick: one would take the job, or none can).
+ * - only the nearest eligible busy member preempts, and its re-plan takes the job (`preemptFor`), so the others
+ *   keep working.
+ * - the re-plan skips the deposit brain factions do between jobs (the pocket goes along and is deposited after),
+ *   so an interrupted trip goes straight to the job. Only a member with a free inventory slot is eligible.
  */
-function preemptForPriority(faction: FactionState, member: CrewMember, tick: number): void {
+function preemptForUrgent(faction: FactionState, config: Config, tick: number): void {
   const board = faction.board
-  const anchor = board.jobs[member.claims[0] ?? -1]
-  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return
-  const seen = member.planSeen ?? []
-  let avail: Record<string, number> | undefined
-  let higher: CrewJob | undefined
+  const busy: CrewMember[] = []
+  for (const id of faction.crew) {
+    const m = storage.crew[id]
+    if (m.dead || !m.character.valid) continue
+    if (m.actions.length === 0) return
+    busy.push(m)
+  }
+  if (busy.length === 0) return
+  let jobs: CrewJob[] | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!isReady(board, job, tick) || !isPreemptable(anchor, job) || seen.indexOf(id) >= 0) continue
-    avail ??= availableItems(faction, heldItems(member.character))
-    if (!hasMaterials(job, avail)) continue
-    if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) continue
-    higher = job
-    break
+    if (!canPreempt(job) || !isReady(board, job, tick) || !isUrgent(faction, job, config)) continue
+    jobs ??= []
+    jobs.push(job)
   }
-  if (higher === undefined) return
-  resetMember(faction, member, tick)
-  member.stats.preemptions = (member.stats.preemptions ?? 0) + 1
+  if (jobs === undefined) return
+  for (const job of jobs) {
+    if (!isReady(board, job, tick)) continue
+    let best: CrewMember | undefined
+    let bestD = 0
+    for (const m of busy) {
+      if (m.actions.length === 0 || !canPreemptMember(faction, m, job)) continue
+      const d = distance(m.character.position, job.pos)
+      if (best === undefined || d < bestD) {
+        best = m
+        bestD = d
+      }
+    }
+    if (best === undefined) continue
+    resetMember(faction, best, tick)
+    best.stats.preemptions = (best.stats.preemptions ?? 0) + 1
+    best.preemptFor = job.id
+    planNext(faction, best, config, tick)
+  }
 }
 
-/** Jobs that could ever preempt a batch, whatever its priority. */
+/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
+function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob): boolean {
+  const board = faction.board
+  const anchor = board.jobs[member.claims[0] ?? -1]
+  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return false
+  if (!isPreemptable(anchor, job) || (member.planSeen ?? []).indexOf(job.id) >= 0) return false
+  const inv = member.character.get_main_inventory()
+  if (!inv || inv.count_empty_stacks() < 1) return false
+  if (!hasMaterials(job, availableItems(faction, heldItems(member.character)))) return false
+  return job.kind !== "fuel" || fuelTarget(faction, job) !== undefined
+}
+
+/**
+ * B31: a refuel worth pulling a member off its work for: its running target has less than `preemptFuelSeconds` of
+ * fuel left. A machine already out of fuel has stopped (no moment left to save; the job keeps its priority for the
+ * next plan). Ore and lab feeds (fuel jobs of non-fuel items) never are.
+ */
+function isUrgent(faction: FactionState, job: CrewJob, config: Config): boolean {
+  const p = job.payload
+  if (p.kind !== "fuel" || (prototypes.item[p.item]?.fuel_value ?? 0) <= 0) return false
+  const target = fuelTarget(faction, job)
+  const burner = target?.burner
+  if (target === undefined || burner === undefined) return false
+  const perTick = target.prototype.get_max_energy_usage() ?? 0
+  if (perTick <= 0) return false
+  let energy = burner.remaining_burning_fuel
+  for (const c of burner.inventory.get_contents()) energy += c.count * (prototypes.item[c.name]?.fuel_value ?? 0)
+  return energy > 0 && energy < config.preemptFuelSeconds * 60 * perTick
+}
+
+/** Jobs that could ever preempt a batch, whatever its priority (B31: refuels only, never collect transfers). */
 function canPreempt(job: CrewJob): boolean {
-  return job.kind === "fuel" || job.payload.kind === "transfer"
+  return job.kind === "fuel" && job.payload.kind === "fuel"
 }
 
 /** Which jobs are worth abandoning a member's current batch for. */
 function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
-  // A strictly higher priority. Fuel jobs (refuelling drills, keeping the burners burning) may preempt freely.
+  // A strictly higher priority.
   if (job.priority <= anchor.priority) return false
   return canPreempt(job)
 }
@@ -147,10 +204,9 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       }
       member.spot = undefined
       if (!faction.paused) planNext(faction, member, config, tick)
-    } else if (!faction.paused) {
-      preemptForPriority(faction, member, tick)
     }
   }
+  if (!faction.paused) preemptForUrgent(faction, config, tick)
   // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
   const ready = countReady(faction.board, tick)
   for (const id of faction.crew) {
@@ -560,14 +616,17 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   notePlanSeen(faction, member, tick)
   const held = heldItems(character)
   let avail = availableItems(faction, held)
+  // B31: the urgent job this member just dropped its batch for (taken first, without depositing first).
+  const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
+  member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if ((faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job) || !hasMaterials(job, avail)) return false
     if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
     return true
   }
-  let anchor = selectJob(board, pos, tick, accept)
+  let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)
   if (!anchor) return
   member.stats.plans++
   // D38 opportunistic crafting: a craft job is queued and runs while the member does other work, like a player who
@@ -636,6 +695,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (!claim(board, ids, member.id, tick)) return
   member.claims = ids
   member.stats.batches++
+  if (forced !== undefined && ids.indexOf(forced.id) >= 0) member.stats.preemptTaken = (member.stats.preemptTaken ?? 0) + 1
 
   const missing = missingMaterials([...jobs, ...crafts], held)
   if (missing.length > 0) haul(faction, member, missing, tick)

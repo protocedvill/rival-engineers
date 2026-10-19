@@ -9,8 +9,12 @@ import { at, createLab, Lab } from "./lab"
 // B17 (SPEC §5.5 collect-first): material sourcing must collect from bootstrap furnaces (and buffers) before it
 // hand-mines or hand-smelts. The soak watched a saturated crew hand-mine ore while furnaces held full plate stacks:
 // the collect transfer jobs sat open because planNext only fires between batches, and nothing interrupted an
-// in-flight low-priority batch. These tests pin the collect: the basic round trip on an idle crew, and
-// preempt-over-hand-mining when the crew is already busy mid-batch.
+// in-flight low-priority batch. These tests pin the collect: the basic round trip on an idle crew, and the collect
+// on a crew already busy mid-batch.
+//
+// B31 (user, in-session 2026-10-19): a collect no longer preempts a batch (walking off work to shuffle stacks to the
+// depot wastes the walk); the busy crew takes it at its next plan, since it outranks their hand-mining. Only a
+// running burner about to run out of fuel pulls the nearest busy member off its work (and only that one).
 
 let testSeq = 0
 let setupTick = 0
@@ -90,7 +94,7 @@ describe("B17 material sources", () => {
     }, () => "plates at the depot", () => {})
   })
 
-  test("a member hand-mining drops its batch to collect the furnace's plates first", () => {
+  test("a busy crew collects the furnace's plates at its next plan, without preempting", () => {
     const lab = createLab(48)
     const faction = createFaction("b17-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
     const brain = startBootstrap(faction, at(lab, 0, 0))
@@ -149,9 +153,54 @@ describe("B17 material sources", () => {
       const standing = mills.filter((t) => t.valid).length
       const msg = `preemptions ${preempted}, ${standing}/${mills.length} trees, plates ${plates0} at inject → ${plates}, tick ${game.tick} (setup ${setupTick})`
       assert(plates0 === 0, `the depot must be empty when the collect goes live (${msg})`)
-      assert(preempted > 0, `a member must preempt its in-flight batch for the collect (${msg})`)
-      // The preempted member dropped its batch's remaining steps (at most a few trees' worth of work).
-      assert(standing >= mills.length - 3, `the preempted member abandons its batch's steps (${msg})`)
+      assert(preempted === 0, `a collect must not preempt a batch (${msg})`)
+    })
+  })
+
+  test("an urgent refuel pulls only the nearest busy member off its work, and it takes the job", () => {
+    const lab = createLab(48)
+    const faction = createFaction("b31-fuel", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    depot.insert({ name: "coal", count: 50 })
+    addStockpile(faction, depot)
+    // A running furnace with one piece of wood left (2 MJ at 90 kW: ~22 s, under the 30 s default).
+    const furnace = lab.surface.create_entity({ name: "stone-furnace", position: at(lab, 12, 10), force: faction.force })!
+    furnace.get_inventory(defines.inventory.furnace_source)!.insert({ name: "iron-ore", count: 50 })
+    furnace.get_fuel_inventory()!.insert({ name: "wood", count: 1 })
+    setConfigOverride("tripMaxJobs", 1)
+    const mills = treeRow(lab, faction, 12, 3, at(lab, 22, 4))
+    for (const tree of mills) {
+      addJob(faction.board, { kind: "clear", pos: tree.position, payload: { kind: "gather", target: tree, count: 2, item: "wood", deliverTo: depot } }, game.tick)
+    }
+    let stage = 0
+    let taken = 0
+    waitFor(1800, () => {
+      if (stage === 0) {
+        let busy = 0
+        for (const id of faction.crew) {
+          const m = storage.crew[id]
+          if (!m?.dead && m.claims.length > 0 && m.actions.length > 0) busy++
+        }
+        if (busy >= 3) {
+          stage = 1
+          addJob(faction.board, {
+            kind: "fuel",
+            pos: furnace.position,
+            materials: [{ item: "coal", count: 5 }],
+            priority: 100,
+            payload: { kind: "fuel", item: "coal", count: 5, target: furnace, partial: true },
+          }, game.tick)
+        }
+        return false
+      }
+      taken = 0
+      for (const id of faction.crew) taken += storage.crew[id].stats.preemptTaken ?? 0
+      return furnace.get_fuel_inventory()!.get_item_count("coal") > 0
+    }, () => `the refuel (tick ${game.tick}, stage ${stage}, ${preemptedTotal(faction)} preemptions)`, () => {
+      const preempted = preemptedTotal(faction)
+      const msg = `preemptions ${preempted}, taken ${taken}, tick ${game.tick}`
+      assert(preempted === 1, `exactly one member preempts for the refuel (${msg})`)
+      assert(taken === 1, `the preempting member takes the refuel (${msg})`)
     })
   })
 })
