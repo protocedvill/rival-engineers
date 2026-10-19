@@ -8,9 +8,9 @@ import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { supplyChests, tempCells } from "./factory-report"
+import { moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
 import { bufferChests } from "../modules/buffers"
-import { setSupplies, SupplyPoint, supplyStock } from "../jobs/supply"
+import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
 import { destroyEntity, markDirty } from "../planner/terrain"
@@ -963,25 +963,29 @@ function registerSupplies(ctx: Ctx): void {
   for (const chest of ctx.faction.stockpiles) if (chest.valid) seen[chest.unit_number!] = true
   const hub = ctx.brain.hub ?? ctx.brain.base
   const radius = ctx.config.supplyRadius
-  const add = (entity: LuaEntity, inventory: defines.inventory, item?: string, keep?: number): void => {
+  const add = (entity: LuaEntity, inventory: defines.inventory, kind: SupplyKind, item?: string, keep?: number): void => {
     if (!entity.valid || entity.unit_number === undefined || seen[entity.unit_number]) return
     if (radius > 0 && positionDistance(entity.position, hub) > radius) return
     seen[entity.unit_number] = true
-    points.push({ entity, inventory, item, keep })
+    points.push({ entity, inventory, item, keep, kind })
   }
-  for (const chest of supplyChests(ctx.faction.name)) add(chest, defines.inventory.chest)
-  for (const chest of bufferChests(ctx.faction.force)) add(chest, defines.inventory.chest)
+  for (const c of supplyChests(ctx.faction.name)) add(c.entity, defines.inventory.chest, c.temp ? "temp-out" : "chest-out")
+  // B36: buffers of modules the planner stamped were never registered; register any built one that is missing.
+  repairBuffers(ctx.faction.name)
+  for (const chest of bufferChests(ctx.faction.force)) add(chest, defines.inventory.chest, "buffer")
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
     if (site.status === "failed" || site.status === "retired") continue
     for (const part of site.parts) {
       const e = part.built
       if (!e || !e.valid) continue
-      if (site.kind === "smelt" && e.type === "furnace") add(e, defines.inventory.furnace_result)
-      else if (site.kind === "chest" && e.type === "container") add(e, defines.inventory.chest)
-      else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, fuel, PAIR_KEEP)
+      if (site.kind === "smelt" && e.type === "furnace") add(e, defines.inventory.furnace_result, "furnace")
+      else if (site.kind === "chest" && e.type === "container") add(e, defines.inventory.chest, "chest-site")
+      else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, "pair", fuel, PAIR_KEEP)
     }
   }
+  // B36 (proposed, default off): smelter modules' furnace outputs, last (buffers and bootstrap furnaces first).
+  if (ctx.config.supplyModuleFurnaces) for (const e of moduleFurnaces(ctx.faction.name)) add(e, defines.inventory.furnace_result, "module-furnace")
   setSupplies(ctx.faction, points)
 }
 
@@ -1129,6 +1133,12 @@ function topUpTempCells(ctx: Ctx): void {
     const per = craftYield(cell.recipe, cell.item)
     const cap = math.max(per, math.floor(cell.rate * wait))
     const inv = m.get_inventory(defines.inventory.crafter_input)
+    // B36: the buffer is the output chest. A cell whose output already holds `cap` products is stocked: topping it up
+    // further only piles up its product and eats the ingredients other cells need (seed 11: the belt cell took every
+    // gear while 218 belts sat in its chest, and the red-science cell never got one).
+    const room = cap - cell.output.get_item_count(cell.item)
+    if (room <= 0) continue
+    const crafts = math.ceil(room / per)
     for (const ing of recipe.ingredients) {
       const have = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
       let inflight = 0
@@ -1137,7 +1147,7 @@ function topUpTempCells(ctx: Ctx): void {
         const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]!]
         if (job.payload.kind === "fuel") inflight = job.payload.count
       }
-      const add = math.max(0, math.min(cap * ing.amount - have - inflight, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
+      const add = math.max(0, math.min(crafts * ing.amount - have - inflight, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
       if (add <= 0) continue
       addKeyed(ctx, key, {
         kind: "fuel",

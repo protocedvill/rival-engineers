@@ -91,6 +91,8 @@ export interface CrewStats {
   preemptions?: number
   /** B31: preemptions whose re-plan claimed the job the member dropped its batch for. */
   preemptTaken?: number
+  /** B36: items taken for jobs, by source kind (`depot`, `buffer`, `furnace`, `temp-out`, ... see `SupplyKind`). */
+  takes?: Record<string, number>
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */
@@ -99,6 +101,8 @@ export interface CrewAction {
   job?: number
   /** A take from a stockpile reserves this until it finishes (`from`: the source's unit number, B32). */
   reserve?: ItemCount & { from?: number }
+  /** B36: the source kind of a take (telemetry). */
+  src?: string
 }
 
 export interface CrewMember {

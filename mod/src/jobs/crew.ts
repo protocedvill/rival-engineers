@@ -268,6 +268,10 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     if (status === "queued" || status === "running") break
     member.actions.shift()
     unreserve(faction, ca.reserve)
+    if (ca.src !== undefined && action !== undefined && action.stats.items > 0) {
+      const takes = (member.stats.takes ??= {})
+      takes[ca.src] = (takes[ca.src] ?? 0) + action.stats.items
+    }
     // M6/B22: a member that cannot get anywhere is boxed in. A "pathfinder found no path" walk counts, and so do
     // the stuck/unreachable re-path failures members used to loop in forever. Only a finished *walk* action resets
     // the count: a successful craft or transfer happens standing in one spot and says nothing about mobility.
@@ -906,7 +910,7 @@ function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], t
       reserveAt(faction, g.entity, h.item, count)
       // Partial: grab what is there when we arrive, like a player.
       const action = enqueue(member.controller, { kind: "take", entity: g.entity, item: h.item, count, allowPartial: true })
-      member.actions.push({ action, job: job.id, reserve: { item: h.item, count, from: g.entity.unit_number } })
+      member.actions.push({ action, job: job.id, reserve: { item: h.item, count, from: g.entity.unit_number }, src: h.kind })
     }
     cur = g.entity.position
   }

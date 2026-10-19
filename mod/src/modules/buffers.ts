@@ -46,6 +46,12 @@ export function registerBuffer(surface: LuaSurface, force: string, entity: LuaEn
   storage.buffers[key(surface.name, entity.position)] = e
 }
 
+/** B36: a built buffer chest is registered at `pos`. */
+export function isBufferAt(surface: string, pos: MapPosition): boolean {
+  const e = storage.buffers?.[key(surface, pos)]
+  return e !== undefined && e.entity !== undefined && e.entity.valid
+}
+
 /** Built-entity events: a registered buffer ghost became its chest. */
 export function onBufferBuilt(entity: LuaEntity | undefined): void {
   if (storage.buffers === undefined || entity === undefined || !entity.valid || entity.type !== "container") return

@@ -689,3 +689,62 @@ direction 2 scores against. B29's demand/supply diagnosis is not touched.
 | `planner-placement-growth-band-units` | `settings.ts`, `policy.ts` `placement.growthBandUnits` | 2 | The units a growth goal usually needs first (8 tiles for a smelter); also the depth of the own-band check. The full depth (5 units for a smelter) broke the seed 222 replay. | yes (new, proposed P38) |
 | `planner-placement-growth-blocked` | `settings.ts`, `policy.ts` `placement.growthBlocked` | 3 per near unit | 8 broke seed 222 even with undergrounds; 3 passes it. At 3, the walled-in spot of the planner test still wins over moving. Guess. | yes (new, proposed P38) |
 | Window margin + growth length | `placement.ts` `startWindow` | footprint + corridor + 4 + growth length + corridor.min | Derived: the own band must lie inside the scoring window. | no (derived) |
+
+## M6b.7: B36 module buffers and temp-cell feeds as supply sources (2026-10-19)
+
+The B36 row (user, review game on the B32 build): crew never take from module buffer chests and still hand-mine
+while furnaces hold plates. Manager probe soak (seed 11, 45 game-min) added: the belt cell's output chest held 218
+belts while the red-science cell never made a pack (its input chest had copper but no gears).
+
+**Root causes:**
+1. **Module buffers stamped by the planner runtime were never registered** (`storage.buffers`). `stampParts` /
+   `stampLayout` create a module's entities with `stampModule`, which neither registers buffers nor (for ghosts) limits
+   them; only growth ghosts (`factory.ts`), conflict repairs and route specs (`createSpec`) called `registerBuffer`. So
+   a smelter column's or gear row's buffer head built from a first plan was no supply point (B32's `bufferChests` only
+   lists registered ones) and had no slot limit (an iron chest soaked up 32 stacks off the line). Nothing in the
+   radius, `supply-min-take`, haul source order or reservations dropped it.
+2. **Temp-cell top-ups had no stopping point but the input chest** (B18 `topUpTempCells`): a cell was refilled up to
+   `cap` "products" worth of input regardless of what its output chest held, and `cap` was used as a craft count (the
+   belt cell asked for 120 gears per refill, not 60). Cells are refilled in node order from the shared surplus, so the
+   belt cell, consuming as fast as it was fed, took every gear while belts piled up for no order, and the red-science
+   cell (later in order) never saw a gear surplus. Copper did arrive (5 + 2 in the machine = its 6-pack buffer).
+
+**Fix:**
+- `planner/runtime.ts` `registerModuleBuffers`: every module stamped by the runtime (ghost or real) registers its
+  buffer entities, like `createSpec`; the crew's revive then limits the chest (`onBufferBuilt`).
+- `factory-report.ts` `repairBuffers` (each think, from `registerSupplies`): a built node's buffer chest that is not
+  registered with a valid entity is found and registered (and limited). Repairs older saves; one table lookup per
+  buffered module, a search only for missing ones.
+- `topUpTempCells`: a cell whose output chest holds `cap` products is not topped up; otherwise it is refilled for
+  `ceil((cap - output) / per)` crafts (was `cap` crafts). The on-demand feed (`feedTempCells`) is unchanged.
+- **Proposed P39 (not approved):** `supply-module-furnaces` (default off) makes built smelter modules' furnace
+  outputs supply points (last in order). The hand-mining while module furnaces hold plates is by design today: only
+  the buffer head is the module's crew-facing surplus. I did not turn it on: it can starve the belt.
+- **Telemetry:** `CrewStats.takes` counts items actually taken (the take action's item count) by source kind:
+  `depot`, `buffer`, `furnace` (bootstrap), `chest-site`, `pair`, `chest-out` (mall), `temp-out` (temp cell output),
+  `module-furnace`. `soak.py` sums them per faction (`takes_by_source`, "Items taken by source" in the scorecard).
+
+**Tests (T2):**
+- `bootstrap-sources_test` "B36: a craft takes its plates from a smelter module's buffer chest built from the planner's
+  ghosts": a smelter column stamped as ghosts by `stampParts`, revived; 100 plates in its buffer, empty depot, an ore
+  patch: the craft takes 60 plates from the buffer, no hand-mining, `takes.buffer` = 60. Old code: fails (buffer
+  bar 33, i.e. unregistered and unlimited).
+- "B36: a built module's unregistered buffer chest (an older save) is registered and taken from": old code fails
+  ("hand-sourcing 3, buffer 100").
+- "B36: supply-module-furnaces (proposed, off by default) takes from a smelter module's furnaces" (setting on).
+- `temp-factory_test` "B36: a stocked belt cell leaves the gears to the red-science cell": gear, belt and red-science
+  cells, plates and copper in the depot. New code: 3 packs by tick ~8600. Old code: 0 packs after 19 800 ticks (the
+  belt cell took every gear).
+
+Filtered T2: "B17" "B30" "B31" "B32" "B36" "D42 buffer" "D38" (21 passed) and "job board" "burner bootstrap"
+(18 passed), all green. T1 green (15/15). No soak run (manager), from the branch after `npm run build`:
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 222,11 --hours 1.5 --name b36-check --no-build -j 2`.
+Look for: "Items taken by source" showing `buffer` and `temp-out` takes; red-science cell `products_finished` > 0;
+fewer iron-ore gathers once smelter modules are built; no new stalls vs the B32 run.
+
+### Magic numbers for the user (M6b.7)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `supply-module-furnaces` | `settings.ts`, `bootstrap.ts` `registerSupplies` | false | Proposed P39: taking from a module's furnaces may starve its belt; off until the user decides. | yes (new, proposed P39) |
+| temp-cell top-up stop | `bootstrap.ts` `topUpTempCells` | output chest ≥ `cap` | Reuses `cap` = `bootstrap-factory-wait-seconds` (60) × the cell's rate: the same buffer B18 meant to build. No new number. | no (rule) |
