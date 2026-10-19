@@ -161,7 +161,11 @@ starting areas, SPEC §5.7 / D32). In a normal freeplay game with the mod, the i
 **Inspector** (Ctrl+Shift+I, or the magnifier button on the shortcut bar):
 - Top row: game speed ×1–×16, Pause/Resume, Step (one tick), Spectate. Overlay checkboxes: *Crew paths and
   actions* (each crew member's walk path, its target, and "#id action · category Ns" above its head) and *Planned
-  entities* (ghosts outlined in the faction's colour, brighter when claimed). Overlays are drawn only for you.
+  entities* (ghosts outlined in the faction's colour, brighter when claimed), *Factory graph*, and *Growth plans* (B33,
+  off by default: each expandable module's footprint in white, its planned growth units in order `+1`, `+2`... in amber
+  with an arrow toward the last one, a strip mine's units past its ore in dashed red; a whole-patch mine's full planned
+  footprint in violet, its built drills in green, its unbuilt planned drills dashed violet and its ore patch outlined in
+  yellow). Overlays are drawn only for you.
 - Faction (◀ ▶ to cycle, Go to base): the brain's current goal, what it waits on, the Job Board (ready, claimed,
   waiting on dependencies, in back-off, done, failed, releases), the oldest job nobody is working and why, and
   stalls (with the current one, if any).

@@ -23,6 +23,12 @@ export interface PlacedModule {
   fixed?: boolean
   /** D52: immutable whole-patch design; `def` is partial or complete, while `claim` is reserved up front. */
   minePlan?: { full: ModuleDef; claim: number[]; occupied: number[]; complete: boolean }
+  /**
+   * B33: a strip mine without a whole-patch plan (its plan did not fit): how many more growth units still put every
+   * new drill on its ore. Its growth area (and so its hard claim) stops there instead of running the belt-limited
+   * `expand.maxUnits` off the patch. Absent: not known (older saves, non-mines): `maxUnits`.
+   */
+  oreUnits?: number
 }
 
 export interface PortRef {
@@ -293,27 +299,72 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
 }
 
 /**
- * B9: the world rect an expandable module would add if it grew by every unit it still may (`expand.maxUnits`), on the
- * side `tryExpand` would grow it (the end that moves fewer entities, as `expandMoves` decides); undefined if it can't.
+ * The end an expandable module grows at: "auto" is the end `tryExpand(..., "auto")` grows, the one whose entities move
+ * (`expandMoves`: the head when it holds fewer entities than the tail).
  */
-export function growthArea(m: PlacedModule): Rect | undefined {
-  if (m.minePlan !== undefined) return undefined
-  const c = m.canonical
-  const spec = c.expand
-  if (spec === undefined || spec.maxUnits <= 0) return undefined
-  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
-  const len = spec.maxUnits * size
+export function growthEnd(def: ModuleDef, end: "auto" | "head" | "tail" = "auto"): "head" | "tail" {
+  if (end !== "auto") return end
+  const spec = def.expand!
   let head = 0
   let tail = 0
-  for (const e of c.entities) if ((spec.axis === "x" ? e.x : e.y) >= spec.insertAt) tail++
+  for (const e of def.entities) if ((spec.axis === "x" ? e.x : e.y) >= spec.insertAt) tail++
   else head++
-  const W = c.footprint.w
-  const H = c.footprint.h
-  // Canonical strip beyond the end that grows: the head side (before 0) when the head moves, else past the far end.
-  const headMoves = head < tail
-  const strip: Rect = spec.axis === "x" ? { x: headMoves ? -len : W, y: 0, w: len, h: H } : { x: 0, y: headMoves ? -len : H, w: W, h: len }
-  const r = transformRect(strip, W, H, m.transform)
-  return { x: m.origin.x + r.x, y: m.origin.y + r.y, w: r.w, h: r.h }
+  return head < tail ? "head" : "tail"
+}
+
+/** The canonical strip of new ground growth unit `i` (0 = the first) adds at one end. */
+export function growthStrip(def: ModuleDef, i: number, end: "auto" | "head" | "tail" = "auto"): Rect {
+  const spec = def.expand!
+  const W = def.footprint.w
+  const H = def.footprint.h
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const head = growthEnd(def, end) === "head"
+  return spec.axis === "x"
+    ? { x: head ? -(i + 1) * size : W + i * size, y: 0, w: size, h: H }
+    : { x: 0, y: head ? -(i + 1) * size : H + i * size, w: W, h: size }
+}
+
+/** B33: growth units a module may still add as planned (its cap, and for a strip mine the units over its ore). */
+export function plannedGrowthUnits(m: PlacedModule): number {
+  if (m.minePlan !== undefined) return 0
+  const spec = m.canonical.expand
+  if (spec === undefined || spec.maxUnits <= 0) return 0
+  return m.oreUnits !== undefined ? math.max(0, math.min(spec.maxUnits, m.oreUnits)) : spec.maxUnits
+}
+
+/** B33: the world rects of a module's next `n` growth units (default: every planned one) in order, on `end`. */
+export function growthUnitRects(m: PlacedModule, n?: number, end: "auto" | "head" | "tail" = "auto"): Rect[] {
+  const out: Rect[] = []
+  const c = m.canonical
+  const units = n ?? plannedGrowthUnits(m)
+  if (c.expand === undefined) return out
+  for (let i = 0; i < units; i++) {
+    const r = transformRect(growthStrip(c, i, end), c.footprint.w, c.footprint.h, m.transform)
+    out.push({ x: m.origin.x + r.x, y: m.origin.y + r.y, w: r.w, h: r.h })
+  }
+  return out
+}
+
+/**
+ * B9: the world rect an expandable module would add if it grew by every unit it still may (`plannedGrowthUnits`), on
+ * the side `tryExpand` would grow it (the end that moves fewer entities, as `expandMoves` decides); undefined if it
+ * can't. B33: a strip mine's stops at the end of its ore.
+ */
+export function growthArea(m: PlacedModule): Rect | undefined {
+  const units = plannedGrowthUnits(m)
+  if (units <= 0) return undefined
+  const rects = growthUnitRects(m, units)
+  let x1 = math.huge
+  let y1 = math.huge
+  let x2 = -math.huge
+  let y2 = -math.huge
+  for (const r of rects) {
+    x1 = math.min(x1, r.x)
+    y1 = math.min(y1, r.y)
+    x2 = math.max(x2, r.x + r.w)
+    y2 = math.max(y2, r.y + r.h)
+  }
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
 }
 
 /** Removes a module's tiles (before re-marking it grown). Routes are untouched. */

@@ -11,10 +11,10 @@ import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modu
 import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
-import { CLIFF, DX, DY, FOREIGN, FREE, inflate, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, LayoutState, markModule, PlacedModule, portOutside, portTile, unmarkModule } from "./layout"
+import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
+import { commitModule, findModule, growthEnd, growthStrip, LayoutState, markModule, PlacedModule, portApproach, portOutside, portTile, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer } from "./policy"
-import { connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
+import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
 
 export interface PlacementRequest {
   /** Instance id. */
@@ -88,28 +88,6 @@ function transformsOf(def: ModuleDef): Transform[] {
 
 function isMining(def: ModuleDef): boolean {
   return def.site === "resource-patch"
-}
-
-function growthEnd(def: ModuleDef, end: "auto" | "head" | "tail"): "head" | "tail" {
-  if (end !== "auto") return end
-  const spec = def.expand!
-  let head = 0
-  let tail = 0
-  for (const e of def.entities) if ((spec.axis === "x" ? e.x : e.y) >= spec.insertAt) tail++
-  else head++
-  return head < tail ? "head" : "tail"
-}
-
-/** The canonical strip occupied by growth unit `i` at one end. */
-function growthStrip(def: ModuleDef, i: number, end: "auto" | "head" | "tail"): Rect {
-  const spec = def.expand!
-  const W = def.footprint.w
-  const H = def.footprint.h
-  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
-  const head = growthEnd(def, end) === "head"
-  return spec.axis === "x"
-    ? { x: head ? -(i + 1) * size : W + i * size, y: 0, w: size, h: H }
-    : { x: 0, y: head ? -(i + 1) * size : H + i * size, w: W, h: size }
 }
 
 /**
@@ -617,15 +595,78 @@ export function placeNow(req: PlacementRequest, state: LayoutState, terrain: Ter
   return s
 }
 
-/** Replaces the small linear placement template with its immutable, fixed-port whole-patch mine plan. */
-export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy): void {
-  // Until the staged plan exposes one fixed port per belt lane, sharing its single collector requires splitter taps.
-  if (policy.topology !== "splitter-tap" || !isMining(m.canonical) || m.minePlan !== undefined) return
+function drillCount(def: ModuleDef, facts: ProtoFacts): number {
+  let n = 0
+  for (const e of def.entities) if (facts.entity(e.name)?.type === "mining-drill") n++
+  return n
+}
+
+/**
+ * B33: growth units of a strip mine (no whole-patch plan) that still put every new drill on its ore (ore under the
+ * drill's body, the whole-patch plan's own test), counted from the growing end until the first unit that doesn't.
+ * Its growth area, and so its hard claim, stops there instead of running the belt-limited cap off the patch.
+ */
+export function stripOreUnits(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts): number {
+  const c = m.canonical
+  const spec = c.expand
+  const resource = c.anchor?.resource
+  if (spec === undefined || resource === undefined || m.minePlan !== undefined) return 0
+  // A mine grows at its tail (its head holds the output port, B25): unit i is the new ground past the far end.
+  if (growthEnd(c) !== "tail") return spec.maxUnits
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const W = c.footprint.w
+  const H = c.footprint.h
+  let n = 0
+  for (let i = 0; i < spec.maxUnits; i++) {
+    const off = (spec.axis === "x" ? W : H) + i * size
+    for (const e of spec.unit.entities) {
+      if (facts.entity(e.name)?.type !== "mining-drill") continue
+      const er = entityRect(e, facts)
+      const local = spec.axis === "x" ? { x: er.x + off, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + off, w: er.w, h: er.h }
+      const r = transformRect(local, W, H, m.transform)
+      let on = false
+      for (let x = m.origin.x + r.x; x < m.origin.x + r.x + r.w && !on; x++) for (let y = m.origin.y + r.y; y < m.origin.y + r.y + r.h; y++) if (terrain.ore(x, y) === resource) on = true
+      if (!on) return n
+    }
+    n++
+  }
+  return n
+}
+
+/**
+ * Replaces the small linear placement template with its immutable, fixed-port whole-patch mine plan (D52), in every
+ * topology (B33: point-to-point mines were left as strips whose growth ran off the patch). The plan covers the part of
+ * the patch one output belt can carry (`claimPart`) and avoids ground other modules, routes, claims and reservations of
+ * `state` already hold. When the plan does not fit (its entities on unbuildable or taken ground), the mine stays the
+ * strip it was placed as and its growth is clipped to its ore (`stripOreUnits`).
+ */
+export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy, state?: LayoutState): void {
+  if (!isMining(m.canonical) || m.minePlan !== undefined) return
+  const strip = (): void => {
+    if (m.canonical.expand !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
+  }
   const resource = m.canonical.anchor?.resource
   const drillName = m.canonical.params?.drill
-  if (resource === undefined || typeof drillName !== "string") return
+  const belt = m.canonical.params?.belt
+  if (resource === undefined || typeof drillName !== "string" || typeof belt !== "string") return strip()
   const drill = facts.entity(drillName)
-  if (drill === undefined) return
+  if (drill === undefined) return strip()
+  // Ground the layout already gives to someone else reads as own structures: no planned drill, belt or pole there.
+  const taken = (x: number, y: number): boolean => {
+    if (state === undefined) return false
+    const k = tkey(x, y)
+    const o = state.occ[k]
+    if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}`) return true
+    if (state.routeOcc[k] !== undefined) return true
+    const mo = state.mine?.[k]
+    if (mo !== undefined && mo !== m.id) return true
+    const r = state.reserved[k]
+    return r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`
+  }
+  const view: TerrainView = {
+    block: (x, y) => (taken(x, y) ? OWN : terrain.block(x, y)),
+    ore: (x, y) => terrain.ore(x, y),
+  }
   const seeds: Vec[] = []
   for (const a of m.def.anchor?.miningAreas ?? []) {
     for (let x = m.origin.x + a.x; x < m.origin.x + a.x + a.w; x++) {
@@ -633,19 +674,68 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
     }
   }
   const patch = connectedPatch(terrain, resource, seeds, region)
-  if (patch === undefined) return
-  const plan = planWholePatch(terrain, patch, drill)
+  if (patch === undefined) return strip()
   // Preserve the routing intent of the accepted small placement. Its output was oriented toward the consumer;
   // using that outside tile as the materializer's target chooses the matching edge of the whole-patch plan.
   const oldOut = m.def.ports.find((p) => p.id === "out")
   const near = oldOut !== undefined ? portOutside(m, oldOut) : { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
-  const built = materializeMinePlan(m.canonical, plan, facts, near)
-  if (built === undefined) return
+  // The part it claims: a shared (splitter-tap) mine one full output belt over as many lanes as that takes; a
+  // point-to-point mine, which only ever feeds its one consumer, one lane of the patch's grid (the strip it was placed
+  // as, on the full-coverage grid and only over ore) holding at most as many drills as its template could grow to, so
+  // the rest of the field stays free for the next consumer's own mine (the seed 11 / 3333 replays: two coal outposts
+  // on one small field).
+  let cap = beltDrillCap(facts, belt, drill, resource)
+  let maxLanes = math.huge
+  const spec = m.canonical.expand
+  if (policy.topology !== "splitter-tap") {
+    maxLanes = 1
+    if (spec !== undefined) {
+      let perUnit = 0
+      for (const e of spec.unit.entities) if (facts.entity(e.name)?.type === "mining-drill") perUnit++
+      cap = math.min(cap, drillCount(m.canonical, facts) + spec.maxUnits * perUnit)
+    }
+  }
+  const plan = claimPart(planWholePatch(view, patch, drill), view, drill, near, cap, maxLanes)
+  const built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage)
+  if (built === undefined) return strip()
+  // B33: the whole plan must fit: every claimed tile buildable (trees and rocks as the policy clears them, own
+  // structures the layout doesn't hold as D51 evicts them), in the region, untaken, and off other non-mine modules' corridor ring; its output port must have a usable outside tile.
+  const ownRect = { x: built.origin.x, y: built.origin.y, w: built.full.footprint.w, h: built.full.footprint.h }
+  for (const k of built.claim) {
+    const x = keyX(k)
+    const y = keyY(k)
+    // Own structures the layout doesn't know (bootstrap sites on the patch) are fine: adoption evicts them (D51 (3)).
+    const b = terrain.block(x, y)
+    if (!rectContains(region, x, y) || taken(x, y)) return strip()
+    if (b !== FREE && b !== OWN && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return strip()
+  }
+  if (state !== undefined) {
+    const ring = inflate(ownRect, policy.corridor.min)
+    for (let x = ring.x; x < ring.x + ring.w; x++) {
+      for (let y = ring.y; y < ring.y + ring.h; y++) {
+        const o = state.occ[tkey(x, y)]
+        if (o === undefined || string.sub(o, 1, 2) !== "m:" || o === `m:${m.id}`) continue
+        const other = findModule(state, string.sub(o, 3))
+        if (other === undefined || !isMining(other.canonical)) return strip()
+      }
+    }
+  }
+  const out = built.initial.ports.find((p) => p.id === "out")
+  if (out !== undefined) {
+    const probe: PlacedModule = { ...m, canonical: built.initial, def: built.initial, transform: IDENTITY, origin: built.origin, rect: ownRect }
+    // The route starts on the outside tile and leaves over the approach tile: both must be ground the router can use
+    // (own structures there are not evicted for a route; the seed 3333 replay's iron mine faced into its base).
+    for (const o of [portOutside(probe, out), portApproach(probe, out)]) {
+      const b = terrain.block(o.x, o.y)
+      if (taken(o.x, o.y) || (b !== FREE && b !== TREE && b !== ROCK)) return strip()
+    }
+  }
   m.canonical = built.initial
   m.def = built.initial
   m.transform = IDENTITY
   m.origin = built.origin
-  m.rect = { x: built.origin.x, y: built.origin.y, w: built.initial.footprint.w, h: built.initial.footprint.h }
+  m.rect = ownRect
+  m.oreUnits = undefined
   m.minePlan = { full: built.full, claim: built.claim, occupied: built.occupied, complete: false }
 }
 
@@ -812,21 +902,21 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       }
     }
     // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
-    // need resource in reach; otherwise depletion could never be remedied in place (M6a.2, seed 222).
+    // need resource; otherwise depletion could never be remedied in place (M6a.2, seed 222). B33: under the drill
+    // itself (the whole-patch plan's test), not just somewhere in its mining area: a strip growing on a drill that
+    // only grazes the patch edge is growth off the patch.
     for (let i = 0; i < k; i++) {
       for (const e of spec.unit.entities) {
         const f = facts.entity(e.name)
-        if (f?.type !== "mining-drill" || f.miningRadius === undefined) continue
+        if (f?.type !== "mining-drill") continue
         const offset = end === "head" ? i * size : spec.insertAt + i * size
-        const local = spec.axis === "x" ? { x: e.x + offset, y: e.y } : { x: e.x, y: e.y + offset }
-        const p = transformPoint(local, grown.footprint.w, grown.footprint.h, m.transform)
-        const rad = f.miningRadius
-        const x1 = Math.floor(origin.x + p.x - rad + 0.01)
-        const y1 = Math.floor(origin.y + p.y - rad + 0.01)
-        const x2 = Math.ceil(origin.x + p.x + rad - 0.01)
-        const y2 = Math.ceil(origin.y + p.y + rad - 0.01)
+        const er = entityRect(e, facts)
+        const local = spec.axis === "x" ? { x: er.x + offset, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + offset, w: er.w, h: er.h }
+        const r = transformRect(local, grown.footprint.w, grown.footprint.h, m.transform)
+        const x1 = origin.x + r.x
+        const y1 = origin.y + r.y
         let mine = false
-        for (let x = x1; x < x2; x++) for (let y = y1; y < y2; y++) if (terrain.ore(x, y) === resource) mine = true
+        for (let x = x1; x < x1 + r.w; x++) for (let y = y1; y < y1 + r.h; y++) if (terrain.ore(x, y) === resource) mine = true
         if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${x1},${y1}`, movedPorts: [], moved: [] }
       }
     }
@@ -860,6 +950,8 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
   m.def = placed
   m.origin = origin
   m.rect = rect
+  // B33: a strip mine's growth claim keeps stopping where its ore ends.
+  if (mining && m.oreUnits !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
   markModule(state, m, facts, policy.corridor.preferred)
   const movedPorts: string[] = []
   for (const p of m.def.ports) {

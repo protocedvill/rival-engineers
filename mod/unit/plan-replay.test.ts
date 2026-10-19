@@ -64,6 +64,14 @@ interface ReplayOptions {
   expect?: "done" | "failed"
 }
 
+/** REPLAY_DUMP=1: each module's placement, mine plan (B33) or ore-clipped strip, and belt ports. */
+function dumpModules(layout: LayoutState): void {
+  for (const m of layout.modules) {
+    const ports = m.def.ports.filter((p) => p.kind !== "power").map((p) => `${p.id}@${m.origin.x + p.pos.x},${m.origin.y + p.pos.y}`)
+    print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h}${m.minePlan !== undefined ? ` mine plan ${m.minePlan.claim.length} tiles` : ""}${m.oreUnits !== undefined ? ` strip, ${m.oreUnits} units on ore` : ""} ports ${ports.join(" ")}`)
+  }
+}
+
 function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
     const fx = load(name)
@@ -109,6 +117,7 @@ test("replay seed222-production without undergrounds: routing fails, the undergr
   fx.request.compare = { undergrounds: { tiers: beltTiers(F) }, workFactor: 2, minWork: 5000 }
   const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
   runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  if (os.getenv("REPLAY_DUMP") !== undefined) dumpModules(job.layout)
   ok(job.phase === "failed", `the plan fails without undergrounds (${job.phase})`)
   const results: CompareResult[] = job.compare?.results ?? []
   const d = logisticsFirst(results, 50, 50)
@@ -229,8 +238,11 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
 // D52 (3) (M6a.2): mining outposts' room to grow is a hard claim; the placements and routes moved, and the splitter
 // decisions flipped (seed 11: one coal producer now saves -1 tiles, was 88; seed 3333: 60, was 46). The splitter
 // comparison is off by default (D50); the underground decision is unchanged (118 / 82 tiles).
+// B33: mines get their whole-patch plans in point-to-point plans too (one lane of the patch grid each) and strip mines
+// claim growth only over ore; seed 3333's mines moved again and one coal producer now saves 14 tiles (was 60): the
+// splitter decision flipped back (the comparison is still off by default). Undergrounds unchanged (seed 3333: 80).
 compareReplay("seed11-production-ok", { undergrounds: true, splitters: false })
-compareReplay("seed3333-production-ok", { undergrounds: true, splitters: true })
+compareReplay("seed3333-production-ok", { undergrounds: true, splitters: false })
 
 // B26 (growth bands): with the current placement weights the same two stage-1 clusters fail to route without
 // undergrounds (the smelters' input/growth side now turns away from ore and claims, so feeds wrap around them), and
@@ -250,6 +262,27 @@ function b26Replay(name: string): void {
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name} (B26): ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+    if (os.getenv("REPLAY_DUMP") !== undefined) dumpModules(job.layout)
+    const map = os.getenv("REPLAY_MAP")
+    if (map !== undefined) {
+      const [x1, y1, x2, y2] = string.match(map, "(-?%d+),(-?%d+),(-?%d+),(-?%d+)")
+      const view = fixtureView(fx)
+      for (let y = tonumber(y1)!; y <= tonumber(y2)!; y++) {
+        let row = ""
+        for (let x = tonumber(x1)!; x <= tonumber(x2)!; x++) {
+          const k = tkey(x, y)
+          const o = job.layout.occ[k]
+          let c = view.ore(x, y) !== undefined ? "," : "."
+          if (view.block(x, y) !== FREE) c = "#"
+          if (job.layout.mine?.[k] !== undefined) c = "m"
+          if (job.layout.reserved[k] !== undefined) c = "r"
+          if (o !== undefined) c = string.sub(o, 1, 1) === "m" ? string.sub(o, 4, 4) : "x"
+          if (job.layout.routeOcc[k] !== undefined) c = "="
+          row += c
+        }
+        print(`    ${y} ${row}`)
+      }
+    }
     ok(job.phase === "done", `plan done (${why.join("; ")})`)
   })
 }

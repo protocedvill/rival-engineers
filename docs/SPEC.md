@@ -827,6 +827,20 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   with (b) on, the seed 11 and 3333 stage-1 clusters no longer route **without** undergrounds (a smelter's growth end is
   its input side, which now turns away from ore, so feeds wrap round it); they do route with them, and both seeds decide
   "undergrounds first" under D36 / D51 anyway. Values are guesses tuned on six replays; a soak decides.
+- **P39, the part of a patch a mine claims (proposed, B33; M6 report M6b.7):** D52 whole-patch plans now apply in every
+  plan topology (before, only splitter-tap plans got them, so point-to-point mines stayed strips whose growth claim ran
+  off the patch). "The part it claims" (D52 (1)) is: (a) a **shared** (splitter-tap) mine: as many drills of the
+  whole-patch grid as its one output belt carries (both lanes; 30 electric drills on iron with yellow belts; a starting
+  iron patch holds 67-69), whole lanes nearest the consumer first; (b) a **point-to-point** mine (it only ever feeds
+  one consumer): **one lane** of the grid, at most the drills its strip template could grow to (14 for a 1-side
+  electric 2-row outpost). Two lanes or more made the second coal outpost of the seed 11 / 3333 stage-1 clusters
+  unplaceable (one small coal field). (c) A mine whose plan does not fit (its entities on water, cliffs, other modules'
+  ground or claims, its output port facing built structures) stays a strip, and its growth claim stops at the last unit
+  whose drills all have ore under them (was: the belt-limited cap, 36 tiles for an electric strip). (d) Strip growth
+  needs ore under each new drill's body, not just in its mining area (the whole-patch plan's own test). (e) A partial
+  stage starts with drills whose mining area meets `minOreCoverage` (0.6), not on the thin edge nearest the consumer.
+  (f) A route that crossed itself is retried with that tile blocked, not just costed. Not done:
+  balancing the two lanes of the collector belt (the part is capped at the belt's total).
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

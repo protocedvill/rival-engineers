@@ -325,6 +325,9 @@ describe("burner bootstrap", () => {
         const parts = allParts(entry.job!.layout)
         const taken: Record<number, boolean> = {}
         for (const k of partTiles(entry.job!.layout, parts)) taken[k] = true
+        // As the factory's adoption does (B23 / D52): a whole-patch mine's claim covers its unbuilt footprint too. B33:
+        // the outpost is now a whole-patch mine in a point-to-point plan as well; its first drills may stand beside the site.
+        for (const m of entry.job!.layout.modules) for (const k of m.minePlan?.claim ?? []) taken[k] = true
         const evicted = evictSites(faction, lab.surface, taken, "test plan")
         assert(evicted.length > 0 && site.status === "retired", `the bootstrap site under the outpost is evicted (${evicted.length}, ${site.status})`)
         for (const k of partTiles(entry.job!.layout, parts)) brain.reserved[k] = true
