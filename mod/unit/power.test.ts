@@ -126,6 +126,35 @@ test("no generator yet: nothing to connect, no poles; modules within reach need 
   eq(unpoweredModules(b, F).length, 0, "powered")
 })
 
+test("B43: a consumer whose trunk line was evicted joins through the line still hanging off it", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  const m = place(layout, "labs", labs, 50, 4)
+  polesNow(layout, terrain(80, 30), F, POLICY)
+  eq(unpoweredModules(layout, F).length, 0, "joined first")
+  // B37 evicted the line's first part (report 333968: a route took the trunk): only its last two poles stay, as a line
+  // of their own still joined to the labs.
+  const line = layout.poleLines![0]
+  const keep = layout.poles!.filter((p) => p.line === line.id).slice(-2)
+  for (const p of layout.poles!) delete layout.occ[tkey(p.x, p.y)]
+  layout.poles = keep.map((p, i) => ({ ...p, id: `poles:old:0.${i}`, line: "poles:old:0" }))
+  for (const p of layout.poles) layout.occ[tkey(p.x, p.y)] = "x:poles:old:0"
+  layout.poleLines = [{ id: "poles:old:0", from: "poles:gone", to: "labs", poles: layout.poles.map((p) => p.id) }]
+  // Every tile in wire reach of the labs' own poles is taken (a mine's growth room in the report).
+  for (const e of m.def.entities) {
+    if (e.name !== "small-electric-pole") continue
+    for (let x = math.floor(m.origin.x + e.x) - 8; x <= m.origin.x + e.x + 8; x++) {
+      for (let y = math.floor(m.origin.y + e.y) - 8; y <= m.origin.y + e.y + 8; y++) {
+        const k = tkey(x, y)
+        if (layout.occ[k] === undefined) layout.reserved[k] = "test"
+      }
+    }
+  }
+  eq(unpoweredModules(layout, F).join(","), "labs", "cut off")
+  const job = polesNow(layout, terrain(80, 30), F, POLICY, "poles:new:")
+  eq(unpoweredModules(layout, F).length, 0, `joined again (${tostring(job.failures.labs)})`)
+})
+
 test("B39: a second steam block joins the first one's network (old: its own island, powering nothing)", () => {
   const layout = newLayout()
   place(layout, "steam", steam, 2, 2)

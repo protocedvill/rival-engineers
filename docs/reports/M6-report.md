@@ -1065,3 +1065,26 @@ Validation: the report's save (`tools/modules/input/b42-report-125521.zip`) resu
 stray pick-ups, no BUILD STUCK. That save is from before the first fix, so only the second fix acts in it. Full T2 suite on the final code: 141/141
 (an earlier run on the build before the last tweak had one order-dependent failure, B33 review overlay, which passes
 alone, with the jobs tests, and in the rerun). No new magic numbers.
+
+## M6b.15: B43 a second power plant's pole pass joins a cut-off line (2026-10-19)
+
+The user's review report `333968-run-finished-all-research-but-ne`: faction 1 finished every red-only technology but
+stayed at stage 0, so green science was never planned. Its steam block could not grow (its coal outpost n2 blocks it:
+"blocked at 371,119", three failures), so the design asked for a second steam block. Every power goal from g6 to g15
+failed all 4 attempts with `power:n18: no pole path (window margin 112)`, a new goal about every 18,800 ticks. With a
+power spec always pending, `advanceGoals` never moved on to stage 2.
+
+n18 is the faction's copper mine, powered in the game. Replaying the captured plan (`mod/unit/fixtures/r333968-second-power.lua`)
+showed the mechanism: the second plant's coal route crosses trunk line `poles:905:1`, which B37 evicts as a whole. The
+copper mine's line `poles:905:4` hangs off it and stays, still joined to the mine's pole. The pole planner then had to
+reconnect n18 but aimed only at n18's own pole, which sits in the middle of the mine where every tile in wire reach is
+module footprint or claimed growth room, although `startNext`'s comment said it targets "every pole of the owner's
+component". It now does: the search ends at any pole of the owner's union-find component, here the surviving line.
+
+Tests: T1 `power` "B43: a consumer whose trunk line was evicted joins through the line still hanging off it" (fails on
+the old code with "no pole path (window margin 112)") and `plan-replay` "r333968-second-power" (the captured plan, now
+done). The report's save (`tools/modules/input/r333968.zip`) resumed with the fix: g15 (whose attempt 1 was already in
+flight in the save) plans on attempt 2, evicting 6 poles, and the second plant is built at tick 346050; the factory then
+plans the mall (g16). That run stopped at tick 410400 with the mall still building, before any stage change, so the
+move to green science is not yet shown. No new magic numbers.
+

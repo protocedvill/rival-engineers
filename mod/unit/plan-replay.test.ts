@@ -410,4 +410,10 @@ test("replay m6a2-seed222-mall-iron: the shared mine completes over its own pole
   ok(mine !== undefined && mine.minePlan !== undefined && mine.minePlan.complete === true, "the shared mine's plan is whole")
 })
 
+// B43 (review report 333968, faction 1 g15, tick 334080): the second steam block's coal route evicts the trunk pole line
+// (B37) that the copper mine n18's line hangs off. The pole planner aimed only at n18's own pole, in the middle of the
+// mine where every tile in reach is footprint or growth room: "power:n18: no pole path" on every attempt. It now aims at
+// n18's whole pole component, the surviving line included.
+replay("r333968-second-power")
+
 run("plan-replay")

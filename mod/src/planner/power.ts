@@ -257,14 +257,18 @@ function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boo
   if (retry === undefined) job.pending = keep
   if (best === undefined) return false
   job.pending = job.pending.filter((o) => o !== best!.owner)
-  // The target: every pole of the owner's component(s).
+  // The target: every pole of the owner's component(s). B43: that includes line poles joined to it, e.g. a line to a
+  // mine whose trunk line a plan evicted (B37): the mine's own pole may sit where no new pole can reach it.
+  const roots: Record<number, boolean> = {}
+  for (let i = 0; i < job.nodes.length; i++) if (job.nodes[i].owner === best.owner) roots[find(job, i)] = true
   const goals: PoleNode[] = []
   let gx1 = math.huge
   let gy1 = math.huge
   let gx2 = -math.huge
   let gy2 = -math.huge
-  for (const n of job.nodes) {
-    if (n.owner !== best.owner) continue
+  for (let i = 0; i < job.nodes.length; i++) {
+    const n = job.nodes[i]
+    if (!roots[find(job, i)]) continue
     goals.push(n)
     gx1 = math.min(gx1, n.x)
     gy1 = math.min(gy1, n.y)
