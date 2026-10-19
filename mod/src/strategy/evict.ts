@@ -92,6 +92,16 @@ export function evictSites(faction: FactionState, surface: LuaSurface, keys: Rec
   return out
 }
 
+/** B42: `e` is a built part of one of the faction's live bootstrap sites (their own logic and eviction handle it). */
+export function isSitePart(brain: BrainState | undefined, e: LuaEntity): boolean {
+  if (brain === undefined) return false
+  for (const site of brain.sites) {
+    if (site.status === "retired" || site.status === "failed") continue
+    for (const part of site.parts) if (part.built !== undefined && part.built.valid && part.built === e) return true
+  }
+  return false
+}
+
 /**
  * M6a.2: the faction's reserved tiles = its bootstrap sites' tiles plus what the factory layout holds
  * (`factoryReserveTiles`). Called after a change that may give up ground (a growth, a reroute, a relocation): stale

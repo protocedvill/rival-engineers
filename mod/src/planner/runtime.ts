@@ -12,7 +12,7 @@ import { addClearJob, addPlaceJob, getFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { stampModule } from "../modules/stamp"
 import { registerBuffer } from "../modules/buffers"
-import { BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
+import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
@@ -262,6 +262,34 @@ export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?:
       seen[key] = true
       out.push(e)
     }
+  }
+  return out
+}
+
+/** B42: every entity `layout` plans, keyed `name@x,y` (`%g`: positions went through module arithmetic). */
+export function layoutEntityKeys(layout: LayoutState): Record<string, boolean> {
+  const keys: Record<string, boolean> = {}
+  for (const e of partEntities(layout, allParts(layout))) keys[string.format("%s@%g,%g", e.name, e.x, e.y)] = true
+  return keys
+}
+
+/** Types under a ghost that are not built structures. */
+const NOT_STRUCTURES = ["entity-ghost", "tile-ghost", "character", "character-corpse", "item-request-proxy", "item-entity"]
+
+/**
+ * B42: the faction's own built entities under `ghost` that the layout (`layoutEntityKeys`) does not plan: an obsolete
+ * route piece put back, say. Nothing else removes them, so the ghost could never be placed. A live entity with the
+ * ghost's own name and position is the planned one already built (B41), not a stray.
+ */
+export function strayUnder(surface: LuaSurface, force: string, planned: Record<string, boolean>, ghost: LuaEntity): LuaEntity[] {
+  const box = ghost.bounding_box
+  const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
+  const out: LuaEntity[] = []
+  for (const e of findEntities(surface, { area, force })) {
+    if (NOT_STRUCTURES.indexOf(e.type) >= 0) continue
+    if (e.name === ghost.ghost_name && e.position.x === ghost.position.x && e.position.y === ghost.position.y) continue
+    if (planned[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]) continue
+    out.push(e)
   }
   return out
 }

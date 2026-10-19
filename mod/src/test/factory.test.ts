@@ -12,7 +12,7 @@ import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { claimView, stampParts } from "../planner/runtime"
+import { claimView, layoutEntityKeys, stampParts, strayUnder } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
 import { at, createLab, Lab } from "./lab"
@@ -335,5 +335,34 @@ describe("M5a power and growth", () => {
     assert(built!.valid, "the re-used pole stays built")
     const overlaid = lab.surface.find_entities_filtered({ ghost_name: "small-electric-pole", position: built!.position, force })
     assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
+  })
+
+  test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: "blocked", name: "small-electric-pole", x, y, line: "poles:b42:0" },
+      { id: "built", name: "small-electric-pole", x: x + 4, y, line: "poles:b42:0" },
+      { id: "other", name: "small-electric-pole", x: x + 8, y, line: "poles:b42:0" },
+    ]
+    layout.poleLines = [{ id: "poles:b42:0", from: "power", to: "consumer", poles: ["blocked", "built", "other"] }]
+    // Report 125521: an obsolete underground belt put back on the tile of a planned pole.
+    const belt = s.create_entity({ name: "underground-belt", type: "input", position: { x: x + 0.5, y: y + 0.5 }, direction: defines.direction.south, force })!
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })!
+    // B41: the planned pole already built under its own ghost is not a stray.
+    s.create_entity({ name: "small-electric-pole", position: { x: x + 4.5, y: y + 0.5 }, force })
+    const overBuilt = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 4.5, y: y + 0.5 }, force })!
+    // A planned entity under some other ghost is the layout's own: never picked up by this rule.
+    s.create_entity({ name: "small-electric-pole", position: { x: x + 8.5, y: y + 0.5 }, force })
+    const overPlanned = s.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: { x: x + 8.5, y: y + 0.5 }, force })!
+    const planned = layoutEntityKeys(layout)
+    const strays = strayUnder(s, force.name, planned, ghost)
+    assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
+    assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
+    assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
   })
 })

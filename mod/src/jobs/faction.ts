@@ -199,3 +199,14 @@ export function addClearJob(faction: FactionState, target: LuaEntity, priority?:
   const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, payload: { kind: "clear", target } }, game.tick)
   return job.id
 }
+
+/** B42: the active clear job that removes `e`, if one is already scheduled. */
+export function clearJobFor(faction: FactionState, e: LuaEntity): number | undefined {
+  const board = faction.board
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (job.payload.kind !== "clear" || job.status === "done" || job.status === "failed") continue
+    if (job.payload.target.valid && job.payload.target === e) return id
+  }
+  return undefined
+}

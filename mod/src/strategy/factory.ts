@@ -2,7 +2,7 @@ import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
-import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
+import { addClearJob, addPlaceJob, clearJobFor, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
@@ -24,7 +24,7 @@ import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRe
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
-import { evictSites, resyncReserved } from "./evict"
+import { evictSites, isSitePart, resyncReserved } from "./evict"
 import { checkPowerFuel, powerFuelled, producerGrowing } from "./fuel"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
@@ -759,7 +759,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       return
     }
     const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
-    replanGhosts(ctx, g, fake as never, left)
+    replanGhosts(ctx, g, fake as never, left, ctx.f.layout)
     b.placeJobs = fake.placeJobs
     return
   }
@@ -1251,7 +1251,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
       relocateGoal(ctx, g, entry, `build stuck: ${g.reason}`)
       return
     }
-    replanGhosts(ctx, g, b, left)
+    replanGhosts(ctx, g, b, left, entry.job?.layout ?? ctx.f.layout)
     return
   }
   g.status = "done"
@@ -1431,7 +1431,8 @@ function failureReasons(ctx: Ctx, ids: number[]): string {
   return out.join("; ")
 }
 
-function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof RT.getPlannerEntry>>["build"], left: LuaEntity[]): void {
+/** Re-places leftover ghosts, after clearing what blocks them; `layout` is what the build realizes. */
+function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof RT.getPlannerEntry>>["build"], left: LuaEntity[], layout: LayoutState): void {
   const faction = ctx.faction
   b!.placeJobs = []
   // B15: a bootstrap site built after the plan's terrain scan may stand under a leftover ghost: evict it.
@@ -1464,6 +1465,23 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
       if (j !== undefined && j.status !== "done" && j.status !== "failed") continue
       g.clearing[k] = addClearJob(faction, e, b!.priority)
       log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: clearing ${e.name} at ${k} under a leftover ${gh.ghost_name} ghost${j !== undefined ? ` (last clear job ${j.status}: ${j.reason ?? "?"})` : ""}`)
+    }
+  }
+  // B42: one of the faction's own entities the layout no longer plans (an obsolete route piece put back) blocks a
+  // leftover ghost for good: pick it up. Stockpiles and bootstrap sites (evicted above) stay, and an entity already
+  // being cleared is not cleared twice.
+  let planned: Record<string, boolean> | undefined
+  for (const gh of left) {
+    if (!gh.valid) continue
+    if (planned === undefined) {
+      // A plan's layout copied the base when it was planned: what the faction's layout gained since is planned too.
+      planned = RT.layoutEntityKeys(layout)
+      if (layout !== ctx.f.layout) for (const [k] of pairs(RT.layoutEntityKeys(ctx.f.layout))) planned[k as string] = true
+    }
+    for (const e of RT.strayUnder(ctx.surface, faction.force, planned, gh)) {
+      if (faction.stockpiles.indexOf(e) >= 0 || isSitePart(faction.brain, e) || clearJobFor(faction, e) !== undefined) continue
+      addClearJob(faction, e, b!.priority)
+      log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: picking up ${e.name} at ${e.position.x},${e.position.y} under a leftover ${gh.ghost_name} ghost (not in the layout)`)
     }
   }
   for (const gh of left) {
@@ -1962,11 +1980,12 @@ function recover(ctx: Ctx): void {
   faction.brain!.jobKeys = {}
   for (const g of ctx.f.goals) {
     if (g.status !== "building") continue
-    const b = g.plan !== undefined ? RT.getPlannerEntry(g.plan)?.build : undefined
+    const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
+    const b = entry?.build
     if (b === undefined) continue
     const left: LuaEntity[] = []
     for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
-    if (left.length > 0) replanGhosts(ctx, g, b, left)
+    if (left.length > 0) replanGhosts(ctx, g, b, left, entry!.job?.layout ?? ctx.f.layout)
   }
   faction.brain!.replans++
 }

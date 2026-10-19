@@ -1049,5 +1049,19 @@ job; on the old code the clear job fails `target-invalid` and the pipe is ghoste
 by the member and the pipe stays gone. Targeted runs: T2 "job board" (11 tests) and all T1 pass; full suite and soaks
 not run by this change.
 
-Proposed, not done: a growth ghost that can't be placed because an own entity outside the layout sits under it could
-clear that entity rather than retry for 10 rounds (another way an obsolete entity can come back). No new magic numbers.
+Second fix (the user asked for it in-session, 2026-10-19): a leftover ghost blocked by one of the faction's own
+entities that the layout no longer plans used to be retried for `build-stuck-rounds` and given up. `replanGhosts` (the
+leftover-ghost round of plans, growths and repairs) now also gives each such stray a clear job: `planner/runtime.ts`
+`strayUnder` returns the faction's own built entities under the ghost that are not in the build's layout
+(`layoutEntityKeys`, `name@x,y`); a live entity with the ghost's own name and position is the planned one already
+built (B41) and not a stray. Stockpiles, parts of live bootstrap sites (`evictSites` handles those just before) and
+entities with an active clear job are left alone. T2 `factory` "B42: an own entity the layout does not plan under a
+leftover ghost is a stray…" pins the classification: the stray underground under a pole ghost, not a built planned pole
+under its own ghost or under another ghost.
+
+Validation: the report's save (`tools/modules/input/b42-report-125521.zip`) resumed with the fix for 40 game minutes
+(`soak.py --from-save`, `stop_when_done = false`): faction 2's g6 round logs "picking up underground-belt at
+-377.5,86.5 under a leftover small-electric-pole ghost (not in the layout)" and g6 grows power at tick 126870; no other
+stray pick-ups, no BUILD STUCK. That save is from before the first fix, so only the second fix acts in it. Full T2 suite on the final code: 141/141
+(an earlier run on the build before the last tweak had one order-dependent failure, B33 review overlay, which passes
+alone, with the jobs tests, and in the rerun). No new magic numbers.

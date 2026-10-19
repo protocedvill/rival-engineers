@@ -23,7 +23,7 @@ import {
   selectJob,
   addJob,
 } from "./board"
-import { addPlaceJob, factionSurface } from "./faction"
+import { addPlaceJob, clearJobFor, factionSurface } from "./faction"
 import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
 import { recordCrewPlan, recordCrewSupply } from "./crew-diagnostics"
 
@@ -420,17 +420,6 @@ function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   storage.unboxGhosts ??= []
   storage.unboxGhosts.push({ faction: faction.name, params, tick })
   log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (re-placed from a ghost)`)
-}
-
-/** B42: the active clear job that removes `e`, if the planner already scheduled it. */
-function clearJobFor(faction: FactionState, e: LuaEntity): number | undefined {
-  const board = faction.board
-  for (const id of board.active) {
-    const job = board.jobs[id]
-    if (job.payload.kind !== "clear" || job.status === "done" || job.status === "failed") continue
-    if (job.payload.target.valid && job.payload.target === e) return id
-  }
-  return undefined
 }
 
 /** M6: ghosts for what boxed-in members picked up, once the entity is gone; each gets a place job. */
