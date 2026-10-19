@@ -133,6 +133,9 @@ function prepareDataDir(dir) {
     const dst = join(mods, zip)
     if (!existsSync(dst) || statSync(dst).size !== statSync(src).size) copyFileSync(src, dst)
   }
+  // Every run starts from the settings' defaults, like CI: Factorio keeps a stored value when a default changes, so an
+  // old shard dir silently ran with a stale `module-buffer-slots` (1, default 2) until B36's tests caught it.
+  rmSync(join(mods, "mod-settings.dat"), { force: true })
 }
 
 const shortPath = (p) => relative(process.cwd(), p) || "."
