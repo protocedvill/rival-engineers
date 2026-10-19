@@ -542,3 +542,60 @@ left gets a refuel job: exactly one preemption, taken.
 | `MAX_PREEMPTIONS_PER_HOUR` | `test/preempt-loop.test.ts` | 10 | Test bound: "a handful per member and game-hour". | test only |
 | `MIN_TAKEN_RATIO` | `test/preempt-loop.test.ts` | 0.75 | Test bound: most preemptions must lead to taking the job (was 18%). | test only |
 | free slots to preempt | `jobs/crew.ts` `canPreemptMember` | 1 | A member with a full pocket would have to deposit first (point 3). One slot covers the coal for a refuel. | no |
+
+## M6b.5: B32 crew take parts directly from supply points (2026-10-19)
+
+The B32 row (user, in-session 2026-10-19, the intent of B17): when a member needs an item for a job, it takes it
+straight from where the faction holds it, instead of the brain creating collect transfers that shuffle furnace
+output stacks to the depot (B17's fix) and crew walking off work to do them.
+
+**Design:**
+1. **Supply points** (`jobs/supply.ts`, a leaf module). Every think the brain registers the faction's supply points in
+   `FactionState.supplies` (storage): the factory's chest-out chests (mall and temporary cells, `supplyChests`), module
+   buffer chests (`bufferChests`), and the bootstrap sites' furnace outputs, chest-site chests and pair drills' coal
+   above `PAIR_KEEP` (10). Only those within `supply-radius` of the hub (0 = any). The crew reads their live contents
+   (cached per tick: idle members plan every tick; the controller, which moves items, steps after the crew).
+2. **Availability.** `availableItems` (crew) counts held items + stockpiles + supply points, each source minus the
+   takes reserved **at that source** (`FactionState.reservedAt`, by unit number and item), so two members never count
+   the same stack. A supply point holding fewer than `supply-min-take` of an item is not worth the walk and does not
+   count. The brain's `ctx.stock` adds the same supply holdings (`supplyStock`), so `reconcile` only hand-crafts or
+   hand-mines what neither the depot nor a supply point in range holds. Ore-in-depot feeds and the smelting inbound
+   count still use the depot and pockets only (`ctx.depotStock`).
+3. **The haul** takes the batch's missing materials from several sources in one trip: greedy from the member's
+   position, preferring a source that holds the whole remaining need of an item (one stop beats several), then the
+   smallest detour on the way to where the batch is worked (the standing spot; a craft: where the member is), ties by
+   unit number. Each take is reserved at its source until it finishes. Batch planning for place/fuel jobs plans from
+   the nearest source of the first missing item (was: nearest stockpile).
+
+**Collect transfers: removed.** `produce` no longer creates them (`collect`/`collectSources` are gone, and the
+`transfer` priority with them). None was needed to keep a machine running: a full furnace, chest site or pair drill
+just pauses its drill (H5 already accepted that, since collecting everything filled depot after depot), and the next
+job needing the items takes them from there, which un-blocks it. The `transfer` payload kind stays so jobs in older
+saves finish. B18 top-ups and D38 feeds are unchanged fuel jobs; their materials now come from supply points too
+(a cell's input chest can be filled straight from a furnace), and a cell's output chest counts as stock.
+
+**Tests (T2 `test/bootstrap-sources_test.ts`, describe "B17 material sources"):**
+- "B32: a craft needing iron plates is fed straight from a furnace holding plates": empty depot, a furnace with 100
+  plates; the 20-gear craft completes with **no plate ever in the depot, no transfer job and no hand-mining**, 40
+  plates left in the furnace. Old code (9644eab + this test): fails, "depot plates max 100, transfers 1".
+- "B32: two crafts take from different furnaces, never counting the same stack": two furnaces of 60 plates, two
+  50-plate crafts: both complete, no job released, 20 plates left (old code fails: transfers 2, depot plates 70).
+- "B32: with the furnaces empty, the brain falls back to hand-mining" (passes on old code too: the fallback).
+- "B32: a furnace outside supply-radius is not taken from" (`supplyRadius` 5: hand-mining, the furnace keeps 100).
+- The B17 busy-crew test now injects the craft into a crew busy hand-mining: no preemption, the plates go straight
+  from the furnace to the craft (old code: depot plates max 100). The B31 urgent-refuel test is unchanged.
+
+Filtered T2 runs: "B17 material sources", "B30 preemption livelock", "D38 temporary factories", "D42 buffer depots",
+"job board", "burner bootstrap": all green. T1 green. No soak run (manager):
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 222,11 --hours 0.6 --name b32-check --no-build -j 2`
+from the branch after building. Look for: no `transfer` jobs; `byKind.haul` share not much above B31's; fewer ore
+gathers while furnaces hold plates; preemption stats as in B31; no new stalls (milestones on time vs B31's run).
+
+### Magic numbers for the user (M6b.5)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `supply-radius` | `settings.ts`, `strategy/bootstrap.ts` `registerSupplies` | 384 | Tiles from the hub: `scan-radius` (128) × `EXPLORE_MAX` (3), the farthest the brain places sites by default, so every own site counts. 0 = any distance. Guess. | yes (new) |
+| `supply-min-take` | `settings.ts`, `jobs/supply.ts` `takeable`/`supplyStock` | 5 | A supply point holding fewer is not worth the walk (B17's collect skipped sources under min(need, 8)). Stockpiles always count. Guess. | yes (new) |
+| `PAIR_KEEP` | `strategy/bootstrap.ts` | 10 | Coal a pair drill keeps for its partner when the crew takes its surplus (unchanged from M3; `PAIR_COLLECT_AT` is gone). | no (existing) |
+| haul source order | `jobs/crew.ts` `haul` | — | Rule, no number: whole-need sources first, then smallest detour. | no |

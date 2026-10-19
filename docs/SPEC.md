@@ -178,7 +178,10 @@ reach multiplier (scales build, reach and resource reach through the character's
   reserved so crew members don't plan with the same items.
 - (M3) Haul jobs come in three payloads: a member's own **haul** of materials for its batch, a **deposit** of what
   it carries into the depot (brain-driven factions empty their pockets between jobs), and a **transfer** that
-  collects output from a machine (furnace plates, a stone chest, a coal pair's surplus) into the depot. Fuel jobs
+  moves items from one entity to another. B32 (user, 2026-10-19): a haul takes the batch's materials straight from
+  the depot and the faction's **supply points** (bootstrap furnace outputs and chests, a coal pair's surplus, the
+  factory's output chests, module buffers), several in one trip, reserved per source; the brain no longer creates
+  transfers that shuffle machine output to the depot. Fuel jobs
   also feed ore into furnaces. Deliveries (gather → furnace, craft → depot) insert what fits; leftovers are
   deposited.
 
@@ -372,12 +375,13 @@ tag → filter → in-game validation gate.
     **chest**. The first-electricity kit (`first-electricity-items`, default offshore pump, boiler, steam engine,
     10 small poles) comes once every resource has half its sites; the remaining sites follow.
   - **H2** at most 2 goals in progress, so materials go to the earliest goals.
-  - **H3** everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
+  - **H3** everything gathered or crafted goes to the depot; crew empty their pockets there between
     jobs. Craft jobs take raw materials; the crafting queue makes intermediates.
   - **H4 demand-driven production:** the materials of active jobs and the goal's items are the demand. A
-    shortfall is met by collecting from the faction's machines, then hand-crafting, then hand-mining (ore goes
+    shortfall beyond what the depot and the supply points hold (B32: the crew takes from them directly) is met by
+    temporary cells, then hand-crafting, then hand-mining (ore goes
     straight into a furnace of its kind), with at most one hand-mining job per crew member.
-  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are collected on demand only.
+  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are taken by the jobs that need them (B32), never moved to the depot.
   - **H6** sites go on the patch chosen by distance and size from the depot, on the patch tiles nearest it,
     facing it, one tile apart, on tiles free of trees, rocks and active hand-mining.
   - **H7 exploration:** when a needed resource (or trees) has no known patch, the area around the base is

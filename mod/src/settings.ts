@@ -779,4 +779,23 @@ data.extend([
     maximum_value: 3600,
     order: "m-g",
   },
+  // B32: where the crew takes a job's materials from besides the depot.
+  {
+    type: "int-setting",
+    name: Settings.supplyRadius,
+    setting_type: "runtime-global",
+    default_value: 384,
+    minimum_value: 0,
+    maximum_value: 4096,
+    order: "m-h",
+  },
+  {
+    type: "int-setting",
+    name: Settings.supplyMinTake,
+    setting_type: "runtime-global",
+    default_value: 5,
+    minimum_value: 1,
+    maximum_value: 1000,
+    order: "m-i",
+  },
 ])

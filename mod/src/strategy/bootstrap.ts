@@ -8,8 +8,9 @@ import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { mallSources, tempCells } from "./factory-report"
-import { bufferSources } from "../modules/buffers"
+import { supplyChests, tempCells } from "./factory-report"
+import { bufferChests } from "../modules/buffers"
+import { setSupplies, SupplyPoint, supplyStock } from "../jobs/supply"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
 import { destroyEntity, markDirty } from "../planner/terrain"
@@ -24,14 +25,16 @@ import { destroyEntity, markDirty } from "../planner/terrain"
 //     Site kind comes from prototypes: a resource whose product is a fuel gets self-feeding drill pairs, one
 //     that smelts gets a drill feeding a furnace, anything else a drill feeding a chest.
 //  H2 At most SITE_WINDOW goals are worked on at once, so materials go to the earliest goals first.
-//  H3 Everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
-//     jobs. Craft jobs take raw materials (the crafting queue makes intermediates).
-//  H4 Demand-driven production: the materials of active jobs and the goal's items are the demand. A shortfall
-//     is met, in order, by collecting from the faction's machines (furnace plates, stone chests, surplus in
-//     coal pairs), by hand-crafting, or by hand-mining (ore goes straight into a furnace of its kind).
-//     Hand-mining is capped at one job per crew member.
+//  H3 Everything gathered or crafted goes to the depot; crew empty their pockets there between jobs. Craft jobs
+//     take raw materials (the crafting queue makes intermediates).
+//  H4 Demand-driven production: the materials of active jobs and the goal's items are the demand. Stock is what the
+//     depot, the crew's pockets and the supply points hold (B32: furnace plates and chests of sites, surplus coal in
+//     pairs, the factory's output chests, module buffers, within `supply-radius` of the hub): the crew takes from
+//     supply points directly when a job needs the item. A shortfall beyond that is met by temporary cells, by
+//     hand-crafting, or by hand-mining (ore goes straight into a furnace of its kind). Hand-mining is capped at one
+//     job per crew member.
 //  H5 Burners are refuelled when they hold less than FUEL_LOW_MINUTES of fuel, up to FUEL_TOP_MINUTES.
-//     Outputs are collected only on demand: a full furnace just pauses its drill until plates are needed
+//     Outputs are never moved to the depot (B32): a full furnace just pauses its drill until a job takes its plates
 //     (collecting everything filled depot after depot with plates nobody needed).
 //  H6 Sites go on the patch chosen by distance and size from the hub (the depot), on the patch tiles
 //     nearest the depot, facing it, one tile apart, on tiles free of trees and rocks.
@@ -39,16 +42,14 @@ import { destroyEntity, markDirty } from "../planner/terrain"
 const SITE_WINDOW = 2
 const FUEL_LOW_MINUTES = 2
 const FUEL_TOP_MINUTES = 8
-/** Coal kept in each drill of a self-feeding pair when collecting its surplus. */
+/** Coal kept in each drill of a self-feeding pair when the crew takes its surplus. */
 const PAIR_KEEP = 10
-/** A pair drill's surplus is collected once it holds this much. */
-const PAIR_COLLECT_AT = 30
 /** Coal the depot should hold on top of open fuel jobs. */
 const FUEL_BUFFER = 20
 const GATHER_CHUNK = 20
 /** Most raw items in one craft job (a crew member carries them in one trip). */
 const CRAFT_CHUNK_RAW = 60
-const PRIORITY = { fuel: 100, place: 90, transfer: 60, feed: 55, craft: 50, gather: 20 }
+const PRIORITY = { fuel: 100, place: 90, feed: 55, craft: 50, gather: 20 }
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
 const EXPLORE_MAX = 3
@@ -193,7 +194,10 @@ interface Ctx {
   tick: number
   surface: LuaSurface
   force: LuaForce
+  /** What the depot, the crew's pockets and the supply points hold. */
   stock: Record<string, number>
+  /** The depot and the crew's pockets only (ore there is fed into furnaces). */
+  depotStock: Record<string, number>
   pending: Record<string, number>
   demand: Record<string, number>
   order: string[]
@@ -215,6 +219,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     surface: factionSurface(faction),
     force: factionForce(faction),
     stock: {},
+    depotStock: {},
     pending: {},
     demand: {},
     order: [],
@@ -232,6 +237,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   updateSites(ctx)
   checkDepletion(ctx)
   ctx.depot = pickDepot(ctx)
+  registerSupplies(ctx)
   countStock(ctx)
   advanceGoals(ctx)
   scanJobs(ctx)
@@ -789,6 +795,10 @@ function countStock(ctx: Ctx): void {
     addInv(own, m.character.get_main_inventory() ?? undefined)
     for (const item in own) ctx.stock[item] = math.max(ctx.stock[item] ?? 0, own[item])
   }
+  for (const item in ctx.stock) ctx.depotStock[item] = ctx.stock[item]
+  // B32: what the supply points hold is stock too: the crew takes it from there when a job needs it.
+  const supply = supplyStock(ctx.faction, ctx.config.supplyMinTake)
+  for (const item in supply) ctx.stock[item] = (ctx.stock[item] ?? 0) + supply[item]
 }
 
 function addDemand(ctx: Ctx, item: string, count: number): void {
@@ -895,7 +905,7 @@ function maintain(ctx: Ctx): void {
   // Ore sitting in the depot (leftovers of hand-mining) goes into furnaces of its kind.
   const catalog = ctx.brain.catalog
   for (const ore in catalog.smelts) {
-    const inDepot = ctx.stock[ore] ?? 0
+    const inDepot = ctx.depotStock[ore] ?? 0
     if (inDepot <= 0) continue
     for (const furnace of furnacesFor(ctx, ore)) {
       const key = `feed:${furnace.unit_number}`
@@ -941,53 +951,38 @@ function sourceRoom(furnace: LuaEntity, ore: string): number {
   return stack - inv.get_item_count(ore)
 }
 
-interface Source {
-  entity: LuaEntity
-  item: string
-  amount: number
-}
-
-/** Machines holding `item` (or anything collectable, if undefined) the crew may take from. */
-function collectSources(ctx: Ctx, item: string | undefined): Source[] {
-  // The factory's mall (M5) supplies buildings: its output chests come first.
-  const out: Source[] = mallSources(ctx.faction.name, item)
-  // D42 / B5: module buffer depots (the end of a smelter column) next.
-  for (const b of bufferSources(ctx.faction.force, item)) out.push(b)
+/**
+ * B32: the supply points the crew may take from when a job needs an item (`jobs/supply.ts`), registered every think:
+ * the factory's chest-out ports (mall and temporary cells), module buffer chests, then the bootstrap sites' furnace
+ * outputs, chest-site chests and pair drills' surplus coal. Only those within `supply-radius` of the hub (0 = any).
+ * Stockpiles are not listed (the crew counts them anyway). Replaces B17's collect transfers to the depot.
+ */
+function registerSupplies(ctx: Ctx): void {
+  const points: SupplyPoint[] = []
+  const seen: Record<number, boolean> = {}
+  for (const chest of ctx.faction.stockpiles) if (chest.valid) seen[chest.unit_number!] = true
+  const hub = ctx.brain.hub ?? ctx.brain.base
+  const radius = ctx.config.supplyRadius
+  const add = (entity: LuaEntity, inventory: defines.inventory, item?: string, keep?: number): void => {
+    if (!entity.valid || entity.unit_number === undefined || seen[entity.unit_number]) return
+    if (radius > 0 && positionDistance(entity.position, hub) > radius) return
+    seen[entity.unit_number] = true
+    points.push({ entity, inventory, item, keep })
+  }
+  for (const chest of supplyChests(ctx.faction.name)) add(chest, defines.inventory.chest)
+  for (const chest of bufferChests(ctx.faction.force)) add(chest, defines.inventory.chest)
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
     if (site.status === "failed" || site.status === "retired") continue
     for (const part of site.parts) {
       const e = part.built
       if (!e || !e.valid) continue
-      if (site.kind === "smelt" && e.type === "furnace") {
-        const inv = e.get_inventory(defines.inventory.furnace_result)!
-        for (const c of inv.get_contents()) if (item === undefined || c.name === item) out.push({ entity: e, item: c.name, amount: c.count })
-      } else if (site.kind === "chest" && e.type === "container") {
-        for (const c of e.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: e, item: c.name, amount: c.count })
-      } else if (site.kind === "pair" && (item === undefined || item === fuel)) {
-        const n = e.get_fuel_inventory()?.get_item_count(fuel) ?? 0
-        if (n >= (item === undefined ? PAIR_COLLECT_AT : PAIR_KEEP + 5)) out.push({ entity: e, item: fuel, amount: n - PAIR_KEEP })
-      }
+      if (site.kind === "smelt" && e.type === "furnace") add(e, defines.inventory.furnace_result)
+      else if (site.kind === "chest" && e.type === "container") add(e, defines.inventory.chest)
+      else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, fuel, PAIR_KEEP)
     }
   }
-  out.sort((a, b) => (a.amount !== b.amount ? b.amount - a.amount : a.entity.unit_number! - b.entity.unit_number!))
-  return out
-}
-
-function collect(ctx: Ctx, from: LuaEntity, item: string, amount: number): number {
-  if (!ctx.depot) return 0
-  const key = `collect:${from.unit_number}:${item}`
-  if (keyActive(ctx, key)) return 0
-  // Take a little more than is there now: it keeps coming while the crew member walks over.
-  const count = amount + 10
-  addKeyed(ctx, key, {
-    kind: "haul",
-    pos: from.position,
-    priority: PRIORITY.transfer,
-    payload: { kind: "transfer", item, count, from, to: ctx.depot },
-  })
-  addPending(ctx, item, amount)
-  return amount
+  setSupplies(ctx.faction, points)
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1015,15 +1010,7 @@ function reconcile(ctx: Ctx): void {
 }
 
 function produce(ctx: Ctx, item: string, short: number): void {
-  // 1. Collect from machines.
-  for (const src of collectSources(ctx, item)) {
-    if (short <= 0) return
-    // Not worth a walk for a handful: wait until a few more have come out.
-    if (src.amount < math.min(short, 8)) continue
-    short -= collect(ctx, src.entity, src.item, src.amount)
-  }
-  if (short <= 0) return
-  // 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  // 1. B32: what the supply points hold is already in the stock (the crew takes it from there). 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
   short = feedTempCells(ctx, item, short)
   if (short <= 0) return
   // 2. Hand-craft.
@@ -1042,7 +1029,7 @@ function produce(ctx: Ctx, item: string, short: number): void {
   if (ore !== undefined) {
     let inbound = ctx.oreInbound[ore] ?? 0
     for (const f of furnacesFor(ctx, ore)) inbound += f.get_inventory(defines.inventory.furnace_source)!.get_item_count(ore)
-    inbound += ctx.stock[ore] ?? 0
+    inbound += ctx.depotStock[ore] ?? 0
     const need = short - inbound
     if (need <= 0) return
     const furnaces = furnacesFor(ctx, ore)
