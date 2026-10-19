@@ -12,6 +12,7 @@ import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, pre
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
+import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
 
 export interface ModuleRequest {
@@ -447,7 +448,10 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
       prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy)
       commitPlacement(job.layout, s.result!, facts, policy)
     }
-    else job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+    else {
+      job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
+    }
     job.placement = undefined
     job.replaceQueue.shift()
     if (job.replaceQueue.length === 0) job.phase = "route"
@@ -480,6 +484,7 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts): bool
     job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
     job.avoid[mid] = [...(job.avoid[mid] ?? []), m.rect]
     job.replaceQueue.push(mid)
+    if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
     if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
     job.stats.replacements++
     job.phase = "place"
@@ -508,6 +513,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (whole !== undefined) {
       const r = tryExpand(job.layout, terrain, facts, policy, whole.id, 1)
       if (r.ok) {
+        if (planTrace.sink !== undefined) traceEvent(`module ${id}: completes the shared whole-patch mine ${whole.id}`)
         delete (job.wholeFail ?? {})[id]
         job.alias[id] = whole.id
         job.expanded[id] = { module: whole.id, units: 1 }
@@ -517,12 +523,14 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       // B23: remember why, so the module's failure names the shared mine instead of the misleading new placement.
       job.wholeFail ??= {}
       job.wholeFail[id] = `${whole.id}: ${r.reason ?? "expansion failed"}`
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: shared mine ${job.wholeFail[id]}`)
     }
     // Expand-first: grow a compatible module when there is room.
     if (mreq.expandUnits !== undefined && policy.expansion === "expand-first") {
       const cand = expansionCandidate(job.layout, mreq.def, mreq.expandUnits)
       if (cand !== undefined) {
         const r = tryExpand(job.layout, terrain, facts, policy, cand.id, mreq.expandUnits)
+        if (planTrace.sink !== undefined) traceEvent(`module ${id}: expand ${cand.id} by ${mreq.expandUnits}: ${r.ok ? "ok" : r.reason ?? "failed"}`)
         if (r.ok) {
           job.alias[id] = cand.id
           job.expanded[id] = { module: cand.id, units: mreq.expandUnits }
@@ -570,6 +578,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       // B23: a request that wanted the shared mine says so in its failure.
       const wf = job.wholeFail?.[id]
       job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: ${job.failures[`module:${id}`]}`)
       job.phase = "failed"
     }
     job.placement = undefined
@@ -594,12 +603,15 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     const req = routeRequest(job, c, policy, {})
     if (typeof req === "string") {
       job.failures[id] = req
+      traceRouteFailure(job.layout, terrain, policy, id, req, job.compareProbe ? "compare" : "plan")
       return 1
     }
     if (c.from === undefined) {
       const stub = externalStub(job, terrain, policy, c, req)
-      if (typeof stub === "string") job.failures[id] = stub
-      else commitRoute(job.layout, stub)
+      if (typeof stub === "string") {
+        job.failures[id] = stub
+        traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
+      } else commitRoute(job.layout, stub)
       return 1
     }
     job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0 }
@@ -616,6 +628,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
     if (typeof req === "string") {
       job.failures[cur.conn] = req
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, req, job.compareProbe ? "compare" : "plan")
       job.current = undefined
       return
     }
@@ -640,7 +653,11 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     }
     if (!cur.rip) restart(true)
     else {
-      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = cur.search.reason ?? "no path"
+      const reason = cur.search.reason ?? "no path"
+      // Traced before tryReplace changes the layout; a re-placement only retries the connection.
+      const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
+      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = reason
+      else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
       job.current = undefined
     }
     return used
@@ -653,6 +670,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       restart(cur.rip)
     } else {
       job.failures[cur.conn] = "route crosses itself"
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, "route crosses itself", job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
     return used
@@ -663,7 +681,10 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
     if (n >= policy.router.maxRipups) {
-      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+      if (!tryReplace(job, c, facts)) {
+        job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+        traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+      }
       job.current = undefined
       return used
     }

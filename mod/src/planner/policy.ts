@@ -183,6 +183,25 @@ registerPacking("compact-cluster", (f, p) => {
   )
 })
 
+/**
+ * The compact-cluster score split into its weighted terms (plan dumps, `planner/trace.ts`); they sum to the scorer's
+ * value (pinned by a T1 test). Not on the hot path: the scorer above stays allocation-free.
+ */
+export function placementTerms(f: CandidateFeatures, p: LayoutPolicy): Record<string, number> {
+  const w = p.placement
+  return {
+    center: w.center * f.centerDist,
+    port: w.port * f.portDist,
+    facing: w.facing * f.facingAway,
+    clear: w.clear * f.clearCost,
+    adjacent: -w.adjacent * f.adjacent,
+    exactGap: -w.exactGap * f.exactGap,
+    coverage: w.coverage * (1 - f.coverage),
+    growthCoverage: (w.growthCoverage ?? 0) * (f.growthCoverage !== undefined && f.growthCoverage < 0.3 ? 1 : 0),
+    softClaim: (w.softClaim ?? 0) * (f.softClaim ?? 0),
+  }
+}
+
 /** The v1 early-game policy (SPEC §5.3): compact cluster, 1–2-tile corridors, expand-first, clear trees and rocks. */
 export const EARLY_COMPACT: LayoutPolicy = {
   id: "early-compact",
