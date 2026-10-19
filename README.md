@@ -5,6 +5,9 @@ See [`docs/SPEC.md`](docs/SPEC.md) for the full design and milestones.
 
 ## Development
 
+Agents and contributors start with [`AGENTS.md`](AGENTS.md). It routes each kind of change to the Factorio/TSTL
+lessons that must be read before editing; those engine facts cannot be recovered reliably from the TypeScript alone.
+
 Requirements: Node 22, Lua 5.2+ (`lua5.2` or `lua` on PATH, or `$LUA`) for unit tests, Python 3 with Pillow
 (renderer), and Linux (headless Factorio).
 
@@ -15,6 +18,9 @@ mkdir -p .factorio-test && curl -fsSL https://factorio.com/get-download/2.0.77/h
 mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
+npm run status           # branch/commit, dirty state, current report and unresolved BUGS rows
+npm run doctor           # read-only environment check: build freshness, runtimes, locks and Factorio processes
+npm run diagnose -- RUN [SEED] [FACTION]  # explain a soak's goal/planner/job/crew blocker chain
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
 npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (over 5 min: ~10 min on 2026-10-19 with other runs going; manager-only, SPEC §9)
 npm test -- "pattern"    # filter tests by Lua pattern (several patterns: any of them)
@@ -60,6 +66,10 @@ python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/no-sta
 python3 tools/harness/soak.py -j 1                        # one at a time (for performance numbers)
 # → out/soak/<name>/scorecard.md, scorecard.json, seed-N/{telemetry.json,frames/,factorio-current.log}
 ```
+
+Every new soak also writes `out/soak/<name>/run.json` atomically. It records the commit and dirty state, generated-mod
+content hash, invocation, per-seed PID/status/exit reason and whether the experiment completed. Incremental scorecards
+are marked partial until every seed finishes; use the manifest instead of inferring process state from file mtimes.
 
 Seeds and configs run concurrently, `-j` at a time (default `$SOAK_JOBS`, else half the cores), each in its own
 write-data directory `.factorio-test/soak/<name>/seed-N/`. Concurrent runs slow each other: compare wall and AI

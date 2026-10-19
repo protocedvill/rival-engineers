@@ -30,12 +30,15 @@ works as long as the storage layout is compatible, and it only shows the fix's e
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -57,6 +60,87 @@ PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
 GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def git_output(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+
+
+def build_digest():
+    """Content identity of the exact generated mod loaded by Factorio (not an mtime proxy)."""
+    build = ROOT / "mod" / "build"
+    if not build.exists():
+        return None
+    digest = hashlib.sha256()
+    for path in sorted(p for p in build.rglob("*") if p.is_file()):
+        digest.update(str(path.relative_to(build)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+class RunManifest:
+    """Atomically updated experiment provenance. Scorecards remain backward-compatible result summaries."""
+
+    def __init__(self, path, cfg, jobs):
+        self.path = path
+        self.lock = threading.Lock()
+        changed = git_output("status", "--short").splitlines()
+        self.data = {
+            "schema": 1,
+            "status": "running",
+            "startedAt": utc_now(),
+            "completedAt": None,
+            "invocation": sys.argv,
+            "repo": {
+                "commit": git_output("rev-parse", "HEAD"),
+                "branch": git_output("rev-parse", "--abbrev-ref", "HEAD"),
+                "dirty": bool(changed),
+                "changed": changed,
+            },
+            "build": {"sha256": build_digest()},
+            "configSha256": hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest(),
+            "jobs": jobs,
+            "seeds": {str(seed): {"status": "pending"} for seed in cfg["run"]["seeds"]},
+        }
+        self.write()
+
+    def write(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.data, indent=2) + "\n")
+        os.replace(tmp, self.path)
+
+    def seed(self, seed, status, **fields):
+        with self.lock:
+            item = self.data["seeds"][str(seed)]
+            item.update(fields)
+            item["status"] = status
+            item["updatedAt"] = utc_now()
+            self.write()
+
+    def finish(self):
+        with self.lock:
+            self.data["status"] = "complete"
+            self.data["completedAt"] = utc_now()
+            self.write()
+
+    def scorecard_meta(self):
+        with self.lock:
+            finished = sum(1 for seed in self.data["seeds"].values()
+                           if seed["status"] not in ("pending", "running"))
+            return {
+                "partial": finished != len(self.data["seeds"]),
+                "finishedSeeds": finished,
+                "totalSeeds": len(self.data["seeds"]),
+                "manifest": "run.json",
+                "commit": self.data["repo"]["commit"],
+                "buildSha256": self.data["build"]["sha256"],
+            }
 
 
 def load_config(path, args):
@@ -199,7 +283,7 @@ class FailFast:
         return reason
 
 
-def run_seed(cfg, seed, out_dir, port=None, from_save=None):
+def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
     run = cfg["run"]
     run_dir = setup_dir(cfg, seed)
     data = run_dir / "data"
@@ -233,14 +317,20 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     started = time.time()
     stopped_early = False
     failed_fast = None
+    done = False
+    capped = False
+    exit_reason = "process-exit"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        if status:
+            status("running", pid=proc.pid, startedAt=utc_now())
         while proc.poll() is None:
             time.sleep(1)
             failed_fast = watch.poll()
             done = run["stop_when_done"] and (script_out / "done.json").exists()
             capped = snapshots and watch.tick >= ticks
             if done or failed_fast or capped:
+                exit_reason = "milestone" if done else "fail-fast" if failed_fast else "game-time-cap"
                 time.sleep(0.5 if done else 0)
                 proc.kill()  # --benchmark ignores SIGTERM
                 stopped_early = bool(done or failed_fast)
@@ -265,6 +355,7 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None):
     r = summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early, done_milestone(cfg))
     r["failed_fast"] = failed_fast
     r["saves"] = sorted(str(p) for p in (data / "saves").glob("min-*.zip")) if snapshots else []
+    r["_manifest"] = {"pid": proc.pid, "returnCode": proc.returncode, "exitReason": exit_reason}
     return r
 
 
@@ -440,6 +531,8 @@ def main():
         cfg["run"]["jobs"] = jobs  # recorded in scorecard.json: wall times depend on it
         out_dirs[cfg["run"]["name"]] = ROOT / "out" / "soak" / cfg["run"]["name"]
         out_dirs[cfg["run"]["name"]].mkdir(parents=True, exist_ok=True)
+    manifests = {cfg["run"]["name"]: RunManifest(out_dirs[cfg["run"]["name"]] / "run.json", cfg, jobs)
+                 for cfg in cfgs}
     results = {name: {} for name in names}
     started = time.time()
     print(f"{len(tasks)} run(s), {jobs} at a time", flush=True)
@@ -447,9 +540,20 @@ def main():
     ports = {(c["run"]["name"], s): 34200 + i for i, (c, s) in enumerate(tasks)}
 
     def task(cfg, seed):
-        print(f"{cfg['run']['name']} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
-        return run_seed(cfg, seed, out_dirs[cfg["run"]["name"]] / f"seed-{seed}", ports[(cfg["run"]["name"], seed)],
-                        args.from_save and str(Path(args.from_save).resolve()))
+        name = cfg["run"]["name"]
+        manifest = manifests[name]
+        print(f"{name} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
+        try:
+            r = run_seed(cfg, seed, out_dirs[name] / f"seed-{seed}", ports[(name, seed)],
+                         args.from_save and str(Path(args.from_save).resolve()),
+                         lambda state, **fields: manifest.seed(seed, state, **fields))
+            meta = r.pop("_manifest")
+            state = "passed" if r["pass"] else "failed-fast" if r.get("failed_fast") else "failed"
+            manifest.seed(seed, state, **meta, gameMinutes=r["game_minutes"], wallSeconds=r["wall_seconds"])
+            return r
+        except BaseException as e:
+            manifest.seed(seed, "crashed", error=repr(e))
+            raise
 
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {pool.submit(task, cfg, seed): (cfg, seed) for cfg, seed in tasks}
@@ -474,10 +578,13 @@ def main():
             print("\n".join(lines), flush=True)
             # The scorecard so far, in config seed order.
             ordered = [results[name][s] for s in cfg["run"]["seeds"] if s in results[name]]
-            (out_dirs[name] / "scorecard.json").write_text(json.dumps({"config": cfg, "results": ordered}, indent=1))
-            (out_dirs[name] / "scorecard.md").write_text(markdown(cfg, ordered))
+            meta = manifests[name].scorecard_meta()
+            (out_dirs[name] / "scorecard.json").write_text(json.dumps({"meta": meta, "config": cfg, "results": ordered}, indent=1))
+            warning = f"> **PARTIAL:** {meta['finishedSeeds']}/{meta['totalSeeds']} seeds finished. See `run.json`.\n\n" if meta["partial"] else ""
+            (out_dirs[name] / "scorecard.md").write_text(warning + markdown(cfg, ordered))
     for cfg in cfgs:
         name = cfg["run"]["name"]
+        manifests[name].finish()
         ordered = [results[name][s] for s in cfg["run"]["seeds"]]
         if args.gif:
             render_gifs(out_dirs[name], ordered)

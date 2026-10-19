@@ -1,4 +1,10 @@
-# Rival Engineers
+# Rival Engineers — read `AGENTS.md` first
+
+**Mandatory:** [`AGENTS.md`](AGENTS.md) is the tool-neutral entry point and routes each kind of change to the
+learned rules it needs. Read it before searching the code. The ledger below is intentionally retained because its
+Factorio and TSTL facts are part of the correctness model, not optional tips.
+
+# Project rules and learned engine facts
 
 Factorio 2.0 mod: AI factions whose physical character crews build factories like players do.
 

@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "status": "node tools/project-status.mjs",
+    "doctor": "node tools/doctor.mjs",
+    "diagnose": "node tools/diagnose.mjs",
     "build": "node tools/build-mod.mjs",
     "typecheck": "tsc -p mod/tsconfig.json --noEmit && tsc -p mod/tsconfig.settings.json --noEmit && tsc -p mod/tsconfig.unit.json --noEmit",
     "test:unit": "node tools/run-unit-tests.mjs",
