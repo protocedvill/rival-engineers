@@ -501,3 +501,93 @@ the library can produce. The T2 validation lab still stamps the changed modules.
 placement and needs replays, so it is left for a decision.
 
 No new magic numbers.
+
+## M6b.4: B26 growth bands kept clear at placement (2026-10-19)
+
+The B26 row: smelter columns never grew in place. Their growth band (on the tail end, which is also the ore/fuel input
+side) was blocked by modules placed there, by ore, and by other modules' claims and reservations, so after 3 failed
+expansions the design built a parallel cluster instead. Placement only had a 0.5/tile soft claim against other
+modules, and only mines had a growth check of their own (D52).
+
+**Fix (987553b, `planner/placement.ts`, `planner/policy.ts`):**
+1. **Near band (fix direction 1).** A new placement layer marks each other expandable non-mine module's first
+   `growthBandUnits` growth units, on the end `tryExpand` grows. A candidate pays `growthBand` per footprint tile there,
+   on top of the soft claim. The D50 soft-claim default (0.5) is unchanged. Direct partners are exempt, as from the soft
+   claim (P28). Without that exemption the ore outposts and feeders were pushed off the smelter's input side, and the
+   seed 11 replay failed.
+2. **Own band (fix direction 2).** For an expandable non-mining module, a second layer marks every tile `tryExpand`
+   would refuse: non-free terrain (trees and rocks only when they can't be cleared), ore under `protectOre`, any `occ`
+   (other modules, interaction tiles, poles), routes, port reservations, other modules' mine claims and soft claims.
+   Each candidate counts the near units its band can grow into, checking both this layer and the other modules'
+   corridor ring (`too close`). It pays `growthBlocked` per near unit that would be refused. This generalises D52's
+   mining-only `growthCoverage`. The window margin grows by the module's growth length so the band is always inside
+   the window.
+3. **Failure reasons.** `tryExpand` and `planGrowth` already log distinct reasons, and they are unchanged: `occupied at`,
+   `ore at`, `mine claim of`, `reserved at`, `route at`, `blocked at`, `too close to`, `reroute failed`.
+
+**Judged on six replays** (new `REPLAY_PLACEMENT` / `UNIT_FILTER` / `REPLAY_DUMP` env vars):
+
+| Replay | Result with the B26 defaults |
+|---|---|
+| seed222-production (undergrounds) | done |
+| seed11-green-boxed (×2) | as expected |
+| m6a2-seed222-green-line (×2) | as expected |
+| green-line-dev11 | as expected |
+| m6a2-seed222-mall-iron | done |
+| seed11-production-ok, without undergrounds | fails |
+| seed11-production-ok, with undergrounds | done |
+| seed3333-production-ok, without undergrounds | fails |
+| seed3333-production-ok, with undergrounds | done |
+
+Dropped variants:
+- **The own band over every unit up to the cap** (a smelter's band is 20 tiles deep), at 8 per unit: it moved the
+  seed 222 red line and both smelters, its coal outpost went about 100 tiles out, and the iron feed failed "no path"
+  even with undergrounds.
+- **Own band at 8 per near unit:** still failed on seed 222.
+- **Near band applied to partners:** failed on seed 11.
+
+The no-underground failures are the trade-off of fix direction 2. A smelter's growth end is its input side. Keeping it
+clear of ore and claims turns it away from the ore, so the feeds wrap round the column. Without undergrounds the
+chaotic stage-1 routing then fails. In game, D51 reroutes the same placement with undergrounds and researches them
+first, which both seeds decide anyway (saves 118 / 82 tiles). The D36 / B2 comparison replays now pin the pre-B26
+placement weights, because their numbers document those decisions. New `b26Replay` tests pin that both clusters plan
+with undergrounds under the B26 weights.
+
+**Tests:**
+- **T1 `planner-batch` "B26 (a)":** a non-partner module pulled into the first growth unit (by its cluster centre and
+  its input's source) sits there under the old weights and keeps off it now. When cliffs leave only the near band free,
+  it is placed there anyway, and `tryExpand` then fails with `occupied at`.
+- **T1 `planner-batch` "B26 (b)":** a 4-furnace smelter between an ore patch (south) and a neighbouring column growing
+  toward it. With the old weights it faces the ore and its near growth fails (`ore at 65,74`). Now it turns
+  (rot 1, at 58,61), grows by its 2 near units, and the neighbour still grows fully.
+- **T1 `planner` expand-first test:** with B26's check the module would avoid the walled spot, so the "places a copy"
+  case runs with `growthBlocked: 0`, plus a case at weight 20 where it grows instead.
+- **T2:** `planner%-driven expansion` and `soft claim` passed.
+
+Not run: the full T1 and T2 suites (each over 5 min). Run per file, every T1 file passes.
+
+**Fix direction (c), "a smelter column actually grows in place".** No replay or T2 test runs a factory to a grow goal
+(the T2 expansion test calls `planGrowth` directly), so it needs a soak:
+`python3 tools/harness/soak.py -c tools/harness/m6.toml --seeds 11,222,3333 --hours 4 --name b26-growth --no-build`
+(after `npm run build` in this worktree). Look for:
+- `goal gN (grow) done` for the iron-plate and copper-plate smelter roles.
+- Fewer `cannot grow by … units` lines, and which reasons remain.
+- No new parallel clusters for smelters.
+
+**B29:** the steam block and labs are expandable non-mining modules, so their near bands are protected and their own
+placement is scored the same way. The `ore at` / `blocked at` growth failures in B29's evidence are the cases fix
+direction 2 scores against. B29's demand/supply diagnosis is not touched.
+
+**Not covered:**
+- Pole lines are still planned without regard to growth bands (`occupied at x:poles:`).
+- Routes only pay the router soft claim (0.5).
+- Head-end growth is not scored.
+
+### Magic numbers for the user (M6b.4)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `planner-placement-growth-band` | `settings.ts`, `policy.ts` `placement.growthBand` | 4 per tile | About 8× the 0.5 soft claim. A 4×4 module overlapping a full near band pays about 64, so it moves rather than block a growth unless nothing else fits. Guess; passed six replays. | yes (new, proposed P38) |
+| `planner-placement-growth-band-units` | `settings.ts`, `policy.ts` `placement.growthBandUnits` | 2 | The units a growth goal usually needs first (8 tiles for a smelter); also the depth of the own-band check. The full depth (5 units for a smelter) broke the seed 222 replay. | yes (new, proposed P38) |
+| `planner-placement-growth-blocked` | `settings.ts`, `policy.ts` `placement.growthBlocked` | 3 per near unit | 8 broke seed 222 even with undergrounds; 3 passes it. At 3, the walled-in spot of the planner test still wins over moving. Guess. | yes (new, proposed P38) |
+| Window margin + growth length | `placement.ts` `startWindow` | footprint + corridor + 4 + growth length + corridor.min | Derived: the own band must lie inside the scoring window. | no (derived) |

@@ -429,7 +429,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
   }
   // B26: the same for any expandable module that is not a mine: how many units of its own growth band (on the end
   // `tryExpand` grows) are clear of what `tryExpand` refuses — terrain, ore, other modules and their corridor ring,
-  // routes, port reservations, interaction tiles, mine and soft claims. Units past the first refused one count too.
+  // routes, port reservations, interaction tiles, mine and soft claims. Near units past the first refused one count too.
   let growthBlocked: number | undefined
   const spec = s.req.def.expand
   if (!mining && spec !== undefined && spec.maxUnits > 0 && (policy.placement.growthBlocked ?? 0) > 0) {
