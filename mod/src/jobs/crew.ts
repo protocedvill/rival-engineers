@@ -77,15 +77,24 @@ export function onCrewTick(): void {
  * outrank the batch it was claimed into), drops the whole batch — `resetMember` releases the claims without
  * penalty — and plans again on the next tick, where priority sends it to the preempting job first. Only a ready
  * job can do it: a back-off or claimed one never pulls a member off work it has already started.
+ *
+ * B30: only a job the member had no chance to take when it planned (not in `planSeen`: it became ready since)
+ * and whose materials it can get. A job that was ready at plan time and not chosen (no coal for a fuel job, say)
+ * would be passed over again by the next plan, and preempting for it every tick livelocked the crew.
  */
 function preemptForPriority(faction: FactionState, member: CrewMember, tick: number): void {
   const board = faction.board
   const anchor = board.jobs[member.claims[0] ?? -1]
   if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return
+  const seen = member.planSeen ?? []
+  let avail: Record<string, number> | undefined
   let higher: CrewJob | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!isReady(board, job, tick) || !isPreemptable(anchor, job)) continue
+    if (!isReady(board, job, tick) || !isPreemptable(anchor, job) || seen.indexOf(id) >= 0) continue
+    avail ??= availableItems(faction, heldItems(member.character))
+    if (!hasMaterials(job, avail)) continue
+    if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) continue
     higher = job
     break
   }
@@ -94,11 +103,27 @@ function preemptForPriority(faction: FactionState, member: CrewMember, tick: num
   member.stats.preemptions = (member.stats.preemptions ?? 0) + 1
 }
 
+/** Jobs that could ever preempt a batch, whatever its priority. */
+function canPreempt(job: CrewJob): boolean {
+  return job.kind === "fuel" || job.payload.kind === "transfer"
+}
+
 /** Which jobs are worth abandoning a member's current batch for. */
 function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
   // A strictly higher priority. Fuel jobs (refuelling drills, keeping the burners burning) may preempt freely.
   if (job.priority <= anchor.priority) return false
-  return job.kind === "fuel" || job.payload.kind === "transfer"
+  return canPreempt(job)
+}
+
+/** B30: remembers the ready jobs that could preempt, so only ones that become ready after this plan do. */
+function notePlanSeen(faction: FactionState, member: CrewMember, tick: number): void {
+  const board = faction.board
+  const seen: number[] = []
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (canPreempt(job) && isReady(board, job, tick)) seen.push(id)
+  }
+  member.planSeen = seen
 }
 
 function stepFaction(faction: FactionState, config: Config, tick: number): void {
@@ -532,6 +557,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const character = member.character
   const pos = character.position
   dropDeadJobs(faction, tick)
+  notePlanSeen(faction, member, tick)
   const held = heldItems(character)
   let avail = availableItems(faction, held)
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.

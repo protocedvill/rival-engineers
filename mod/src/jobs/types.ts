@@ -108,4 +108,6 @@ export interface CrewMember {
   noPaths?: number
   /** B22: ticks one over the earliest tick of the next escape attempt when the last found nothing to clear. */
   unboxRetryAt?: number
+  /** B30: ready fuel/transfer jobs when the member last planned; only jobs not in it can preempt its batch. */
+  planSeen?: number[]
 }
