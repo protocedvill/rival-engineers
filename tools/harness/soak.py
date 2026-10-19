@@ -291,12 +291,16 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_
         by_kind = {}
         crew_ticks = 0
         idle = 0
+        takes = {}
         for m in f.get("crew", []):
             st = m.get("stats", {})
             crew_ticks += st.get("ticks", 0)
             idle += st.get("ticks", 0) - st.get("busyTicks", 0)
             for k, v in (st.get("byKind") or {}).items():
                 by_kind[k] = by_kind.get(k, 0) + v
+            # B36: items taken for jobs by source kind (depot, buffer, furnace, temp-out, chest-out, ...).
+            for k, v in (st.get("takes") or {}).items():
+                takes[k] = takes.get(k, 0) + v
         done_tick = milestones.get(done_ms)
         permanent = [s for s in stalls if s.get("recoveredTick") is None and done_tick is None]
         factions[name] = {
@@ -311,6 +315,7 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_
             "waiting": brain.get("waiting", []),
             "job_time_share": {k: round(v / crew_ticks, 3) for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1])} if crew_ticks else {},
             "crew_without_claim_share": round(idle / crew_ticks, 3) if crew_ticks else None,
+            "takes_by_source": dict(sorted(takes.items(), key=lambda kv: -kv[1])),
             "counters": f.get("counters"),
         }
     ok = bool(factions) and all(f["done"] and f["permanent_stalls"] == 0 for f in factions.values())
@@ -360,6 +365,11 @@ def markdown(cfg, results):
         for name, f in r["factions"].items():
             share = ", ".join(f"{k} {v:.0%}" for k, v in f["job_time_share"].items())
             lines.append(f"- seed {r['seed']} faction {name}: {share}; no claim {f['crew_without_claim_share']:.0%}" if f["crew_without_claim_share"] is not None else f"- seed {r['seed']} faction {name}: -")
+    lines += ["", "## Items taken by source (B36)", ""]
+    for r in results:
+        for name, f in r["factions"].items():
+            t = f.get("takes_by_source") or {}
+            lines.append(f"- seed {r['seed']} faction {name}: " + (", ".join(f"{k} {v}" for k, v in t.items()) or "none"))
     stalls = [(r["seed"], n, s) for r in results for n, f in r["factions"].items() for s in f["stalls"]]
     lines += ["", "## Stalls", ""]
     if not stalls:

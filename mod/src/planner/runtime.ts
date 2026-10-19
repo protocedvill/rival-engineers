@@ -261,6 +261,14 @@ export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?:
   return out
 }
 
+/** B36: a stamped module's buffer chest (ghost or real) is a registered buffer, like a route spec's (`createSpec`). */
+function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buffer?: boolean }[], placed: (LuaEntity | undefined)[]): void {
+  for (let i = 0; i < specs.length; i++) {
+    const e = placed[i]
+    if (e !== undefined && specs[i].buffer) registerBuffer(surface, force, e)
+  }
+}
+
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
   const params: Record<string, unknown> = { name: ghost ? "entity-ghost" : e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
   if (ghost) params.inner_name = e.name
@@ -284,6 +292,7 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
   for (const m of layout.modules) {
     if (!mods[m.id]) continue
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
+    registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
@@ -305,6 +314,7 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
   const failed: string[] = []
   for (const m of layout.modules) {
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
+    registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)

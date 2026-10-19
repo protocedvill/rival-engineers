@@ -17,7 +17,13 @@ export interface SupplyPoint {
   item?: string
   /** Left in place (a pair drill keeps coal to feed its partner). */
   keep?: number
+  /** B36: what kind of source it is, for the per-source take counters (`CrewStats.takes`). */
+  kind: SupplyKind
 }
+
+/** B36: source kinds for telemetry. `depot`: a stockpile. */
+export type SupplyKind = "depot" | "chest-out" | "temp-out" | "buffer" | "furnace" | "chest-site" | "pair" | "module-furnace"
+
 
 /** What one source holds of one item, after what it keeps back. `depot`: a stockpile (no minimum take). */
 export interface Holding {
@@ -25,6 +31,7 @@ export interface Holding {
   item: string
   amount: number
   depot: boolean
+  kind: SupplyKind
 }
 
 /** Replaces the faction's supply points (the brain, every think). */
@@ -37,13 +44,13 @@ export function setSupplies(faction: FactionState, points: SupplyPoint[]): void 
 // valid within one tick (the controller, which moves items, steps after the crew), so it never outlives a save.
 const cache: Record<string, { tick: number; list: Holding[] }> = {}
 
-function addInventory(out: Holding[], entity: LuaEntity, inv: defines.inventory, depot: boolean, only?: string, keep?: number): void {
+function addInventory(out: Holding[], entity: LuaEntity, inv: defines.inventory, kind: SupplyKind, only?: string, keep?: number): void {
   const inventory = entity.get_inventory(inv)
   if (inventory === undefined || inventory === null) return
   for (const c of inventory.get_contents()) {
     if (only !== undefined && c.name !== only) continue
     const amount = c.count - (keep ?? 0)
-    if (amount > 0) out.push({ entity, item: c.name, amount, depot })
+    if (amount > 0) out.push({ entity, item: c.name, amount, depot: kind === "depot", kind })
   }
 }
 
@@ -53,8 +60,8 @@ function addInventory(out: Holding[], entity: LuaEntity, inv: defines.inventory,
  */
 export function rawHoldings(faction: FactionState): Holding[] {
   const out: Holding[] = []
-  for (const chest of faction.stockpiles) if (chest.valid) addInventory(out, chest, defines.inventory.chest, true)
-  for (const p of faction.supplies ?? []) if (p.entity.valid) addInventory(out, p.entity, p.inventory, false, p.item, p.keep)
+  for (const chest of faction.stockpiles) if (chest.valid) addInventory(out, chest, defines.inventory.chest, "depot")
+  for (const p of faction.supplies ?? []) if (p.entity.valid) addInventory(out, p.entity, p.inventory, p.kind, p.item, p.keep)
   return out
 }
 
@@ -84,7 +91,7 @@ export function takeable(faction: FactionState, minTake: number): Holding[] {
     if (!h.entity.valid) continue
     const amount = h.amount - reservedAt(faction, h.entity, h.item)
     if (amount <= 0 || (!h.depot && amount < minTake)) continue
-    out.push({ entity: h.entity, item: h.item, amount, depot: h.depot })
+    out.push({ entity: h.entity, item: h.item, amount, depot: h.depot, kind: h.kind })
   }
   return out
 }
@@ -95,7 +102,7 @@ export function supplyStock(faction: FactionState, minTake: number): Record<stri
   for (const p of faction.supplies ?? []) {
     if (!p.entity.valid) continue
     const list: Holding[] = []
-    addInventory(list, p.entity, p.inventory, false, p.item, p.keep)
+    addInventory(list, p.entity, p.inventory, p.kind, p.item, p.keep)
     for (const h of list) if (h.amount >= minTake) out[h.item] = (out[h.item] ?? 0) + h.amount
   }
   return out

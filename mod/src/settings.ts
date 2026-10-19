@@ -825,4 +825,12 @@ data.extend([
     maximum_value: 1000,
     order: "m-i",
   },
+  // B36 (proposed, off): take from smelter modules' furnaces as well.
+  {
+    type: "bool-setting",
+    name: Settings.supplyModuleFurnaces,
+    setting_type: "runtime-global",
+    default_value: false,
+    order: "m-j",
+  },
 ])

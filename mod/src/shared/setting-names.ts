@@ -95,4 +95,5 @@ export const Settings = {
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",
   supplyRadius: "rival-engineers-supply-radius",
   supplyMinTake: "rival-engineers-supply-min-take",
+  supplyModuleFurnaces: "rival-engineers-supply-module-furnaces",
 } as const

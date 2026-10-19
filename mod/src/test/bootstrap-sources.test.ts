@@ -6,6 +6,14 @@ import { startBootstrap } from "../strategy/bootstrap"
 import { Site, SitePart } from "../strategy/types"
 import { FactionState } from "../jobs/types"
 import { at, createLab, Lab } from "./lab"
+import { generatedModule } from "../modules/library"
+import { prototypeFacts } from "../modules/prototype-facts"
+import { stampModule } from "../modules/stamp"
+import { commitModule, PlacedModule } from "../planner/layout"
+import { addNode } from "../planner/logical"
+import { stampParts } from "../planner/runtime"
+import { FactoryState, startFactory } from "../strategy/factory"
+import { ModuleDef } from "../modules/types"
 
 // B17 (SPEC §5.5 collect-first): material sourcing must take from bootstrap furnaces (and buffers) before it
 // hand-mines or hand-smelts.
@@ -177,6 +185,106 @@ describe("B17 material sources", () => {
     })
   })
 
+  // B36: a module's buffer chest stamped by the planner runtime (ghosts the crew builds) was never registered, so the
+  // crew never took from it and hand-mined instead.
+  test("B36: a craft takes its plates from a smelter module's buffer chest built from the planner's ghosts", () => {
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b36-a", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    // The factory's own think stays off: the test builds the module itself.
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12))
+    const r = stampParts(lab.surface, faction.force, f.layout, { modules: [m.id], routes: [], poles: [] }, true)
+    assert(r.failed.length === 0, `ghosts stamped: ${r.failed.join("; ")}`)
+    for (const g of r.entities) if (g.valid) g.revive({ raise_revive: true })
+    const buffer = bufferOf(lab, def, m, faction.force)
+    assert(buffer.get_inventory(defines.inventory.chest)!.get_bar() === 3, `the buffer is limited to 2 slots (bar ${buffer.get_inventory(defines.inventory.chest)!.get_bar()})`)
+    buffer.insert({ name: "iron-plate", count: 100 })
+    brain.nextThink = game.tick
+    addCraft(faction, depot)
+    const watch = watchSourcing(faction, depot)
+    waitFor(1800, () => {
+      watch.sample()
+      return depot.get_item_count("iron-gear-wheel") >= 20 || watch.handSourcing > 0
+    }, () => `the gears at the depot (${watch.describe()})`, () => {
+      const msg = `${watch.describe()}, buffer ${buffer.get_item_count("iron-plate")}, takes ${describeTakes(faction)}`
+      assert(watch.handSourcing === 0, `nothing was hand-mined (${msg})`)
+      assert(buffer.get_item_count("iron-plate") === 40, `the craft's 60 plates came out of the buffer (${msg})`)
+      assert(takesOf(faction, "buffer") === 60, `60 takes counted from a buffer (${msg})`)
+    })
+  })
+
+  test("B36: a built module's unregistered buffer chest (an older save) is registered and taken from", () => {
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b36-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    // The factory's own think stays off: the test builds the module itself.
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12))
+    // Stamped for real without registering the buffer (what the runtime's ghosts amounted to before B36).
+    stampModule(lab.surface, faction.force, def, m.origin, { bufferSlots: 32 })
+    const buffer = bufferOf(lab, def, m, faction.force)
+    buffer.insert({ name: "iron-plate", count: 100 })
+    brain.nextThink = game.tick
+    addCraft(faction, depot)
+    const watch = watchSourcing(faction, depot)
+    waitFor(1800, () => {
+      watch.sample()
+      return depot.get_item_count("iron-gear-wheel") >= 20 || watch.handSourcing > 0
+    }, () => `the gears at the depot (${watch.describe()})`, () => {
+      const msg = `${watch.describe()}, buffer ${buffer.get_item_count("iron-plate")}, takes ${describeTakes(faction)}`
+      assert(watch.handSourcing === 0, `nothing was hand-mined (${msg})`)
+      assert(buffer.get_item_count("iron-plate") === 40, `the craft's plates came out of the buffer (${msg})`)
+      assert(buffer.get_inventory(defines.inventory.chest)!.get_bar() === 3, "the repaired buffer got its slot limit")
+    })
+  })
+
+  test("B36: supply-module-furnaces (proposed, off by default) takes from a smelter module's furnaces", () => {
+    setConfigOverride("supplyModuleFurnaces", true)
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b36-c", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    // The factory's own think stays off: the test builds the module itself.
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12))
+    const made = stampModule(lab.surface, faction.force, def, m.origin)
+    let furnace: LuaEntity | undefined
+    for (const e of made) if (e !== undefined && e.type === "furnace") furnace ??= e
+    furnace!.get_inventory(defines.inventory.furnace_result)!.insert({ name: "iron-plate", count: 100 })
+    brain.nextThink = game.tick
+    addCraft(faction, depot)
+    const watch = watchSourcing(faction, depot)
+    waitFor(1800, () => {
+      watch.sample()
+      return depot.get_item_count("iron-gear-wheel") >= 20 || watch.handSourcing > 0
+    }, () => `the gears at the depot (${watch.describe()})`, () => {
+      const msg = `${watch.describe()}, furnace ${furnace!.get_item_count("iron-plate")}, takes ${describeTakes(faction)}`
+      assert(watch.handSourcing === 0, `nothing was hand-mined (${msg})`)
+      assert(takesOf(faction, "module-furnace") === 60, `taken from the module's furnace (${msg})`)
+    })
+  })
+
   test("a busy crew takes the furnace's plates for a new craft at its next plan, without preempting", () => {
     const lab = createLab(48)
     const faction = createFaction("b17-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
@@ -274,6 +382,56 @@ describe("B17 material sources", () => {
     })
   })
 })
+
+/** A 4-furnace iron smelter column with a buffer head (D42), committed to the factory's layout as a built node. */
+function smelterModule(f: FactoryState, origin: MapPosition): { def: ModuleDef; m: PlacedModule } {
+  const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
+  const o = { x: math.floor(origin.x), y: math.floor(origin.y) }
+  const m: PlacedModule = { id: "smelter", canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  commitModule(f.layout, m, prototypeFacts, 1)
+  addNode(f.graph, {
+    id: "smelter",
+    role: "iron-plate#1",
+    kind: "module",
+    module: def.id,
+    generator: "smelter-column",
+    recipe: "iron-plate",
+    item: "iron-plate",
+    capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
+    planned: { inputs: [], outputs: [] },
+    powerW: 0,
+    lifecycle: "built",
+    status: "unknown",
+    createdTick: game.tick,
+    builtTick: game.tick,
+  })
+  return { def, m }
+}
+
+/** The module's built buffer chest. */
+function bufferOf(lab: Lab, def: ModuleDef, m: PlacedModule, force: string): LuaEntity {
+  for (const e of def.entities) {
+    if (!e.buffer) continue
+    const found = lab.surface.find_entities_filtered({ type: "container", force, position: { x: m.origin.x + e.x, y: m.origin.y + e.y }, limit: 1 })[0]
+    assert(found !== undefined, "the buffer chest is built")
+    return found
+  }
+  error("no buffer in the module")
+}
+
+function takesOf(faction: FactionState, kind: string): number {
+  let n = 0
+  for (const id of faction.crew) n += storage.crew[id].stats.takes?.[kind] ?? 0
+  return n
+}
+
+function describeTakes(faction: FactionState): string {
+  const all: Record<string, number> = {}
+  for (const id of faction.crew) for (const [k, v] of pairs(storage.crew[id].stats.takes ?? {})) all[k as string] = (all[k as string] ?? 0) + v
+  const parts: string[] = []
+  for (const [k, v] of pairs(all)) parts.push(`${k} ${v}`)
+  return parts.join(", ")
+}
 
 /** An iron chest usable as the faction's depot. */
 function chest(lab: Lab, position: MapPosition, force: string): LuaEntity {

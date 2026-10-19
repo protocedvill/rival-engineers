@@ -831,6 +831,11 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   with (b) on, the seed 11 and 3333 stage-1 clusters no longer route **without** undergrounds (a smelter's growth end is
   its input side, which now turns away from ore, so feeds wrap round it); they do route with them, and both seeds decide
   "undergrounds first" under D36 / D51 anyway. Values are guesses tuned on six replays; a soak decides.
+- **P39, take from smelter modules' furnaces (decided by the user in-session 2026-10-19: keep the implemented setting, default off, no further work; B36; M6 report M6b.8):** with `supply-module-furnaces` on
+  (default **off**), the result slots of built smelter modules' furnaces are supply points too (registered last, after
+  buffers and bootstrap furnaces). Their plates pile up when the output belt backs up, but taking them can starve the
+  module's belt and its consumers, and the buffer head (D42/D51) already holds the surplus the crew should take. Open
+  question for the user: turn it on, or rather raise `module-buffer-slots` (2)?
 
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 

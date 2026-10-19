@@ -20,28 +20,29 @@ import { Lab, at, createLab } from "./lab"
 const SPEED = 50
 
 /** A built chest-fed gear cell 10 tiles east of the lab origin (the D38 test's cell), factory state and all. */
-function buildGearCell(lab: Lab, faction: FactionState): FactoryState {
-  const f = startFactory(faction)
-  const def = generatedModule("chest-cell", { recipe: "iron-gear-wheel", machine: "assembling-machine-1", chest: "iron-chest" })
-  const origin = { x: math.floor(lab.origin.x) + 10, y: math.floor(lab.origin.y) - 2 }
-  const m: PlacedModule = { id: "cell", canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+function buildGearCell(lab: Lab, faction: FactionState, recipe = "iron-gear-wheel", dy = 0, id = "cell"): FactoryState {
+  const f = getFactory(faction.name) ?? startFactory(faction)
+  const def = generatedModule("chest-cell", { recipe, machine: "assembling-machine-1", chest: "iron-chest" })
+  const origin = { x: math.floor(lab.origin.x) + 10, y: math.floor(lab.origin.y) - 2 + dy }
+  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(f.layout, m, prototypeFacts, 1)
-  const r = stampParts(lab.surface, faction.force, f.layout, { modules: ["cell"], routes: [], poles: [] }, false)
+  const r = stampParts(lab.surface, faction.force, f.layout, { modules: [id], routes: [], poles: [] }, false)
   assert(r.failed.length === 0, `stamped: ${r.failed.join("; ")}`)
   const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: { x: origin.x + 1, y: origin.y - 2 }, force: faction.force })!
   eei.power_production = 1e6
   eei.electric_buffer_size = 1e6
   lab.surface.create_entity({ name: "small-electric-pole", position: { x: origin.x + 0.5, y: origin.y - 0.5 }, force: faction.force })
+  const item = prototypes.recipe[recipe].main_product?.name ?? recipe
   addNode(f.graph, {
-    id: "cell",
-    role: "temp:iron-gear-wheel#1",
+    id,
+    role: `temp:${item}#1`,
     kind: "sink",
     module: def.id,
     generator: "chest-cell",
-    recipe: "iron-gear-wheel",
-    item: "iron-gear-wheel",
+    recipe,
+    item,
     capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
-    planned: { inputs: [], outputs: [{ item: "iron-gear-wheel", perSecond: rateIn(def.rates.outputs, "iron-gear-wheel") }] },
+    planned: { inputs: [], outputs: [{ item, perSecond: rateIn(def.rates.outputs, item) }] },
     powerW: 0,
     lifecycle: "built",
     status: "unknown",
@@ -164,6 +165,35 @@ describe("D38 temporary factories", () => {
       assert(plates >= target, `the input chest was topped up (${plates} of ${target})`)
       assert(refill !== undefined, "a refill job was created")
     }
+  })
+
+  // B36 (manager probe soak, seed 11): the red-science cell was never fed its gears though the gear cell's output chest
+  // held 141: the belt cell, first in node order, took every gear for its top-up while 218 belts sat in its output chest.
+  // A cell whose output chest holds its buffer is not topped up; the gears then reach the red-science cell.
+  test("B36: a stocked belt cell leaves the gears to the red-science cell", () => {
+    const lab = createLab(32)
+    const faction = createFaction("b36-cells", { position: at(lab, 0, 8), crew: 2, starterItems: {} })
+    const { brain } = quietPlateDepot(lab, faction)
+    const depot = faction.stockpiles[0]
+    depot.insert({ name: "copper-plate", count: 100 })
+    game.forces[faction.force].recipes["automation-science-pack"].enabled = true
+    game.forces[faction.force].recipes["transport-belt"].enabled = true
+    buildGearCell(lab, faction, "transport-belt", 4, "belt")
+    buildGearCell(lab, faction, "automation-science-pack", 8, "red")
+    const red = tempCells(faction.name, "automation-science-pack")[0]
+    const gear = tempCells(faction.name, "iron-gear-wheel")[0]
+    assert(red !== undefined && red.machine !== undefined, "the red-science cell is found")
+    brain.nextThink = game.tick + 1
+    let maxGearOut = 0
+    async(60 * 60 * 6)
+    on_tick(() => {
+      maxGearOut = math.max(maxGearOut, gear.output.get_item_count("iron-gear-wheel"))
+      if (red.machine!.products_finished < 3) return
+      const belt = tempCells(faction.name, "transport-belt")[0]
+      log(`[b36] red cell made ${red.machine!.products_finished} packs by tick ${game.tick}; gear cell output held up to ${maxGearOut}; belt cell output ${belt.output.get_item_count("transport-belt")}`)
+      done()
+      return false
+    })
   })
 
   test("the refill priority setting steers the refresh jobs", () => {

@@ -192,6 +192,8 @@ export interface Config {
   supplyRadius: number
   /** B32: a supply point holding fewer of an item than this is not worth the walk (stockpiles always count). */
   supplyMinTake: number
+  /** B36 (proposed): smelter modules' furnace outputs are supply points too (may starve the module's belt). */
+  supplyModuleFurnaces: boolean
 }
 
 export type ConfigKey = keyof Config
@@ -297,6 +299,7 @@ export function getConfig(): Config {
     preemptFuelSeconds: setting(Settings.preemptFuelSeconds),
     supplyRadius: setting(Settings.supplyRadius),
     supplyMinTake: setting(Settings.supplyMinTake),
+    supplyModuleFurnaces: setting(Settings.supplyModuleFurnaces),
   }
   const target = config as unknown as Record<string, unknown>
   const overrides = storage.configOverrides as Record<string, unknown>

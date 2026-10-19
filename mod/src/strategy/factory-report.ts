@@ -8,6 +8,7 @@ import { entryPolicy, tiers } from "../planner/runtime"
 import { statusCounts } from "./reconcile"
 import { isTempRole } from "./stage"
 import { findEntities } from "../work"
+import { isBufferAt, registerBuffer } from "../modules/buffers"
 import type { FactoryState } from "./factory"
 
 // Read-only views of a faction's factory (split out of factory.ts, whose main chunk hit Lua's 200-local limit): the
@@ -76,8 +77,8 @@ export function tempCells(factionName: string, item?: string): TempCell[] {
 // takes from directly when a job needs their items.
 
 /** Built chest-out port chests of the factory's sink modules (mall, temporary cells), in node order. */
-export function supplyChests(factionName: string): LuaEntity[] {
-  const out: LuaEntity[] = []
+export function supplyChests(factionName: string): { entity: LuaEntity; temp: boolean }[] {
+  const out: { entity: LuaEntity; temp: boolean }[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
@@ -89,8 +90,55 @@ export function supplyChests(factionName: string): LuaEntity[] {
     for (const p of m.def.ports) {
       if (p.kind !== "chest-out") continue
       const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
-      if (chest !== undefined) out.push(chest)
+      if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role) })
     }
+  }
+  return out
+}
+
+/**
+ * B36: makes sure every built module's buffer chest (D42/D51) is a registered buffer. Modules stamped as ghosts by the
+ * planner runtime were never registered before B36 (only growth and conflict ghosts were), so their chests had no slot
+ * limit and were no supply points. Cheap: one lookup per buffered module, a search only for unregistered ones.
+ */
+export function repairBuffers(factionName: string): void {
+  const f = getFactory(factionName)
+  if (f === undefined) return
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph)) {
+    if (n.lifecycle !== "built") continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    for (const e of m.def.entities) {
+      if (!e.buffer) continue
+      const pos = { x: m.origin.x + e.x, y: m.origin.y + e.y }
+      if (isBufferAt(surface.name, pos)) continue
+      const chest = findEntities(surface, { type: "container", force: faction.force, position: pos, limit: 1 })[0]
+      if (chest !== undefined) registerBuffer(surface, faction.force, chest)
+    }
+  }
+}
+
+/**
+ * B36 (proposed, `supply-module-furnaces`, default off): the furnaces of built smelter modules, whose result slots
+ * fill up when their output belt backs up. Taking from them may starve the module's belt.
+ */
+export function moduleFurnaces(factionName: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const f = getFactory(factionName)
+  if (f === undefined) return out
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph)) {
+    if (n.lifecycle !== "built") continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    let any = false
+    for (const e of m.def.entities) if (prototypes.entity[e.name]?.type === "furnace") any = true
+    if (!any) continue
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    for (const e of findEntities(surface, { type: "furnace", force: faction.force, area })) out.push(e)
   }
   return out
 }
