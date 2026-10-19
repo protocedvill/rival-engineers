@@ -16,7 +16,7 @@ mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
-npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (~2.5 min, serial ~11)
+npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (over 5 min: ~10 min on 2026-10-19 with other runs going; manager-only, SPEC §9)
 npm test -- "pattern"    # filter tests by Lua pattern (several patterns: any of them)
 npm test -- -j 4 "pattern"      # shard count (default: half the cores, at most one shard per unit; or $TEST_JOBS)
 npm test -- --plan              # print the shard plan without running
