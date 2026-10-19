@@ -33,6 +33,10 @@ Factorio saves retain `storage` across code changes. Storage interfaces are augm
 persistent field therefore needs a deterministic default, save/reload consideration, and usually an optional read
 until a migration boundary exists. Never retain a `LuaEntity` without checking `.valid` on later use.
 
+The migration boundary now lives in `storage-schema.ts`. **Before adding or changing a persisted field**, decide
+whether old saves can use an optional/defaulted read or need the next numbered migration. Never edit an old migration
+after release; append one version step and add a pure regression. A save from a newer schema fails closed.
+
 ## High-risk coordinators
 
 `strategy/factory.ts`, `strategy/bootstrap.ts` and `jobs/crew.ts` currently coordinate several responsibilities.
@@ -48,3 +52,7 @@ top-level declaration/import. `tools/build-mod.mjs` guards at 185 because Lua fa
 - A T2 test covers any claimed Factorio behaviour.
 - Telemetry explains the new blocked/waiting state with a stable reason, not only prose.
 - The relevant learned-rule document is updated when a new boundary surprise was found.
+
+Run `npm run check:architecture` when changing `Config`, setting names/definitions, or a module marked pure. It is
+also part of `npm run typecheck`, specifically because these three-way drifts otherwise survive code review and fail
+only when Factorio loads the mod.

@@ -8,7 +8,7 @@ from player intuition. This directory routes work to the smallest set of prior l
 
 | If your task touches… | Read before code | What skipping it has caused |
 |---|---|---|
-| Architecture, strategy, planner, jobs, storage | [`architecture.md`](architecture.md) | State split across the wrong layer, runtime-only logic that could not be replayed, and import cycles that break Lua loading. |
+| Architecture, strategy, planner, jobs, storage, settings | [`architecture.md`](architecture.md) | State split across the wrong layer, runtime-only logic that could not be replayed, save incompatibility, setting drift, and import cycles that break Lua loading. |
 | Tests, shards, logs, snapshots, soak runs, performance | [`testing-and-soaks.md`](testing-and-soaks.md) | False test failures, state shared across separate games, stale builds, 20-minute reruns for bugs reproducible in seconds, and invalid concurrent performance numbers. |
 | Branches, reports, proposals, settings, magic numbers | [`operating-model.md`](operating-model.md) | Stale handoffs, proposals recorded as decisions, changes on the wrong stacked branch, and unreviewed tuning constants. |
 | Any TypeScript/TSTL code | [`CLAUDE.md`](../../CLAUDE.md), “TSTL gotchas” | Code that typechecks but shifts callback arguments, shares loop indices, retains supposedly-cleared fields, or exceeds Lua’s local limit. |

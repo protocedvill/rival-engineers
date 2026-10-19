@@ -18,6 +18,7 @@ mkdir -p .factorio-test && curl -fsSL https://factorio.com/get-download/2.0.77/h
 mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
+npm run check:architecture # setting registry parity and pure-module boundary checks (also included in typecheck)
 npm run status           # branch/commit, dirty state, current report and unresolved BUGS rows
 npm run doctor           # read-only environment check: build freshness, runtimes, locks and Factorio processes
 npm run diagnose -- RUN [SEED] [FACTION]  # explain a soak's goal/planner/job/crew blocker chain
