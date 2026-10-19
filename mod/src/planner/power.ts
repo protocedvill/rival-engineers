@@ -177,19 +177,20 @@ export function newPoleJob(prefix: string, pole: string, facts: ProtoFacts): Pol
 
 function init(job: PoleJob, layout: LayoutState, facts: ProtoFacts): number {
   const roles = powerRoles(layout, facts)
-  const isSource: Record<string, boolean> = {}
-  for (const s of roles.sources) isSource[s] = true
   const poles = layoutPoles(layout, facts)
+  // B39: one network. Only the first generator module (the first power plant) is powered; later ones join it like
+  // consumers do, or a second plant stays an island that powers nothing.
+  const main = roles.sources[0]
   for (const p of poles) {
     const i = addNode(job, p)
-    if (isSource[p.owner]) job.powered[find(job, i)] = true
+    if (p.owner === main) job.powered[find(job, i)] = true
   }
   // Without a generator there is nothing to connect to yet: a later plan (the steam block's) joins everything.
   if (roles.sources.length === 0) {
     job.phase = "done"
     return poles.length
   }
-  job.pending = [...roles.consumers]
+  job.pending = [...roles.sources.slice(1), ...roles.consumers]
   job.phase = "connect"
   return poles.length
 }
@@ -503,13 +504,15 @@ export function polesNow(layout: LayoutState, terrain: TerrainView, facts: Proto
 
 /**
  * Independent check: the pole components of a layout (module poles and line poles joined within wire reach), and the
- * consumer modules not connected to any generator module.
+ * modules not on the first generator module's network: consumers, and (B39) later generator modules.
  */
 export function unpoweredModules(layout: LayoutState, facts: ProtoFacts): string[] {
   const job = newPoleJob("check:", "small-electric-pole", facts)
   init(job, layout, facts)
   const out: string[] = []
-  for (const owner of powerRoles(layout, facts).consumers) if (!ownerPowered(job, owner)) out.push(owner)
+  const roles = powerRoles(layout, facts)
+  // B39: a generator module off the first plant's network counts too (an island powers nothing).
+  for (const owner of [...roles.sources.slice(1), ...roles.consumers]) if (!ownerPowered(job, owner)) out.push(owner)
   return out
 }
 

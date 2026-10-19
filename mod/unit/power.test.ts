@@ -126,6 +126,18 @@ test("no generator yet: nothing to connect, no poles; modules within reach need 
   eq(unpoweredModules(b, F).length, 0, "powered")
 })
 
+test("B39: a second steam block joins the first one's network (old: its own island, powering nothing)", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, 12, 2)
+  // The second plant 40 tiles south, nothing near it.
+  place(layout, "steam2", steam, 2, 50)
+  polesNow(layout, terrain(60, 80), F, POLICY)
+  eq(unpoweredModules(layout, F).length, 0, "one network")
+  ok((layout.poleLines ?? []).some((l) => l.to === "steam2"), "a line joins the second plant")
+  eq(poleProblems(layout, terrain(60, 80)).length, 0, poleProblems(layout, terrain(60, 80)).join("; "))
+})
+
 test("budgeted: stepping 5 units at a time gives the same line", () => {
   const mk = (): LayoutState => {
     const l = newLayout()

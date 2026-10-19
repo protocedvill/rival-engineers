@@ -102,6 +102,8 @@ export interface BrainState {
   replans: number
   /** Why the plan is waiting right now (for stall reports and telemetry). */
   waiting: string[]
+  /** B38: the last think's shortfalls: item → demand, stock, pending and what `produce` did about it (telemetry). */
+  shortfalls?: Record<string, { demand: number; stock: number; pending: number; action: string }>
   done: boolean
   doneTick?: number
   nextThink: number

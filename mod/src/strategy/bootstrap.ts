@@ -208,6 +208,8 @@ interface Ctx {
   woodGathers: number
   depot?: LuaEntity
   waiting: string[]
+  /** B38: this think's shortfalls and the path `produce` took for each (copied to `brain.shortfalls`). */
+  shortfalls: Record<string, { demand: number; stock: number; pending: number; action: string }>
 }
 
 function think(faction: FactionState, brain: BrainState, config: Config, tick: number): void {
@@ -224,6 +226,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     demand: {},
     order: [],
     oreInbound: {},
+    shortfalls: {},
     gathers: 0,
     woodGathers: 0,
     depot: undefined,
@@ -248,6 +251,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   topUpTempCells(ctx)
   milestones(ctx)
   brain.waiting = ctx.waiting
+  brain.shortfalls = ctx.shortfalls
   checkStall(ctx)
   if (tick - brain.lastPrune >= 3600) {
     brain.lastPrune = tick
@@ -814,6 +818,11 @@ function addPending(ctx: Ctx, item: string, count: number): void {
   ctx.pending[item] = (ctx.pending[item] ?? 0) + count
 }
 
+/** B38: a job feeding depot ore into a bootstrap furnace (`maintain`); not furnace fuel. */
+function isOreFeed(ctx: Ctx, p: JobPayload): boolean {
+  return p.kind === "fuel" && p.item !== ctx.brain.catalog.fuel && p.target !== undefined && p.target.valid && p.target.type === "furnace" && ctx.brain.catalog.smelts[p.item] !== undefined
+}
+
 /** Demand and pending output from every active job. */
 function scanJobs(ctx: Ctx): void {
   const board = ctx.faction.board
@@ -838,6 +847,8 @@ function scanJobs(ctx: Ctx): void {
         break
     }
     if (p.kind === "haul" || p.kind === "deposit" || p.kind === "transfer") continue
+    // B38: a feed moves ore the depot already holds into a furnace; as demand it sent the crew hand-mining ore for it.
+    if (isOreFeed(ctx, p)) continue
     for (const m of job.materials) addDemand(ctx, m.item, m.count)
   }
 }
@@ -902,17 +913,37 @@ function maintain(ctx: Ctx): void {
   }
   if (ctx.brain.sites.length > 0) addDemand(ctx, fuel, FUEL_BUFFER)
   if (!ctx.depot) return
-  // Ore sitting in the depot (leftovers of hand-mining) goes into furnaces of its kind.
+  // Ore sitting in the depot (leftovers of hand-mining) goes into furnaces of its kind. B38: only the ore no open feed has
+  // claimed yet (feeds beyond what the depot holds are cancelled), never into a furnace whose output is full, and a feed
+  // is no demand (it used to send the crew hand-mining ore to fill the feeds it had just over-booked).
   const catalog = ctx.brain.catalog
+  const feeds: Record<string, number[]> = {}
+  const claimedOre: Record<string, number> = {}
+  for (const id of ctx.faction.board.active) {
+    const job = ctx.faction.board.jobs[id]
+    const p = job.payload
+    if (!isOreFeed(ctx, p) || p.kind !== "fuel") continue
+    claimedOre[p.item] = (claimedOre[p.item] ?? 0) + p.count
+    if (job.status === "open") (feeds[p.item] ??= []).push(id)
+  }
   for (const ore in catalog.smelts) {
     const inDepot = ctx.depotStock[ore] ?? 0
-    if (inDepot <= 0) continue
+    let claimed = claimedOre[ore] ?? 0
+    for (const id of [...(feeds[ore] ?? [])].reverse()) {
+      if (claimed <= inDepot) break
+      const p = ctx.faction.board.jobs[id].payload
+      if (p.kind === "fuel") claimed -= p.count
+      failJob(ctx.faction.board, id, "feed: the depot no longer holds the ore", ctx.tick)
+    }
+    const free = inDepot - claimed
+    if (free <= 0) continue
     for (const furnace of furnacesFor(ctx, ore)) {
       const key = `feed:${furnace.unit_number}`
       if (keyActive(ctx, key)) continue
+      if (furnace.status === defines.entity_status.full_output) continue
       const room = sourceRoom(furnace, ore)
       if (room < 5) continue
-      const count = math.min(room, inDepot)
+      const count = math.min(room, free)
       addKeyed(ctx, key, {
         kind: "fuel",
         pos: furnace.position,
@@ -920,7 +951,6 @@ function maintain(ctx: Ctx): void {
         priority: PRIORITY.feed,
         payload: { kind: "fuel", item: ore, count, target: furnace, partial: true },
       })
-      addDemand(ctx, ore, count)
       ctx.oreInbound[ore] = (ctx.oreInbound[ore] ?? 0) + count
       break
     }
@@ -1009,23 +1039,30 @@ function reconcile(ctx: Ctx): void {
   for (let i = 0; i < ctx.order.length; i++) {
     const item = ctx.order[i]
     const short = ctx.demand[item] - (ctx.stock[item] ?? 0) - (ctx.pending[item] ?? 0)
-    if (short > 0) produce(ctx, item, short)
+    if (short <= 0) continue
+    ctx.shortfalls[item] = { demand: ctx.demand[item], stock: ctx.stock[item] ?? 0, pending: ctx.pending[item] ?? 0, action: "?" }
+    produce(ctx, item, short)
   }
 }
 
 function produce(ctx: Ctx, item: string, short: number): void {
+  const note = (action: string): void => {
+    const f = ctx.shortfalls[item]
+    if (f !== undefined) f.action = action
+  }
   // 1. B32: what the supply points hold is already in the stock (the crew takes it from there). 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  const before = short
   short = feedTempCells(ctx, item, short)
-  if (short <= 0) return
+  if (short <= 0) return note(`temp cells cover ${before}`)
   // 2. Hand-craft.
   const hr = handRecipe(ctx.force, item)
   if (hr) {
     if (!hr.enabled) {
       ctx.waiting.push(`recipe ${hr.recipe.name} locked`)
-      return
+      return note("recipe locked")
     }
     craft(ctx, item, hr.recipe.name, short)
-    return
+    return note(`hand-craft ${short}`)
   }
   // 3. Smelt: plates come from furnaces; hand-mine ore into them if what is on its way is not enough.
   const catalog = ctx.brain.catalog
@@ -1035,15 +1072,17 @@ function produce(ctx: Ctx, item: string, short: number): void {
     for (const f of furnacesFor(ctx, ore)) inbound += f.get_inventory(defines.inventory.furnace_source)!.get_item_count(ore)
     inbound += ctx.depotStock[ore] ?? 0
     const need = short - inbound
-    if (need <= 0) return
-    const furnaces = furnacesFor(ctx, ore)
+    if (need <= 0) return note(`smelt: ${inbound} ${ore} on its way`)
+    // B38: never into a furnace whose output is full (it won't smelt until the plates are taken).
+    const furnaces = furnacesFor(ctx, ore).filter((f) => f.status !== defines.entity_status.full_output)
     const into = furnaces.length > 0 ? furnaces[0] : ctx.depot
     if (furnaces.length === 0) ctx.waiting.push(`no furnace for ${ore}`)
     gather(ctx, ore, need, into)
-    return
+    return note(`smelt: hand-mine ${need} ${ore} (${inbound} on its way)`)
   }
   // 4. Hand-mine a resource or cut trees.
   gather(ctx, item, short, ctx.depot)
+  note(`gather ${short}`)
 }
 
 /**
@@ -1534,6 +1573,7 @@ export function brainReport(faction: FactionState) {
     stalls: brain.stalls,
     replans: brain.replans,
     waiting: brain.waiting,
+    shortfalls: brain.shortfalls,
     steps: brain.steps,
   }
 }

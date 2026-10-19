@@ -162,6 +162,55 @@ describe("B17 material sources", () => {
     }, () => `a hand-mining job (${watch.describe()})`, () => {})
   })
 
+  test("B38: ore in the depot is fed into furnaces without over-booking it or hand-mining more ore for the feeds", () => {
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -20, 8))
+    // The depot 40 tiles from the furnaces: a feed takes several thinks to deliver, as in the user's report (B38: each
+    // think booked the whole depot ore again for another furnace, and the over-booking sent the crew hand-mining).
+    const faction = createFaction("b38", { position: at(lab, -26, 0), crew: 2, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, -26, 0))
+    const depot = chest(lab, at(lab, -26, 2), faction.force)
+    addStockpile(faction, depot)
+    depot.insert({ name: "iron-ore", count: 12 })
+    // Four empty bootstrap furnaces and a fifth whose output is full: no ore goes into that one.
+    const furnaces: LuaEntity[] = []
+    for (let i = 0; i < 4; i++) furnaces.push(platedFurnace(lab, faction, at(lab, 14 + 3 * i, 0), 0))
+    const full = platedFurnace(lab, faction, at(lab, 14, 4), 100)
+    full.get_inventory(defines.inventory.furnace_source)!.clear()
+    full.insert({ name: "coal", count: 5 })
+    full.get_inventory(defines.inventory.furnace_source)!.insert({ name: "iron-ore", count: 1 })
+    brain.sites = [...furnaces.map((f) => smeltSite(brain, f)), smeltSite(brain, full)]
+    brain.goals = []
+    brain.rescanAt = undefined
+    brain.nextThink = game.tick
+    const watch = watchSourcing(faction, depot)
+    let maxBooked = 0
+    let ticks = 0
+    let intoFull = 0
+    waitFor(1800, () => {
+      watch.sample()
+      let booked = 0
+      for (const id of faction.board.active) {
+        const p = faction.board.jobs[id].payload
+        if (p.kind === "fuel" && p.item === "iron-ore") {
+          booked += p.count
+          if (p.target === full) intoFull++
+        }
+      }
+      maxBooked = math.max(maxBooked, booked)
+      return ++ticks >= 1500
+    }, () => "1500 ticks", () => {
+      let fed = 0
+      for (const f of furnaces) fed += f.get_item_count("iron-ore") + f.get_item_count("iron-plate")
+      const msg = `${watch.describe()}, most ore booked ${maxBooked}, fed ${fed}, feeds into the full furnace ${intoFull}`
+      log(`[b38] ${msg}; shortfalls ${serpent.line(brain.shortfalls ?? {})}`)
+      assert(watch.handSourcing === 0, `no ore was hand-mined for the feeds (${msg})`)
+      assert(maxBooked <= 12, `the feeds never booked more ore than the depot held (${msg})`)
+      assert(fed === 12, `the depot's 12 ore went into the empty furnaces (${msg})`)
+      assert(intoFull === 0, `no feed into the furnace with a full output (${msg})`)
+    })
+  })
+
   test("B32: a furnace outside supply-radius is not taken from", () => {
     setConfigOverride("supplyRadius", 5)
     const lab = createLab(32)

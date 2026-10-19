@@ -986,3 +986,37 @@ placements and routes; new lines are regenerated for what they powered. The cost
 |---|---|---|---|---|
 | `planner-pole-evict-cost` | `settings.ts`, `policy.ts` `obstacles.poleEvict` | 0.5 per pole tile | User decision (in-session 2026-10-19): nearly free; a tree costs 2. On a tie the planner still keeps off a line. | yes (new) |
 
+## M6b.12: B38 depot-ore feeds, B39 second power plant, richer report dumps (2026-10-19)
+
+Triaged from the user's four B34 review reports (the user approved the fixes in-session):
+- `147797-this-power-plant-should-have-exp`, `198830-power-poles-were-never-connected`: the first plant could not grow
+  because a pole line stood in its growth area (`blocked at -295,-170` / `361,174`, a small pole on that tile) and a
+  second plant was placed instead: B37 (M6b.11). The second plant was then never wired to the network: B39.
+- `58098-hand-mining-iron-ore-when-there`, `88641-mining-copper-when-full-copper-f`: B38.
+
+**B38 root cause** (`bootstrap.ts`): `maintain` turns ore in the depot into furnace feed jobs, one furnace per think,
+each sized to the depot's whole ore count; the feeds already open were not subtracted, and `scanJobs` adds every
+active job's materials as demand. Open feeds of 46 iron ore against ~2 in the depot (report 58098) made a 44-ore
+shortfall, which `produce` met by hand-mining ore into the depot, which made more feeds. **Fix:** a feed (fuel job
+moving a smeltable ore into a bootstrap furnace, `isOreFeed`) is no demand; new feeds book only the depot ore no open
+feed claims, open feeds beyond what the depot holds are cancelled; no feed and no hand-mined ore goes into a furnace
+whose output is full.
+
+**B39 root cause** (`power.ts` `init`): every generator module's pole component counted as powered and only consumers
+were joined, so a second steam block stayed an island (faction 1, report 198830: "n1 at 184% load", repair "nothing
+missing" every cycle). **Fix:** only the first generator module is powered; later ones are pending like consumers, so
+the plan's pole step joins them. `unpoweredModules` reports an unjoined later generator too.
+
+**Observability:** report and frame dumps (`dumpEntities`) carry each built entity's non-empty inventories, its
+`defines.entity_status` name and its electric network id; the bootstrap brain keeps its last think's `shortfalls`
+(demand, stock, pending and what `produce` did) in `faction_report` / telemetry.
+
+**Tests:**
+- T2 `bootstrap-sources` "B38: ore in the depot is fed…": depot 40 tiles from four empty furnaces and one with a full
+  output, 12 ore. Old code: 2 hand-mining jobs, 60 ore booked, feeds into the full furnace. New: none, at most 12
+  booked, all 12 fed.
+- T1 `power` "B39: a second steam block joins the first one's network". Old code: no line to it.
+- Full T1 (21 files) passes; filtered T2 (B38, B32, B37, power-up, review tools) passes.
+
+No new magic numbers.
+

@@ -206,7 +206,9 @@ report (they work while spectating; a character player also has them as shortcut
 `message.txt`; `report.json` (message, tick, save name, surface, your camera position and zoom, controller, the
 inspector's selected faction/crew, game speed, mod version, and per faction the soak telemetry: brain, board job
 counts and open jobs, depot, research, each crew member's pocket, stats, last action and position, plus the work
-report); `entities.json` (a frame dump around the camera, `frame-dump-radius` tiles, `tools/render` format) and
+report; the brain's `shortfalls` say what it was short of and what it did about it); `entities.json` (a frame dump
+around the camera, `frame-dump-radius` tiles, `tools/render` format; built entities carry their non-empty `inventories`,
+`status` and electric `network` id, so full furnaces and unjoined poles show) and
 `graph-<faction>.json` (each Factory Graph). An agent diagnosing one: read `message.txt` and `report.json`, render
 `entities.json` with `tools/render` (with `--graph` for a graph), then reproduce from the save:
 `npm run review -- --load _autosave-re-report-<tick>-<slug>` to watch it, or copy the zip and
