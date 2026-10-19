@@ -24,10 +24,19 @@ export function ok(condition: boolean, what = "condition"): void {
   if (!condition) error(`${what} is false`, 2)
 }
 
-/** Runs every registered test, prints results and exits non-zero on any failure. */
+/**
+ * Runs every registered test, prints results and exits non-zero on any failure. `$UNIT_TEST_FILTER` (set by
+ * `npm run test:unit -- -t <text>` and `replay:sweep`) runs only the tests whose name contains that text.
+ */
 export function run(suite: string): void {
+  const filter = os.getenv("UNIT_TEST_FILTER")
   let failed = 0
+  let skipped = 0
   for (const t of tests) {
+    if (filter !== undefined && filter !== "" && string.find(t.name, filter, 1, true)[0] === undefined) {
+      skipped++
+      continue
+    }
     const [success, err] = pcall(t.fn)
     if (success) {
       print(`PASS ${suite} > ${t.name}`)
@@ -36,6 +45,6 @@ export function run(suite: string): void {
       print(`FAIL ${suite} > ${t.name}\n    ${tostring(err)}`)
     }
   }
-  print(`${suite}: ${tests.length - failed} passed, ${failed} failed`)
+  print(`${suite}: ${tests.length - failed - skipped} passed, ${failed} failed${skipped > 0 ? `, ${skipped} filtered out` : ""}`)
   if (failed > 0) os.exit(1)
 }

@@ -2,13 +2,16 @@
 // input to script-output/rival-engineers/failed-plans/<faction>/<goal>-a<attempt>-t<tick>.input.lua (runtime.ts
 // exportPlanInput); copy one into mod/unit/fixtures/ and list it below. Each replay runs the plan unbudgeted on the
 // captured terrain and base layout and must succeed. (Plain Lua's `pairs` order is not Factorio's, so a replay is the
-// same scenario, not a bit-exact rerun.)
+// same scenario, not a bit-exact rerun.) Each replay prints a `REPLAY {json}` metrics line (tabulated by
+// `npm run replay:sweep`) and, when it fails or with REPLAY_DUMP=1, writes a decision dump (dump.ts) to
+// out/replay-dumps/<replay>/.
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { FOREIGN, FREE, OWN, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { findModule, LayoutState, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
+import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -50,8 +53,9 @@ declare const os: { getenv(this: void, name: string): string | undefined }
 declare function loadfile(this: void, path: string): ((this: void) => unknown) | undefined
 
 function load(name: string): PlanInput {
-  const chunk = loadfile(`../unit/fixtures/${name}.lua`)
-  if (chunk === undefined) error(`fixture ${name} not found (run from mod/build-unit)`)
+  // $UNIT_SRC: mod/unit (set by the T1 runner, whatever the build dir); else relative to mod/build-unit.
+  const chunk = loadfile(`${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
+  if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
   return chunk() as PlanInput
 }
 
@@ -83,10 +87,12 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       },
       ore: (x, y) => view.ore(x, y),
     }
+    startTrace()
     runJob(job, terrain, F, fx.policy, 100000)
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+    finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === (opts.expect ?? "done"))
     ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
   })
 }
@@ -105,10 +111,12 @@ test("replay seed222-production without undergrounds: routing fails, the undergr
   ok(tier.maxUnderground <= 1, "captured without undergrounds")
   fx.request.compare = { undergrounds: { tiers: beltTiers(F) }, workFactor: 2, minWork: 5000 }
   const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  startTrace()
   runJob(job, fixtureView(fx), F, fx.policy, 100000)
-  ok(job.phase === "failed", `the plan fails without undergrounds (${job.phase})`)
   const results: CompareResult[] = job.compare?.results ?? []
   const d = logisticsFirst(results, 50, 50)
+  finishReplay("seed222-production-no-ug", job, job.phase === "failed" && d.undergrounds)
+  ok(job.phase === "failed", `the plan fails without undergrounds (${job.phase})`)
   print(`  seed222 without undergrounds: ${d.why.join("; ")}`)
   ok(results.length === 1 && results[0].kind === "undergrounds" && results[0].status === "done" && results[0].baseFailed === true, "the underground alternative routes")
   ok(d.undergrounds, "research undergrounds first")
@@ -186,20 +194,14 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
     const base = fx.base !== undefined && adopted ? stripPlan(fx.base, fx.request) : fx.base
     fx.request.compare = { undergrounds: { tiers: beltTiers(F) }, splitters: { items: multiProducerItems(fx) }, workFactor: 2, minWork: 5000 }
     const job = newPlanJob(fx.request, tier, base, fx.tiers)
+    startTrace()
     runJob(job, fixtureView(fx), F, fx.policy, 100000)
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
-    ok(job.phase === "done", `plan done (${why.join("; ")})`)
-    if (os.getenv("REPLAY_DUMP") !== undefined) {
-      for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h}`)
-      if (job.layout.soft !== undefined) {
-        const owners: Record<string, number> = {}
-        for (const [, o] of pairs(job.layout.soft)) owners[o as string] = (owners[o as string] ?? 0) + 1
-        for (const [o, n] of pairs(owners)) print(`    soft claim of ${o as string}: ${n as number} tiles`)
-      }
-    }
     const results: CompareResult[] = job.compare?.results ?? []
     const d = logisticsFirst(results, 50, 50)
+    finishReplay(`${name}-compare`, job, job.phase === "done" && d.undergrounds === expect.undergrounds && d.splitters === expect.splitters)
+    ok(job.phase === "done", `plan done (${why.join("; ")})`)
     print(`  ${name}: plan work ${math.floor(job.stats.work)} (routing ${math.floor(job.stats.routeWork)}, comparison ${math.floor(job.stats.compareWork ?? 0)}); ${d.why.join("; ")}`)
     ok(d.undergrounds === expect.undergrounds, `undergrounds decision ${d.undergrounds}`)
     ok(d.splitters === expect.splitters, `splitters decision ${d.splitters}`)
@@ -214,7 +216,7 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
 // D50 (placement soft claim 0.5, a module's partners exempt): seed 11's placement is the same as at 0.1 except one coal
 // outpost 2 tiles over, but the no-underground cluster then routes 392 tiles instead of 336 (rip-up order); one coal
 // producer then saves 88 tiles, so the splitter comparison (off by default since D50) would research splitters there.
-// REPLAY_DUMP=1 prints the placements and soft claims.
+// REPLAY_DUMP=1 writes the placements (score terms), soft claims and route failures to out/replay-dumps/<name>-compare/.
 // D52 (3) (M6a.2): mining outposts' room to grow is a hard claim; the placements and routes moved, and the splitter
 // decisions flipped (seed 11: one coal producer now saves -1 tiles, was 88; seed 3333: 60, was 46). The splitter
 // comparison is off by default (D50); the underground decision is unchanged (118 / 82 tiles).
@@ -260,10 +262,12 @@ test("replay m6a2-seed222-mall-iron (stale reservations freed): the request comp
     },
     ore: (x, y) => view.ore(x, y),
   }
+  startTrace()
   runJob(job, terrain, F, fx.policy, 100000)
   const why: string[] = []
   for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
   print(`  m6a2-seed222-mall-iron (freed): ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
+  finishReplay("m6a2-seed222-mall-iron-freed-shared", job, job.phase === "done" && (job.alias["n22"] ?? "") === "n16")
   ok(job.phase === "done", `plan done (${why.join("; ")})`)
   ok((job.alias["n22"] ?? "") === "n16", `n22 reuses the built mine instead of a new one (alias: ${job.alias["n22"]})`)
   const mine = findModule(job.layout, "n16")

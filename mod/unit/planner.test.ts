@@ -8,7 +8,8 @@ import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { placeNow } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
-import { EARLY_COMPACT, LayoutPolicy, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
+import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
+import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -377,6 +378,35 @@ test("placement: compact next to the partner, at least the minimum corridor away
   const px = r.x + math.floor(port.pos.x)
   const py = r.y + math.floor(port.pos.y)
   ok(math.abs(px - target.x) + math.abs(py - target.y) <= 20, `input port near the smelter's output (${px},${py} vs ${target.x},${target.y})`)
+})
+
+test("placement trace: same decision with the trace on; score terms sum to the score; rejections name their blocker", () => {
+  const rows = field(50, 50)
+  for (let y = 15; y < 35; y++) rows[y] = string.rep(".", 15) + string.rep("i", 20) + string.rep(".", 15)
+  const terrain = asciiTerrain(rows)
+  const def = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  const req = { id: "g", def, targets: {}, center: { x: 25, y: 25 }, region: { x: 0, y: 0, w: 50, h: 50 } }
+  const off = placeNow(req, newLayout(), terrain, policy())
+  planTrace.sink = newTraceSink()
+  const on = placeNow(req, newLayout(), terrain, policy())
+  const sink = planTrace.sink
+  planTrace.sink = undefined
+  eq(on.candidates, off.candidates, "candidates scored")
+  eq(on.result!.rect.x, off.result!.rect.x, "x")
+  eq(on.result!.rect.y, off.result!.rect.y, "y")
+  eq(on.trace, undefined, "the accumulator leaves the search when it ends")
+  eq(sink.placements.length, 1, "one placement traced")
+  const p = sink.placements[0]
+  const c = p.chosen!
+  eq(c.origin.x, on.result!.rect.x, "chosen x")
+  let total = 0
+  for (const [, v] of pairs(placementTerms(c.features, policy()))) total += v as number
+  near(total, c.score, 1e-6, "terms sum to the score")
+  near(packingScorer("compact-cluster")(c.features, policy()), c.score, 1e-6, "the scorer agrees")
+  ok(p.top.length > 1 && p.top[0].score <= p.top[1].score, "runners-up sorted by score")
+  const ore = p.rejected["ore"]
+  ok(ore !== undefined && ore.count > 0, "ore rejections counted")
+  ok(string.find(ore.examples[0].blocker, "ore iron-ore", 1, true)[0] !== undefined, `the blocker names the ore (${ore.examples[0].blocker})`)
 })
 
 test("placement: keeps off water, cliffs, structures and ore; corridor min is configurable", () => {

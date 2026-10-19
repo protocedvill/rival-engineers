@@ -13,7 +13,8 @@ import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, T
 import { ModuleDef, ModuleEntity } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { commitModule, findModule, LayoutState, markModule, PlacedModule, portOutside, portTile, unmarkModule } from "./layout"
-import { CandidateFeatures, LayoutPolicy, packingScorer } from "./policy"
+import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
+import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
 
 export interface PlacementRequest {
@@ -72,6 +73,8 @@ export interface PlacementSearch {
   candidates: number
   reason?: string
   result?: PlacedModule
+  /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
+  trace?: PlacementAcc
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft"]
@@ -166,6 +169,7 @@ export function newPlacement(req: PlacementRequest): PlacementSearch {
     ri: -1,
     work: 0,
     candidates: 0,
+    trace: planTrace.sink !== undefined ? newPlacementAcc() : undefined,
   }
 }
 
@@ -317,21 +321,48 @@ function sum(s: PlacementSearch, layer: string, r: Rect): number | undefined {
   return a[y2 * W + x2] - a[y1 * W + x2] - a[y2 * W + x1] + a[y1 * W + x1]
 }
 
+/** Why `evaluate` last rejected a candidate, and the features it last scored (plan traces; plain upvalue writes). */
+let why = ""
+let lastF: CandidateFeatures | undefined
+
 function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number): { score: number; coverage: number; clear: number } | undefined {
   const def = td.def
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
-  if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) return undefined
-  if (sum(s, "hard", rect) !== 0) return undefined
-  for (const a of s.req.avoid ?? []) if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) return undefined
+  if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) {
+    why = "region"
+    return undefined
+  }
+  if (sum(s, "hard", rect) !== 0) {
+    why = "hard"
+    return undefined
+  }
+  for (const a of s.req.avoid ?? []) {
+    if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) {
+      why = "avoid"
+      return undefined
+    }
+  }
   const mining = isMining(def)
-  if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) return undefined
-  if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) return undefined
+  if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) {
+    why = "ore"
+    return undefined
+  }
+  if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) {
+    why = "corridor"
+    return undefined
+  }
   const clear = sum(s, "clear", rect)!
-  if (clear > policy.obstacles.maxClearCost) return undefined
+  if (clear > policy.obstacles.maxClearCost) {
+    why = "clear-cost"
+    return undefined
+  }
   if (def.site === "shore") {
     for (const w of def.anchor?.water ?? []) {
       const wr = { x: ox + w.x, y: oy + w.y, w: w.w, h: w.h }
-      if (sum(s, "water", wr) !== w.w * w.h) return undefined
+      if (sum(s, "water", wr) !== w.w * w.h) {
+        why = "shore"
+        return undefined
+      }
     }
   }
   let coverage = 1
@@ -341,9 +372,15 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     for (const a of def.anchor?.miningAreas ?? []) {
       const area = { x: ox + a.x, y: oy + a.y, w: a.w, h: a.h }
       const n = sum(s, "res", area)
-      if (n === undefined || n < policy.minOreCoverage * a.w * a.h) return undefined
+      if (n === undefined || n < policy.minOreCoverage * a.w * a.h) {
+        why = "coverage"
+        return undefined
+      }
       // B6: a drill mines every ore in its area; a second ore would clog the single-item line (D23).
-      if (sum(s, "ore", area)! !== n) return undefined
+      if (sum(s, "ore", area)! !== n) {
+        why = "foreign-ore"
+        return undefined
+      }
       have += n
       all += a.w * a.h
     }
@@ -361,7 +398,10 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     const cands = [tailCov, headCov].filter((c): c is number => c !== undefined)
     if (cands.length > 0) {
       growthCoverage = Math.max(...cands)
-      if ((s.req.def.expand?.maxUnits ?? 0) > 0 && growthCoverage === 0) return undefined
+      if ((s.req.def.expand?.maxUnits ?? 0) > 0 && growthCoverage === 0) {
+        why = "no-growth-ore"
+        return undefined
+      }
     }
   }
   let portDist = 0
@@ -369,9 +409,15 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
   for (const p of td.ports) {
     const x = ox + p.ox
     const y = oy + p.oy
-    if (sum(s, "hard", { x, y, w: 1, h: 1 }) !== 0) return undefined
+    if (sum(s, "hard", { x, y, w: 1, h: 1 }) !== 0) {
+      why = "port-blocked"
+      return undefined
+    }
     // Port clearance: the tile beyond the outside tile is not another module or blocked, so the port has a lane out.
-    if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) return undefined
+    if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) {
+      why = "port-lane"
+      return undefined
+    }
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]
     if (t === undefined) continue
@@ -391,6 +437,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     growthCoverage,
     softClaim: sum(s, "soft", rect) ?? 0,
   }
+  lastF = f
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
 }
 
@@ -406,6 +453,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       if (r > maxR) {
         s.phase = "failed"
         s.reason = `no ${s.req.def.site} site in the region`
+        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
         break
       }
       let found: Vec | undefined
@@ -448,6 +496,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         const c = s.refine[s.ri]
         const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy)
         s.candidates = (s.candidates ?? 0) + 1
+        if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
         if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
         s.ri++
         used++
@@ -492,12 +541,14 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         }
         s.result = m
         s.phase = "done"
+        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
       } else if (s.radiusIdx + 1 < radii(s, policy).length) {
         s.radiusIdx++
         startWindow(s, policy)
       } else {
         s.phase = "failed"
         s.reason = "no feasible position"
+        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
       }
       continue
     }
@@ -509,6 +560,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
     const e = evaluate(s, policy, td, ox, oy)
     s.candidates = (s.candidates ?? 0) + 1
+    if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
     if (e !== undefined) {
       if (s.best === undefined || e.score < s.best.score - 1e-9) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
       if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
@@ -522,6 +574,101 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
   }
   s.work += used
   return used
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Decision trace (planner/trace.ts): only runs while a tool has `planTrace.sink` set.
+
+function tname(t: Transform): string {
+  return `r${t.rot}${t.mirror ? "m" : ""}`
+}
+
+function traceCandidate(s: PlacementSearch, ti: number, ox: number, oy: number, score: number | undefined): void {
+  const acc = s.trace!
+  if (score !== undefined) {
+    noteFeasible(acc, ti, ox, oy, score)
+    return
+  }
+  const def = s.tdefs[ti].def
+  noteReject(acc, why, ti, ox, oy, manhattan({ x: ox + def.footprint.w / 2, y: oy + def.footprint.h / 2 }, s.req.center))
+}
+
+/** The first tile of `r` where `test` holds, described. */
+function firstTile(state: LayoutState, terrain: TerrainView, r: Rect, test: (this: void, x: number, y: number) => boolean): string | undefined {
+  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (test(x, y)) return `${x},${y}: ${describeTile(state, terrain, x, y)}`
+  return undefined
+}
+
+/** What rules out a rejected candidate, in words (re-derived from the layout and terrain, like `satRow` does). */
+function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, reason: string, td: TDef, ox: number, oy: number): string {
+  const def = td.def
+  const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
+  const treeHard = policy.obstacles.trees !== "clear"
+  const rockHard = policy.obstacles.rocks !== "clear"
+  const hard = (x: number, y: number): boolean => {
+    const k = tkey(x, y)
+    const b = terrain.block(x, y)
+    const mo = state.mine?.[k]
+    return b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || state.occ[k] !== undefined || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined || (mo !== undefined && mo !== s.req.id)
+  }
+  const isMod = (x: number, y: number): boolean => {
+    const o = state.occ[tkey(x, y)]
+    return o !== undefined && string.sub(o, 1, 2) === "m:"
+  }
+  if (reason === "hard") return `blocked at ${firstTile(state, terrain, rect, hard) ?? "?"}`
+  if (reason === "ore") return `ore at ${firstTile(state, terrain, rect, (x, y) => terrain.ore(x, y) !== undefined) ?? "?"}`
+  if (reason === "corridor") return `module within ${policy.corridor.min} tiles at ${firstTile(state, terrain, inflate(rect, policy.corridor.min), isMod) ?? "?"}`
+  if (reason === "clear-cost") return `clearing cost over ${policy.obstacles.maxClearCost}`
+  if (reason === "region") return "footprint leaves the planning region"
+  if (reason === "avoid") return "overlaps an avoided rectangle (old footprint or the request's avoid list)"
+  if (reason === "port-blocked" || reason === "port-lane") {
+    for (const p of td.ports) {
+      const x = ox + p.ox + (reason === "port-lane" ? p.nx : 0)
+      const y = oy + p.oy + (reason === "port-lane" ? p.ny : 0)
+      if (hard(x, y) || (reason === "port-lane" && isMod(x, y))) return `port ${p.id} ${reason === "port-lane" ? "lane" : "outside tile"} at ${x},${y}: ${describeTile(state, terrain, x, y)}`
+    }
+  }
+  return reason
+}
+
+function candidateTrace(s: PlacementSearch, policy: LayoutPolicy, ti: number, ox: number, oy: number): CandidateTrace | undefined {
+  const td = s.tdefs[ti]
+  const e = evaluate(s, policy, td, ox, oy)
+  if (e === undefined || lastF === undefined) return undefined
+  return { transform: tname(td.t), origin: { x: ox, y: oy }, rect: { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }, score: e.score, terms: placementTerms(lastF, policy), features: lastF }
+}
+
+function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
+  const acc = s.trace!
+  s.trace = undefined
+  const sink = planTrace.sink
+  if (sink === undefined) return
+  const top: CandidateTrace[] = []
+  for (const c of acc.top) {
+    const t = candidateTrace(s, policy, c.ti, c.ox, c.oy)
+    if (t !== undefined) top.push(t)
+  }
+  const rejected: Record<string, { count: number; examples: RejectTrace[] }> = {}
+  for (const [reason, r] of pairs(acc.rejected)) {
+    rejected[reason as string] = {
+      count: r.count,
+      examples: r.examples.map((x) => ({ transform: tname(s.tdefs[x.ti].t), origin: { x: x.ox, y: x.oy }, centerDist: x.dist, blocker: rejectBlocker(s, state, terrain, policy, reason as string, s.tdefs[x.ti], x.ox, x.oy) })),
+    }
+  }
+  sink.placements.push({
+    module: s.req.id,
+    def: s.req.def.id,
+    phase: s.phase === "done" ? "done" : "failed",
+    reason: s.reason,
+    center: s.req.center,
+    target: s.target,
+    radius: radii(s, policy)[s.radiusIdx],
+    candidates: s.candidates,
+    feasible: acc.feasible,
+    chosen: s.best !== undefined ? candidateTrace(s, policy, s.best.ti, s.best.ox, s.best.oy) : undefined,
+    top,
+    rejected,
+  })
 }
 
 /** Places synchronously (tests, tools). */
