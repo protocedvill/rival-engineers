@@ -10,6 +10,8 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Work milestone by milestone on `mN-<slug>` branches, stacked on the previous milestone branch. One PR per
   milestone, with a report at `docs/reports/MN-report.md`.
 - Throwaway experiments go on `proto/<topic>` branches. No PRs for them.
+- In a git worktree, `node_modules` (and `.factorio-test/factorio`) are symlinks to the main checkout. Stage only your
+  own files (no `git add -A` / `git add .`): a committed `node_modules` link once replaced the main checkout's real one.
 - Never touch the user's `~/.factorio` (saves, mods, blueprint storage) in place. Copy inputs into
   `tools/modules/input/` first. Test runs use the isolated install under `.factorio-test/` (git-ignored).
 - Determinism rules in SPEC §5.6 are hard constraints. All persistent state goes in `storage`, use no
