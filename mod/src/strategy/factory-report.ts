@@ -31,6 +31,8 @@ function policyFor() {
 /** A built temporary cell of `item`: its input and output chests and the assembler, for the economy (bootstrap.ts). */
 export interface TempCell {
   node: string
+  /** The product the cell makes (its node's item). */
+  item: string
   recipe: string
   input: LuaEntity
   output: LuaEntity
@@ -39,14 +41,17 @@ export interface TempCell {
   rate: number
 }
 
-export function tempCells(factionName: string, item: string): TempCell[] {
+export function tempCells(factionName: string, item?: string): TempCell[] {
   const out: TempCell[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph, "sink")) {
-    if (!isTempRole(n.role) || n.item !== item || n.lifecycle !== "built" || n.recipe === undefined) continue
+    if (!isTempRole(n.role) || n.lifecycle !== "built" || n.recipe === undefined || n.item === undefined) continue
+    const nodeItem = n.item
+    const recipe = n.recipe
+    if (item !== undefined && nodeItem !== item) continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let inPos: Vec | undefined
@@ -61,7 +66,7 @@ export function tempCells(factionName: string, item: string): TempCell[] {
     if (input === undefined || output === undefined) continue
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     const machine = findEntities(surface, { type: "assembling-machine", force: faction.force, area, limit: 1 })[0]
-    out.push({ node: n.id, recipe: n.recipe, input, output, machine, rate: rateIn(n.capacity.outputs, item) })
+    out.push({ node: n.id, item: nodeItem, recipe, input, output, machine, rate: rateIn(n.capacity.outputs, nodeItem) })
   }
   return out
 }

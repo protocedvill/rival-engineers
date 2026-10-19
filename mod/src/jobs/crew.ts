@@ -1,4 +1,4 @@
-import { LuaEntity, LuaInventory } from "factorio:runtime"
+import { BoundingBoxArray, LuaEntity, LuaInventory } from "factorio:runtime"
 import { cancel, cancelAll, enqueue, getAction } from "../character/controller"
 import { ActionRecord, ActionStatus } from "../character/types"
 import { Config, getConfig } from "../config"
@@ -17,6 +17,7 @@ import {
   planTrip,
   Pos,
   Rect,
+  isReady,
   release,
   releaseAllOf,
   selectJob,
@@ -70,6 +71,36 @@ export function onCrewTick(): void {
   if (tick % 60 === 0) placeUnboxGhosts(tick)
 }
 
+/**
+ * B17: like a player who abandons their ore trip to fetch the plates a furnace has been holding out, a member
+ * with work in flight preempts itself for a *strictly higher-priority* ready job (the brain's collect transfers
+ * outrank the batch it was claimed into), drops the whole batch — `resetMember` releases the claims without
+ * penalty — and plans again on the next tick, where priority sends it to the preempting job first. Only a ready
+ * job can do it: a back-off or claimed one never pulls a member off work it has already started.
+ */
+function preemptForPriority(faction: FactionState, member: CrewMember, tick: number): void {
+  const board = faction.board
+  const anchor = board.jobs[member.claims[0] ?? -1]
+  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return
+  let higher: CrewJob | undefined
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (!isReady(board, job, tick) || !isPreemptable(anchor, job)) continue
+    higher = job
+    break
+  }
+  if (higher === undefined) return
+  resetMember(faction, member, tick)
+  member.stats.preemptions = (member.stats.preemptions ?? 0) + 1
+}
+
+/** Which jobs are worth abandoning a member's current batch for. */
+function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
+  // A strictly higher priority. Fuel jobs (refuelling drills, keeping the burners burning) may preempt freely.
+  if (job.priority <= anchor.priority) return false
+  return job.kind === "fuel" || job.payload.kind === "transfer"
+}
+
 function stepFaction(faction: FactionState, config: Config, tick: number): void {
   for (const id of faction.crew) {
     const member = storage.crew[id]
@@ -91,6 +122,8 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       }
       member.spot = undefined
       if (!faction.paused) planNext(faction, member, config, tick)
+    } else if (!faction.paused) {
+      preemptForPriority(faction, member, tick)
     }
   }
   // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
@@ -152,9 +185,17 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     if (status === "queued" || status === "running") break
     member.actions.shift()
     unreserve(faction, ca.reserve)
-    // M6: a member that finds no path anywhere, several times in a row, is boxed in by what the crew built around it.
-    if (action?.reason === "no-path" && action.detail === "pathfinder found no path") member.noPaths = (member.noPaths ?? 0) + 1
-    else if (status === "succeeded") member.noPaths = 0
+    // M6/B22: a member that cannot get anywhere is boxed in. A "pathfinder found no path" walk counts, and so do
+    // the stuck/unreachable re-path failures members used to loop in forever. Only a finished *walk* action resets
+    // the count: a successful craft or transfer happens standing in one spot and says nothing about mobility.
+    const reason = action?.reason
+    if (
+      reason === "no-path" ? action!.detail === "pathfinder found no path" : reason === "stuck" || reason === "unreachable"
+    ) {
+      member.noPaths = (member.noPaths ?? 0) + 1
+    } else if (status === "succeeded" && ca.job === undefined) {
+      member.noPaths = 0
+    }
     if ((member.noPaths ?? 0) >= TRAPPED_NO_PATHS) {
       member.noPaths = 0
       unbox(faction, member, tick)
@@ -186,47 +227,99 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
   }
 }
 
-/** No-path failures in a row after which a member counts as boxed in (M6, seed 222: a member enclosed by a grown steam block hoarded the belts its build needed for hours). */
+/** Walk failures in a row after which a member counts as boxed in (M6, seed 222): no-path walks, and stuck/unreachable loops (B22: a member that re-paths forever in place is just as stuck). */
 const TRAPPED_NO_PATHS = 3
-/** How far around a boxed-in member to look for a small entity to pick up. */
+/** How far around a boxed-in member to look for own entities it may pick up. */
 const UNBOX_RADIUS = 3
+/** B22: how far around it to look for neutral trees and rocks to mine through. */
+const UNBOX_TREE_RADIUS = 3
+/** B22: most trees or rocks one escape mines before it gets back to work (the walk re-checks the rest). */
+const UNBOX_TREES_PER_ESCAPE = 16
 /** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
 const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
+/** B22: own structures big enough to trap a member (walls, machines); picked up like the small ones, last. */
+const UNBOX_BIG_TYPES = ["wall", "furnace", "boiler", "lab", "mining-drill", "burner-generator", "steam-engine", "assembling-machine", "storage-tank", "radar"]
+/** B22: after an escape attempt that found nothing the member could clear, wait this long before trying again. */
+const UNBOX_RETRY_TICKS = 600
+
+/** B22: one thing near a boxed-in member that blocks it: an own structure to pick up, or a neutral tree/rock to mine. */
+interface EscapeTarget {
+  entity: LuaEntity
+  act: "pickUp" | "mine"
+  rank: number
+}
 
 /**
- * M6: like a player walled in by their own build, a boxed-in member picks up the nearest small entity around it and
- * leaves a ghost in its place (a place job re-places it once the member is out). Its other work is dropped.
+ * B22: what a boxed-in member clears to get out. Own structures go one at a time (cheap first: small, then big;
+ * a ghost re-places each once the member is out); if none stands in the way, it mines the trees and rocks in its
+ * reach — all of them, up to `UNBOX_TREES_PER_ESCAPE`, so a ring of them actually opens. Only what the member can
+ * *reach* counts — a walk out of the enclosure is exactly the thing that fails. Empty: nothing in reach at all.
  */
-function unbox(faction: FactionState, member: CrewMember, tick: number): void {
+function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
   const c = member.character
-  if (!c.valid) return
   const p = c.position
-  const found = findEntities(factionSurface(faction), { force: faction.force, type: UNBOX_TYPES, area: [[p.x - UNBOX_RADIUS, p.y - UNBOX_RADIUS], [p.x + UNBOX_RADIUS, p.y + UNBOX_RADIUS]] })
-  let best: LuaEntity | undefined
-  let bestRank = math.huge
-  for (const e of found) {
+  const area: BoundingBoxArray = [[p.x - UNBOX_RADIUS, p.y - UNBOX_RADIUS], [p.x + UNBOX_RADIUS, p.y + UNBOX_RADIUS]]
+  const surface = factionSurface(faction)
+  let best: EscapeTarget | undefined
+  const offer = (e: LuaEntity, slot: number): void => {
+    if (!c.can_reach_entity(e)) return
     const d = (e.position.x - p.x) ** 2 + (e.position.y - p.y) ** 2
-    const rank = UNBOX_TYPES.indexOf(e.type) * 100 + d
-    if (rank < bestRank || (rank === bestRank && best !== undefined && (e.unit_number ?? 0) < (best.unit_number ?? 0))) {
-      best = e
-      bestRank = rank
+    const rank = slot * 100 + d
+    if (best === undefined || rank < best.rank || (rank === best.rank && (e.unit_number ?? 0) < (best.entity.unit_number ?? 0))) {
+      best = { entity: e, act: "pickUp", rank }
     }
   }
-  resetMember(faction, member, tick)
-  if (best === undefined) {
-    log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${math.floor(p.x)},${math.floor(p.y)} finds no path anywhere and nothing to pick up`)
+  for (const e of findEntities(surface, { force: faction.force, type: UNBOX_TYPES, area })) offer(e, UNBOX_TYPES.indexOf(e.type))
+  for (const e of findEntities(surface, { force: faction.force, type: UNBOX_BIG_TYPES, area })) offer(e, UNBOX_TYPES.length + UNBOX_BIG_TYPES.indexOf(e.type))
+  // Its own structures stand between it and the way out: open a hole one pick-up at a time.
+  if (best !== undefined) return [best]
+  const treeArea: BoundingBoxArray = [[p.x - UNBOX_TREE_RADIUS, p.y - UNBOX_TREE_RADIUS], [p.x + UNBOX_TREE_RADIUS, p.y + UNBOX_TREE_RADIUS]]
+  const found = findEntities(surface, { type: ["tree", "simple-entity"], area: treeArea })
+  const trees: EscapeTarget[] = []
+  for (const e of found) {
+    if (!e.minable || !e.prototype.mineable_properties.minable || !c.can_reach_entity(e)) continue
+    trees.push({ entity: e, act: "mine", rank: (e.position.x - p.x) ** 2 + (e.position.y - p.y) ** 2 })
+  }
+  trees.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : (a.entity.unit_number ?? 0) - (b.entity.unit_number ?? 0)))
+  while (trees.length > UNBOX_TREES_PER_ESCAPE) trees.pop()
+  return trees
+}
+
+/**
+ * M6/B22: like a player walled in by their own build, a boxed-in member clears a way out — picks up an own entity
+ * around it, or mines the trees and rocks it reaches — then walks on; its dropped jobs go back to the board, so it
+ * resumes after the escape. With nothing nearby it can clear, it drops nothing: the failed walk keeps running
+ * through the board's own failure handling, and after `UNBOX_RETRY_TICKS` the escape is tried again.
+ */
+function unbox(faction: FactionState, member: CrewMember, tick: number): void {
+  if (!member.character.valid) return
+  const plan = escapePlan(faction, member)
+  const p = member.character.position
+  if (plan.length === 0) {
+    if (tick < (member.unboxRetryAt ?? 0)) return
+    member.unboxRetryAt = tick + UNBOX_RETRY_TICKS
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is stuck at ${math.floor(p.x)},${math.floor(p.y)} and nothing in reach to clear; retrying in ${UNBOX_RETRY_TICKS} ticks`)
     return
   }
-  const params: Record<string, unknown> = { name: "entity-ghost", inner_name: best.name, position: best.position, direction: best.direction, force: faction.force }
-  if (best.type === "underground-belt") params.type = best.belt_to_ground_type
-  const name = best.name
-  const at = `${best.position.x},${best.position.y}`
-  member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: best }) })
+  resetMember(faction, member, tick)
   member.stats.unboxed = (member.stats.unboxed ?? 0) + 1
+  if (plan.length > 1 || (plan.length === 1 && plan[0].act === "mine")) {
+    for (const t of plan) {
+      member.actions.push({ action: enqueue(member.controller, { kind: "mine", target: t.entity }) })
+    }
+    const e = plan[0].entity
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: mines ${plan.length} tree/rock around it (${e.name} at ${e.position.x},${e.position.y} first) to get out`)
+    return
+  }
+  const e = plan[0].entity
+  const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: e.position, direction: e.direction, force: faction.force }
+  if (e.type === "underground-belt") params.type = e.belt_to_ground_type
+  if (e.type === "assembling-machine") params.recipe = e.get_recipe()[0]?.name
+  member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: e }) })
   // The ghost goes in once the entity is gone (a ghost can't overlap it): the next poll makes it.
   storage.unboxGhosts ??= []
   storage.unboxGhosts.push({ faction: faction.name, params, tick })
-  log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${name} at ${at} (re-placed from a ghost)`)
+  log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (re-placed from a ghost)`)
 }
 
 /** M6: ghosts for what boxed-in members picked up, once the entity is gone; each gets a place job. */

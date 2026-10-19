@@ -79,6 +79,7 @@ export const Settings = {
   moduleBufferSlots: "rival-engineers-module-buffer-slots",
   bootstrapFactories: "rival-engineers-bootstrap-factories",
   bootstrapFactoryWaitSeconds: "rival-engineers-bootstrap-factory-wait-seconds",
+  bootstrapTempCellFeedPriority: "rival-engineers-bootstrap-temp-cell-feed-priority",
   crewBackgroundCrafts: "rival-engineers-crew-background-crafts",
   factoryDesignMargin: "rival-engineers-factory-design-margin",
   factoryLabSizing: "rival-engineers-factory-lab-sizing",

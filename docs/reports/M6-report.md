@@ -162,8 +162,11 @@ for regression signals only, not a target.
 | `redLine` expansion cap | `modules/generators.ts` | 10 units (`10 - units`) | Guess: keeps a red line within ~120 tiles; no game limit. | no |
 | `labArray` expansion cap | `modules/generators.ts` | 10 units (`10 - units`) | Guess: same reason (8 tiles per unit). | no |
 | `OUTPOST_FAR_RADIUS` | `planner/placement.ts` | 192 tiles | One more search ring for mining outposts beyond the policy's radii (ore near the core runs out); within the plan's region. Guess. | no |
-| `TRAPPED_NO_PATHS` | `jobs/crew.ts` | 3 no-path failures in a row | Boxed-in detection: one or two failures happen on busy sites. Guess. | no |
-| `UNBOX_RADIUS` | `jobs/crew.ts` | 3 tiles | The small entities around a boxed-in member it may pick up (within reach). Guess. | no |
+| `TRAPPED_NO_PATHS` | `jobs/crew.ts` | 3 walk failures in a row (B22: no-path walks, stuck and unreachable re-path loops; only a finished *walk* resets it) | Boxed-in detection: one or two failures happen on busy sites. Guess. | no |
+| `UNBOX_RADIUS` | `jobs/crew.ts` | 3 tiles | The own entities around a boxed-in member it may pick up (within reach). Guess. | no |
+| `UNBOX_TREE_RADIUS` (B22) | `jobs/crew.ts` | 3 tiles | How far around a boxed-in member it looks for neutral trees/rocks to mine through. Guess. | no |
+| `UNBOX_TREES_PER_ESCAPE` (B22) | `jobs/crew.ts` | 16 | Most trees/rocks one escape mines before it walks on (the walk re-checks the rest); enough to open a dense seed-222-style ring in ≤2 escapes. Guess. | no |
+| `UNBOX_RETRY_TICKS` (B22) | `jobs/crew.ts` | 600 (10 game-s) | Wait before the next escape attempt when the last found nothing to clear (instead of dropping work every cycle). Guess. | no |
 | `ROW_BUFFER_W` | `modules/generators.ts` | 2 columns | Buffer head width on assembler rows / circuit blocks (belt + inserter + chest). Layout-derived. | no |
 | `SCIENCE_SAMPLE_TICKS` | `strategy/stage.ts` | 3600 (1 game-min) | Sample period for "sustained" (P31). | no |
 | `SCIENCE_MAX_SAMPLES` | `strategy/stage.ts` | 600 (10 game-h) | Keeps the 8-h run's samples with margin; bounds storage. | no |
@@ -341,3 +344,121 @@ claim is occupied; and a sabotaged completion (foreign ground under the first no
 `wholeFail["n22"] = "n16: planned mine blocked at -47,500"` before any fallback, checked step-by-step so it does not
 depend on Lua table order. Codex's B21 work (whole-patch drill plans `mine-plan.ts`, D52, and the rest of the
 uncommitted 25-file tree) landed in the same commit bec529b.
+
+## M6a.3: B22 the stuck member — unboxing becomes a real escape (2026-10-18)
+
+The M6 unbox (6db6e37) covered only part of the stuck-member problem, as the B22 row describes: it triggered only on
+3 straight "pathfinder found no path" walk failures (members looping "stuck"/"unreachable" re-paths never triggered
+it, and any successful action — a standing craft, a transfer — erased the count), it could only pick up small own
+entities within 3 tiles (big machines, walls, and all neutral trees/rocks were invisible to it), and with nothing to
+pick up it logged and dropped its work, re-triggering every cycle forever.
+
+**Fix (1b198fd, `jobs/crew.ts`):**
+
+- The trigger now counts `stuck` and `unreachable` walk failures equally, and only a finished *walk* action resets
+  the count (a standing action says nothing about mobility).
+- The escape is chosen from what the member can act on **from where it stands** (`can_reach_entity`) and ordered
+  cheap first: its faction's own entities one at a time, small types then walls and big machines (the pick-up leaves
+  a ghost with the entity's recipe, so a picked-up assembler re-places with its recipe); if no own structure stands
+  in the way, it mines the neutral trees and rocks in its reach — all of them, up to `UNBOX_TREES_PER_ESCAPE` (16),
+  so a dense ring actually opens instead of one tree per cycle.
+- With nothing nearby to clear it no longer drops its work every cycle: the attempt waits out
+  `UNBOX_RETRY_TICKS` (600) before unboxing again, and the member's jobs keep running through the board's own
+  failure handling (penalised releases, `jobMaxAttempts`) — the real escalation path when the walk is unfixable.
+
+**Tests (T2 `jobs.test`):** a member boxed in behind two staggered tree rings (seed-222-style density, 28 trees)
+mines its way out and builds its chest; a member enveloped by its own assembling machines (pitch-3 ring, boxes
+touching in a continuous wall) picks one up, gets out, builds, and the machine is re-placed. Both pass `stats.unboxed`
+matches: the tree case mines (no ghosts), the machine case picks up. Full suite 115/115 at 1b198fd.
+
+## M6b: B16 the factory-graph GUI window (2026-10-19)
+
+The B16 row: a factory-graph window beside the map overlay, like the vanilla production graph — nodes with
+planned vs measured rates and status, edges as plain relationships, laid out to be understood rather than to
+match real positions. The overlay (M5b) needs a spectator in the base and clutters with many modules; the dumps
+leave the game. This window is a per-player screen frame read at the same cadence as the inspector.
+
+**What (`review/graph-window.ts` + `review/graph-layout.ts`, SPEC D29 note):**
+
+- Hotkey `Ctrl+Shift+G` / a shortcut-bar button (own shortcut prototype, same icon scheme as the inspector's);
+  the faction ◀ ▶ buttons share the inspector's per-player faction selection.
+- **Layout by dataflow, not position:** `graph-layout.ts` is pure (no Factorio globals) and computes each
+  node's depth from its belt/crew inputs (power edges are drawn but do not shape the layout; a cycle's leftovers
+  share one level past the deepest resolved node). The window draws one column per depth, one chip (button) per
+  node tinted with the overlay's status colours — grey when `planned`/`building` — with its measured/planned
+  output (power: load %) under it, and the status counts in a header.
+- **Plain edges:** a bordered table — From · To · Item · Plan · Measured · Probe — reusing the reconciler's own
+  `edgeVerdict` (stale/full/intake/broken/sparse), so the window and the remedies language never disagree.
+- Root cause and status reason sit in each chip's tooltip; clicking a chip takes your camera to the module in
+  the base (`findModule` + `goTo`), which is where the map overlay takes over for the real geometry.
+- No factory yet (or an empty graph) prints a note instead of an empty frame; the window never writes to AI
+  state (the `model.ts` rule) and every new number it could have invented was avoided: it reuses the overlay's
+  `MAX_NODES`/`MAX_EDGES` caps and the inspector's refresh cadence and frame sizes.
+
+**Tests:** T1 `unit/graph-layout.test.ts` (4 tests): levels for outpost → smelter → gears with a power edge in,
+cycle leftovers, crew-fed edges, verdict rows, status counts and cause text. T2 `test/graph-window.test.ts`: a
+faction with a hand-built two-node chain (reconciler.test.ts's pattern) — the layout is asserted headless
+(levels, counts, verdict) and, with a player, the window opens, renders 2 chips sharing the faction cycle, and
+closes; a faction without a factory gets the note. Registered in `control.ts`.
+
+## M6b.1: B17 preemption — collect-first material sourcing (2026-10-19)
+
+The B17 row: a soak (`faction b17-a`/`b17-b` labs, the `B17 probe:` log lines during development) showed the crew
+hand-mining ore while bootstrap furnaces held full plate stacks. The brain's collect transfer jobs were open and
+ready the whole time — root cause is on the crew side: `planNext` only fires between batches (when a member's
+actions empty), and `selectJob` never interrupts work already in flight, so an open high-priority transfer had to
+wait for every busy member to finish a whole low-priority gather batch first.
+
+**Fix (951e1da, `jobs/crew.ts`):** crew preemption. `stepFaction` checks each member with work in flight
+(claims + queued actions) against the open board first; when a **strictly higher-priority ready** job exists and is
+worth the drop (`isPreemptable`: fuel jobs or a transfer payload — a back-off or claimed job never pulls a member
+off started work), the member preempts itself: `resetMember` drops the whole batch (claim release without the
+failure penalty) and it re-plans on the next tick, where plain priority ordering sends it to the preempting job.
+`CrewStats.preemptions` accounts the drops. No new setting or constant: it reuses the existing priority table
+(fuel 100 > place 90 > transfer 60 > gather 20), so a preempt only ever moves work *forward*.
+
+**Tests (T2 `test/bootstrap-sources_test.ts`):** two labs, empty depot chest, a plated furnace with 100 plates.
+1. The basic collect round trip on an idle crew (plates reach the depot; no ore patches in the lab, so the
+   collect is the only plate source).
+2. Preempt-over-hand-mining: `tripMaxJobs=1` (test-only override — otherwise `planTrip` chains the row of 12
+   neighbouring trees into two members' trips and the third never gets work, so the crew can't be saturated),
+   wait until all three members are provably in flight on gather jobs, then inject a craft demand and force a
+   think; the collect transfer appears into a saturated crew where only a preemption can claim it. Asserts
+   `preemptions > 0`, the depot empty at inject, and the trees surviving the dropped batch.
+
+Both pass in-tick (~0.5 s). The soak probe code itself (the `B17 probe` diagnostics) was never committed —
+stripped from the fix. Full suite (119 tests, 12 shards) green.
+
+### Magic numbers for the user (M6b.1)
+
+None new: preemption uses the existing priority table, and the engine-capability numbers it relies on (reach 10,
+character speed) were already measured in `engine-capabilities_test`.
+
+## M6b.2: B18 proactive temp-cell stocking (2026-10-19)
+
+The B18 row: temporary factory cells (D38 "chest cells") were fed only when an order asked for their product
+(`feedTempCells` runs inside the produce pass) — with no request in flight the input chest drained, the cell
+stopped, and there was no buffered output to serve a later request. The user's P26 check in game kept tripping
+over dry cells.
+
+**Fix (32076d2, `strategy/bootstrap.ts` `topUpTempCells`):** every think (after `reconcile`), each **built** cell's
+input chest is topped up to the same buffer the demand feed uses (`bootstrap-factory-wait-seconds` of the cell's
+output; a powered, non-marked machine only) from the depot's surplus — requests win, what they leave stocks the
+cells. Each ingredient is one keyed `tempfeed:` **fuel** job, the same keys the on-demand feed uses, so the two
+passes never double-book (what a refill is already bringing counts across thinks), and only enough to reach the
+buffer is reserved (`addDemand`). The refills' competition with other work is the new
+`bootstrap-temp-cell-feed-priority` (default **40**: above gather 20, below the collect transfers 60, so a furnace
+collect still preempts an in-flight refill — §5.5 collect-first holds; **0 = never stock proactively**). The D38
+feeds stay at `feed` (55). `tempCells` now takes an optional item (so the pass sees every cell) and carries the
+cell's product.
+
+**Tests (T2 `test/temp-factory.test.ts`, sharing the extracted cell builder):** a quiet economy (no goals, no
+sites, replan held off by a `stallTicks` override) with a depot of 200 plates: the input chest is topped up exactly
+to the target with **nothing anywhere asking for the cell's product**; the setting steers the refill job's priority
+(65) and **0** queues no refill. Full suite (122 tests, 12 shards) green.
+
+### Magic numbers for the user (M6b.2)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| `bootstrap-temp-cell-feed-priority` | `settings.ts`, `strategy/bootstrap.ts` | 40 | Between gather (20) and craft (50): refills beat hand-mining but never pre-empt the §5.5 collects/fuel; 0 = off (P26 pending). Guess. | yes (new) |

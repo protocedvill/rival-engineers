@@ -75,10 +75,12 @@ export interface CrewStats {
   deposits?: number
   /** D38: craft jobs queued in the background of another batch. */
   backgroundCrafts?: number
-  /** M6: times the member picked up an entity to get out of an enclosure (it is re-placed from a ghost). */
+  /** M6: times the member cleared a way out of an enclosure (picked an entity up — re-placed from a ghost — or mined a tree/rock). */
   unboxed?: number
   /** Mining trips of more than one job (B3). */
   trips?: number
+  /** B17: batches dropped to work a strictly higher-priority job first (a collect transfer on furnaces, a fuel refill). */
+  preemptions?: number
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */
@@ -102,6 +104,8 @@ export interface CrewMember {
   spot?: Pos
   dead: boolean
   stats: CrewStats
-  /** M6: pathfinding failures in a row (no path at all); the member is boxed in at TRAPPED_NO_PATHS. */
+  /** M6: walk failures in a row (no path, or a stuck/unreachable re-path loop); the member is boxed in at TRAPPED_NO_PATHS. */
   noPaths?: number
+  /** B22: ticks one over the earliest tick of the next escape attempt when the last found nothing to clear. */
+  unboxRetryAt?: number
 }

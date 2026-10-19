@@ -61,7 +61,7 @@ Two layers, by analogy:
 | D35 | Smelter placement (2026-10-14, user decision via manager) | "Smelting near its ore patch" vs "compact core" is a **LayoutPolicy option**, not a fixed rule. Both are implemented, and **M6 soak runs A/B them** to pick the early-game default. The M4 real-terrain bar (lab 5 modules + steam block, 5/5 seeds) is accepted. |
 | D36 | Undergrounds (2026-10-15, user decision on P16, changed) | Research `logistics` (hand-fed packs, like the other unblocking techs) **before** a production/mall plan only when a route using underground belts would be **at least 50 tiles shorter** in total than the best plan without them (setting, default 50). Otherwise it waits for the normal research order. A plan that has no routing at all without undergrounds counts as infinitely longer, so the seed-222 case still researches it first. **Same rule for splitters** (user, 2026-10-15): if a plan using splitters (e.g. one producer feeding several consumers through splits instead of separate long belts) is at least n tiles shorter (own setting), research the technology that unlocks them first instead of building the long belts. |
 | D37 | Stage 1 target (2026-10-15, user decision) | P11 approved: default `factory-targets` = 10 red/min, labs sized for the research goal's mean unit time. M6 adds the 30 + 30 stage. |
-| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. |
+| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. B18: cells are **kept stocked proactively** — every think tops the input chests up to the same buffer the demand feed uses (`bootstrap-factory-wait-seconds` of output) from the depot's surplus, so an output chest always holds a buffer that serves any later request; `bootstrap-temp-cell-feed-priority` (0 = off) decides how the refills compete with other work. |
 | D39 | Crew pace (2026-10-15, user) | No artificial "think time" slowdown: the crews are already slower than a human because they work inefficiently. Efficiency improvements (batching, crafting while walking) are wanted, not throttling. |
 | D40 | Bootstrap sizing (2026-10-15, user) | Bootstrap drill/furnace counts are **settings**, with the current values as defaults. |
 | D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
@@ -432,7 +432,8 @@ Default to configurable (D18). Settings live in three places:
   `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
   `module-buffer-slots` (2, D51), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
-  = none), `bootstrap-factory-wait-seconds` (60), `crew-background-crafts` (1; 0 = craft standing).
+  = none), `bootstrap-factory-wait-seconds` (60), `bootstrap-temp-cell-feed-priority` (40, B18; 0 = off),
+  `crew-background-crafts` (1; 0 = craft standing).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -514,6 +515,10 @@ In v1, a stall caused by depletion just shows up as a starved node in telemetry.
   and status.
 - **In-game overlay:** a debug setting draws module boxes, edges, rates and node status using the
   `rendering` API in the live game.
+- **Factory-graph window (B16):** a per-player GUI screen (`Ctrl+Shift+G`) beside the overlay: the graph laid
+  out by dataflow depth (not real positions), one chip per node with its reconciler status and measured/planned
+  rate, a table of plain edges (item, planned vs measured, probe verdict), status counts, and a cause line in
+  each chip's tooltip. Clicking a chip jumps the camera to the module in the base.
 
 **Testing:** T1 tests cover the solver (ratios for the red/green chain against hand-computed values,
 e.g. 30+30 SPM → 3.75 Fe/s, 1.25 Cu/s), capacity math and overflow decisions. T2 tests cover measurement
@@ -616,10 +621,15 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
   it under "Assumptions" in the report and keep going. Stop and wait only for decisions that are hard to
   reverse or that change §2 or §3.
 - Never weaken an acceptance test to make it pass. Changing an acceptance threshold is a spec change.
-- **Finishing a task (user, 2026-10-15).** The working agent runs the full test suite and the single-faction
-  acceptance soak on its final code commit, checks the work-count gate (below), writes its report, pushes and
-  hands off. The **manager** then starts the next agent and, in parallel, does the final validation: GitHub CI on
-  the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
+- **Long runs belong to the manager (user, 2026-10-19).** A subagent's prompt cache expires after 5 minutes, the
+  manager's after an hour, so a subagent never runs or waits on anything that can take longer than about 5 minutes:
+  soaks, acceptance rounds, the serial suite, benchmarks. It may run unit tests, filtered T2 tests and the parallel
+  suite (~2.5 min). For a longer run it commits, returns the exact command and what to look for, and the manager runs
+  it and resumes the agent (or the next one) with the result.
+- **Finishing a task (user, 2026-10-15; amended 2026-10-19).** The working agent runs the parallel test suite on its
+  final code commit, writes its report, pushes and hands off. The **manager** then runs the single-faction
+  acceptance soak, checks the work-count gate (below), starts the next agent and, in parallel, does the final
+  validation: GitHub CI on the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
   agent's work (or a resumed agent if it is small). Wall-clock numbers from runs that overlap are not
   performance evidence.
 - **Performance gates (user, 2026-10-15).** (1) **Work counts** (planner work units, path requests, entity scans,

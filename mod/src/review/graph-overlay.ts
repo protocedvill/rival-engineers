@@ -8,7 +8,7 @@ import { OverlayContext, registerOverlayLayer } from "./overlay"
 // its role, status and measured / planned output; each belt edge as a line between its ports with measured / planned
 // items/s; a node's root cause under its box. Drawn for the inspecting player only (review/overlay.ts).
 
-const STATUS_COLOR: Record<NodeStatus, Color> = {
+export const STATUS_COLOR: Record<NodeStatus, Color> = {
   unknown: { r: 0.6, g: 0.6, b: 0.6 },
   ok: { r: 0.2, g: 0.9, b: 0.2 },
   // D49: crew-supplied by design (hand-fed labs): neutral, not a problem colour.
@@ -19,8 +19,8 @@ const STATUS_COLOR: Record<NodeStatus, Color> = {
   unfuelled: { r: 1, g: 0.25, b: 0.2 },
 }
 
-const MAX_NODES = 80
-const MAX_EDGES = 120
+export const MAX_NODES = 80
+export const MAX_EDGES = 120
 
 function fmt(x: number | undefined): string {
   return x === undefined ? "?" : string.format("%.2g", x)

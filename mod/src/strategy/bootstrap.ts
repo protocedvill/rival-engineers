@@ -237,6 +237,9 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   scanJobs(ctx)
   maintain(ctx)
   reconcile(ctx)
+  // B18: what the live orders leave of the surplus stocks the temporary cells (requests win; the refills' crew
+  // priority is its own setting).
+  topUpTempCells(ctx)
   milestones(ctx)
   brain.waiting = ctx.waiting
   checkStall(ctx)
@@ -1115,6 +1118,50 @@ function feedTempCells(ctx: Ctx, item: string, short: number): number {
     }
   }
   return short
+}
+
+/**
+ * B18: keep temporary cells stocked **proactively** (every think): top each built cell's input chest up to the same
+ * buffer the on-demand feed uses (`bootstrap-factory-wait-seconds` of output), from the depot's surplus, so the
+ * cell's output chest builds a buffer that serves any later request without waiting for one. Each ingredient is one
+ * keyed job - the same `tempfeed:` keys the on-demand feed uses, so the two never double-book; the configured
+ * priority decides how the refills compete with other work (0 = never stock proactively). What the cell holds and
+ * what a refill is already bringing counts, so a buffer arrives in chunks across thinks without over-reserving.
+ */
+function topUpTempCells(ctx: Ctx): void {
+  const priority = ctx.config.bootstrapTempCellFeedPriority
+  if (priority <= 0) return
+  const cells = tempCells(ctx.faction.name)
+  if (cells.length === 0) return
+  const wait = ctx.config.bootstrapFactoryWaitSeconds
+  for (const cell of cells) {
+    const m = cell.machine
+    // A cell without power makes nothing: don't stock what won't run.
+    if (m === undefined || !m.valid || m.status === defines.entity_status.no_power || m.to_be_deconstructed()) continue
+    const recipe = prototypes.recipe[cell.recipe]
+    const per = craftYield(cell.recipe, cell.item)
+    const cap = math.max(per, math.floor(cell.rate * wait))
+    const inv = m.get_inventory(defines.inventory.crafter_input)
+    for (const ing of recipe.ingredients) {
+      const have = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      let inflight = 0
+      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
+      if (keyActive(ctx, key)) {
+        const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]!]
+        if (job.payload.kind === "fuel") inflight = job.payload.count
+      }
+      const add = math.max(0, math.min(cap * ing.amount - have - inflight, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
+      if (add <= 0) continue
+      addKeyed(ctx, key, {
+        kind: "fuel",
+        pos: cell.input.position,
+        materials: [{ item: ing.name, count: add }],
+        priority,
+        payload: { kind: "fuel", item: ing.name, count: add, target: cell.input, partial: true },
+      })
+      addDemand(ctx, ing.name, add)
+    }
+  }
 }
 
 function craft(ctx: Ctx, item: string, recipeName: string, short: number): void {

@@ -1,20 +1,55 @@
 import { clearConfigOverrides, setConfigOverride } from "../config"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
+import { Job } from "../jobs/board"
+import { FactionState, JobPayload } from "../jobs/types"
+import { LuaEntity } from "factorio:runtime"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { commitModule, PlacedModule } from "../planner/layout"
 import { addNode, rateIn } from "../planner/logical"
 import { stampParts } from "../planner/runtime"
 import { startBootstrap } from "../strategy/bootstrap"
-import { getFactory, startFactory } from "../strategy/factory"
-import { tempCells } from "../strategy/factory-report"
-import { at, createLab } from "./lab"
+import { FactoryState, getFactory, startFactory } from "../strategy/factory"
+import { TempCell, tempCells } from "../strategy/factory-report"
+import { Lab, at, createLab } from "./lab"
 
 // D38 (M5d): a temporary chest-fed gear cell supplies the bootstrap economy. The brain needs gears: it collects them
 // from the cell's output chest, feeds the cell's input chest with surplus plates from the depot, waits for up to
 // `bootstrap-factory-wait-seconds` of the cell's output and hand-crafts only the rest.
 
 const SPEED = 50
+
+/** A built chest-fed gear cell 10 tiles east of the lab origin (the D38 test's cell), factory state and all. */
+function buildGearCell(lab: Lab, faction: FactionState): FactoryState {
+  const f = startFactory(faction)
+  const def = generatedModule("chest-cell", { recipe: "iron-gear-wheel", machine: "assembling-machine-1", chest: "iron-chest" })
+  const origin = { x: math.floor(lab.origin.x) + 10, y: math.floor(lab.origin.y) - 2 }
+  const m: PlacedModule = { id: "cell", canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  commitModule(f.layout, m, prototypeFacts, 1)
+  const r = stampParts(lab.surface, faction.force, f.layout, { modules: ["cell"], routes: [], poles: [] }, false)
+  assert(r.failed.length === 0, `stamped: ${r.failed.join("; ")}`)
+  const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: { x: origin.x + 1, y: origin.y - 2 }, force: faction.force })!
+  eei.power_production = 1e6
+  eei.electric_buffer_size = 1e6
+  lab.surface.create_entity({ name: "small-electric-pole", position: { x: origin.x + 0.5, y: origin.y - 0.5 }, force: faction.force })
+  addNode(f.graph, {
+    id: "cell",
+    role: "temp:iron-gear-wheel#1",
+    kind: "sink",
+    module: def.id,
+    generator: "chest-cell",
+    recipe: "iron-gear-wheel",
+    item: "iron-gear-wheel",
+    capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
+    planned: { inputs: [], outputs: [{ item: "iron-gear-wheel", perSecond: rateIn(def.rates.outputs, "iron-gear-wheel") }] },
+    powerW: 0,
+    lifecycle: "built",
+    status: "unknown",
+    createdTick: game.tick,
+    builtTick: game.tick,
+  })
+  return f
+}
 
 describe("D38 temporary factories", () => {
   let speed = 1
@@ -44,34 +79,7 @@ describe("D38 temporary factories", () => {
     depot.insert({ name: "iron-plate", count: 200 })
     addStockpile(faction, depot)
     brain.goals = [{ kind: "items", items: { "iron-gear-wheel": 30 }, label: "d38-gears" }]
-    const f = startFactory(faction)
-    // A built gear cell 10 tiles east, powered by an energy interface next to its pole.
-    const def = generatedModule("chest-cell", { recipe: "iron-gear-wheel", machine: "assembling-machine-1", chest: "iron-chest" })
-    const origin = { x: math.floor(lab.origin.x) + 10, y: math.floor(lab.origin.y) - 2 }
-    const m: PlacedModule = { id: "cell", canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
-    commitModule(f.layout, m, prototypeFacts, 1)
-    const r = stampParts(lab.surface, faction.force, f.layout, { modules: ["cell"], routes: [], poles: [] }, false)
-    assert(r.failed.length === 0, `stamped: ${r.failed.join("; ")}`)
-    const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: { x: origin.x + 1, y: origin.y - 2 }, force: faction.force })!
-    eei.power_production = 1e6
-    eei.electric_buffer_size = 1e6
-    lab.surface.create_entity({ name: "small-electric-pole", position: { x: origin.x + 0.5, y: origin.y - 0.5 }, force: faction.force })
-    addNode(f.graph, {
-      id: "cell",
-      role: "temp:iron-gear-wheel#1",
-      kind: "sink",
-      module: def.id,
-      generator: "chest-cell",
-      recipe: "iron-gear-wheel",
-      item: "iron-gear-wheel",
-      capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
-      planned: { inputs: [], outputs: [{ item: "iron-gear-wheel", perSecond: rateIn(def.rates.outputs, "iron-gear-wheel") }] },
-      powerW: 0,
-      lifecycle: "built",
-      status: "unknown",
-      createdTick: game.tick,
-      builtTick: game.tick,
-    })
+    const f = buildGearCell(lab, faction)
     const cells = tempCells(faction.name, "iron-gear-wheel")
     assert(cells.length === 1, `the cell is found (${cells.length})`)
     const machine = cells[0].machine!
@@ -87,6 +95,109 @@ describe("D38 temporary factories", () => {
       assert(made >= 15, `the cell made most of the gears (${made} of 30)`)
       done()
       return false
+    })
+  })
+
+  /** A quiet-economy temp cell: no goals, no sites, nothing anywhere asking for the cell's product. */
+  function quietPlateDepot(lab: Lab, faction: FactionState): { brain: ReturnType<typeof startBootstrap>; depot: LuaEntity; cell: TempCell } {
+    const brain = startBootstrap(faction, at(lab, 0, 8))
+    const depot = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 0.5, 4.5), force: faction.force })!
+    depot.insert({ name: "iron-plate", count: 200 })
+    addStockpile(faction, depot)
+    // Replan stays off so the brain cannot invent an order for the test window.
+    setConfigOverride("stallTicks", 1e9)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    buildGearCell(lab, faction)
+    const cells = tempCells(faction.name, "iron-gear-wheel")
+    assert(cells.length === 1 && cells[0].machine !== undefined, "the cell is found with its machine")
+    return { brain, depot, cell: cells[0] }
+  }
+
+  const cellKey = (cell: TempCell, item: string): string => `tempfeed:${cell.input.unit_number}:${item}`
+
+  test("the brain stocks a cell's input chest with no order asking for its product (B18)", () => {
+    const lab = createLab(32)
+    const faction = createFaction("d38-topup", { position: at(lab, 0, 8), crew: 1, starterItems: {} })
+    const { brain, cell } = quietPlateDepot(lab, faction)
+    const target = math.min(math.max(1, math.floor(cell.rate * 60)) * 2, 200)
+    // Proactive stocking: force the brain's think now that the cell exists.
+    brain.nextThink = game.tick + 1
+    let refill: Job<JobPayload> | undefined
+    async(60 * 60 * 6)
+    on_tick(() => {
+      if (refill === undefined) {
+        const id = brain.jobKeys[cellKey(cell, "iron-plate")]
+        const job = id === undefined ? undefined : faction.board.jobs[id]
+        if (job !== undefined && job.status !== "done") {
+          refill = job
+          log(`[b18] refill job: #${job.id} ${job.kind}/p${job.priority} at tick ${game.tick}`)
+          assert(job.kind === "fuel", `the refill is a fuel job (${job.kind})`)
+          assert(job.priority === 40, `the refill runs at the default priority (p${job.priority} of 40)`)
+          if (job.payload.kind === "fuel") {
+            assert(job.payload.item === "iron-plate" && job.payload.target === cell.input, "the refill targets the cell's input chest")
+            assert(job.payload.count > 0, `the refill counts plates (${job.payload.count})`)
+          }
+        }
+      }
+      const plates = cell.input.get_item_count("iron-plate")
+      if (plates < target || refill === undefined) return
+      // Nobody ever asked for the cell's product, yet the cell got stocked: the crew keep every cell ready to
+      // have its output chest serve a later request (or the factory's) without waiting for one.
+      finalChecks(brain, faction, target, plates)
+      done()
+    })
+
+    function finalChecks(brain: ReturnType<typeof startBootstrap>, faction: FactionState, target: number, plates: number): void {
+      log(`[b18] cell stocked: ${plates} plates in the input chest (target ${target}), ${cell.output.get_item_count("iron-gear-wheel")} gears made for no order`)
+      for (const g of brain.goals) {
+        const items = (g as { items?: Record<string, number> }).items ?? {}
+        for (const item in items) assert(item !== "iron-gear-wheel", `no order asks for the cell's product (goal has ${item})`)
+      }
+      for (const id of faction.board.active) {
+        const j = faction.board.jobs[id]
+        if (j === undefined) continue
+        const payloadItem = (j.payload as { item?: string }).item
+        assert(payloadItem !== "iron-gear-wheel", `no job asks for the cell's product (${j.kind})`)
+      }
+      assert(plates >= target, `the input chest was topped up (${plates} of ${target})`)
+      assert(refill !== undefined, "a refill job was created")
+    }
+  })
+
+  test("the refill priority setting steers the refresh jobs", () => {
+    setConfigOverride("bootstrapTempCellFeedPriority", 65)
+    const lab = createLab(32)
+    const faction = createFaction("d38-topup65", { position: at(lab, 0, 8), crew: 1, starterItems: {} })
+    const { brain, cell } = quietPlateDepot(lab, faction)
+    brain.nextThink = game.tick + 1
+    async(600)
+    on_tick(() => {
+      const id = brain.jobKeys[cellKey(cell, "iron-plate")]
+      const job = id === undefined ? undefined : faction.board.jobs[id]
+      if (job === undefined || job.status === "done") return
+      assert(job.kind === "fuel" && job.priority === 65, `the refill runs at the configured priority (p${job.priority})`)
+      done()
+    })
+  })
+
+  test("the refill priority 0 keeps the cells demand-fed only", () => {
+    setConfigOverride("bootstrapTempCellFeedPriority", 0)
+    const lab = createLab(32)
+    const faction = createFaction("d38-topup0", { position: at(lab, 0, 8), crew: 1, starterItems: {} })
+    const { brain, cell } = quietPlateDepot(lab, faction)
+    brain.nextThink = game.tick + 1
+    let waited = 0
+    async(1200)
+    on_tick(() => {
+      waited++
+      if (waited < 60) return
+      const id = brain.jobKeys[cellKey(cell, "iron-plate")]
+      assert(id === undefined, "no proactive refill was queued")
+      assert(cell.input.get_item_count("iron-plate") === 0, `the input chest stays empty (${cell.input.get_item_count("iron-plate")})`)
+      log("[b18] priority 0: no refill (done)")
+      done()
     })
   })
 })

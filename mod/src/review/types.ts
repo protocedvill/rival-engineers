@@ -34,6 +34,10 @@ export interface CrewTime {
 
 export interface PlayerReview {
   open: boolean
+  /** The factory-graph window (B16) is open. */
+  graphOpen?: boolean
+  /** Last tick the factory-graph window was refreshed (shares the inspector's cadence). */
+  graphLastRefresh?: number
   /** Selected faction (name) and crew member (id). */
   faction?: string
   crew?: number
