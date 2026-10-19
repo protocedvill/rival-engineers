@@ -16,6 +16,8 @@ mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
+npm run test:unit -- --no-build -t "green-line-dev11" plan-replay   # reuse the last build, one test (0.5 s, not 30 s + all)
+npm run replay:sweep -- "seed11-production-ok" "REPLAY_UG=,1" "REPLAY_SOFT_PLACE=0.25,0.5" -j 2   # replay variants in parallel
 npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (over 5 min: ~10 min on 2026-10-19 with other runs going; manager-only, SPEC §9)
 npm test -- "pattern"    # filter tests by Lua pattern (several patterns: any of them)
 npm test -- -j 4 "pattern"      # shard count (default: half the cores, at most one shard per unit; or $TEST_JOBS)
@@ -25,6 +27,12 @@ npm test -- "routing lab"       # M4b: 5 modules placed, routed and run in a lab
 npm test -- "real terrain"      # M4b: the module set on 5 generated maps (~10 s; filters are Lua patterns: no "|", escape "-" as "%-")
 npm run test:serial      # build + one `factorio-test run` in .factorio-test/data (debugging; takes the same filters)
 ```
+
+T1 options (`tools/run-unit-tests.mjs`): `--no-build` skips the delete + TSTL compile (~20–30 s) and runs the existing
+build (it stops with an error if there is none); `--out DIR` or `$UNIT_OUT` builds and runs in DIR instead of
+`mod/build-unit`, so concurrent runs in one checkout don't clobber each other (any number of runs may share one build
+read-only with `--no-build`); `-t TEXT` (`$UNIT_TEST_FILTER`) runs only the tests whose name contains TEXT; the last
+argument filters test files. Without options it rebuilds and runs everything, as before.
 
 `npm test` (`tools/test-parallel.mjs`) runs one `factorio-test run` per shard, each with its own write-data directory
 `.factorio-test/shards/N/` (vendored mods copied from `ci/mods/`). A test file is one unit; `tools/test-shards.json`
@@ -77,10 +85,26 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
 3. **Failed plans as T1 tests:** with frame dumps on, every failed plan writes `failed-plans/<faction>/<goal>-aN-tT`
    `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
    Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the
-   plan in plain Lua in ~10 s (`npm run test:unit -- plan-replay`; `REPLAY_ROUTER="maxRipups=6"` and
-   `REPLAY_UNDERGROUND=4` try router variants). Soaks also keep every *adopted* plan's input (`plans/<faction>/`);
-   `compareReplay(...)` replays one with the D36 / B2 comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`,
-   `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
+   plan in plain Lua (`npm run test:unit -- --no-build -t "<fixture>" plan-replay`: one replay takes from 0.5 s to a minute or so; the
+   whole file takes over 5 minutes). `REPLAY_ROUTER="maxRipups=6"` and `REPLAY_UNDERGROUND=4` try router variants. Soaks
+   also keep every *adopted* plan's input (`plans/<faction>/`); `compareReplay(...)` replays one with the D36 / B2
+   comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`, `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
+   - **Read the dump first.** A replay that fails writes `out/replay-dumps/<replay>/summary.txt` and `plan.json`
+     (`REPLAY_DUMP=1`: every replay; `REPLAY_DUMP=0`: no trace). For each placement: the chosen site and the runners-up
+     with every weighted score term (`center`, `port`, `facing`, `clear`, `adjacent`, `exactGap`, `coverage`,
+     `growthCoverage`, `softClaim`; lower wins), and the rejected candidates counted by reason (`hard`, `ore`,
+     `corridor`, `port-lane`, ...) with the nearest one's blocker (`blocked at 475,-70: terrain own`,
+     `ore at ...`, `occupied m:n3`, `reserved p:n21.out`, `route route:... (fixed)`). For each failed route: window,
+     expansions, and what walls the explored region (tiles per blocker), plus the start and goal neighbourhoods.
+     Events list re-placements, expansions and shared-mine completions. The trace (`src/planner/trace.ts`) is off in
+     game: one nil check per placement candidate.
+   - **Sweep variants in parallel**, not one replay at a time: `npm run replay:sweep -- "<test filter>" "VAR=a,b"
+     "VAR2=x,y" [-j N] [--no-build] [--out DIR] [--name NAME]` builds once, runs every combination as its own Lua
+     process (`-j`: default half the cores, or `$SWEEP_JOBS`) and prints one row per replay and combination: result,
+     phase, work (placement / routing / comparison), searches, rip-ups, re-placements, route tiles, failures. An empty
+     value unsets the variable (`REPLAY_UG=,1`); split values on `|` when one contains a comma
+     (`"REPLAY_ROUTER=maxRipups=6,rip=10|maxRipups=8"`). Output: `out/replay-sweep/NAME/summary.{txt,json}` and per
+     combination `output.log` and `dumps/`.
 4. Engine-side bugs (walks, mining, placement) get a T2 test with the same neighbourhood (`npm test -- "name"`, ~20 s).
 5. Full acceptance last, more seeds than the bar (`--seeds 11,222,...,7,77,777`) so one round shows several bugs.
 

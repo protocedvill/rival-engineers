@@ -26,14 +26,17 @@ export function ok(condition: boolean, what = "condition"): void {
   if (!condition) error(`${what} is false`, 2)
 }
 
-/** Runs every registered test, prints results and exits non-zero on any failure. */
+/**
+ * Runs every registered test, prints results and exits non-zero on any failure. `$UNIT_TEST_FILTER` (set by
+ * `npm run test:unit -- -t <text>` and `replay:sweep`) runs only the tests whose name contains that text.
+ */
 export function run(suite: string): void {
+  // UNIT_FILTER is the older name (B26), still accepted.
+  const filter = os.getenv("UNIT_TEST_FILTER") ?? os.getenv("UNIT_FILTER")
   let failed = 0
-  // UNIT_FILTER="text": run only the tests whose name contains it (plain text, not a pattern).
-  const filter = os.getenv("UNIT_FILTER")
   let skipped = 0
   for (const t of tests) {
-    if (filter !== undefined && string.find(t.name, filter, 1, true)[0] === undefined) {
+    if (filter !== undefined && filter !== "" && string.find(t.name, filter, 1, true)[0] === undefined) {
       skipped++
       continue
     }
