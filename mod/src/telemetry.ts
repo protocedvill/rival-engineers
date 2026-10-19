@@ -1,4 +1,4 @@
-import { LuaEntityPrototype, LuaProfiler, LuaSurface, MapPosition } from "factorio:runtime"
+import { LuaEntity, LuaEntityPrototype, LuaProfiler, LuaSurface, MapPosition } from "factorio:runtime"
 import { getConfig } from "./config"
 import { brainReport } from "./strategy/bootstrap"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
@@ -25,6 +25,35 @@ interface DumpedEntity {
   /** Ghosts: the planned entity's name and type (footprint fields describe the planned entity). */
   ghost_name?: string
   ghost_type?: string
+  /** Non-empty inventories by name (`fuel`, `furnace_source`, `furnace_result`, `chest`...): item → count. */
+  inventories?: Record<string, Record<string, number>>
+  /** `defines.entity_status` name (machines, drills, inserters, labs...). */
+  status?: string
+  /** Electric network the entity is on (poles and electric machines): which poles and machines are joined. */
+  network?: number
+}
+
+let statusNames: Record<number, string> | undefined
+
+/** What an entity holds, its status and electric network, for dumps (review reports, soak frames). */
+function entityState(e: LuaEntity, d: DumpedEntity): void {
+  const max = e.get_max_inventory_index()
+  for (let i = 1; i <= max; i++) {
+    const inv = e.get_inventory(i as defines.inventory)
+    if (inv === undefined || inv.is_empty()) continue
+    const items: Record<string, number> = {}
+    for (const c of inv.get_contents()) items[c.name] = (items[c.name] ?? 0) + c.count
+    d.inventories ??= {}
+    d.inventories[inv.name ?? tostring(i)] = items
+  }
+  if (e.status !== undefined) {
+    if (statusNames === undefined) {
+      statusNames = {}
+      for (const [k, v] of pairs(defines.entity_status)) statusNames[v as unknown as number] = k as string
+    }
+    d.status = statusNames[e.status as unknown as number]
+  }
+  if (e.electric_network_id !== undefined) d.network = e.electric_network_id
 }
 
 /**
@@ -46,7 +75,7 @@ export function dumpEntities(file: string, center: MapPosition, radius: number, 
     const box = proto.collision_box
     // Rotated non-square entities swap their footprint.
     const sideways = e.direction === defines.direction.east || e.direction === defines.direction.west
-    out.push({
+    const d: DumpedEntity = {
       name: e.name,
       type: e.type,
       x: e.position.x,
@@ -59,7 +88,9 @@ export function dumpEntities(file: string, center: MapPosition, radius: number, 
       th: sideways ? proto.tile_width : proto.tile_height,
       ghost_name: ghost ? proto.name : undefined,
       ghost_type: ghost ? proto.type : undefined,
-    })
+    }
+    if (!ghost && e.type !== "resource" && e.type !== "tree" && e.type !== "simple-entity") entityState(e, d)
+    out.push(d)
   }
   let tiles: [number, number][] | undefined
   if (water) {
