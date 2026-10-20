@@ -2,7 +2,9 @@ import { LuaEntity, LuaEntityPrototype, LuaProfiler, LuaSurface, MapPosition } f
 import { getConfig } from "./config"
 import { brainReport } from "./strategy/bootstrap"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
-import { partProfilers, PROFILE_PARTS, setAiProfiler, setPartProfilers } from "./profiling"
+// Read `partProfilers` through the module: a named import of an exported `let` is a load-time copy in TSTL (always nil here).
+import * as profiling from "./profiling"
+import { PROFILE_PARTS, setAiProfiler, setPartProfilers } from "./profiling"
 import { workReport } from "./work"
 import { factionDiagnostics } from "./diagnostics"
 
@@ -163,7 +165,7 @@ export function writeTelemetry(): void {
     log(["", `[re-telemetry] tick=${tick} ticks=${tick - profiledFrom} ai=`, profiler])
   }
   // The same interval by on_tick subsystem (soak.py: the profile table).
-  const parts = partProfilers
+  const parts = profiling.partProfilers
   if (parts !== undefined) for (let i = 0; i < PROFILE_PARTS.length; i++) log(["", `[re-profile] tick=${tick} ticks=${tick - profiledFrom} part=${PROFILE_PARTS[i]} `, parts[i]])
   profiler = helpers.create_profiler(true)
   profiledFrom = tick

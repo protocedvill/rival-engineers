@@ -530,7 +530,11 @@ def markdown(cfg, results):
                 cells.append(f"{p['ms_per_tick_avg']} / {p['worst_interval_ms_per_tick']} @{p['worst_interval_tick'] / 3600:.0f}" if p else "-")
             lines.append(f"| {r['seed']} | " + " | ".join(cells) + " |")
     else:
-        lines.append("No profile lines (telemetry off?).")
+        lines.append("**WARNING: no `[re-profile]` lines in any seed log: the per-subsystem profile is missing (telemetry off, "
+                     "or the mod's profiling is broken).**")
+    for r in results:
+        if r.get("ai_ms_per_tick_avg") and not r.get("profile"):
+            lines.append(f"**WARNING: seed {r['seed']} logged AI time but no `[re-profile]` lines.**")
     lines += ["", "## Milestones (game minutes)", ""]
     for r in results:
         for name, f in r["factions"].items():
@@ -668,6 +672,11 @@ def main():
             for fname, f in r["factions"].items():
                 lines.append(f"  faction {fname}: {'done at ' + str(f['done_minutes']) + ' min' if f['done'] else 'NOT done'}, "
                              f"stalls {len(f['stalls'])}, goal {f['current_goal']}, sites {f['sites']}")
+            if r.get("profile"):
+                top = sorted(r["profile"].items(), key=lambda kv: -kv[1]["ms_per_tick_avg"])[:3]
+                lines.append("  profile (ms/tick): " + ", ".join(f"{k} {v['ms_per_tick_avg']}" for k, v in top))
+            elif r.get("ai_ms_per_tick_avg"):
+                lines.append("  WARNING: no [re-profile] lines in the log (per-subsystem profile missing)")
             if r.get("failed_fast"):
                 lines.append(f"  STOPPED (fail fast): {r['failed_fast']}")
             if r.get("saves"):
