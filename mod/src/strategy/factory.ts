@@ -11,7 +11,7 @@ import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/buil
 import { maxExpandable, planGrowth } from "../planner/grow"
 import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
-import { findModule, growthArea, LayoutState, modulesOnTiles, newLayout, PlacedModule } from "../planner/layout"
+import { findModule, growthArea, LayoutState, modulesOnTiles, newLayout, PlacedModule, PlannedPole } from "../planner/layout"
 import { recordDiagnostic } from "../diagnostic-events"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
@@ -1040,6 +1040,26 @@ function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof RT.getPlannerE
   return `contested: ${who.join(", ")}`
 }
 
+/** B46: removes the poles at `gone` (`name@x,y`) from a building goal's own layout and parts; returns how many. */
+export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefined, gone: Record<string, boolean>): number {
+  const drop: Record<string, boolean> = {}
+  const kept: PlannedPole[] = []
+  for (const p of layout.poles ?? []) {
+    if (!gone[`${p.name}@${p.x},${p.y}`]) {
+      kept.push(p)
+      continue
+    }
+    drop[p.id] = true
+    const k = tkey(p.x, p.y)
+    if (layout.occ[k] === `x:${p.line}`) delete layout.occ[k]
+  }
+  const n = (layout.poles?.length ?? 0) - kept.length
+  if (n === 0) return 0
+  layout.poles = kept
+  if (parts !== undefined) parts.poles = parts.poles.filter((id) => !drop[id])
+  return n
+}
+
 /** A finished plan becomes the faction's layout; its new parts become graph nodes and edges and are built. */
 function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
@@ -1120,6 +1140,18 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
     }
     for (const gh of findEntities(ctx.surface, { ghost_name: p.name, position: at, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
   }
+  // B46: a goal still building may have planned some of these poles. Its own copy of its plan drops them, so it neither
+  // ghosts them once its clearing is done nor re-places them in a leftover round (seed 11: g10's route evicted the
+  // mall's pole line while the mall was still clearing; the mall then ghosted a pole onto g10's built belt).
+  const gone: Record<string, boolean> = {}
+  for (const p of job.layout.evictedPoles ?? []) if (!relaid[`${p.name}@${p.x},${p.y}`]) gone[`${p.name}@${p.x},${p.y}`] = true
+  for (const other of f.goals) {
+    if (other === g || other.status !== "building" || other.plan === undefined) continue
+    const oe = RT.getPlannerEntry(other.plan)
+    if (oe?.job === undefined) continue
+    const n = dropPlannedPoles(oe.job.layout, oe.build?.parts, gone)
+    if (n > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${n} poles goal ${other.id} has not built yet (B46)`)
+  }
   if ((job.layout.evictedPoles?.length ?? 0) > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${job.layout.evictedPoles!.length} poles (B37)`)
   f.layout.evictedPoles = undefined
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
@@ -1165,7 +1197,9 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
         b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
       }
     }
-    b.extraAdd = add
+    // B47: one plan can complete several shared mines; each one's entities join the list (seed 3333: g14 completed n6
+    // and n18, n18's list replaced n6's, and n6's poles, the only link to two new modules, were never built).
+    b.extraAdd = [...(b.extraAdd ?? []), ...add]
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${ex.module}: ${add.length} entities to build`)
   }
   g.status = "building"
@@ -1628,6 +1662,14 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
   } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(rid)
   const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
+  if (e.kind === "power") {
+    // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing
+    // ones are re-placed like line poles. Never their machines (D49).
+    const built: BuildParts = { modules: [], routes: [], poles: [] }
+    for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && findModule(f.layout, n.id) !== undefined) built.modules.push(n.id)
+    const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
+    for (const s of own.missing) check.missing.push(s)
+  }
   if (check.missing.length === 0) {
     say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
     return

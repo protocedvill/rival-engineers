@@ -76,6 +76,11 @@ export interface PlacementWeights {
    * (terrain, ore, other modules and their corridor, routes, reservations, mine and soft claims) over its own band.
    */
   growthBlocked?: number
+  /**
+   * B45: a placement must leave every other module's unconnected port lane at least this many reachable tiles (0: off):
+   * its footprint and margin ring, and a whole-patch mine's claim, must not wall the lane in.
+   */
+  portEscape?: number
 }
 
 export interface LayoutPolicy {
@@ -235,7 +240,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     bundleFactor: 0.9,
     softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 8 },
 }
 registerPolicy(EARLY_COMPACT)
 

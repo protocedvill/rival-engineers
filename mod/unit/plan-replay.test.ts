@@ -7,9 +7,10 @@
 // out/replay-dumps/<replay>/.
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
-import { FOREIGN, FREE, OWN, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
-import { findModule, LayoutState, ripRoute } from "../src/planner/layout"
+import { FOREIGN, FREE, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
+import { findModule, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
+import { laneLeadsOut, openPortEnds } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
@@ -415,5 +416,42 @@ test("replay m6a2-seed222-mall-iron: the shared mine completes over its own pole
 // mine where every tile in reach is footprint or growth room: "power:n18: no pole path" on every attempt. It now aims at
 // n18's whole pole component, the surviving line included.
 replay("r333968-second-power")
+
+// B45 (seed 222 after D54, goal g4 at tick 67170): the steam block's electric coal mine n6 went on the coal patch south
+// of the labs; its whole-patch claim, its margin and the bootstrap's reservations walled in the labs' unconnected pack
+// input lane, and every red-science production plan after it failed on "no path". Placement now keeps every open port
+// lane leading out: here no whole-patch plan can (its output belt crosses the lane's only way out), so n6 stays a strip.
+function sealedLanes(name: string, escape: number): string[] {
+  const fx = load(name)
+  fx.policy.placement.portEscape = escape
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  runJob(job, view, F, fx.policy, 100000)
+  ok(job.phase === "done", `${name} plans (${job.phase})`)
+  const l = job.layout
+  // What a later plan sees: the layout's ground, plus every module's margin as own ground (factoryReserveTiles).
+  const margin: Record<number, boolean> = {}
+  for (const m of l.modules) for (const k of moduleMargin(m)) margin[k] = true
+  const free = (x: number, y: number): boolean => {
+    const b = view.block(x, y)
+    if (b !== FREE && b !== TREE && b !== ROCK) return false
+    const k = tkey(x, y)
+    if (l.occ[k] !== undefined || l.routeOcc[k] !== undefined || l.reserved[k] !== undefined || l.mine?.[k] !== undefined) return false
+    return !margin[k]
+  }
+  const sealed: string[] = []
+  for (const a of openPortEnds(l, undefined)) if (!laneLeadsOut(a, free, 8)) sealed.push(`${a.x},${a.y}`)
+  const n6 = findModule(l, "n6")
+  print(`  ${name} escape ${escape}: n6 at ${n6?.rect.x},${n6?.rect.y} ${n6?.rect.w}x${n6?.rect.h}${n6?.minePlan !== undefined ? " whole-patch" : " strip"}, sealed ${sealed.join(" ")}`)
+  return sealed
+}
+
+test("B45: the steam block's coal mine leaves the labs' pack input lane a way out", () => {
+  const before = sealedLanes("r-d54-222-g4", 0)
+  ok(before.indexOf("-43,493") >= 0, `without the rule the labs' lane end -43,493 is sealed (sealed: ${before.join(" ")})`)
+  const after = sealedLanes("r-d54-222-g4", 8)
+  ok(after.length === 0, `with it every open lane leads out (sealed: ${after.join(" ")})`)
+})
 
 run("plan-replay")

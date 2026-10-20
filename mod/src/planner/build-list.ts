@@ -4,7 +4,7 @@
 
 import { worldEntity } from "./world-entity"
 import { dirValue, tkey } from "./grid"
-import { LayoutState, moduleTiles } from "./layout"
+import { LayoutState, moduleMargin, moduleTiles } from "./layout"
 
 export interface EntitySpec {
   name: string
@@ -116,13 +116,10 @@ export function factoryReserveTiles(layout: LayoutState): number[] {
     out.push(k as number)
   }
   for (const m of layout.modules) {
-    for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) {
-      for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) {
-        const k = tkey(x, y)
-        if (seen[k]) continue
-        seen[k] = true
-        out.push(k)
-      }
+    for (const k of moduleMargin(m)) {
+      if (seen[k]) continue
+      seen[k] = true
+      out.push(k)
     }
   }
   return out

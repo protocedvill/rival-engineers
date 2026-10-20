@@ -12,7 +12,7 @@ import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, markModule, PlacedModule, portApproach, portOutside, portTile, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
@@ -79,6 +79,8 @@ export interface PlacementSearch {
   result?: PlacedModule
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
+  /** B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate. */
+  openPorts?: { x: number; y: number; ok?: boolean }[]
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
@@ -219,6 +221,73 @@ function nearBandTiles(s: PlacementSearch, state: LayoutState, policy: LayoutPol
   return out
 }
 
+/**
+ * B45: the lane end (approach tile) of every belt port in the layout that no route uses yet, except module `except`'s,
+ * inside `area`. A later route must still reach it, so a new module must not wall it in.
+ */
+export function openPortEnds(state: LayoutState, except: string | undefined, area?: Rect): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = []
+  for (const m of state.modules) {
+    if (m.id === except) continue
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      if (state.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+      const a = portApproach(m, p)
+      if (state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
+      if (area !== undefined && !rectContains(area, a.x, a.y)) continue
+      out.push(a)
+    }
+  }
+  return out
+}
+
+/**
+ * B45: a way out of a port lane ending at `start`: the shortest path over `free` ground to a tile `need` steps
+ * (Manhattan) away, or undefined if the lane is walled in (seed 222, D54: the power plant's coal mine, its claim and its
+ * margin sealed the labs' pack input, and every later production plan failed on "no path").
+ */
+export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number): Vec[] | undefined {
+  const from: Record<number, number> = { [tkey(start.x, start.y)]: -1 }
+  const queue: Vec[] = [start]
+  let i = 0
+  while (i < queue.length) {
+    const c = queue[i++]
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = c.x + dx
+      const y = c.y + dy
+      const k = tkey(x, y)
+      if (from[k] !== undefined || !free(x, y)) continue
+      from[k] = tkey(c.x, c.y)
+      if (math.abs(x - start.x) + math.abs(y - start.y) >= need) {
+        const path: Vec[] = []
+        for (let at = k; at !== -1; at = from[at]) path.push({ x: keyX(at), y: keyY(at) })
+        return path
+      }
+      queue.push({ x, y })
+    }
+  }
+  return undefined
+}
+
+export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number): boolean {
+  return laneWayOut(start, free, need) !== undefined
+}
+
+/** B45: the open port lanes near `blocked` (Chebyshev distance `need` + 1) that lead out without it but not with it. */
+function sealsPortLane(s: PlacementSearch, blocked: Rect, need: number): boolean {
+  const ports = s.openPorts ?? []
+  if (ports.length === 0) return false
+  const hardAt = (x: number, y: number): boolean => (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
+  for (const p of ports) {
+    if (p.x < blocked.x - need - 1 || p.x > blocked.x + blocked.w + need || p.y < blocked.y - need - 1 || p.y > blocked.y + blocked.h + need) continue
+    if (p.ok === undefined) p.ok = laneLeadsOut(p, (x, y) => !hardAt(x, y), need)
+    if (!p.ok) continue
+    if (!laneLeadsOut(p, (x, y) => !hardAt(x, y) && !rectContains(blocked, x, y), need)) return true
+  }
+  return false
+}
+
 function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
   const R = radii(s, policy)[s.radiusIdx]
   // B26: an expandable module's own growth band (and its corridor ring) must fit in the window to be scored.
@@ -231,6 +300,7 @@ function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   s.row = 0
   s.sat = {}
   s.band = nearBandTiles(s, state, policy)
+  s.openPorts = openPortEnds(state, s.req.id, { x: s.wx, y: s.wy, w: s.ww, h: s.wh })
   for (const l of LAYERS) {
     const a: number[] = []
     for (let i = 0; i < s.ww + 1; i++) a.push(0)
@@ -493,6 +563,11 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     if (t === undefined) continue
     portDist += math.abs(t.x - x) + math.abs(t.y - y)
     if (p.nx * (t.x - x) + p.ny * (t.y - y) < 0) facingAway++
+  }
+  // B45: nor wall in another module's unconnected port lane (its margin ring reads as own ground to later plans).
+  const escape = policy.placement.portEscape ?? 0
+  if (escape > 0 && sealsPortLane(s, inflate(rect, 1), escape)) {
+    return reject(s, "port-sealed", ox, oy)
   }
   const adjacent = sum(s, "mods", inflate(rect, policy.corridor.preferred + 1)) ?? 0
   const inner = sum(s, "mods", inflate(rect, policy.corridor.preferred)) ?? 0
@@ -850,8 +925,32 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
       cap = math.min(cap, drillCount(m.canonical, facts) + spec.maxUnits * perUnit)
     }
   }
-  const plan = claimPart(planWholePatch(view, patch, drill), view, drill, near, cap, maxLanes)
-  const built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage)
+  // B45: the plan, its claim and its margin must not wall in another module's unconnected port lane: when they do, the
+  // patch is planned again around each such lane's way out (and a tile either side of it, the margin), once.
+  const escape = state !== undefined ? (policy.placement.portEscape ?? 0) : 0
+  const ground = (x: number, y: number): boolean => {
+    const b = terrain.block(x, y)
+    return !taken(x, y) && (b === FREE || b === TREE || b === ROCK)
+  }
+  const lanes = escape > 0 ? openPortEnds(state!, m.id).filter((a) => laneLeadsOut(a, ground, escape)) : []
+  const keepOut: Record<number, boolean> = {}
+  const planView: TerrainView = { block: (x, y) => (keepOut[tkey(x, y)] ? FOREIGN : view.block(x, y)), ore: view.ore }
+  let built: ReturnType<typeof materializeMinePlan>
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const plan = claimPart(planWholePatch(planView, patch, drill), planView, drill, near, cap, maxLanes)
+    built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage)
+    if (built === undefined) return strip()
+    const margin: Record<number, boolean> = {}
+    for (const k of moduleMargin({ ...m, minePlan: { full: built.full, claim: built.claim, occupied: built.occupied, complete: false } })) margin[k] = true
+    let sealed = false
+    for (const a of lanes) {
+      if (laneLeadsOut(a, (x, y) => ground(x, y) && !margin[tkey(x, y)], escape)) continue
+      sealed = true
+      for (const t of laneWayOut(a, ground, escape)!) for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) keepOut[tkey(t.x + dx, t.y + dy)] = true
+    }
+    if (!sealed) break
+    if (attempt === 1) return strip()
+  }
   if (built === undefined) return strip()
   // B33: the whole plan must fit: every claimed tile buildable (trees and rocks as the policy clears them, own
   // structures the layout doesn't hold as D51 evicts them), in the region, untaken, and off other non-mine modules' corridor ring; its output port must have a usable outside tile.

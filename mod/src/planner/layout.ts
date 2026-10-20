@@ -6,7 +6,7 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
-import { CLIFF, DX, DY, FOREIGN, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
+import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
 
 export interface PlacedModule {
   /** Instance id (unique in the layout). */
@@ -264,6 +264,31 @@ export function moduleTiles(m: PlacedModule): number[] {
   if (m.minePlan !== undefined) return m.minePlan.occupied
   const out: number[] = []
   for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) out.push(tkey(x, y))
+  return out
+}
+
+/**
+ * A module's footprint and the 1-tile margin around it, which the faction reserves (`factoryReserveTiles`). B45: a
+ * whole-patch mine's margin follows its claimed tiles, not its bounding box: the box can wrap around ground the mine
+ * leaves free (seed 222: another module's port lane), which would read as own ground to every later plan.
+ */
+export function moduleMargin(m: PlacedModule): number[] {
+  const out: number[] = []
+  if (m.minePlan !== undefined) {
+    const seen: Record<number, boolean> = {}
+    for (const k of [...m.minePlan.claim, ...m.minePlan.occupied]) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const n = tkey(keyX(k) + dx, keyY(k) + dy)
+          if (seen[n]) continue
+          seen[n] = true
+          out.push(n)
+        }
+      }
+    }
+    return out
+  }
+  for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) out.push(tkey(x, y))
   return out
 }
 

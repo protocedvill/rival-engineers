@@ -1137,3 +1137,109 @@ Tests:
   power-up and M5a pass.
 
 No new magic numbers. Soak comparison against m6-b44-55e7cad and m6-base-b666577 follows.
+
+## M6b.18: B45 placements keep other modules' open port lanes reachable (2026-10-20)
+
+The D54 soak's seed 222 stopped at 64 game-min ("g5 production planning (placed 0); waiting: no researchable
+technology"). At the user's request (in-session, 2026-10-20) I rendered the area and found the cause:
+- The labs (g2) came first. Their pack input stays unconnected while packs are hand-fed, and its 2-tile lane points
+  south at a coal patch.
+- D54's electric coal mine for the steam block (g4, after electric drills) went on that patch. Its whole-patch claim
+  came within a tile of the lane end, its margin ring (and before this fix the whole bounding box: `factoryReserveTiles`
+  reserved `rect` + 1, which reads as own ground to every later plan) closed the sides, and bootstrap reservations
+  closed the rest.
+- Every red-science plan then failed on "no path" to the labs, with undergrounds too, so the D36 fallback (research
+  `logistics`) never triggered either.
+
+Placement never checked that a new module leaves *other* modules' open ports reachable. The user chose a general
+placement rule (in-session, 2026-10-20):
+- `placement.ts` `openPortEnds` lists every belt port no route uses yet. `laneWayOut` / `laneLeadsOut` ask whether a
+  route can get `portEscape` steps (Manhattan) away from its lane end over free ground.
+- `evaluate` rejects a candidate (`port-sealed`) when its footprint plus margin ring walls in a lane that led out
+  without it. Only lanes near the candidate are checked.
+- `prepareWholePatchPlacement` checks the whole-patch plan's claim and margin the same way. If the plan walls a lane in,
+  it re-plans once with that lane's way out (±1 tile) kept free. If the plan still walls the lane in, the mine stays the
+  strip it was placed as.
+- `layout.ts` `moduleMargin`: a whole-patch mine's reserved margin is its claimed tiles + 1, no longer its bounding box
+  + 1 (`factoryReserveTiles`).
+
+In the seed 222 case no whole-patch plan can keep the lane open: the mine's output belt has to cross the lane's only way
+out, along the patch's top edge. So n6 stays a 5×7 strip, which can grow only over its own ore.
+
+Tests:
+- T1 `plan-replay` "B45: the steam block's coal mine leaves the labs' pack input lane a way out" replays the adopted g4
+  plan. With the rule off, lane end -43,493 is sealed; with it on, no open lane is sealed.
+- A replay sweep with `portEscape=0|8` over every replay: 16/16 pass either way. Only seed222-production changes, still
+  done, with placement work 308k → 88k.
+
+### Magic numbers for the user (M6b.18)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Port escape distance | `policy.ts` `placement.portEscape` | 8 steps | A lane must lead at least this far (Manhattan) over free ground, so it isn't a closed pocket; a guess, small enough to stay cheap per candidate. 0 turns the rule off. | no (policy default) |
+| Way-out keep-out width | `placement.ts` `prepareWholePatchPlacement` | path ± 1 tile | One tile either side, the size of a mine's reserved margin. | no |
+
+## M6b.19: B46 an evicted pole stays out of a goal that is still building (2026-10-20)
+
+The D54 soak's seed 11 stopped at 113 game-min: the mall goal g9 had a pole ghost at (450, -27) that was never placed,
+because a built belt stood on the tile ("leftover ghosts for 20 rounds … cannot-place"). The user asked me to
+investigate (in-session, 2026-10-20). The adopted-plan captures show the sequence:
+- g9 (mall) was planned at tick 179040 with a pole line through the tile (`poles:8942`). Its plan became the faction
+  layout, and its build started with the clear phase (ghosts come after the trees and rocks are gone).
+- g10 (production) was planned 360 ticks later on that layout. Its copper-plate route to the green labs took the tile
+  and evicted g9's pole line (B37, "goal g10 evicts 6 poles").
+- B37 eviction picks up built poles, destroys existing ghosts and updates the faction layout. g9 had no ghosts yet, and
+  its build stamps from its own copy of the plan (`entry.job.layout` and `build.parts`), which still had the pole.
+  When g9's clearing finished it ghosted the pole next to g10's belt ghost. The belt got built (`can_place_entity`
+  ignores ghosts), and the pole could then never be placed. Leftover rounds re-place from the same stale plan.
+
+Fix: `factory.ts` `adoptPlan` drops the plan's evicted poles (except those it lays again at the same spot) from every
+other goal that is still building, in its plan layout and its build parts (`dropPlannedPoles`), and logs "goal X
+evicts N poles goal Y has not built yet (B46)". The consumers those poles served are re-joined by the evicting plan's
+own pole step (B37), as for built lines.
+
+Tests: T2 `factory` "B46: poles another plan evicted leave a building goal's own plan" checks that the dropped pole
+leaves the parts and the layout, and that stamping the goal's ghosts no longer creates it. No new magic numbers.
+
+## M6b.20: B47 a plan completing two shared mines builds both; B48 completed mines are measured whole (2026-10-20)
+
+The D54 soak's seed 3333 ran the full 480 game-min without a stall. It finished all research by 270 min but never
+sustained science, so it didn't reach v1-done. The user asked me to log and fix both causes (in-session, 2026-10-20).
+
+**B47.** Goal g14 (the second green cluster) completed two shared whole-patch mines, n6 (the steam block's coal) and
+n18 (copper): "completes the shared mine n6: 27 entities", then "… n18: 87 entities". `adoptPlan` set
+`b.extraAdd = add` inside the loop over completed mines, so n18's list replaced n6's. n6 stayed at 2 drills and 1 pole
+in the game, while the layout held the completed mine (40 entities, 6 poles). Those poles were the pole planner's only
+link from the network to the cluster's red line (n26) and green line (n25). In the game both modules formed their own
+pole islands for the rest of the run (checked from the frames: nearest network pole 13 tiles away). The reconciler saw
+"lacks power while the power plant has spare capacity" and tried a repair, but a power repair re-placed only pole-line
+poles: "nothing missing". (Its earlier "power at 144% load … grow failed" came from the same unpowered cluster plus a
+real short spike; the plant ran at 59% load at the end, all 9 boilers working.)
+
+Fixes:
+- `factory.ts` `adoptPlan`: `extraAdd` accumulates over every completed mine.
+- `factory.ts` reconciler repair: for a power edge it also re-places the missing **poles** of built modules (D49: belts
+  and poles may be re-placed, never machines). `conflicts.ts` `checkBuild` takes an entity filter for that.
+
+**B48.** The cluster's iron mine n28 read as "the ore under its drills is used up … cannot grow". In the game 10 of its
+17 drills were waiting for space (the cluster was backed up behind B47) and 7 were worked out. Measurement
+(`measure.ts` `sampleNodes`) searches a node's machines again only when its `builtTick` changes. A shared mine's
+completion (g17 completed n28) builds new drills into a built module without changing it, so only the original 5
+drills were measured, 4 of them worked out. Measurement now searches again (counters kept) while fewer machines stand
+than the module's layout plans.
+
+Tests:
+- T2 `reconciler` "B47: a module whose own pole is gone is repaired through its power edge": the pole is ghosted
+  again, nothing else of the module is. It fails without the change ("nothing missing", no repair goal).
+- T2 `reconciler` "B48: drills built into a built mine later join its measurement": 2, then 4 machines. It fails on
+  the old code (2).
+- The `extraAdd` accumulation was checked by resuming seed 3333 from its 60-min snapshot (before the cluster's plan)
+  with the fix (`soak.py --from-save … --no-fail-fast`, to 150 min). The plan (now g15) again completed n6 and n18
+  together. n6 was built whole (12 drills, 6 poles; before: 2 and 1), and the cluster's red and green lines read `ok`
+  (0.4 and 0.2 packs/s). n28 was measured with all 18 drills and read "backed-up 33%", no longer "depleted".
+- B46 was checked the same way: seed 11 resumed from its 40-min snapshot logged "goal g10 evicts 5 poles goal g9 has
+  not built yet (B46)", g9 was built with 0 extra rounds, and the run reached 150 min without a stall (before: stopped
+  at 113 min).
+
+No new magic numbers. A resumed run's fail-fast "no automated-red-science by 1.5 game hours" fires falsely when the
+milestone came before the snapshot (the log of the resumed run doesn't repeat it): use `--no-fail-fast` there.

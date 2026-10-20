@@ -15,8 +15,8 @@ import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
 import { checkPowerFuel, powerFuelled } from "../strategy/fuel"
-import { FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
-import { describeMachines } from "../strategy/measure"
+import { FactoryGoal, FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
+import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
 import { feed, followRoute } from "./route-lab"
 
@@ -448,5 +448,57 @@ describe("M5b reconciler", () => {
     assert(jobs[0].target === boilers[0] && jobs[0].count === prototypes.item["coal"].stack_size, `a whole stack for the empty boiler (${jobs[0].count})`)
     refuelBoilers(ctx, "pw", "coal")
     assert(fuelJobs().length === 1, "not queued twice")
+  })
+  test("B47: a module whose own pole is gone is repaired through its power edge (the pole is re-placed, not its machines)", () => {
+    const c = chainLab()
+    const s = c.lab.surface
+    const g = c.f.graph
+    const tick = game.tick
+    addNode(g, { id: "pw", role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addEdge(g, { id: "e:power=>gears", role: "power=>gears", kind: "power", item: "electricity", from: "pw", to: "gears", plannedRate: 0, physical: [] })
+    const m = c.gears
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    const poles = s.find_entities_filtered({ area, type: "electric-pole" })
+    assert(poles.length > 0, "the gear row has its own poles")
+    const gone = poles[0].position
+    poles[0].destroy()
+    let goal: FactoryGoal | undefined
+    async(60 * 60 * 6)
+    reconcileUntil(c.faction, c.f, 60 * 60 * 5, () => undefined, () => {
+      goal = c.f.goals.filter((x) => x.kind === "repair")[0]
+      return goal !== undefined
+    }, (ok) => {
+      log(`[b47] ${describe_(g, c.f)}\n  remedies ${serpent.line(c.f.reconciler?.log)}`)
+      assert(ok, `a repair goal (gears ${g.nodes.gears.status}, cause ${g.nodes.gears.cause?.why})`)
+      const ghosts = s.find_entities_filtered({ ghost_name: "small-electric-pole", position: gone })
+      assert(ghosts.length === 1, `the module's pole is ghosted again (${ghosts.length})`)
+      assert(s.find_entities_filtered({ area, type: "entity-ghost" }).length === 1, "nothing else of the module")
+      done()
+    })
+  })
+
+  test("B48: drills built into a built mine later (same builtTick) join its measurement", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const s = lab.surface
+    for (let x = -12; x < 12; x++) for (let y = -12; y < 12; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
+    const layout = newLayout()
+    const mine = placeDef(layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2, drill: "electric-mining-drill" }), { x: math.floor(lab.origin.x) - 4, y: math.floor(lab.origin.y) - 6 })
+    const r = stampParts(s, faction.force, layout, { modules: ["mine"], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    node(f.graph, mine, "outpost", "iron-ore", 1, game.tick)
+    const area = { left_top: { x: mine.rect.x, y: mine.rect.y }, right_bottom: { x: mine.rect.x + mine.rect.w, y: mine.rect.y + mine.rect.h } }
+    const drills = s.find_entities_filtered({ area, type: "mining-drill" })
+    assert(drills.length === 4, `four drills planned and built (${drills.length})`)
+    // Two of them are built later, as a shared mine's completion is: the node keeps its builtTick.
+    const later = drills.slice(2).map((d) => ({ name: d.name, position: d.position, direction: d.direction }))
+    for (const d of drills.slice(2)) d.destroy()
+    const meter = newMeter()
+    sampleNodes(meter, f.graph, layout, s, faction.force, game.tick, 5)
+    assert(meter.nodes["mine"].machines.length === 2, `two drills measured first (${meter.nodes["mine"].machines.length})`)
+    for (const d of later) s.create_entity({ ...d, force: faction.force })
+    sampleNodes(meter, f.graph, layout, s, faction.force, game.tick + 60, 5)
+    assert(meter.nodes["mine"].machines.length === 4, `all four measured once built (${meter.nodes["mine"].machines.length})`)
   })
 })

@@ -61,6 +61,8 @@ export interface NodeMeter {
   inserters: LuaEntity[]
   /** The node's builtTick when the machines were found (a grown node is searched again). */
   builtTick: number
+  /** B48: machines the module's layout plans; while fewer are found, they are searched again every sample. */
+  planned?: number
   /** Lab packs (the module's belt-in items). */
   packs: string[]
   cum: Counters
@@ -176,6 +178,18 @@ function kindOf(type: string): MachineKind | undefined {
   if (type === "boiler") return "boiler"
   if (type === "generator") return "generator"
   return undefined
+}
+
+/** B48: how many machines (measured entity types) the module's layout entities hold. */
+function plannedMachines(layout: LayoutState, n: LogicalNode): number {
+  const m = findModule(layout, n.id)
+  if (m === undefined) return 0
+  let count = 0
+  for (const e of m.def.entities) {
+    const type = prototypes.entity[e.name]?.type
+    if (type !== undefined && kindOf(type) !== undefined) count++
+  }
+  return count
 }
 
 function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n: LogicalNode): { machines: Machine[]; packs: string[]; inserters: LuaEntity[] } {
@@ -325,8 +339,16 @@ export function sampleNodes(meter: MeterState, graph: LogicalGraph, layout: Layo
     let nm = meter.nodes[id]
     if (nm === undefined || nm.builtTick !== built) {
       const found = findMachines(surface, force, layout, n)
-      nm = { machines: found.machines, inserters: found.inserters, packs: found.packs, builtTick: built, cum: newCounters(tick), ring: [] }
+      nm = { machines: found.machines, inserters: found.inserters, packs: found.packs, builtTick: built, planned: plannedMachines(layout, n), cum: newCounters(tick), ring: [] }
       meter.nodes[id] = nm
+    } else if (nm.machines.length < (nm.planned = plannedMachines(layout, n))) {
+      // B48: machines built into a built module later (a shared mine's completion keeps its builtTick) are measured
+      // once they stand; the counters go on (seed 3333: 5 of n28's 17 drills were measured, it read as depleted).
+      const found = findMachines(surface, force, layout, n)
+      if (found.machines.length > nm.machines.length) {
+        nm.machines = found.machines
+        nm.inserters = found.inserters
+      }
     }
     let lost = false
     for (const mc of nm.machines) if (!sampleMachine(nm.cum, mc, nm.packs)) lost = true

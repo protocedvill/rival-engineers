@@ -5,9 +5,10 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { Vec } from "../planner/grid"
+import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
+import { dropPlannedPoles } from "../strategy/factory"
 import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
@@ -335,6 +336,33 @@ describe("M5a power and growth", () => {
     assert(built!.valid, "the re-used pole stays built")
     const overlaid = lab.surface.find_entities_filtered({ ghost_name: "small-electric-pole", position: built!.position, force })
     assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
+  })
+
+  test("B46: poles another plan evicted leave a building goal's own plan: its ghost stamp no longer creates them", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: "evicted", name: "small-electric-pole", x, y, line: "poles:b46:0" },
+      { id: "kept", name: "small-electric-pole", x: x + 6, y, line: "poles:b46:0" },
+    ]
+    layout.poleLines = [{ id: "poles:b46:0", from: "power", to: "consumer", poles: ["evicted", "kept"] }]
+    layout.occ[tkey(x, y)] = "x:poles:b46:0"
+    layout.occ[tkey(x + 6, y)] = "x:poles:b46:0"
+    const parts = { modules: [], routes: [], poles: ["evicted", "kept"] }
+    // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
+    const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
+    assert(n === 1, `one pole dropped (${n})`)
+    assert(parts.poles.length === 1 && parts.poles[0] === "kept", `parts keep the other pole (${parts.poles.join(",")})`)
+    assert(layout.occ[tkey(x, y)] === undefined && layout.occ[tkey(x + 6, y)] === "x:poles:b46:0", "its tile is no longer the goal's")
+    const r = stampParts(s, force.name, layout, parts, true)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    assert(r.entities.length === 1 && r.entities[0].position.x === x + 6.5, `only the kept pole is ghosted (${r.entities.length})`)
+    assert(s.find_entities_filtered({ ghost_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 } }).length === 0, "no ghost where the other plan's belt goes")
+    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }) === 0, "idempotent")
   })
 
   test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {

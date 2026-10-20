@@ -61,11 +61,12 @@ function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
 }
 
 /** Checks `parts` of `layout` against the world (see the file comment). */
-export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts): BuildCheck {
+export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
   const seen: Record<string, boolean> = {}
   for (const e of partEntities(layout, parts)) {
+    if (only !== undefined && !only(e)) continue
     if (ownBuilt(surface, force, e) !== undefined) continue
     const ghost = ownGhost(surface, force, e)
     if (ghost === undefined) missing.push(e)
