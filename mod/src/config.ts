@@ -79,7 +79,10 @@ export interface Config {
   layoutTopology: string
   /** D25: edges are planned up to this fraction of nominal belt capacity. */
   beltUtilization: number
-  /** Planner budget: work units per tick (one placement candidate or one A* expansion each). */
+  /**
+   * Planner budget for the whole mod: work units per tick (one placement candidate or one A* expansion each), shared
+   * equally by the plans running; one plan alone gets all of it.
+   */
   plannerWorkPerTick: number
   /** Terrain model budget: chunks scanned per tick. */
   terrainChunksPerTick: number

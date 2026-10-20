@@ -429,6 +429,31 @@ export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) 
   return undefined
 }
 
+/**
+ * B51: the belt inputs of module `id` not in `fed` whose lane (from the approach tile) no longer leads `need` steps out
+ * over ground a route could use: not a module, route, mine claim or another port's reservation; trees and rocks pass.
+ */
+export function sealedInputs(state: LayoutState, terrain: TerrainView, id: string, fed: Record<string, boolean>, need: number): string[] {
+  const m = findModule(state, id)
+  const out: string[] = []
+  if (m === undefined) return out
+  for (const p of m.def.ports) {
+    if (p.kind !== "belt-in" || fed[p.id]) continue
+    const tag = portTag(m.id, p.id)
+    const free = (x: number, y: number): boolean => {
+      const k = tkey(x, y)
+      const o = state.occ[k]
+      if ((o !== undefined && !isPoleTag(o)) || state.routeOcc[k] !== undefined || state.mine?.[k] !== undefined) return false
+      const r = state.reserved[k]
+      if (r !== undefined && r !== tag) return false
+      const b = terrain.block(x, y)
+      return r === tag || b === FREE || b === TREE || b === ROCK
+    }
+    if (!laneLeadsOut(portApproach(m, p), free, need)) out.push(p.id)
+  }
+  return out
+}
+
 export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number): boolean {
   return laneWayOut(start, free, need) !== undefined
 }

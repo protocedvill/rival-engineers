@@ -130,6 +130,53 @@ test("router: straight route from an out port to an in port", () => {
   noProblems(state, terrain, "straight")
 })
 
+/** A long field with staggered walls (gaps alternate top and bottom) between x 2 and x 200. */
+function longMaze(): string[] {
+  const rows = field(220, 80)
+  for (let wx = 30; wx < 190; wx += 30) {
+    const gapTop = (wx / 30) % 2 === 0
+    for (let y = 0; y < 80; y++) if (gapTop ? y > 12 : y < 66) rows[y] = rows[y].substring(0, wx) + "#" + rows[y].substring(wx + 1)
+  }
+  return rows
+}
+
+test("router: two-level routing finds a long route with far fewer expansions, about as short", () => {
+  const terrain = asciiTerrain(longMaze())
+  const run1 = (longRoute: number) => {
+    const state = newLayout()
+    const a = source("a", EAST)
+    const b = sink("b", EAST)
+    place(state, a, 2, 40)
+    place(state, b, 205, 40)
+    const p = policy()
+    const job = routeOne(state, terrain, { ...p, router: { ...p.router, longRoute } }, conn("c", "a", "b"), [a, b])
+    return { job, route: state.routes["route:c"] }
+  }
+  const two = run1(64)
+  const one = run1(0)
+  eq(two.job.phase, "done", `two-level (${two.job.failures})`)
+  eq(one.job.phase, "done", "one-level")
+  ok(two.job.stats.expansions * 2 < one.job.stats.expansions, `expansions ${two.job.stats.expansions} vs ${one.job.stats.expansions}`)
+  ok(two.route.cost <= one.route.cost * 1.1, `cost ${two.route.cost} vs ${one.route.cost}`)
+})
+
+test("router: two-level routing falls back to the whole window when its corridor has no way through", () => {
+  // An unknown-ground wall (no underground passes it) at x 100 with its one gap at y 62, outside the straight corridor.
+  const rows = field(220, 80)
+  for (let y = 0; y < 80; y++) if (y !== 62) rows[y] = rows[y].substring(0, 100) + "?" + rows[y].substring(101)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 2, 40)
+  place(state, b, 205, 40)
+  const job = routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b])
+  eq(job.phase, "done", `routed (${job.failures})`)
+  let through = false
+  for (const k of state.routes["route:c"].tiles) if (keyX(k) === 100 && keyY(k) === 62) through = true
+  ok(through, "through the gap")
+})
+
 test("router: turns to reach a port that faces another way, arriving with the port's direction", () => {
   const terrain = asciiTerrain(field(30, 30))
   const state = newLayout()

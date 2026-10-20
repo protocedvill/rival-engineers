@@ -10,7 +10,7 @@ import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { FOREIGN, FREE, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
 import { findModule, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
-import { laneLeadsOut, openPortEnds } from "../src/planner/placement"
+import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
@@ -452,6 +452,26 @@ test("B45: the steam block's coal mine leaves the labs' pack input lane a way ou
   ok(before.indexOf("-43,493") >= 0, `without the rule the labs' lane end -43,493 is sealed (sealed: ${before.join(" ")})`)
   const after = sealedLanes("r-d54-222-g4", 8)
   ok(after.length === 0, `with it every open lane leads out (sealed: ${after.join(" ")})`)
+})
+
+// B51 (seed 3333, D55 resume, g19): the smelter n34's ore input was fed by a splitter tap on the relocated mine's route.
+// Once the tap was gone, its lane was walled in (the coal route above, n33 and the pack route's underground on the
+// approach row, its own margin below): two plans searched the whole region for 12 min each and failed "no path".
+// `relocate` now relocates such a consumer too.
+test("B51: a smelter input that lost its tap feed is sealed; an open input is not", () => {
+  const fx = load("s3333-b51-sealed-lane")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  const sealed = sealedInputs(job.layout, view, "n34", {}, 8)
+  ok(sealed.indexOf("in-ore") >= 0, `n34 in-ore sealed (${sealed.join(",")})`)
+  const open: string[] = []
+  for (const m of job.layout.modules) {
+    if (m.id === "n34") continue
+    for (const p of m.def.ports) if (p.kind === "belt-in" && sealedInputs(job.layout, view, m.id, {}, 8).indexOf(p.id) < 0) open.push(`${m.id}.${p.id}`)
+  }
+  print(`    [b51] open inputs: ${open.join(" ")}`)
+  ok(open.length > 0, "other inputs lead out")
 })
 
 run("plan-replay")

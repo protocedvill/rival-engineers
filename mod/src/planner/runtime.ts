@@ -207,8 +207,8 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   }
 }
 
-/** One tick of one planner job. */
-export function stepEntry(entry: PlannerEntry): void {
+/** One tick of one planner job; `budget`: its share of the planner's work this tick (default: all of it). */
+export function stepEntry(entry: PlannerEntry, budget?: number): void {
   const c = getConfig()
   const t = storage.terrains?.[entry.terrain]
   if (t === undefined) return
@@ -233,7 +233,7 @@ export function stepEntry(entry: PlannerEntry): void {
     const w0 = st.work
     const c0 = st.candidates ?? 0
     const e0 = st.expansions
-    const finished = stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), c.plannerWorkPerTick)
+    const finished = stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), budget ?? c.plannerWorkPerTick)
     countWork("plannerWork", st.work - w0)
     countWork("placementCandidates", (st.candidates ?? 0) - c0)
     countWork("routerExpansions", st.expansions - e0)
@@ -243,12 +243,29 @@ export function stepEntry(entry: PlannerEntry): void {
   if (entry.build !== undefined && entry.build.phase !== "done") stepBuild(entry)
 }
 
+/**
+ * The planner's work budget (`planner-work-per-tick`) is the whole mod's, shared by the jobs planning this tick (user,
+ * 2026-10-20): each gets an equal share of what is left, and work a job doesn't use passes to the next. A job planning
+ * alone gets all of it.
+ */
 export function onPlannerTick(): void {
   const p = storage.planner
   if (p === undefined) return
+  let left = getConfig().plannerWorkPerTick
+  let planning = 0
+  for (const id of p.order) if (p.entries[id]?.phase === "plan") planning++
   for (const id of p.order) {
     const e = p.entries[id]
-    if (e !== undefined) stepEntry(e)
+    if (e === undefined) continue
+    if (e.phase !== "plan") {
+      stepEntry(e)
+      continue
+    }
+    const share = math.max(1, math.floor(left / planning))
+    const w0 = e.job!.stats.work
+    stepEntry(e, share)
+    left = math.max(0, left - (e.job!.stats.work - w0))
+    planning--
   }
 }
 

@@ -1345,3 +1345,52 @@ Tests (T1):
 | Patch join distance | `placement.ts` `PATCH_JOIN` | 2 tiles (Chebyshev) | The same join as `world/resources.ts` `JOIN`, so both see the same patches. | no |
 | Radar goal failures | `factory.ts` `RADAR_MAX_FAILED` | 2 | It is cosmetic (D56): give up after two failed plans instead of retrying forever. A guess. | no |
 | Radar on/off | `factory-radar` | on | D56. | yes |
+
+## M6b.23: D58 two-level routing and a shared planner budget, B51 sealed smelter input (2026-10-20)
+
+The D57 resume of seed 3333 (`d57-s3333`, from `m6-d55-73d7ac7` min-0120) confirmed D57. Mine attempts that found
+no room now fail in under 1 s (they took 1–5 min before), and g17's replacement iron mine was built at ~165 min
+(~203 min with B50 alone). The run still stopped at 203 game min, not done. Plans g18 and g19 (the second iron line's
+mine, labs#3) each spent ~12 min of wall time in their last attempt (radius 378, ~3.6M router expansions over 6
+searches) and failed with "no path" into `n34.in-ore`.
+
+- **B51.** n34 (a smelter of the second green cluster) had been fed by a tap on n27's route, so the B45 lane test never
+  covered it. When D55 relocated n27, n34 lost its feed. Its input approach was walled in by the coal route above, n33
+  plus the red-pack route's underground on the approach row, and n34's own margin. `fuel.ts` `relocate` now collects
+  the consumers of the routes it drops. It relocates each production module (power is hand-fed under D54, labs are left
+  alone) whose unfed input lane no longer leads out (`placement.ts` `sealedInputs`), one level deep.
+- **D58** (user decision, approved in-session 2026-10-20). The user said: "Let's do two-level routing for long
+  distances and do (3), but in a flexible way where any planning entry can take the entire mod's budget if there is
+  nothing competing. Otherwise, they share."
+  - `router.ts`: a connection whose nearest start is `longRoute` tiles or more from the goal is first searched over
+    `coarseCell`-tile cells. A cell's cost is the cell size times its average tile cost, raised for cells that are
+    mostly blocked; a cell with nothing passable is closed. The tile search then runs inside the corridor of cells
+    along that path, with a weighted heuristic. If the corridor has no way through, or the coarse search fails, the
+    whole window is searched as before. Both coarse failures and corridor failures fall back, so the result is never
+    worse than "no path" from a full search.
+  - `runtime.ts`: `planner-work-per-tick` is now the whole mod's budget. Plans in their "plan" phase share it equally.
+    Work a plan leaves unused goes to the next plan, and a plan running alone gets all of it.
+- On the T1 maze (a 300-tile route), two-level routing used 1,460 expansions against 23,873 for one level, at the same
+  route cost (226). The heuristic weight sets the trade-off: 1.0 → 17,278, 1.2 → 11,355, 1.5 → 1,268. Weights of 1.3
+  or more inside short routes lost the B7 belt bundling, and a 64-tile threshold broke the B7 test, so only routes of
+  128+ tiles use it.
+
+Tests (T1):
+- `planner` "router: two-level routing finds a long route with far fewer expansions, about as short".
+- `planner` "router: two-level routing falls back to the whole window when its corridor has no way through".
+- `plan-replay` "B51: a smelter input that lost its tap feed is sealed; an open input is not". It uses the captured
+  g19 layout (`unit/fixtures/s3333-b51-sealed-lane.lua`).
+
+### Magic numbers for the user (M6b.23)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Two-level threshold | `policy.ts` `router.longRoute` | 128 tiles (Manhattan) | 64 broke the B7 bundling test; 128 keeps short and mid routes exact. | no |
+| Coarse cell size | `router.coarseCell` | 8 tiles | A quarter chunk: small enough to thread between modules, 64× fewer nodes. A guess. | no |
+| Corridor width | `router.corridorCells` | 1 cell each side (2 at the ends) | The narrowest corridor that still found the maze route; ends get one more for port approaches. | no |
+| Corridor heuristic weight | `router.corridorWeight` | 1.5 | 1.5 cut expansions ~13× at equal cost on the maze; lower weights save little. | no |
+| Sparse-cell penalty | `router.ts` `cellCost` | below 50 % passable, up to ×4 | Steers the corridor away from mostly-blocked cells. A guess. | no |
+| Coarse work per cell | `router.ts` `stepCoarse` | C²/8 (8 per cell at C = 8), charged once per cell | A cell's first cost reads its C² tile costs; a tile cost read is counted as about 1/8 of a search expansion. A guess. | no |
+| Planner budget | `planner-work-per-tick` | 400 per tick for the whole mod (was 100 per plan) | The user asked that one plan can take all of it. Estimated 2–3 ms/tick at full use; not yet measured. | yes |
+| Lane escape distance | `fuel.ts` `LANE_ESCAPE` | 8 tiles | Same idea as the B45 lane test: an input lane must lead 8 free tiles out. | no |
+| B51 relocation depth | `fuel.ts` `relocate` | 1 level | Relocating a sealed consumer does not cascade further, so one depletion cannot rip a whole cluster. | no |

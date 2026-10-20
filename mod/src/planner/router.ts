@@ -69,13 +69,38 @@ export interface Search {
   status: "running" | "found" | "failed"
   found?: number
   reason?: string
+  /** Splitter tap starts (computed once; the tile search seeds them). */
+  tapStarts: { tap: TapStart; cost: number }[]
+  /** Two-level routing: the cell search still running, then the corridor of cells (`cellOf`) the tile search keeps to. */
+  coarse?: Coarse
+  corridor?: Record<number, boolean>
+  /** Cell size of the coarse search and cells per window row. */
+  cell: number
+  cellsW: number
+  /** The corridor search found no path and the whole window was searched instead. */
+  widened?: boolean
+  /** Heuristic weight: 1 (exact A*), `corridorWeight` while inside a corridor. */
+  hw?: number
+}
+
+/** A* over `cell`×`cell` tile cells of the window (two-level routing). */
+interface Coarse {
+  g: Record<number, number>
+  par: Record<number, number>
+  closed: Record<number, boolean>
+  hs: number[]
+  hf: number[]
+  /** Cell cost (entering it), -1 if impassable; evaluated lazily. */
+  cost: Record<number, number>
+  starts: number[]
+  goal: number
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Binary heap on parallel arrays (state, f). Ties: lower f first, then insertion order is not guaranteed but the
 // whole procedure is deterministic.
 
-function heapPush(s: Search, state: number, f: number): void {
+function heapPush(s: { hs: number[]; hf: number[] }, state: number, f: number): void {
   const hs = s.hs
   const hf = s.hf
   let i = hs.length
@@ -92,7 +117,7 @@ function heapPush(s: Search, state: number, f: number): void {
   hf[i] = f
 }
 
-function heapPop(s: Search): number {
+function heapPop(s: { hs: number[]; hf: number[] }): number {
   const hs = s.hs
   const hf = s.hf
   const top = hs[0]
@@ -126,7 +151,11 @@ function encode(s: Search, x: number, y: number, d: number): number {
 }
 
 function inWindow(s: Search, x: number, y: number): boolean {
-  return x >= s.x0 && y >= s.y0 && x < s.x0 + s.w && y < s.y0 + s.h
+  return x >= s.x0 && y >= s.y0 && x < s.x0 + s.w && y < s.y0 + s.h && (s.corridor === undefined || s.corridor[cellOf(s, x, y)] === true)
+}
+
+function cellOf(s: Search, x: number, y: number): number {
+  return math.floor((y - s.y0) / s.cell) * s.cellsW + math.floor((x - s.x0) / s.cell)
 }
 
 /**
@@ -263,6 +292,7 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   const m = policy.router.margin * (req.windowMargin ?? 1)
   const w = policy.router
   const maxK = req.tier.maxUnderground
+  const C = math.max(1, w.coarseCell ?? 8)
   const s: Search = {
     req,
     rip,
@@ -281,30 +311,153 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
     hMin: math.min(minTileCost(policy), (w.underground + 2 * minTileCost(policy)) / (maxK + 1)),
     expansions: 0,
     status: "running",
+    tapStarts: [],
+    cell: C,
+    cellsW: math.ceil((x2 - x1 + 2 * m + 1) / C),
   }
   s.goalS = encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))
+  for (const id of req.taps ?? []) for (const c of tapCandidates(state, terrain, policy, req, rip, id)) s.tapStarts.push(c)
+  // Two-level routing: a long connection searches cells first (`stepCoarse`), then tiles inside their corridor.
+  const starts: { x: number; y: number }[] = []
+  if (req.start) starts.push(req.start)
+  for (const c of s.tapStarts) starts.push({ x: c.tap.x2, y: c.tap.y2 })
+  let near = math.huge
+  for (const p of starts) near = math.min(near, math.abs(p.x - req.goal.x) + math.abs(p.y - req.goal.y))
+  const long = w.longRoute ?? 0
+  if (long > 0 && C > 1 && starts.length > 0 && near >= long) {
+    const co: Coarse = { g: {}, par: {}, closed: {}, hs: [], hf: [], cost: {}, starts: [], goal: cellOf(s, req.goal.x, req.goal.y) }
+    for (const p of starts) {
+      const c = cellOf(s, p.x, p.y)
+      if (co.g[c] !== undefined) continue
+      co.starts.push(c)
+      co.g[c] = 0
+      heapPush(co, c, coarseH(s, co, c))
+    }
+    s.coarse = co
+    return s
+  }
+  seedFine(s)
+  return s
+}
+
+/** Pushes the tile search's starts: the port's outside tile and the splitter tap candidates. */
+function seedFine(s: Search): void {
+  const req = s.req
   const push = (x: number, y: number, d: number, g: number, mv: number): number | undefined => {
     if (!inWindow(s, x, y)) return undefined
     const st = encode(s, x, y, d)
     if (s.g[st] !== undefined && s.g[st] <= g) return undefined
     s.g[st] = g
     s.mv[st] = mv
-    heapPush(s, st, g + s.hMin * (math.abs(x - req.goal.x) + math.abs(y - req.goal.y)))
+    heapPush(s, st, g + (s.hw ?? 1) * s.hMin * (math.abs(x - req.goal.x) + math.abs(y - req.goal.y)))
     return st
   }
   if (req.start) push(req.start.x, req.start.y, req.start.dir, 0, -1)
-  for (const id of req.taps ?? []) {
-    for (const c of tapCandidates(state, terrain, policy, req, rip, id)) {
-      const t = c.tap
-      const st = push(t.x2 + DX[t.dir], t.y2 + DY[t.dir], t.dir, c.cost, -2)
-      if (st !== undefined) s.taps[st] = t
-    }
+  for (const c of s.tapStarts) {
+    const t = c.tap
+    const st = push(t.x2 + DX[t.dir], t.y2 + DY[t.dir], t.dir, c.cost, -2)
+    if (st !== undefined) s.taps[st] = t
   }
   if (s.hs.length === 0) {
     s.status = "failed"
     s.reason = "no start"
   }
-  return s
+}
+
+function coarseH(s: Search, co: Coarse, c: number): number {
+  const dx = math.abs((c % s.cellsW) - (co.goal % s.cellsW))
+  const dy = math.abs(math.floor(c / s.cellsW) - math.floor(co.goal / s.cellsW))
+  return s.hMin * s.cell * (dx + dy)
+}
+
+/**
+ * The cost of entering a cell: its passable tiles' mean tile cost over a cell's width, more when few of its tiles are
+ * passable; -1 when none is (the start and goal cells always pass).
+ */
+function cellCost(s: Search, co: Coarse, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, c: number): number {
+  const cached = co.cost[c]
+  if (cached !== undefined) return cached
+  const cx = s.x0 + (c % s.cellsW) * s.cell
+  const cy = s.y0 + math.floor(c / s.cellsW) * s.cell
+  let n = 0
+  let all = 0
+  let sum = 0
+  for (let y = cy; y < math.min(cy + s.cell, s.y0 + s.h); y++) {
+    for (let x = cx; x < math.min(cx + s.cell, s.x0 + s.w); x++) {
+      all++
+      const t = tileCost(state, terrain, policy, s.req, s.rip, x, y)
+      if (t < 0) continue
+      n++
+      sum += t
+    }
+  }
+  let cost: number
+  if (n === 0) cost = c === co.goal || co.starts.indexOf(c) >= 0 ? s.cell * 4 : -1
+  // Only mostly blocked cells pay extra: a cell crossed by a belt stays as cheap as its tiles (routes bundle, B7).
+  else cost = s.cell * (sum / n) * (1 + 3 * math.max(0, 0.5 - n / all) * 2)
+  co.cost[c] = cost
+  return cost
+}
+
+/** Runs the cell search; on reaching the goal cell, the corridor is set and the tile search seeded. Returns the work. */
+function stepCoarse(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  const co = s.coarse!
+  const cellsH = math.ceil(s.h / s.cell)
+  const cellWork = (s.cell * s.cell) / 8
+  let used = 0
+  while (used < budget) {
+    if (co.hs.length === 0) {
+      // No cell path: search the whole window tile by tile.
+      s.coarse = undefined
+      seedFine(s)
+      return used
+    }
+    const cur = heapPop(co)
+    if (co.closed[cur]) continue
+    co.closed[cur] = true
+    used++
+    if (cur === co.goal) {
+      const r = policy.router.corridorCells ?? 1
+      const corridor: Record<number, boolean> = {}
+      const mark = (c: number, rad: number): void => {
+        const ccx = c % s.cellsW
+        const ccy = math.floor(c / s.cellsW)
+        for (let dx = -rad; dx <= rad; dx++) {
+          for (let dy = -rad; dy <= rad; dy++) {
+            const nx = ccx + dx
+            const ny = ccy + dy
+            if (nx >= 0 && ny >= 0 && nx < s.cellsW && ny < cellsH) corridor[ny * s.cellsW + nx] = true
+          }
+        }
+      }
+      for (let c: number | undefined = cur; c !== undefined; c = co.par[c]) mark(c, r)
+      mark(co.goal, r + 1)
+      for (const c of co.starts) mark(c, r + 1)
+      s.corridor = corridor
+      s.hw = math.max(1, policy.router.corridorWeight ?? 1)
+      s.coarse = undefined
+      seedFine(s)
+      return used
+    }
+    const ccx = cur % s.cellsW
+    const ccy = math.floor(cur / s.cellsW)
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = ccx + dx
+      const ny = ccy + dy
+      if (nx < 0 || ny < 0 || nx >= s.cellsW || ny >= cellsH) continue
+      const nc = ny * s.cellsW + nx
+      if (co.closed[nc]) continue
+      if (co.cost[nc] === undefined) used += cellWork
+      const c = cellCost(s, co, state, terrain, policy, nc)
+      if (c < 0) continue
+      const g = co.g[cur] + c
+      if (co.g[nc] !== undefined && co.g[nc] <= g) continue
+      co.g[nc] = g
+      co.par[nc] = cur
+      heapPush(co, nc, g + coarseH(s, co, nc))
+    }
+  }
+  return used
 }
 
 /** Runs up to `budget` expansions. Returns the number used. */
@@ -315,6 +468,10 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
   const gx = req.goal.x
   const gy = req.goal.y
   let used = 0
+  if (s.coarse !== undefined) {
+    used += stepCoarse(s, state, terrain, policy, budget)
+    if (s.coarse !== undefined) return used
+  }
   // The blocker tile behind a side-loaded port stays free.
   const blocked: Record<number, boolean> = {}
   if (req.goal.side !== undefined) {
@@ -334,10 +491,23 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
     s.g[st] = g
     s.par[st] = parent
     s.mv[st] = mv
-    heapPush(s, st, g + s.hMin * (math.abs(x - gx) + math.abs(y - gy)))
+    heapPush(s, st, g + (s.hw ?? 1) * s.hMin * (math.abs(x - gx) + math.abs(y - gy)))
   }
   while (s.status === "running" && used < budget) {
     if (s.hs.length === 0) {
+      if (s.corridor !== undefined) {
+        // Two-level routing: no path inside the corridor; search the whole window instead.
+        s.corridor = undefined
+        s.hw = 1
+        s.widened = true
+        s.g = {}
+        s.par = {}
+        s.mv = {}
+        s.closed = {}
+        s.taps = {}
+        seedFine(s)
+        continue
+      }
       s.status = "failed"
       s.reason = "no path"
       break

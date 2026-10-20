@@ -5,7 +5,9 @@ import { abandonParts } from "../planner/conflicts"
 import { findModule } from "../planner/layout"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
-import { markDirty } from "../planner/terrain"
+import { sealedInputs } from "../planner/placement"
+import * as RT from "../planner/runtime"
+import { markDirty, terrainView } from "../planner/terrain"
 import { findEntities } from "../work"
 import { resyncReserved } from "./evict"
 import type { FactoryState } from "./factory"
@@ -115,7 +117,31 @@ interface FuelCtx {
   tick: number
 }
 
-export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string): void {
+/** B51: how far (Manhattan steps over free ground) an input lane must lead out, as B45's `portEscape`. */
+const LANE_ESCAPE = 8
+
+/**
+ * B51 (seed 3333): the modules among `ids` with a belt input that no edge feeds any more and whose lane no longer leads
+ * out: built routes and other modules walled it in while a tap fed it. No plan can feed such a port.
+ */
+function sealedConsumers(ctx: FuelCtx, ids: string[]): LogicalNode[] {
+  const f = ctx.f
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return []
+  const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
+  const out: LogicalNode[] = []
+  for (const id of ids) {
+    const n = f.graph.nodes[id]
+    // Production modules only: power is hand-fed when its fuel stops (D54), and labs and mines have no such lane.
+    if (n === undefined || n.kind !== "module" || out.indexOf(n) >= 0) continue
+    const fed: Record<string, boolean> = {}
+    for (const e of LG.edgesInto(f.graph, id)) if (e.kind === "belt" && e.toPort !== undefined) fed[e.toPort] = true
+    if (sealedInputs(f.layout, view, id, fed, LANE_ESCAPE).length > 0) out.push(n)
+  }
+  return out
+}
+
+export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string, depth = 0): void {
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)
@@ -126,6 +152,7 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   // D52 aliases: a node that shared its whole-patch mine has no module of its own and fed through its routes; it goes
   // with it (the design plans its role again), or later goals connect to its missing port.
   const drop: LogicalNode[] = [n]
+  const consumers: string[] = []
   for (const eid of [...f.graph.edgeOrder]) {
     const e = f.graph.edges[eid]
     if (e.kind !== "belt") continue
@@ -133,6 +160,7 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
     for (const p of e.physical ?? []) if (gone[p]) lost = true
     if (!lost) continue
     LG.removeEdge(f.graph, eid)
+    if (e.to !== undefined && consumers.indexOf(e.to) < 0) consumers.push(e.to)
     const from = e.from !== undefined ? f.graph.nodes[e.from] : undefined
     if (from !== undefined && drop.indexOf(from) < 0 && findModule(f.layout, from.id) === undefined) drop.push(from)
   }
@@ -147,4 +175,10 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   // Its ore tiles are worked out: the terrain is scanned again before the next plan.
   markDirty(ctx.faction.surface, { x: m.rect.x - 8, y: m.rect.y - 8 }, { x: m.rect.x + m.rect.w + 8, y: m.rect.y + m.rect.h + 8 })
   log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped${drop.length > 1 ? `, ${drop.length - 1} aliased nodes dropped` : ""}; the design plans a new one`)
+  // B51: a consumer left with a walled-in input lane goes too (once, not further down the chain).
+  if (depth > 0) return
+  for (const c of sealedConsumers(ctx, consumers)) {
+    if (f.graph.nodes[c.id] === undefined) continue
+    relocate(ctx, c, `B51 ${c.role}`, "lost its feed and its input lane is walled in", depth + 1)
+  }
 }

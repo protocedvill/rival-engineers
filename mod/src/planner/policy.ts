@@ -43,6 +43,17 @@ export interface RouterWeights {
   bundleFactor?: number
   /** B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim). */
   softClaim?: number
+  /**
+   * Two-level routing (user, 2026-10-20): a connection whose ends are at least this far apart (Manhattan tiles) is
+   * routed over `coarseCell`-tile cells first, then tile by tile inside a corridor of those cells. 0: off.
+   */
+  longRoute?: number
+  /** Cell size (tiles) of the coarse search. */
+  coarseCell?: number
+  /** Corridor half-width around the coarse path, in cells (the ends get one more). */
+  corridorCells?: number
+  /** Heuristic weight inside a corridor (weighted A*: the route costs at most this times the corridor's best). */
+  corridorWeight?: number
 }
 
 export interface PlacementWeights {
@@ -244,6 +255,10 @@ export const EARLY_COMPACT: LayoutPolicy = {
     underModules: false,
     bundleFactor: 0.9,
     softClaim: 0.5,
+    longRoute: 128,
+    coarseCell: 8,
+    corridorCells: 1,
+    corridorWeight: 1.5,
   },
   placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 8, newField: 50 },
 }
