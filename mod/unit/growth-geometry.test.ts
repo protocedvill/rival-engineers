@@ -13,6 +13,9 @@ import { commitModule, findModule, growthArea, growthUnitRects, LayoutState, new
 import { beltDrillCap, candidateOk, connectedPatch, planWholePatch } from "../src/planner/mine-plan"
 import { placeNow, prepareWholePatchPlacement, tryExpand } from "../src/planner/placement"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
+import { planGrowth } from "../src/planner/grow"
+import { newRoutingJob, runJob } from "../src/planner/plan"
+import { beltTiers } from "../src/planner/capacity"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -378,5 +381,77 @@ for (const name of ["seed11-green-boxed", "m6a2-seed222-mall-iron", "m6a2-seed22
     ok(patches > 0, "the capture has patches")
   })
 }
+
+// D55 (user, 2026-10-20): a completed whole-patch mine whose ore is used up claims the next free part of its patch.
+function workedOut(m: PlacedModule, ore: (this: void, x: number, y: number) => string | undefined): (this: void, x: number, y: number) => string | undefined {
+  const gone: Record<number, boolean> = {}
+  for (const e of m.def.entities) {
+    if (e.name !== "electric-mining-drill") continue
+    for (let x = math.floor(m.origin.x + e.x - 2.5); x < m.origin.x + e.x + 2.5; x++) for (let y = math.floor(m.origin.y + e.y - 2.5); y < m.origin.y + e.y + 2.5; y++) gone[tkey(x, y)] = true
+  }
+  return (x, y) => (gone[tkey(x, y)] ? undefined : ore(x, y))
+}
+
+test("D55: a worked-out mine re-claims the next part of its patch; a spent patch has none", () => {
+  const region = { x: 0, y: 0, w: 120, h: 80 }
+  const ore = (x: number, y: number): string | undefined => (x >= 20 && x < 100 && y >= 20 && y < 34 ? "iron-ore" : undefined)
+  const view = patchTerrain(region, ore)
+  const state = newLayout()
+  const m = placeMine(state, view, region, P2P, "mine", { x: 22, y: 24 })
+  ok(m.minePlan !== undefined, "whole-patch plan")
+  ok(tryExpand(state, view, F, P2P, "mine", 1).ok, "completed")
+  ok(m.minePlan!.complete, "complete")
+  const oldDrills: Record<string, boolean> = {}
+  let n = 0
+  for (const e of m.def.entities) if (e.name === "electric-mining-drill") { oldDrills[string.format("%g,%g", e.x + m.origin.x, e.y + m.origin.y)] = true; n++ }
+  const done = patchTerrain(region, workedOut(m, ore))
+  ok(!tryExpand(state, done, F, P2P, "mine", 1).ok, "a completed mine can't grow")
+  const r = tryExpand(state, done, F, P2P, "mine", 1, "auto", true)
+  ok(r.ok, `re-claimed: ${r.reason}`)
+  let fresh = 0
+  let drills = 0
+  for (const e of m.def.entities) {
+    if (e.name !== "electric-mining-drill") continue
+    drills++
+    if (!oldDrills[string.format("%g,%g", e.x + m.origin.x, e.y + m.origin.y)]) fresh++
+    ok(candidateOk(done, "iron-ore", ELECTRIC, e.x + m.origin.x, e.y + m.origin.y), `drill ${e.x + m.origin.x},${e.y + m.origin.y} on ore that is left`)
+  }
+  print(`  ${n} drills before, ${drills} after (${fresh} on new ground), rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h}`)
+  ok(drills > 0 && drills <= n, `as many drills at most (${drills}/${n})`)
+  ok(fresh === drills, "every drill on fresh ground")
+  ok(m.minePlan!.complete, "the new part is built whole")
+  // The same mine on a patch it has used up entirely: nothing better is left, it stays where it is.
+  const spent = patchTerrain(region, workedOut(m, (x, y) => (x >= m.rect.x && x < m.rect.x + m.rect.w && y >= m.rect.y && y < m.rect.y + m.rect.h ? ore(x, y) : undefined)))
+  const at = { ...m.rect }
+  const r2 = tryExpand(state, spent, F, P2P, "mine", 1, "auto", true)
+  ok(!r2.ok, "no better part of a spent patch")
+  print(`  spent: ${r2.reason}`)
+  ok(m.rect.x === at.x && m.rect.y === at.y && findModule(state, "mine") === m, "the mine is unchanged")
+  ok(state.occ[tkey(m.origin.x + 1, m.origin.y + 1)] !== undefined || state.mine !== undefined, "still marked in the layout")
+})
+
+test("D55: planGrowth moves a worked-out mine to the next part of its patch and reroutes its output", () => {
+  const region = { x: 0, y: 0, w: 120, h: 90 }
+  const ore = (x: number, y: number): string | undefined => (x >= 20 && x < 100 && y >= 50 && y < 64 ? "iron-ore" : undefined)
+  const view = patchTerrain(region, ore)
+  const state = newLayout()
+  placeMine(state, view, region, P2P, "mine", { x: 22, y: 54 })
+  ok(tryExpand(state, view, F, P2P, "mine", 1).ok, "completed")
+  const smelt = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const sm: PlacedModule = { id: "smelt", canonical: smelt, def: smelt, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 10 }, rect: { x: 30, y: 10, w: smelt.footprint.w, h: smelt.footprint.h }, fixed: true }
+  commitModule(state, sm, F, 2)
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 40, y: 40 }, region }, beltTiers(F)[0], state), view, F, P2P)
+  eq(job.phase, "done", "routed")
+  const done = patchTerrain(region, workedOut(findModule(job.layout, "mine")!, ore))
+  const g = planGrowth(job.layout, done, F, P2P, beltTiers(F)[0], "mine", 1, "small-electric-pole", "poles:t:", true)
+  ok(g.ok, `moved: ${g.reason}`)
+  eq(g.rerouted.join(","), "ore", "its output rerouted")
+  let added = 0
+  let removed = 0
+  for (const e of g.add) if (e.name === "electric-mining-drill") added++
+  for (const e of g.remove) if (e.name === "electric-mining-drill") removed++
+  print(`  ${removed} drills picked up, ${added} placed`)
+  ok(added > 0 && removed > 0, "old drills go, new ones come")
+})
 
 run("growth-geometry")

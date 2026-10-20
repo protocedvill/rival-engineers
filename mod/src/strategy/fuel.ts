@@ -115,7 +115,7 @@ interface FuelCtx {
   tick: number
 }
 
-function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string): void {
+export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string): void {
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)

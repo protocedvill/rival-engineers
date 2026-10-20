@@ -1051,9 +1051,93 @@ export interface ExpansionResult {
  * (`expandMoves`); "head" grows before 0 (D52/OutpostPlanner: a mine on the edge of an irregular patch grows back
  * toward the ore, not just away from it); "tail" grows past the far end. Commits on success.
  */
-export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto"): ExpansionResult {
+/**
+ * D55 (user, 2026-10-20): a completed whole-patch mine whose ore is used up claims the next free part of its own patch:
+ * a new plan with as many drills (and, point to point, one lane) over the ore left, next to its old output port. It
+ * replaces the mine in `state` only if it covers more ore tiles than the mine's drills still reach (else the patch is
+ * spent and the caller relocates the mine). Returns why it could not, or undefined.
+ */
+function reclaimWholePatch(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, m: PlacedModule): string | undefined {
+  const resource = m.canonical.anchor?.resource
+  const drillName = m.canonical.params?.drill
+  if (m.minePlan === undefined || resource === undefined || typeof drillName !== "string") return "not a whole-patch mine"
+  const drill = facts.entity(drillName)
+  const out = m.def.ports.find((p) => p.id === "out")
+  if (drill === undefined || out === undefined) return "not a whole-patch mine"
+  const near = portOutside(m, out)
+  // What the mine's drills still reach (their mining areas, game data).
+  const reach = math.ceil(drill.miningRadius ?? math.max(drill.tileW, drill.tileH) / 2)
+  const still: Record<number, boolean> = {}
+  let have = 0
+  const seeds: Vec[] = []
+  const box = inflate(m.rect, reach)
+  for (let x = box.x; x < box.x + box.w; x++) for (let y = box.y; y < box.y + box.h; y++) if (terrain.ore(x, y) === resource) seeds.push({ x, y })
+  for (const e of m.def.entities) {
+    if (facts.entity(e.name)?.type !== "mining-drill") continue
+    for (let x = math.floor(m.origin.x + e.x - reach); x < m.origin.x + e.x + reach; x++) {
+      for (let y = math.floor(m.origin.y + e.y - reach); y < m.origin.y + e.y + reach; y++) {
+        const k = tkey(x, y)
+        if (still[k] || terrain.ore(x, y) !== resource) continue
+        still[k] = true
+        have++
+      }
+    }
+  }
+  // The whole patch, wherever it reaches (bounded by what the terrain scan knows).
+  const all = { x: -1e6, y: -1e6, w: 2e6, h: 2e6 }
+  const patch = connectedPatch(terrain, resource, seeds, all)
+  if (patch === undefined) return `no ${resource} left in its patch`
+  unmarkModule(state, m, facts)
+  const restore = (why: string): string => {
+    markModule(state, m, facts, policy.corridor.preferred)
+    return why
+  }
+  const taken = (x: number, y: number): boolean => {
+    const k = tkey(x, y)
+    const o = state.occ[k]
+    if (o !== undefined && !isPoleTag(o)) return true
+    if (state.routeOcc[k] !== undefined || state.reserved[k] !== undefined) return true
+    return state.mine?.[k] !== undefined
+  }
+  const view: TerrainView = { block: (x, y) => (taken(x, y) ? FOREIGN : terrain.block(x, y)), ore: (x, y) => terrain.ore(x, y) }
+  const cap = drillCount(m.minePlan.full, facts)
+  const plan = claimPart(planWholePatch(view, patch, drill), view, drill, near, cap, policy.topology !== "splitter-tap" ? 1 : math.huge)
+  if (plan.covered.length <= have) return restore(`its patch has no better part left (${plan.covered.length} ore tiles, its drills reach ${have})`)
+  const built = materializeMinePlan(m.minePlan.full, plan, facts, near, policy.minOreCoverage)
+  if (built === undefined) return restore("no mine fits the rest of its patch")
+  for (const k of built.claim) {
+    const x = keyX(k)
+    const y = keyY(k)
+    const b = view.block(x, y)
+    if (b !== FREE && b !== OWN && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return restore(`the new part is blocked at ${x},${y}`)
+  }
+  const nout = built.full.ports.find((p) => p.id === "out")
+  const rect = { x: built.origin.x, y: built.origin.y, w: built.full.footprint.w, h: built.full.footprint.h }
+  if (nout !== undefined) {
+    const probe: PlacedModule = { ...m, canonical: built.full, def: built.full, transform: IDENTITY, origin: built.origin, rect }
+    for (const o of [portOutside(probe, nout), portApproach(probe, nout)]) {
+      const b = view.block(o.x, o.y)
+      if (b !== FREE && b !== TREE && b !== ROCK) return restore(`the new part's output is blocked at ${o.x},${o.y}`)
+    }
+  }
+  m.canonical = built.full
+  m.def = built.full
+  m.transform = IDENTITY
+  m.origin = built.origin
+  m.rect = rect
+  m.oreUnits = undefined
+  m.minePlan = { full: built.full, claim: built.claim, occupied: [...built.claim], complete: true }
+  markModule(state, m, facts, policy.corridor.preferred)
+  return undefined
+}
+
+export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto", reclaim = false): ExpansionResult {
   const m = findModule(state, id)
   if (m === undefined) return { ok: false, reason: "unknown module", movedPorts: [], moved: [] }
+  if (reclaim) {
+    const why = reclaimWholePatch(state, terrain, facts, policy, m)
+    return why === undefined ? { ok: true, movedPorts: [], moved: [] } : { ok: false, reason: why, movedPorts: [], moved: [] }
+  }
   if (m.minePlan !== undefined) {
     if (m.minePlan.complete || k < 1) return { ok: false, reason: "whole-patch mine is already complete", movedPorts: [], moved: [] }
     const current: Record<string, boolean> = {}

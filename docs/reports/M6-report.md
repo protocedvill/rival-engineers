@@ -1243,3 +1243,39 @@ Tests:
 
 No new magic numbers. A resumed run's fail-fast "no automated-red-science by 1.5 game hours" fires falsely when the
 milestone came before the snapshot (the log of the resumed run doesn't repeat it): use `--no-fail-fast` there.
+
+## M6b.21: D55 a worked-out mine moves within its patch, else it is relocated (2026-10-20)
+
+In the B48 soak (m6-b48-879fb9b, 2/3) seed 3333 ran 480 game-min without a stall and finished all research, but never
+sustained science. Its iron mine n27 (a whole-patch mine, 18×15 at 346,-64) sat on an isolated patch of about 72 ore
+tiles and was worked out by about 137 min. The other iron near it is separate patches, not more of the same one (I
+first counted ~400 tiles and corrected that to the user). The reconciler said "cannot grow: no expandable module": a
+completed whole-patch mine has no expand spec, and D28 deferred relocation. n6 (coal for power) also worked out at
+about 426 min; D54's hand-feeding keeps the boilers going there.
+
+The user chose, in-session on 2026-10-20, "Claim more of same field" (recorded as SPEC D55, an exception to D28):
+"A worked-out mine claims the next free part of its own patch and is rebuilt/extended there, keeping its output route;
+only when the patch is exhausted does it move to another patch."
+
+Changes:
+- `placement.ts` `reclaimWholePatch`: the patch is found from the ore within mining reach of the mine (the whole
+  connected patch, not just the mine's rect). Ground other modules hold is foreign. The mine is planned again on it
+  with at most as many drills as its whole-patch plan, and its output port is kept. The result is accepted only when
+  the new drills cover more ore tiles than the current drills still reach; otherwise the layout is unchanged and the
+  reason says so. `tryExpand` takes a `reclaim` flag, and `planGrowth` passes it (no fallback end when re-claiming).
+- `factory.ts`: a `deplete:` remedy on a completed whole-patch mine starts a re-claim growth goal ("goal X moves it
+  to the next part of its patch (D55)"). A re-claim that finds nothing better is not a growth failure. The mine is then
+  relocated (`relocateDepleted`, through the P36/D54 relocation in `fuel.ts`): deconstructed, out of the layout and
+  graph, and the design plans the producer again on fresh ore. A strip outpost with no ore left in its growth area is
+  relocated the same way. A relocation waits while a plan is in flight, or while a building/planning goal has an
+  edge from the mine.
+- `reconcile.ts`: the depletion messages no longer say relocation is P2.
+
+Tests (T1 `growth-geometry`):
+- "D55: a worked-out mine re-claims the next part of its patch; a spent patch has none": 12 drills move to fresh
+  ground, and a fully worked-out patch gives "no better part".
+- "D55: planGrowth moves a worked-out mine to the next part of its patch and reroutes its output".
+
+There is no T2 test of the relocation itself: it uses the same `relocate` as D54's burner-outpost replacement. The
+re-soak (below) is the end-to-end check. No new magic numbers. The seed area is the drill's mining radius (game data),
+and the drill cap and the acceptance rule come from the mine's own plan.

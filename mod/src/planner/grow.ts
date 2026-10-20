@@ -42,7 +42,7 @@ function tapGroup(layout: LayoutState, rid: string): string[] {
   return out
 }
 
-export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number, pole = "small-electric-pole", polePrefix = "poles:grow:"): GrowthPlan {
+export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number, pole = "small-electric-pole", polePrefix = "poles:grow:", reclaim = false): GrowthPlan {
   const layout = cloneLayout(base)
   const m = findModule(layout, id)
   if (m === undefined) return { ok: false, reason: `no module ${id}`, layout: base, remove: [], add: [], rerouted: [] }
@@ -88,10 +88,11 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   m.fixed = false
   // Preserve the original minimum-movement end first, then try the opposite end. A failed tryExpand commits nothing,
   // so a mine on the edge of an irregular patch can safely grow back toward the ore (D52/OutpostPlanner).
-  const moves = expandMoves(m.canonical, units)
-  const other = moves.originShift.x !== 0 || moves.originShift.y !== 0 ? "tail" : "head"
-  let r = tryExpand(layout, view, facts, policy, id, units, "auto")
-  if (!r.ok) {
+  // D55: a worked-out whole-patch mine moves to the next free part of its patch instead of growing.
+  let r = tryExpand(layout, view, facts, policy, id, units, "auto", reclaim)
+  if (!r.ok && !reclaim) {
+    const moves = expandMoves(m.canonical, units)
+    const other = moves.originShift.x !== 0 || moves.originShift.y !== 0 ? "tail" : "head"
     const first = r
     r = tryExpand(layout, view, facts, policy, id, units, other)
     // B25: a module that can't grow at its head at all says why its usual end failed.

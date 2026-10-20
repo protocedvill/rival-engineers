@@ -777,6 +777,8 @@ export interface Growth {
   units: number
   need: number
   have: number
+  /** D55: a worked-out whole-patch mine moves to the next free part of its patch instead of growing. */
+  reclaim?: boolean
 }
 
 export interface DesignDiff {

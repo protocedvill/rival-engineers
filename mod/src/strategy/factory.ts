@@ -25,7 +25,7 @@ import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
-import { checkPowerFuel, replaceBurnerOutposts } from "./fuel"
+import { checkPowerFuel, relocate, replaceBurnerOutposts } from "./fuel"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import * as RT from "../planner/runtime"
@@ -618,12 +618,14 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   const policy = policyFor(ctx.config)
   const tier = RT.tiers()[0]
-  const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`)
+  const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`, gr.reclaim === true)
   if (!plan.ok) {
     f.growthDiagnostics ??= {}
     f.growthDiagnostics[gr.node] = { tick: ctx.tick, reason: plan.reason ?? "unknown", units: gr.units }
     recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", decision: "growth-rejected", reason: plan.reason, data: { node: gr.node, role: gr.role, units: gr.units } })
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
+    // D55: a re-claim that finds no better part of the patch is no growth failure (the mine is relocated instead).
+    if (gr.reclaim === true) return false
     f.growFails ??= {}
     f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
     // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
@@ -1611,6 +1613,28 @@ export function reconcileNow(faction: FactionState, f: FactoryState, config: Con
   if (ctx.waiting.length > 0) f.waiting = ctx.waiting
 }
 
+/**
+ * D55: gives up a worked-out mine (P36's relocation: deconstructed, out of the layout and graph); the design plans its
+ * producer again on fresh ore. Not while a plan works on a copy of the layout, nor while a goal builds a connection from it.
+ */
+function relocateDepleted(ctx: Ctx, n: LogicalNode, why: string, say: (this: void, result: string) => void): void {
+  const f = ctx.f
+  if (planning(f) !== undefined) {
+    say(`relocation waits for the plan in flight (${why})`)
+    return
+  }
+  for (const g of f.goals) {
+    if (g.status !== "building" && g.status !== "planning") continue
+    for (const e of g.edges) {
+      if (e.from !== n.role) continue
+      say(`relocation waits for goal ${g.id} (${why})`)
+      return
+    }
+  }
+  relocate(ctx, n, `D55 ${n.role}`, `is worked out (${why})`)
+  say("relocated (D55): the design plans it again on fresh ore")
+}
+
 function applyRemedy(ctx: Ctx, r: Remedy): void {
   const f = ctx.f
   const st = f.reconciler!
@@ -1634,6 +1658,17 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     if (blockedByPlan || (busyGrow !== undefined && busyGrow.growth?.node === r.node)) return
     const n = f.graph.nodes[r.node!]
     const m = n !== undefined ? findModule(f.layout, n.id) : undefined
+    // D55 (user, 2026-10-20): a worked-out mine that can't expand in place (a completed whole-patch mine) moves to the
+    // next free part of its own patch; with nothing better left there, it is given up and planned again elsewhere.
+    if (r.key.startsWith("deplete:") && n !== undefined && m !== undefined && m.minePlan?.complete === true) {
+      const before = f.goals.length
+      if (startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: 0, have: 0, reclaim: true } }) && f.goals.length > before) {
+        say(`goal ${f.goals[f.goals.length - 1].id} moves it to the next part of its patch (D55)`)
+        return
+      }
+      relocateDepleted(ctx, n, ctx.waiting[ctx.waiting.length - 1] ?? "its patch is used up", say)
+      return
+    }
     if (n === undefined || m === undefined || m.canonical.expand === undefined) {
       say("cannot grow: no expandable module")
       return
@@ -1646,7 +1681,12 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     let units = 1
     if (n.kind === "outpost" && t !== undefined) {
       units = maxExpandable(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policyFor(ctx.config), n.id)
-      if (units < 1) { say("cannot grow: no ore in the growth area (D28: relocate is P2)"); return }
+      // D55: nothing left to expand over: the mine is planned again elsewhere.
+      if (units < 1) {
+        if (r.key.startsWith("deplete:")) relocateDepleted(ctx, n, "no ore in its growth area", say)
+        else say("cannot grow: no ore in the growth area")
+        return
+      }
     }
     if (units < 1) { say("cannot grow: at its expansion limit"); return }
     const before = f.goals.length
