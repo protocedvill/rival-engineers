@@ -31,6 +31,11 @@ export interface LabOptions {
   steadyWindowTicks?: number
   steadyWindows?: number
   steadyTolerance?: number
+  /**
+   * Measure over the last group of steady windows (they already agree within `steadyTolerance`) and end there, instead
+   * of measuring `measureTicks` more. Without a steady state, `measureTicks` is measured as before.
+   */
+  measureSteady?: boolean
   /** Judge steadiness on this weighted sum of the outputs (malls: plate value) instead of per output. */
   steadyWeights?: Record<string, number>
   /**
@@ -38,6 +43,12 @@ export interface LabOptions {
    * full chests stop their assemblers and the rest of the mall gets the intermediates. Measures what each chest got.
    */
   chestBar?: number
+  /**
+   * Coal put into every burner machine's fuel slot before the run. Burner furnaces fed exactly their declared coal
+   * rate take 15–23 game-min to reach it from empty (the first ones hoard the thin fuel lane); primed, they start at
+   * once. One validation runs from empty to keep that start covered.
+   */
+  primeFuel?: number
   /** Called once the force is set up and before the module runs (e.g. to start research). */
   setupForce?: (this: void, force: LuaForce) => void
 }
@@ -223,6 +234,11 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   const upkeep: Record<string, boolean> = {}
   for (const u of def.upkeep?.fuel ?? []) upkeep[u.name] = true
   const fuel = "coal"
+  if ((opts.primeFuel ?? 0) > 0)
+    for (const e of entities) {
+      const fi = e.valid ? e.get_fuel_inventory() : undefined
+      if (fi !== undefined) fi.insert({ name: fuel, count: opts.primeFuel! })
+    }
 
   const declared: Record<string, number> = {}
   for (const r of def.rates.outputs) declared[r.item] = r.perSecond
@@ -253,6 +269,9 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   const windowRatios: number[] = []
   const windowRates: Record<string, number>[] = []
   let lastSnap = snapshot()
+  // Snapshot at the end of each window (index 0: the start), for `measureSteady`.
+  const snaps: Record<string, number>[] = [lastSnap]
+  let fromWindows: { start: Record<string, number>; end: Record<string, number>; seconds: number } | undefined
   let warmupEnd: number | undefined = maxWarmup === opts.warmupTicks ? opts.warmupTicks : undefined
   let steady = maxWarmup === opts.warmupTicks
   let measureStart: Record<string, number> = {}
@@ -345,21 +364,25 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         windowRates.push(rates)
         windowRatios.push(worst)
         lastSnap = snap
+        snaps.push(snap)
         if (tick >= opts.warmupTicks && isSteady()) {
           warmupEnd = tick
           steady = true
+          if (opts.measureSteady) fromWindows = { start: snaps[snaps.length - 1 - windowsNeeded], end: snap, seconds: (windowsNeeded * windowTicks) / 60 }
         } else if (tick >= maxWarmup) warmupEnd = tick
         if (warmupEnd !== undefined) measureStart = snapshot()
       }
-      return
+      if (fromWindows === undefined) return
     }
-    if (tick === warmupEnd) measureStart = snapshot()
-    if (tick < warmupEnd + opts.measureTicks) return
-    for (const c of chests) for (const it of c.get_inventory(defines.inventory.chest)!.get_contents()) add(it.name, it.count)
-    // A capped mall counts everything its chests got since the start.
-    if (opts.chestBar !== undefined) measureStart = {}
-    const end = snapshot()
-    const seconds = opts.chestBar !== undefined ? tick / 60 : opts.measureTicks / 60
+    if (fromWindows === undefined) {
+      if (tick === warmupEnd) measureStart = snapshot()
+      if (tick < warmupEnd! + opts.measureTicks) return
+      for (const c of chests) for (const it of c.get_inventory(defines.inventory.chest)!.get_contents()) add(it.name, it.count)
+      // A capped mall counts everything its chests got since the start.
+      if (opts.chestBar !== undefined) measureStart = {}
+    } else measureStart = fromWindows.start
+    const end = fromWindows !== undefined ? fromWindows.end : snapshot()
+    const seconds = fromWindows !== undefined ? fromWindows.seconds : opts.chestBar !== undefined ? tick / 60 : opts.measureTicks / 60
     for (const [item, n] of pairs(end)) measured[item] = (n - (measureStart[item] ?? 0)) / seconds
     const ratio: Record<string, number> = {}
     for (const [item, d] of pairs(declared)) ratio[item] = (measured[item] ?? 0) / d
@@ -383,7 +406,7 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         machines.push(`belt@${e.position.x - origin.x},${e.position.y - origin.y} L=${l} R=${serpent.line(c2)}`)
       }
     }
-    onDone({ declared, measured, ratio, problems, machines, warmupTicks: warmupEnd, steady, windowRatios })
+    onDone({ declared, measured, ratio, problems, machines, warmupTicks: warmupEnd ?? tick, steady, windowRatios })
     done()
     return false
   })

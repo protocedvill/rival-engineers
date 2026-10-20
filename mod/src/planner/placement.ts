@@ -64,6 +64,8 @@ export interface PlacementSearch {
   phase: "site" | "sat" | "scan" | "done" | "failed"
   /** Site search: ring radius reached, and the target point found. */
   ring: number
+  /** Next point of the current ring (`ringPoint` index): a ring is scanned across ticks under the budget. */
+  ringIdx?: number
   target?: Vec
   /** D57 (mines): the ranked free-ore patches, the next one to try, the one being searched, and those found full. */
   patches?: SitePatch[]
@@ -772,6 +774,15 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
   return { score: packingScorer(policy.packing)(f, policy), coverage, clear }
 }
 
+/** Point `i` of ring `r` around `c`, in scan order: the top and bottom rows by x (alternating), then the sides by y. */
+function ringPoint(c: Vec, r: number, i: number): Vec {
+  if (r === 0) return { x: c.x, y: c.y }
+  const row = 2 * (2 * r + 1)
+  if (i < row) return { x: c.x - r + math.floor(i / 2), y: i % 2 === 0 ? c.y - r : c.y + r }
+  const j = i - row
+  return { x: j % 2 === 0 ? c.x - r : c.x + r, y: c.y - r + 1 + math.floor(j / 2) }
+}
+
 /** Advances a placement search by about `budget` work units. Returns the work used. */
 export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
   let used = 0
@@ -781,24 +792,44 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       continue
     }
     if (s.phase === "site") {
-      // Ring by ring around the centre: the nearest shore tile or ore tile of the resource.
+      // Ring by ring around the centre: the nearest shore tile or ore tile of the resource. Only points whose window
+      // (`startWindow`: the target ± the largest radius and margin, clipped to the region) still meets the region count:
+      // the rings are clipped to that box. Half a work unit a tile checked, as `satRow` (B53: r / 2 a ring of 8r tiles
+      // let one planner tick scan ~16× its budget; a region with no water spun at ~50 ms a tick).
       const c = s.req.center
       const r = s.ring
-      const maxR = math.max(s.req.region.w, s.req.region.h)
+      const reg = s.req.region
+      let reach = 0
+      for (const R of radii(s, policy)) reach = math.max(reach, R)
+      reach += maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
+      const bx1 = reg.x - reach
+      const by1 = reg.y - reach
+      const bx2 = reg.x + reg.w - 1 + reach
+      const by2 = reg.y + reg.h - 1 + reach
+      const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
       if (r > maxR) {
         s.phase = "failed"
         s.reason = `no ${s.req.def.site} site in the region`
         if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
         break
       }
+      // Resumes the ring where the last step stopped; half a work unit a point checked.
       let found: Vec | undefined
-      for (let x = c.x - r; x <= c.x + r && found === undefined; x++) {
-        for (const y of r === 0 ? [c.y] : [c.y - r, c.y + r]) if (found === undefined && sitePoint(s.req.def, terrain, x, y)) found = { x, y }
+      const n = r === 0 ? 1 : 8 * r
+      let i = s.ringIdx ?? 0
+      while (i < n && found === undefined && used < budget) {
+        const p = ringPoint(c, r, i)
+        i++
+        if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
+        used += 0.5
+        if (sitePoint(s.req.def, terrain, p.x, p.y)) found = p
       }
-      for (let y = c.y - r + 1; y <= c.y + r - 1 && found === undefined && r > 0; y++) {
-        for (const x of [c.x - r, c.x + r]) if (found === undefined && sitePoint(s.req.def, terrain, x, y)) found = { x, y }
+      if (found === undefined && i < n) {
+        s.ringIdx = i
+        break
       }
-      used += math.max(1, r) / 2
+      s.ringIdx = undefined
+      used += 0.5
       s.ring++
       if (found !== undefined) {
         s.target = found

@@ -17,20 +17,36 @@ export function onTick(): void {
   onAutoSpawnTick()
   const p = profiling.aiProfiler
   if (p) p.tick.reset()
-  onBrainTick()
-  onFactoryTick()
-  onFactoryMeterTick()
-  onPlannerTick()
+  timed(0, onBrainTick)
+  timed(1, onFactoryTick)
+  timed(2, onFactoryMeterTick)
+  timed(3, onPlannerTick)
   // M6a.2: removals between planner entries (a crew pick-up, a dropped ghost) mark chunks dirty; drain them here
   // (same budget as a planner entry's drain, terrain-chunks-per-tick) so a synchronous plan in between (a growth)
   // never reads ground that no longer stands.
-  stepAllTerrains(getConfig().terrainChunksPerTick)
-  onCrewTick()
-  onControllerTick()
+  timed(4, drainTerrains)
+  timed(5, onCrewTick)
+  timed(6, onControllerTick)
   if (p) {
     p.tick.stop()
     p.total.add(p.tick)
   }
-  onTelemetryTick()
-  onReviewTick()
+  timed(7, onTelemetryTick)
+  timed(8, onReviewTick)
+}
+
+function drainTerrains(this: void): void {
+  stepAllTerrains(getConfig().terrainChunksPerTick)
+}
+
+/** Runs one subsystem, timing it into its `PROFILE_PARTS` slot when soaks profile (measurement only). */
+function timed(part: number, fn: (this: void) => void): void {
+  const parts = profiling.partProfilers
+  if (parts === undefined) {
+    fn()
+    return
+  }
+  parts[part].restart()
+  fn()
+  parts[part].stop()
 }

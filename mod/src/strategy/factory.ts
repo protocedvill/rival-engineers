@@ -111,6 +111,8 @@ export interface FactoryGoal {
 
 export interface FactoryState {
   faction: string
+  /** B53: goal kinds whose last goal failed for want of a site, and the tick they may plan again. */
+  siteRetry?: Partial<Record<GoalKind, number>>
   terrain: string
   center: Vec
   layout: LayoutState
@@ -567,6 +569,15 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     if (decision.waiting !== undefined) ctx.waiting.push(decision.waiting)
     if (decision.action === "skip") continue
     const spec = specs[decision.index]
+    const retry = f.siteRetry?.[spec.kind]
+    if (retry !== undefined) {
+      if (ctx.tick < retry) {
+        ctx.waiting.push(`${spec.kind}: paused, no site found (B53); planning again at tick ${retry}`)
+        continue
+      }
+      f.siteRetry![spec.kind] = undefined
+      log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53) over: planning ${spec.kind} goals again`)
+    }
     if (spec.kind === "grow") {
       if (startGrow(ctx, spec) === true) return
       continue
@@ -981,6 +992,13 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     RT.removePlan(entry.id)
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
       g.status = "failed"
+      // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
+      // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.
+      if (string.find(g.reason ?? "", "no %S+ site in the region")[0] !== undefined && ctx.config.factorySiteRetryMinutes > 0) {
+        f.siteRetry ??= {}
+        f.siteRetry[g.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+        log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53): ${g.kind} goal ${g.id} failed all ${g.attempts} plans (${g.reason}; region radius up to ${g.radius}); no ${g.kind} goal plans for ${ctx.config.factorySiteRetryMinutes} game-min, until tick ${f.siteRetry[g.kind]} (setting factory-site-retry-minutes)`)
+      }
       // Planned without undergrounds and boxed in: research them before the next try (see needUndergrounds).
       const ug = RT.tiers()[0]?.underground
       const tech = ug !== undefined ? prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(ug) ?? ug) : undefined

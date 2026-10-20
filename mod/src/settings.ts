@@ -809,6 +809,15 @@ data.extend([
   },
   {
     type: "int-setting",
+    name: Settings.factorySiteRetryMinutes,
+    setting_type: "runtime-global",
+    default_value: 5,
+    minimum_value: 0,
+    maximum_value: 600,
+    order: "j-bfa",
+  },
+  {
+    type: "int-setting",
     name: Settings.factoryPowerFuelMinutes,
     setting_type: "runtime-global",
     default_value: 10,

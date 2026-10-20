@@ -409,6 +409,23 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
 
 DURATION = re.compile(r"\[re-telemetry\] tick=(\d+) ticks=(\d+) ai=Duration: ([0-9.]+)ms")
 BENCH = re.compile(r"Performed (\d+) updates in ([0-9.]+) ms")
+PROFILE = re.compile(r"\[re-profile\] tick=(\d+) ticks=(\d+) part=(\S+) Duration: ([0-9.]+)ms")
+
+
+def profile_parts(text):
+    """Per on_tick subsystem: average ms a tick over the run, and the worst telemetry interval (ms a tick, at tick)."""
+    total, ticks, worst = {}, {}, {}
+    for t, n, part, ms in PROFILE.findall(text):
+        n, ms = int(n), float(ms)
+        if n <= 0:
+            continue
+        total[part] = total.get(part, 0.0) + ms
+        ticks[part] = ticks.get(part, 0) + n
+        if ms / n > worst.get(part, (0.0, 0))[0]:
+            worst[part] = (ms / n, int(t))
+    return {part: {"ms_per_tick_avg": round(total[part] / ticks[part], 4),
+                   "worst_interval_ms_per_tick": round(worst[part][0], 4),
+                   "worst_interval_tick": worst[part][1]} for part in total if ticks[part] > 0}
 
 
 def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_ms=DEFAULT_DONE_MILESTONE):
@@ -473,6 +490,7 @@ def summarize(seed, telemetry, log_file, stdout_file, wall, stopped_early, done_
         "ai_ms_per_tick_avg": round(ai_total_ms / ai_ticks, 4) if ai_ticks else None,
         "ai_ms_per_tick_p99_interval": round(p99, 4) if p99 is not None else None,
         "ai_ms_per_tick_max_interval": round(max(per_tick), 4) if per_tick else None,
+        "profile": profile_parts(text),
         "errors": errors,
         "factions": factions,
         "work": telemetry.get("work"),
@@ -496,6 +514,23 @@ def markdown(cfg, results):
             lines.append(f"| {r['seed']} | {'✅' if r['pass'] else '❌'} | {name} | {f['done_minutes'] if f['done'] else '—'} | "
                          f"{len(f['stalls'])} ({rec}) | {f['replans']} | {r['ai_ms_per_tick_avg']} / {r['ai_ms_per_tick_p99_interval']} | "
                          f"{r['wall_ms_per_tick']} | {f['current_goal'] or 'done'} |")
+    lines += ["", "## AI time by on_tick subsystem (ms a tick: run average / worst telemetry interval at game minute)", ""]
+    parts = []
+    for r in results:
+        for part in (r.get("profile") or {}):
+            if part not in parts:
+                parts.append(part)
+    if parts:
+        lines += ["| Seed | " + " | ".join(parts) + " |", "|---|" + "---|" * len(parts)]
+        for r in results:
+            prof = r.get("profile") or {}
+            cells = []
+            for part in parts:
+                p = prof.get(part)
+                cells.append(f"{p['ms_per_tick_avg']} / {p['worst_interval_ms_per_tick']} @{p['worst_interval_tick'] / 3600:.0f}" if p else "-")
+            lines.append(f"| {r['seed']} | " + " | ".join(cells) + " |")
+    else:
+        lines.append("No profile lines (telemetry off?).")
     lines += ["", "## Milestones (game minutes)", ""]
     for r in results:
         for name, f in r["factions"].items():

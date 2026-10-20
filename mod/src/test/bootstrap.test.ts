@@ -160,6 +160,14 @@ describe("burner bootstrap", () => {
       }
       assert(refuels === 0, `no crew refuelling once running (a fuel job was active for ${refuels} ticks)`)
       assert(faction.brain!.milestones["burner-mining:coal"] !== undefined, "burner-mining:coal milestone")
+      // B53: the lab has no water, so the factory's power goal finds no shore site; its kind then pauses
+      // (factory-site-retry-minutes) instead of starting a new goal at once, forever.
+      const fac = storage.factories?.[faction.name]
+      if (fac !== undefined) {
+        let power = 0
+        for (const g of fac.goals) if (g.kind === "power") power++
+        assert(power <= 1, `B53: ${power} power goals planned on a lab with no water (want at most 1, then a pause)`)
+      }
       log(`[m3] coal pair built at tick ${builtAt}; self-fed for 3 minutes, coal in the depot ${faction.stockpiles[0].get_item_count("coal")}`)
       return true
     })

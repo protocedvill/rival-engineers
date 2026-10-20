@@ -5,6 +5,7 @@ declare function require(this: void, module: string): unknown
 
 import { onPathRequestFinished } from "./character/pathing"
 import { onEntityChanged } from "./planner/terrain"
+import { invalidateConfig } from "./config"
 import { onBufferBuilt } from "./modules/buffers"
 import { registerRemoteInterface } from "./remote"
 import { registerReview } from "./review/index"
@@ -13,10 +14,15 @@ import { onResearchFinished } from "./strategy/bootstrap"
 import { onTick } from "./tick"
 
 script.on_init(() => {
+  invalidateConfig()
   initStorage()
   storage.autoSpawnPending = true
 })
-script.on_configuration_changed(initStorage)
+script.on_configuration_changed(() => {
+  invalidateConfig()
+  initStorage()
+})
+script.on_event(defines.events.on_runtime_mod_setting_changed, invalidateConfig)
 script.on_event(defines.events.on_script_path_request_finished, onPathRequestFinished)
 script.on_event(defines.events.on_tick, onTick)
 script.on_event(defines.events.on_research_finished, (e) => onResearchFinished(e.research.force, e.research.name))

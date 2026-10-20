@@ -193,6 +193,7 @@ export interface Config {
   buildStuckRounds: number
   /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
   factoryPowerFuelMinutes: number
+  factorySiteRetryMinutes: number
   /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
   factoryFuelFallback: boolean
   /** D56: place one radar at the base once power is built (for realism; plans never depend on it). */
@@ -213,19 +214,33 @@ function setting<T extends number | boolean | string>(name: string): T {
   return settings.global[name].value as T
 }
 
+// Reading every setting through `settings.global` cost ~0.9 ms a call (29 call sites, several a tick): the config is
+// built once and rebuilt after a setting or an override changes. Not saved: a loaded game rebuilds it from the same
+// settings and `storage`, so every peer sees the same values. Callers must not modify it.
+let cached: Config | undefined
+
 export function getConfig(): Config {
+  if (cached !== undefined) return cached
   const config = {} as Config
   const target = config as unknown as Record<string, unknown>
   for (const [key, name] of pairs(Settings)) target[key as string] = setting(name as string)
-  const overrides = storage.configOverrides as Record<string, unknown>
+  const overrides = (storage.configOverrides ?? {}) as Record<string, unknown>
   for (const key in overrides) target[key] = overrides[key]
+  cached = config
   return config
+}
+
+/** Drops the cached config (a runtime setting changed, the mod configuration changed, a new game). */
+export function invalidateConfig(): void {
+  cached = undefined
 }
 
 export function setConfigOverride<K extends ConfigKey>(key: K, value: Config[K] | undefined): void {
   storage.configOverrides[key] = value as never
+  cached = undefined
 }
 
 export function clearConfigOverrides(): void {
   storage.configOverrides = {}
+  cached = undefined
 }

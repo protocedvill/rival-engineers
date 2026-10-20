@@ -94,6 +94,7 @@ export const Settings = {
   logisticsShareMinModules: "rival-engineers-logistics-share-min-modules",
   buildStuckRounds: "rival-engineers-build-stuck-rounds",
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",
+  factorySiteRetryMinutes: "rival-engineers-factory-site-retry-minutes",
   factoryFuelFallback: "rival-engineers-factory-fuel-fallback",
   factoryRadar: "rival-engineers-factory-radar",
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",

@@ -1562,3 +1562,59 @@ exists".
 | Seal check cap (first search) | `policy.ts` `router.sealCheck` | 2000 states (about 500 tiles × 4 headings); 0 turns it off | Swept 2000–uncapped: higher caps cost routes that succeed 6–78% more work and gain nothing once retries run uncapped. | no |
 | Seal check cap (retries after "no path") | `router.sealRetry` | 0 (no cap) | The user's rule: an enclosed end is a fail. 8000 gave the same mall-iron gain. | no |
 
+## M6b.26: T2 time, config cache, B53 planner spin, D60 site-retry pause (2026-10-20)
+
+The user asked what takes the most time in T2 (29.4 min wall, 11,513 s of test time over 8 shards). Module validations
+were 56% of it, then routing 15% and bootstrap 11%; the longest single test was the coal-pair bootstrap (928 s).
+
+**Shard balancing** was already automatic (units packed by their past durations, `out/test-timings.json`); a shard
+running long came from run-to-run noise. Nothing changed there.
+
+**Per-tick cost.** Every test runs ticks at a cost that had nothing to do with its own work: an idle 19,800-tick test
+took 80.7 s (4 ms a tick), as long as a validation of four assemblers. With the mod's `onTick` skipped it took 30.1 s.
+Profiled per subsystem: `stepAllTerrains` 0.91 ms a tick and `onTelemetryTick` 0.85 ms a tick, both from one
+`getConfig()` call each. `getConfig()` read every mod setting through `settings.global` on every call (29 call sites,
+several a tick in game). It now builds the config once and rebuilds it after `on_runtime_mod_setting_changed`,
+`on_configuration_changed`, `on_init` or an override change (the cache is a Lua local derived from settings and
+`storage`: a loaded game rebuilds the same values). Idle test 80.7 → 38.5 s. This is an in-game saving too.
+
+**Module validations** (user: prime the fuel; run only as long as validation needs):
+- *Fuel priming* (`LabOptions.primeFuel`): every burner machine starts with 5 coal (the lab's refuel amount), except
+  `smelter iron 12`, which keeps the cold start covered. The burner smelters reached their rate at the first steady
+  check instead of after 15–23 game-min of fuel-lane hoarding.
+- *Measure from the steady windows* (`LabOptions.measureSteady`): steady means the last group of 3 windows agrees with
+  the group before within 3%, so that group already measures the rate; the run ends there instead of measuring 2
+  (fast) or 5 (slow) more game-minutes. Malls keep their 15-minute measurement (lumpy outputs). Fast validations now
+  run 3.5 game-min (the minimum the steady rule allows), slow ones 7.
+- Not changed: the window lengths (30 s fast, 60 s slow) and the 3-window groups. Windows sized by the slowest
+  machine's cycle would need ~1/tolerance cycles each to keep counting noise under 3%, longer than today's for the
+  slow modules; not worth it.
+
+All 19 validations pass at 99.5–100.4% of their declared rates. Times (8-shard runs, before → after): fast ones
+~150 → ~62 s each, smelter copper 759 → 69 s, stone-brick 646 → 124 s, green-line 422 → 63 s, mall-polse 629 → 341 s;
+all 19 together ~6,300 → ~2,150 s.
+
+**B53 (bug): the planner spun at ~43 ms a tick on a map without water.** The coal-pair test (lab tiles, no water) ran at
+21 ticks/s alone. After the planner took over, its power goal found "no shore site in the region" at every radius up
+to 378, failed all 4 plans, and an identical goal started at once, forever. The site-point ring search counted r / 2
+work units for a ring of 8r points and ran out to the region's full width from the centre: one planner tick did ~16×
+its budget. Fixed in `placement.ts`: half a work unit a point checked (as the SAT pass), the scan stops at the budget
+inside a ring and resumes there (same point order), and points whose placement window could not meet the region are
+skipped (such a point used to give an empty window and fail the placement; now the scan goes on to a usable one).
+
+**D60 (user-approved in-session, 2026-10-20): site-retry pause.** After a goal fails all its plans with "no … site in
+the region", goals of its kind wait `factory-site-retry-minutes` (5). The user: "it should also log pretty clearly so
+we aren't surprised later": the pause logs `SITE RETRY PAUSE (B53): power goal g1 failed all 4 plans (…; region radius
+up to 378); no power goal plans for 5 game-min, until tick N (setting factory-site-retry-minutes)`, its end logs
+`SITE RETRY PAUSE (B53) over`, and the factory's waiting list shows it meanwhile. The coal-pair test asserts at most one
+power goal on its waterless lab. Coal-pair test 928 → 70 s.
+
+### Magic numbers for the user (M6b.26)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Site-retry pause | `factory.ts` (D60) | 5 game-min | User-approved. | yes (`factory-site-retry-minutes`, new) |
+| Ring search work per point | `placement.ts` site phase | 0.5 work units | Same rate as a SAT tile (`satRow`); ~7 µs a point in game. | no |
+| Lab fuel priming | `test/modules.test.ts` `PRIME_FUEL` | 5 coal per burner machine | The lab's existing refuel amount. Test only. | no |
+| Cold-start validation | `test/modules.test.ts` `COLD_START` | `smelter iron 12` | The column size the AI builds; the hoarding shows most there. Test only. | no |
+
