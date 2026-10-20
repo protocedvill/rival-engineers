@@ -102,6 +102,11 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
    whole file takes over 5 minutes). `REPLAY_ROUTER="maxRipups=6"` and `REPLAY_UNDERGROUND=4` try router variants. Soaks
    also keep every *adopted* plan's input (`plans/<faction>/`); `compareReplay(...)` replays one with the D36 / B2
    comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`, `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
+   - **Replays use today's weights.** A capture freezes the policy of the day it was taken; `load` replaces every
+     weight (router, placement, obstacles, corridor, search radii) with the current defaults and keeps only the plan's
+     own choices (topology, smelting, utilization). A default change therefore shows up in the replays at once, and a
+     replay that pins a past decision pins its weights itself with a comment (the logistics comparisons: B26, D59).
+     `REPLAY_CAPTURED=1` replays with the captured policy.
    - **Read the dump first.** A replay that fails writes `out/replay-dumps/<replay>/summary.txt` and `plan.json`
      (`REPLAY_DUMP=1`: every replay; `REPLAY_DUMP=0`: no trace). For each placement: the chosen site and the runners-up
      with every weighted score term (`center`, `port`, `facing`, `clear`, `adjacent`, `exactGap`, `coverage`,

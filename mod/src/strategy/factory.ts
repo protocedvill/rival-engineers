@@ -568,7 +568,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     if (decision.action === "skip") continue
     const spec = specs[decision.index]
     if (spec.kind === "grow") {
-      if (startGrow(ctx, spec)) return
+      if (startGrow(ctx, spec) === true) return
       continue
     }
     startGoal(ctx, spec)
@@ -601,7 +601,7 @@ function startGoal(ctx: Ctx, spec: GoalSpec): void {
  * When it can't grow (no room, at its cap), the shortfall stays visible as a waiting reason (D24: a new producer
  * cluster is the remedy, M5b/M6).
  */
-function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
+function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   const f = ctx.f
   const gr = spec.growth!
   const node = f.graph.nodes[gr.node]
@@ -640,6 +640,18 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
     log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow by ${gr.units} units (failure ${f.growFails[gr.role]}): ${plan.reason}`)
     return false
   }
+  // B52 (seed 3333): a growth that reroutes a connection still being built (its producer or consumer under
+  // construction) leaves that goal placing its old copy of the route. Wait for it; no growth failure.
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind !== "belt" || plan.rerouted.indexOf(e.role) < 0) continue
+    for (const end of [e.from, e.to]) {
+      const other = end !== undefined && end !== gr.node ? f.graph.nodes[end] : undefined
+      if (other === undefined || other.lifecycle !== "building") continue
+      ctx.waiting.push(`${gr.role} growth waits for ${other.goal ?? other.id} to finish building (it reroutes ${e.role})`)
+      return "wait"
+    }
+  }
   const g: FactoryGoal = {
     id: `g${f.nextGoal++}`,
     kind: "grow",
@@ -662,6 +674,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   powerEdges(f)
   const m = findModule(f.layout, gr.node)!
   node.capacity = { inputs: m.canonical.rates.inputs, outputs: m.canonical.rates.outputs }
+  // B52: a power node's supply grows with it (graph power balance, measured load).
+  if (node.kind === "power") node.powerW = LG.rateIn(node.capacity.outputs, "electricity")
   node.module = m.canonical.id
   node.lifecycle = "building"
   node.goal = g.id
@@ -1671,7 +1685,10 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     // next free part of its own patch; with nothing better left there, it is given up and planned again elsewhere.
     if (r.key.startsWith("deplete:") && n !== undefined && m !== undefined && m.minePlan?.complete === true) {
       const before = f.goals.length
-      if (startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: 0, have: 0, reclaim: true } }) && f.goals.length > before) {
+      const moved = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: 0, have: 0, reclaim: true } })
+      // B52: it reroutes a connection still being built: try again later.
+      if (moved === "wait") return
+      if (moved === true && f.goals.length > before) {
         say(`goal ${f.goals[f.goals.length - 1].id} moves it to the next part of its patch (D55)`)
         return
       }
@@ -1699,8 +1716,19 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     }
     if (units < 1) { say("cannot grow: at its expansion limit"); return }
     const before = f.goals.length
+    const failsBefore = f.growFails?.[n.role] ?? 0
     const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units, need: have, have } })
-    say(ok && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by ${units} unit(s)` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    // B52: waiting for a goal still building is no attempt (it doesn't use up the remedy's tries).
+    if (ok === "wait") return
+    say(ok === true && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by ${units} unit(s)` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    // B52: the remedy's tries (earlier successful growths count) can run out before GROW_MAX_FAILS expansion failures:
+    // its last failed try marks the growth blocked, so the design's fallback (a second steam block, other producers)
+    // takes over instead of nothing.
+    const fails = f.growFails?.[n.role] ?? 0
+    if (ok === false && fails > failsBefore && fails < ST.GROW_MAX_FAILS && (st.remedies[r.key]?.count ?? 0) >= ctx.config.reconcileMaxRemedies) {
+      f.growFails![n.role] = ST.GROW_MAX_FAILS
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} growth blocked: the reconciler's ${ctx.config.reconcileMaxRemedies} tries are used up (${fails} expansion failures)`)
+    }
     return
   }
   // Repair: re-place the missing pieces of the edge's route (belt) or pole lines (power).
@@ -1719,10 +1747,13 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
     for (const s of own.missing) check.missing.push(s)
   }
-  if (check.missing.length === 0) {
+  if (check.missing.length === 0 && check.misdirected.length === 0) {
     say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
     return
   }
+  // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
+  const clearJobs: number[] = []
+  for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
   const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
   const g: FactoryGoal = {
     id: `g${f.nextGoal++}`,
@@ -1738,10 +1769,11 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     placed: 0,
     rounds: 0,
     reason: r.why,
-    growBuild: { phase: "place", clearJobs: [], add: [], ghosts: d.ghosts, placeJobs: d.placeJobs },
+    growBuild: { phase: clearJobs.length > 0 ? "clear" : "place", clearJobs, add: check.misdirected.map((w) => w.spec), ghosts: d.ghosts, placeJobs: d.placeJobs },
   }
   f.goals.push(g)
-  say(`goal ${g.id} re-places ${check.missing.length} entities${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
+  const turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
+  say(`goal ${g.id} re-places ${check.missing.length} entities${turned}${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
 }
 
 // ---------------------------------------------------------------------------------------------------------

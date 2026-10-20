@@ -129,6 +129,9 @@ export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStat
   const s = m.states
   const pct = (x: number): string => `${math.floor(x * 100 + 0.5)}%`
   if (n.kind === "power") {
+    // B52: the shares are over boilers and engines together, and a boiler without fuel leaves its engines without steam
+    // ("starved", like no water): with any boiler unfuelled, the engines it starves count toward the fuel shortage.
+    if (s.unfuelled >= p.minActive && s.unfuelled + s.starved >= p.badShare) return { status: "unfuelled", why: `boilers without fuel ${pct(s.unfuelled)}, engines without steam ${pct(s.starved)}` }
     if (s.unfuelled >= p.badShare) return { status: "unfuelled", why: `boilers without fuel ${pct(s.unfuelled)}` }
     if (s.starved >= p.badShare) return { status: "starved", why: `boilers without water ${pct(s.starved)}` }
     return { status: "ok", why: `load ${pct(m.load ?? 0)}` }

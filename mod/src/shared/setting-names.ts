@@ -72,6 +72,7 @@ export const Settings = {
   plannerCompareWorkFactor: "rival-engineers-planner-compare-work-factor",
   plannerPlacementSoftClaim: "rival-engineers-planner-placement-soft-claim",
   plannerRouterSoftClaim: "rival-engineers-planner-router-soft-claim",
+  plannerRouterSoftClaimDecay: "rival-engineers-planner-router-soft-claim-decay",
   plannerRouterBundleFactor: "rival-engineers-planner-router-bundle-factor",
   plannerPlacementGrowthBand: "rival-engineers-planner-placement-growth-band",
   plannerPlacementGrowthBandUnits: "rival-engineers-planner-placement-growth-band-units",

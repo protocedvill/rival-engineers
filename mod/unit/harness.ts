@@ -8,7 +8,7 @@ interface UnitTest {
 
 const tests: UnitTest[] = []
 
-declare const os: { getenv(this: void, name: string): string | undefined; exit(this: void, code: number): never }
+declare const os: { getenv(this: void, name: string): string | undefined; exit(this: void, code: number): never; clock(this: void): number }
 
 export function test(name: string, fn: (this: void) => void): void {
   tests.push({ name, fn })
@@ -40,12 +40,16 @@ export function run(suite: string): void {
       skipped++
       continue
     }
+    const t0 = os.clock()
     const [success, err] = pcall(t.fn)
+    // CPU seconds, shown from 1 s: which tests make T1 slow.
+    const dt = os.clock() - t0
+    const time = dt >= 1 ? ` (${string.format("%.1f", dt)} s)` : ""
     if (success) {
-      print(`PASS ${suite} > ${t.name}`)
+      print(`PASS ${suite} > ${t.name}${time}`)
     } else {
       failed++
-      print(`FAIL ${suite} > ${t.name}\n    ${tostring(err)}`)
+      print(`FAIL ${suite} > ${t.name}${time}\n    ${tostring(err)}`)
     }
   }
   print(`${suite}: ${tests.length - failed - skipped} passed, ${failed} failed${skipped > 0 ? `, ${skipped} filtered out` : ""}`)

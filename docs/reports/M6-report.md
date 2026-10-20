@@ -1394,3 +1394,135 @@ Tests (T1):
 | Planner budget | `planner-work-per-tick` | 400 per tick for the whole mod (was 100 per plan) | The user asked that one plan can take all of it. Estimated 2–3 ms/tick at full use; not yet measured. | yes |
 | Lane escape distance | `fuel.ts` `LANE_ESCAPE` | 8 tiles | Same idea as the B45 lane test: an input lane must lead 8 free tiles out. | no |
 | B51 relocation depth | `fuel.ts` `relocate` | 1 level | Relocating a sealed consumer does not cascade further, so one depletion cannot rip a whole cluster. | no |
+
+## M6b.24: B52 the steam block never got its coal, D59 soft-claim cost by growth unit (2026-10-20)
+
+The D58 resume of seed 3333 (`d58-s3333`, from `m6-d55-73d7ac7` min-0120) reached `v1-done` at 224.8 game min
+(science sustained at 204.8, all 42 techs at 224.3; AI 6.6 ms/tick avg, 15.4 p99; no stalls). B51 worked: n34 was
+relocated with n27 and g19 found the far iron field at radius 378. But the power plant never grew ("power cannot grow:
+blocked at 459,-9"), and the user asked why. It was not too small: it was out of coal (B52, five causes):
+
+1. A power growth (g10, ~41 min) rerouted the mall's coal route while the mall goal g9 was still building it. g9 kept
+   placing its old copy: 22 belts north along x=430, which are in no route of the layout. One turned the steam block's
+   coal belt at (430,3) north, so coal from n6 went up that column and n6's drills sat blocked. Boilers 1–4 ran on D54
+   hand-fed stacks, 5–9 stayed dry: 8 of 18 engines, ~7 MW of 16.2 MW built, for ~2.5 game hours.
+2. The repair check (`conflicts.ts` `ownBuilt`) matched name and position only: the turned belt counted as built.
+3. Measured load used `powerW`, still the first unit's 1.8 MW, so the plant read "308–320% load" (really ~34%). The
+   power classification spread its shares over boilers and engines (22% dry boilers, 43% engines without steam: neither
+   reached 50%), so n1 read "ok" and the reconciler grew it instead of tracing the coal.
+4. Those growths failed: the far mine's ore route (g20) ran along x=459, through n1's next growth unit. The router's
+   soft-claim cost was 0.5 a tile, ~6 for the whole crossing.
+5. The reconciler acts on one cause 3 times (`reconcile-max-remedies`), and a successful growth was one of them. The
+   second-steam-block fallback needs 3 *failed* expansions (`GROW_MAX_FAILS`); power stopped at 2.
+
+Fixes (approved in-session 2026-10-20: "Go ahead and make those fixes"):
+- `goal-selection.ts`: a growth waits for every other active goal (mall, repair, temp and radar too).
+  `factory.ts` `startGrow`: a growth plan that would reroute a connection whose producer or consumer is still being
+  built waits (returns "wait": no growth failure, no reconciler try used). That also covers depletion and reconciler
+  growths, which skip the selection rules.
+- `conflicts.ts` `checkBuild` reports `misdirected` belts, undergrounds (incl. the wrong end), splitters and inserters.
+  The repair remedy picks them up first, then places them as planned (a ghost on a live entity of the same name never
+  revives).
+- `measure.ts`: a power node's load is against its built capacity; `startGrow` keeps a power node's `powerW` in step,
+  and `logical.ts` `powerBalance` takes the larger of the two for older saves. `reconcile.ts` `classify`: with dry
+  boilers (≥ `minActive`), dry boilers plus engines without steam ≥ `badShare` is "unfuelled", so an unpowered consumer
+  traces to the coal edge (here n6 backed up → `repair:` the coal route → the turned belt).
+- `factory.ts`: a failed growth that uses up the reconciler's tries marks the role blocked (`GROW_MAX_FAILS`), so the
+  design's fallback (a second steam block, other producers) can take over.
+- D59 (user: "10 or so … diminish a bit after every single expansion unit"): the router's soft-claim cost is
+  `planner-router-soft-claim` (10, was 0.5) × `planner-router-soft-claim-decay` (0.5) per growth unit farther out.
+  `markModule` records each soft tile's unit (`LayoutState.softUnit`); `cloneLayout` (every plan, growth and reroute
+  starts from one) fills the units of soft tiles marked before, so older saves and captures don't pay the full cost
+  everywhere.
+
+Checking (e) on the real plan: the g20 capture replayed (`unit/fixtures/s3333-b52-growth-strip.lua`; terrain outside
+the captured window read as free, so the far shared mine completes) reproduces the game: at 0.5 the route puts 11 tiles
+in n1's unit 1. At a flat 10, 20, 30, 50 or 100 it still crosses unit 1 with an underground: only its 4 end tiles pay,
+while crossing farther west costs a ~40-tile detour plus the farther units' tiles. Two-level routing is not involved
+(`longRoute=0` gives the same). Sweep (route tiles in n1's units 1–11; pass = units 1–2 clear):
+
+| weight | decay | result |
+|---|---|---|
+| 10 | 1, 0.9, 0.8, 0.7, 0.65, 0.6, 0.55 | unit 1 (4 underground ends) |
+| 10 | 0.5, 0.45, 0.4 | unit 5 |
+| 8, 15, 20 | 0.5 | unit 5 (189–196 tiles at 8–15, 181 at 20) |
+| 15, 20 | 0.7 | unit 1 |
+| 20, 30, 40 | 0.6 | unit 5 (177 tiles) |
+| 5 | 0.6 | unit 1 |
+
+So 10 needs a decay of 0.5 or less here; 0.55 already fails. The margin is thin and this is one plan: the soak and
+more replays should judge it.
+
+One existing replay changed: `replay seed3333-production-ok: logistics comparison` (the stage-1 cluster planned
+without undergrounds, already noted as chaotic) fails its routing at 10 / 0.5 and passes with the router's soft cost
+off or at 0.5. Like the B26 weights, the comparison replays now pin the router's soft cost at the capture-era 0.5
+(`REPLAY_D59=1` uses the current one). In the game such a cluster researches undergrounds first (D36); its replay with
+undergrounds passes.
+
+Tests (T1):
+- `goal-selection` "B52: a growth waits for any other goal still building".
+- `reconcile` "classify": n1's real shares (35% working, 43% starved, 22% unfuelled) → unfuelled; no dry boiler → starved.
+- `plan-replay` "B52: a route keeps out of the steam block's nearest growth units" (g20, prints the per-unit counts;
+  `REPLAY_ROUTER="softClaim=…,softClaimDecay=…"` and `REPLAY_MAP_B52=1` for a map of the strip).
+
+Not fixed here: the orphan x=430 column itself stays built (it is in no route, so nothing picks it up). Once (430,3) is
+turned back, the column's lower half side-loads whatever it carries onto the steam block's coal belt (not checked). A sweep for own belts that no
+route owns would be a separate change.
+
+### Magic numbers for the user (M6b.24)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Router soft-claim cost | `policy.ts` `router.softClaim` | 10 per tile in the next growth unit (was 0.5) | User: "10 or so depending on testing". | yes (`planner-router-soft-claim`) |
+| Soft-claim decay per unit | `router.softClaimDecay` | 0.5 | Largest decay that kept g20's route out of units 1–2 at weight 10 (0.55 failed). The user asked for "a bit". | yes (`planner-router-soft-claim-decay`, new) |
+| Dry-boiler floor | `reconcile.ts` `classify` | `minActive` (10%) of the machines | Reuses the existing noise floor: below it a dry boiler is between refuels. | no (existing) |
+
+## M6b.25: seal check for unreachable ports, replays on today's weights (2026-10-20)
+
+The user asked why T1 is slow. Two replays spent 200–350 s each proving that a port can't be reached: a boxed-in port
+makes A* exhaust its whole window (seed 11's 445×434), and every rung of the retry ladder (rip, window ×3, ×9) does it
+again. Asked for a cheap "can't be reached" test, the user picked a bidirectional flood (in-session, 2026-10-20).
+
+**Seal check** (`router.ts` `stepSeal`, before the A* of every search): one flood from the starts and one backwards from
+the goal over the search's own states (tile, heading) and moves (a belt straight on or turning; an underground entered
+straight), passability and underground-span rule, with no costs. It expands the side with the shorter queue. A side
+that runs out before the two meet proves "no path" at the cost of its own enclosed region. When the region did not
+touch the window's edge, `plan.ts` also skips the wider-window retries (a wider window can't open it). When the floods
+meet, or after `router.sealCheck` states, the A* runs as before; a meet means a path exists.
+
+A first version flooded tiles without headings. It leaked on green-line: the goal's pocket connects to the outside
+only through an underground that must be entered heading south from a blocked tile, and the tile flood entered it from
+the side, so the check met after 21 steps and never proved anything. Flooding (tile, heading) states fixed it.
+
+| Replay | Before | After |
+|---|---|---|
+| seed11-green-boxed (fails, as before) | 345 s, routing work 1.76M, 20 searches | 3.6 s |
+| m6a2-seed222-green-line (fails, as before) | 205 s, routing work 1,733,248, 18 searches | < 1 s, routing work 66, 6 searches (the goal's pocket is 4 tiles) |
+| the "freed" variants of both (route) | 9.9k / 449 work | 10.9k / 480 (the check's own cost) |
+
+Full T1: 8 min 16 s. What remains slow is the two `m6a2-seed222-mall-iron` replays that *succeed* (about 85 s each,
+35% of T1): 685k A* expansions over 12 searches. They are as slow with the captured (pre-D59) weights. A profile
+shows plain A* work (heap 15%, keys and window checks 25%, `tileCost` 41%). The cause is the heuristic: it assumes
+0.81 a tile (corridor × bundle factor) while ore tiles cost about 4, so A* floods the iron field. Proposed next: a
+heuristic from a reverse Dijkstra over the coarse cells two-level routing already builds (each cell at its cheapest
+tile, still admissible). Not done here.
+
+**Replays use today's weights** (user, in-session 2026-10-20: captures "static in time" would cause problems). `load`
+replaces a capture's policy with the current `EARLY_COMPACT` copy, keeping only the plan's topology, smelting and
+utilization; `REPLAY_CAPTURED=1` replays the captured policy (an empty value counts as unset). `REPLAY_ROUTER` and
+`REPLAY_PLACEMENT` now apply to every replay (in `load`; the mall-iron and comparison replays ignored them). Pinned
+exceptions:
+- the D36 "seed222-production without undergrounds" test loads its captured weights (today's route it: 197 tiles);
+- the logistics comparisons pin the router's soft cost at 0.5 with no decay (`REPLAY_D59=1` uses today's);
+- planner-batch "B9: routes detour around a growth area" pins the decay at 1 (it tests a flat weight; with the decay
+  the flow's crossing at the area's far end is nearly free, which is D59's intent).
+
+Tests (T1): planner "router: the seal check proves a boxed-in port unreachable cheaply, and changes nothing when a way
+exists".
+
+### Magic numbers for the user (M6b.25)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Seal check cap | `policy.ts` `router.sealCheck` | 2000 states (about 500 tiles × 4 headings); 0 turns it off | Proves the captured boxed-in ports (4 tiles on green-line) with room to spare; a meet usually comes within 100 states, so a reachable route pays little. Not swept. | no |
+

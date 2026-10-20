@@ -149,6 +149,8 @@ export interface Config {
   plannerPlacementSoftClaim: number
   /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
   plannerRouterSoftClaim: number
+  /** B52: the router soft-claim cost's factor per growth unit farther from the module (policy router.softClaimDecay). */
+  plannerRouterSoftClaimDecay: number
   /** B26: placement cost per footprint tile on the near part of another module's growth area (policy placement.growthBand). */
   plannerPlacementGrowthBand: number
   /** B26: growth units next to a module that count as its near band (policy placement.growthBandUnits). */

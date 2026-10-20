@@ -121,6 +121,11 @@ export interface LayoutState {
    */
   soft?: Record<number, string>
   /**
+   * B52: the growth unit a soft-claimed tile belongs to (0: the unit next to the module). Routes pay less for each unit
+   * farther out (`softClaimDecay`). Absent (a mine's claim, a layout from before B52): unit 0.
+   */
+  softUnit?: Record<number, number>
+  /**
    * D52 (3): a mining outpost's planned room to grow (its growth area: tile → outpost id) is a hard claim: no other
    * module, no other module's route and no pole may take it (the user saw poles block mine expansion).
    */
@@ -365,10 +370,19 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
   }
   if (g !== undefined) {
     state.soft ??= {}
-    for (let x = g.x; x < g.x + g.w; x++) {
-      for (let y = g.y; y < g.y + g.h; y++) {
-        const k = tkey(x, y)
-        if (state.soft[k] === undefined && state.occ[k] === undefined) state.soft[k] = m.id
+    state.softUnit ??= {}
+    // Unit by unit outwards (their rects tile `g`), so each tile knows how far out it is (B52).
+    const units = growthUnitRects(m)
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i]
+      for (let x = u.x; x < u.x + u.w; x++) {
+        for (let y = u.y; y < u.y + u.h; y++) {
+          const k = tkey(x, y)
+          if (state.soft[k] === undefined && state.occ[k] === undefined) {
+            state.soft[k] = m.id
+            state.softUnit[k] = i
+          }
+        }
       }
     }
   }
@@ -450,11 +464,35 @@ export function growthArea(m: PlacedModule): Rect | undefined {
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
 }
 
+/** B52: gives each soft-claimed tile without a growth unit (marked before units were recorded) the unit it lies in. */
+export function fillSoftUnits(state: LayoutState): void {
+  if (state.soft === undefined) return
+  state.softUnit ??= {}
+  for (const m of state.modules) {
+    const units = growthUnitRects(m)
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i]
+      for (let x = u.x; x < u.x + u.w; x++) {
+        for (let y = u.y; y < u.y + u.h; y++) {
+          const k = tkey(x, y)
+          if (state.soft[k] === m.id && state.softUnit[k] === undefined) state.softUnit[k] = i
+        }
+      }
+    }
+  }
+}
+
 /** Removes a module's tiles (before re-marking it grown). Routes are untouched. */
 export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts): void {
   const tag = `m:${m.id}`
   const xtag = `x:${m.id}`
-  if (state.soft !== undefined) for (const [k, owner] of pairs(state.soft)) if (owner === m.id) delete state.soft[k as number]
+  if (state.soft !== undefined) {
+    for (const [k, owner] of pairs(state.soft)) {
+      if (owner !== m.id) continue
+      delete state.soft[k as number]
+      if (state.softUnit !== undefined) delete state.softUnit[k as number]
+    }
+  }
   if (state.mine !== undefined) for (const [k, owner] of pairs(state.mine)) if (owner === m.id) delete state.mine[k as number]
   for (const k of moduleTiles(m)) if (state.occ[k] === tag) delete state.occ[k]
   for (const t of interactionTiles(m.def, facts)) {

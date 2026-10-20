@@ -95,6 +95,11 @@ test("classify: on plan is ok; below plan the dominant state decides; no power m
   eq(classify(e, P).status, "ok", "labs without research are idle, not starved")
   const f = node(g, "f", "power", "electricity", 1e6, st({ working: 0.3, unfuelled: 0.7 }), 0)
   eq(classify(f, P).status, "unfuelled", "boilers without fuel")
+  // B52 (seed 3333): 5 of 9 boilers dry starve 10 of 18 engines; over all 27 machines neither share reached badShare.
+  const f2 = node(g, "f2", "power", "electricity", 1e6, st({ working: 0.35, starved: 0.43, unfuelled: 0.22 }), 0)
+  eq(classify(f2, P).status, "unfuelled", "dry boilers and the engines they starve")
+  const f3 = node(g, "f3", "power", "electricity", 1e6, st({ working: 0.4, starved: 0.6 }), 0)
+  eq(classify(f3, P).status, "starved", "no water (no boiler dry)")
   const u = node(g, "u", "module", "x", 1, st({}), 0)
   u.measured = undefined
   eq(classify(u, P).status, "unknown", "not measured")

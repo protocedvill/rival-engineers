@@ -81,6 +81,37 @@ export interface Search {
   widened?: boolean
   /** Heuristic weight: 1 (exact A*), `corridorWeight` while inside a corridor. */
   hw?: number
+  /** Seal check still running (see `stepSeal`). */
+  seal?: Seal
+  /** The seal check proved "no path": the end that ran out, its enclosed tiles, and whether the window's edge cut it. */
+  sealed?: { side: "start" | "goal"; tiles: number; edge: boolean }
+  /** Tiles the seal check visited (work). */
+  sealSteps?: number
+}
+
+/**
+ * Seal check (user, 2026-10-20): a flood from the starts and one backwards from the goal over the search's own states
+ * (tile, heading) and moves (a belt straight on or turning, an underground entered straight), passability and
+ * underground-span rule, without costs. A side that runs out before the two meet proves "no path", at the cost of the
+ * smaller enclosed region instead of the whole window (a boxed-in port otherwise exhausts the window, and every retry
+ * exhausts it again). It expands the side with the shorter queue first; when they meet, or after `router.sealCheck`
+ * states, the search runs as before. (A tile-only flood leaked: it entered an underground from the side.)
+ */
+interface Seal {
+  fq: number[]
+  fi: number
+  fseen: Record<number, boolean>
+  fedge: boolean
+  rq: number[]
+  ri: number
+  rseen: Record<number, boolean>
+  redge: boolean
+  /** Tile passability (cost ≥ 0), cached by tile. */
+  pass: Record<number, boolean>
+  /** A state reached from both ends: a path exists (the search runs). */
+  met: boolean
+  steps: number
+  cap: number
 }
 
 /** A* over `cell`×`cell` tile cells of the window (two-level routing). */
@@ -201,7 +232,9 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   const soft = w.softClaim ?? 0
   if (soft > 0) {
     const owner = state.soft?.[k]
-    if (owner !== undefined && owner !== req.to.module && owner !== req.from?.module) extra += soft
+    // B52: most next to the module, less for each unit farther out: a route that must cross a growth strip crosses
+    // its far end, keeping the module's next units free.
+    if (owner !== undefined && owner !== req.to.module && owner !== req.from?.module) extra += soft * (w.softClaimDecay ?? 1) ** (state.softUnit?.[k] ?? 0)
   }
   let f = state.corridor[k] ? w.corridorFactor : 1
   // B7: next to another route's belt, routes bundle.
@@ -317,6 +350,8 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   }
   s.goalS = encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))
   for (const id of req.taps ?? []) for (const c of tapCandidates(state, terrain, policy, req, rip, id)) s.tapStarts.push(c)
+  const sealCap = w.sealCheck ?? 0
+  if (sealCap > 0) s.seal = newSeal(s, state, terrain, policy, sealCap)
   // Two-level routing: a long connection searches cells first (`stepCoarse`), then tiles inside their corridor.
   const starts: { x: number; y: number }[] = []
   if (req.start) starts.push(req.start)
@@ -340,7 +375,157 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   return s
 }
 
-/** Pushes the tile search's starts: the port's outside tile and the splitter tap candidates. */
+/** Whether an underground from (x, y) heading d to the exit (ex, ey) may run there (the search's span rule). */
+function sealSpanOk(s: Search, state: LayoutState, x: number, y: number, ex: number, ey: number, d: number): boolean {
+  const a = d % 2 === 1 ? math.min(x, ex) : math.min(y, ey)
+  const b = d % 2 === 1 ? math.max(x, ex) : math.max(y, ey)
+  const conflicts = spanConflicts(state, lineKey(x, y, d), a, b)
+  if (conflicts.length === 0) return true
+  if (!s.rip) return false
+  for (const id of conflicts) if (state.routes[id]?.fixed) return false
+  return true
+}
+
+
+/** Tile index in the window (corridor ignored), or -1 outside. */
+function sealTile(s: Search, x: number, y: number): number {
+  if (x < s.x0 || y < s.y0 || x >= s.x0 + s.w || y >= s.y0 + s.h) return -1
+  return (y - s.y0) * s.w + (x - s.x0)
+}
+
+function newSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, cap: number): Seal | undefined {
+  const req = s.req
+  const seal: Seal = { fq: [], fi: 0, fseen: {}, fedge: false, rq: [], ri: 0, rseen: {}, redge: false, pass: {}, met: false, steps: 0, cap }
+  if (sealTile(s, req.goal.x, req.goal.y) < 0) return undefined
+  sealAdd(seal, false, s.goalS)
+  const addStart = (x: number, y: number, d: number): void => {
+    if (sealTile(s, x, y) >= 0) sealAdd(seal, true, encode(s, x, y, d))
+  }
+  if (req.start) addStart(req.start.x, req.start.y, req.start.dir)
+  for (const c of s.tapStarts) addStart(c.tap.x2 + DX[c.tap.dir], c.tap.y2 + DY[c.tap.dir], c.tap.dir)
+  // No start: the search says "no start" itself.
+  if (seal.fq.length === 0) return undefined
+  return seal
+}
+
+/** Adds a state to one side's flood; reaching a state the other side holds proves a path. */
+function sealAdd(seal: Seal, forward: boolean, st: number): void {
+  const seen = forward ? seal.fseen : seal.rseen
+  if (seen[st]) return
+  seen[st] = true
+  ;(forward ? seal.fq : seal.rq).push(st)
+  if ((forward ? seal.rseen : seal.fseen)[st]) seal.met = true
+}
+
+function sealPass(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): boolean {
+  const t = sealTile(s, x, y)
+  const cached = seal.pass[t]
+  if (cached !== undefined) return cached
+  let ok = true
+  if (s.req.goal.side !== undefined) {
+    const b = blockerTile(s.req.goal)
+    if (b.x === x && b.y === y) ok = false
+  }
+  if (ok) ok = tileCost(state, terrain, policy, s.req, s.rip, x, y) >= 0
+  seal.pass[t] = ok
+  return ok
+}
+
+/** Expands one state of the flood from the starts: `stepSearch`'s moves. */
+function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): void {
+  const d = st % 4
+  const t = math.floor(st / 4)
+  const x = s.x0 + (t % s.w)
+  const y = s.y0 + math.floor(t / s.w)
+  if (x === s.req.goal.x && y === s.req.goal.y) return
+  if (!sealPass(s, seal, state, terrain, policy, x, y)) return
+  for (const nd of [d, cw(d), ccw(d)]) {
+    if (sealTile(s, x + DX[nd], y + DY[nd]) < 0) seal.fedge = true
+    else sealAdd(seal, true, encode(s, x + DX[nd], y + DY[nd], nd))
+  }
+  for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
+    if (!underPassable(state, terrain, policy, x + DX[d] * (k - 1), y + DY[d] * (k - 1))) break
+    const ex = x + DX[d] * k
+    const ey = y + DY[d] * k
+    if (sealTile(s, ex, ey) < 0) {
+      seal.fedge = true
+      break
+    }
+    if (!sealPass(s, seal, state, terrain, policy, ex, ey) || !sealSpanOk(s, state, x, y, ex, ey, d)) continue
+    if (sealTile(s, ex + DX[d], ey + DY[d]) < 0) seal.fedge = true
+    else sealAdd(seal, true, encode(s, ex + DX[d], ey + DY[d], d))
+  }
+}
+
+/** Expands one state of the flood from the goal: the states `stepSearch` reaches it from. */
+function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): void {
+  const d = st % 4
+  const t = math.floor(st / 4)
+  // A belt at P pointing d, arrived at heading d or turning into d.
+  const px = s.x0 + (t % s.w) - DX[d]
+  const py = s.y0 + math.floor(t / s.w) - DY[d]
+  if (sealTile(s, px, py) < 0) {
+    seal.redge = true
+    return
+  }
+  if (!sealPass(s, seal, state, terrain, policy, px, py)) return
+  for (const h of [d, cw(d), ccw(d)]) sealAdd(seal, false, encode(s, px, py, h))
+  // An underground ending at E = P, entered straight (heading d) at E − k·d.
+  for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
+    if (!underPassable(state, terrain, policy, px - DX[d] * (k - 1), py - DY[d] * (k - 1))) break
+    const ix = px - DX[d] * k
+    const iy = py - DY[d] * k
+    if (sealTile(s, ix, iy) < 0) {
+      seal.redge = true
+      break
+    }
+    if (!sealPass(s, seal, state, terrain, policy, ix, iy) || !sealSpanOk(s, state, ix, iy, px, py, d)) continue
+    sealAdd(seal, false, encode(s, ix, iy, d))
+  }
+}
+
+/** Runs the seal check for up to `budget` states; returns the work used. */
+function stepSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  const seal = s.seal!
+  let used = 0
+  const done = (): void => {
+    s.seal = undefined
+    s.sealSteps = seal.steps
+  }
+  while (used < budget) {
+    if (seal.met) {
+      done()
+      return used
+    }
+    const fLeft = seal.fq.length - seal.fi
+    const rLeft = seal.rq.length - seal.ri
+    if (fLeft === 0 || rLeft === 0) {
+      const forward = fLeft === 0
+      const tiles: Record<number, boolean> = {}
+      let n = 0
+      for (const [st] of pairs(forward ? seal.fseen : seal.rseen)) {
+        const t = math.floor(st / 4)
+        if (!tiles[t]) n++
+        tiles[t] = true
+      }
+      s.sealed = { side: forward ? "start" : "goal", tiles: n, edge: forward ? seal.fedge : seal.redge }
+      s.status = "failed"
+      s.reason = "no path"
+      done()
+      return used
+    }
+    if (seal.steps >= seal.cap) {
+      done()
+      return used
+    }
+    used++
+    seal.steps++
+    if (fLeft <= rLeft) sealForward(s, seal, state, terrain, policy, seal.fq[seal.fi++])
+    else sealBackward(s, seal, state, terrain, policy, seal.rq[seal.ri++])
+  }
+  return used
+}
+
 function seedFine(s: Search): void {
   const req = s.req
   const push = (x: number, y: number, d: number, g: number, mv: number): number | undefined => {
@@ -468,8 +653,12 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
   const gx = req.goal.x
   const gy = req.goal.y
   let used = 0
+  if (s.seal !== undefined) {
+    used += stepSeal(s, state, terrain, policy, budget)
+    if (s.seal !== undefined || s.status !== "running") return used
+  }
   if (s.coarse !== undefined) {
-    used += stepCoarse(s, state, terrain, policy, budget)
+    used += stepCoarse(s, state, terrain, policy, budget - used)
     if (s.coarse !== undefined) return used
   }
   // The blocker tile behind a side-loaded port stays free.

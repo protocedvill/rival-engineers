@@ -307,7 +307,8 @@ test("B9: routes detour around a growth area when the detour is short", () => {
     const b = sink("b", EAST)
     place(state, a, area.x - 6, y)
     place(state, b, area.x + area.w + 6, y)
-    const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 80), YELLOW, state), terrain, F, policy({ softClaim: soft }))
+    // D59: a flat weight (no decay per growth unit); the flow crosses the area's far end, which the decay makes cheap.
+    const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 80), YELLOW, state), terrain, F, policy({ softClaim: soft, softClaimDecay: 1 }))
     eq(job.phase, "done", "routed")
     return state
   }

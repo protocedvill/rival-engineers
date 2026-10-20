@@ -177,6 +177,45 @@ test("router: two-level routing falls back to the whole window when its corridor
   ok(through, "through the gap")
 })
 
+/** A 160×80 field with a ring of unknown ground (no underground passes it) around (120, 40), with an optional gap. */
+function ringed(gap: boolean): string[] {
+  const rows = field(160, 80)
+  for (let y = 33; y <= 47; y++) {
+    for (let x = 113; x <= 127; x++) {
+      const edge = x === 113 || x === 127 || y === 33 || y === 47
+      if (!edge || (gap && x === 113 && y === 40)) continue
+      rows[y] = rows[y].substring(0, x) + "?" + rows[y].substring(x + 1)
+    }
+  }
+  return rows
+}
+
+// Seal check (user, 2026-10-20): a boxed-in port proves "no path" from its side's few tiles instead of the search
+// exhausting the window and every retry (seed11-green-boxed replay: 1.76M routing work, 20 searches → 19k, 8).
+test("router: the seal check proves a boxed-in port unreachable cheaply, and changes nothing when a way exists", () => {
+  const run1 = (gap: boolean, sealCheck: number) => {
+    const state = newLayout()
+    const a = source("a", EAST)
+    const b = sink("b", EAST)
+    place(state, a, 2, 40)
+    place(state, b, 120, 40)
+    const p = policy()
+    const job = routeOne(state, asciiTerrain(ringed(gap)), { ...p, router: { ...p.router, sealCheck } }, conn("c", "a", "b"), [a, b])
+    return { job, route: state.routes["route:c"] }
+  }
+  const sealed = run1(false, 2000)
+  const plain = run1(false, 0)
+  eq(sealed.job.phase, "failed", "boxed in: fails with the check")
+  eq(plain.job.phase, "failed", "boxed in: fails without it")
+  ok(sealed.job.stats.routeWork * 20 < plain.job.stats.routeWork, `routing work ${sealed.job.stats.routeWork} vs ${plain.job.stats.routeWork}`)
+  ok(sealed.job.stats.searches < plain.job.stats.searches, `searches ${sealed.job.stats.searches} vs ${plain.job.stats.searches} (no window widening)`)
+  const open = run1(true, 2000)
+  const openPlain = run1(true, 0)
+  eq(open.job.phase, "done", "with a gap: routed")
+  eq(openPlain.job.phase, "done", "with a gap: routed without the check")
+  eq(open.route.cost, openPlain.route.cost, "same route cost")
+})
+
 test("router: turns to reach a port that faces another way, arriving with the port's direction", () => {
   const terrain = asciiTerrain(field(30, 30))
   const state = newLayout()

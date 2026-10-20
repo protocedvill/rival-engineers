@@ -7,8 +7,8 @@
 // out/replay-dumps/<replay>/.
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
-import { FOREIGN, FREE, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
-import { findModule, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
+import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
+import { findModule, growthUnitRects, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
@@ -53,11 +53,39 @@ function fixtureView(fx: PlanInput): TerrainView {
 declare const os: { getenv(this: void, name: string): string | undefined }
 declare function loadfile(this: void, path: string): ((this: void) => unknown) | undefined
 
-function load(name: string): PlanInput {
+function load(name: string, captured = false): PlanInput {
   // $UNIT_SRC: mod/unit (set by the T1 runner, whatever the build dir); else relative to mod/build-unit.
   const chunk = loadfile(`${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
   if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
-  return chunk() as PlanInput
+  const fx = chunk() as PlanInput
+  // A capture freezes the policy of its day; replays judge the planner as it is now (user, 2026-10-20). Every weight
+  // comes from the current defaults; only the choices the game made for that plan (topology, smelting, utilization)
+  // stay as captured. A test that pins a past decision pins its weights itself, saying why (compareReplay: B26, D59).
+  // REPLAY_CAPTURED=1 replays with the captured policy instead.
+  if (!captured && (os.getenv("REPLAY_CAPTURED") ?? "") === "") fx.policy = currentPolicy(fx.policy)
+  // Experiments, for every replay: REPLAY_ROUTER="maxRipups=6,rip=10" overrides router weights, REPLAY_PLACEMENT=
+  // "growthBand=4,growthBlocked=8" placement weights (B26 judged on several replays).
+  for (const [k, v] of string.gmatch(os.getenv("REPLAY_ROUTER") ?? "", "(%w+)=([%d.]+)")) (fx.policy.router as unknown as Record<string, number>)[k] = tonumber(v)!
+  for (const [k, v] of string.gmatch(os.getenv("REPLAY_PLACEMENT") ?? "", "(%w+)=([%d.]+)")) (fx.policy.placement as unknown as Record<string, number>)[k] = tonumber(v)!
+  return fx
+}
+
+/** The current default policy with the captured plan's own choices (see `load`). */
+function currentPolicy(captured: LayoutPolicy): LayoutPolicy {
+  const p = EARLY_COMPACT
+  return {
+    ...p,
+    corridor: { ...p.corridor },
+    moduleSelection: { ...p.moduleSelection },
+    obstacles: { ...p.obstacles },
+    searchRadii: [...p.searchRadii],
+    overflow: { ...p.overflow, order: [...p.overflow.order] },
+    router: { ...p.router },
+    placement: { ...p.placement },
+    topology: captured.topology,
+    smelting: captured.smelting ?? p.smelting,
+    utilization: captured.utilization,
+  }
 }
 
 interface ReplayOptions {
@@ -80,10 +108,6 @@ function dumpModules(layout: LayoutState): void {
 function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
     const fx = load(name)
-    // Experiments: REPLAY_ROUTER="maxRipups=6,rip=10" overrides router weights of the captured policy.
-    for (const [k, v] of string.gmatch(os.getenv("REPLAY_ROUTER") ?? "", "(%w+)=([%d.]+)")) (fx.policy.router as unknown as Record<string, number>)[k] = tonumber(v)!
-    // REPLAY_PLACEMENT="growthBand=4,growthBlocked=8" does the same for placement weights (B26 judged on several replays).
-    for (const [k, v] of string.gmatch(os.getenv("REPLAY_PLACEMENT") ?? "", "(%w+)=([%d.]+)")) (fx.policy.placement as unknown as Record<string, number>)[k] = tonumber(v)!
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     const ug = tonumber(os.getenv("REPLAY_UNDERGROUND") ?? "")
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
@@ -118,7 +142,9 @@ replay("seed222-production", { undergrounds: true })
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
 test("replay seed222-production without undergrounds: routing fails, the underground alternative routes (infinitely shorter)", () => {
-  const fx = load("seed222-production")
+  // D36's infinite case is pinned at the capture's weights: on today's (D59 soft claims, B26 bands) the cluster routes
+  // without undergrounds (197 tiles, no rip-ups), which is better, but no longer the case this test is about.
+  const fx = load("seed222-production", true)
   const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
   ok(tier.maxUnderground <= 1, "captured without undergrounds")
   fx.request.compare = { undergrounds: { tiers: beltTiers(F) }, workFactor: 2, minWork: 5000 }
@@ -187,10 +213,8 @@ function multiProducerItems(fx: PlanInput): string[] {
  */
 function compareReplay(name: string, expect: { undergrounds: boolean; splitters: boolean }, adopted = true): void {
   test(`replay ${name}: logistics comparison (undergrounds ${expect.undergrounds ? "≥" : "<"} 50, splitters ${expect.splitters ? "≥" : "<"} 50 tiles shorter)`, () => {
+    // Current weights (`load`), with the pins below (REPLAY_NO_BUNDLE / REPLAY_NO_SOFT leave one out).
     const fx = load(name)
-    // Current weights for what the capture's policy lacked (REPLAY_NO_BUNDLE / REPLAY_NO_SOFT leave one out).
-    fx.policy.router = { ...EARLY_COMPACT.router, ...fx.policy.router }
-    fx.policy.placement = { ...EARLY_COMPACT.placement, ...fx.policy.placement }
     // B26: these no-underground clusters pin the D36 / B2 decisions at the pre-B26 placement. Any B26 weight changes
     // the placements and the chaotic no-underground routing then fails (it routes with undergrounds: test below).
     // REPLAY_B26=1 keeps the current B26 weights.
@@ -201,7 +225,10 @@ function compareReplay(name: string, expect: { undergrounds: boolean; splitters:
     if (os.getenv("REPLAY_NO_BUNDLE") === undefined) fx.policy.router.bundleFactor = EARLY_COMPACT.router.bundleFactor
     else fx.policy.router.bundleFactor = 1
     if (os.getenv("REPLAY_NO_SOFT") === undefined) {
-      fx.policy.router.softClaim = EARLY_COMPACT.router.softClaim
+      // B52 / D59: pinned at the pre-D59 router cost too (0.5, no decay): at 10 / 0.5 the chaotic no-underground
+      // seed 3333 cluster fails its routing (it plans with undergrounds: b26Replay). REPLAY_D59=1 uses the current cost.
+      fx.policy.router.softClaim = os.getenv("REPLAY_D59") !== undefined ? EARLY_COMPACT.router.softClaim : 0.5
+      fx.policy.router.softClaimDecay = os.getenv("REPLAY_D59") !== undefined ? EARLY_COMPACT.router.softClaimDecay : 1
       fx.policy.placement.softClaim = os.getenv("REPLAY_SOFT_PLACE") !== undefined ? tonumber(os.getenv("REPLAY_SOFT_PLACE"))! : EARLY_COMPACT.placement.softClaim
       if (os.getenv("REPLAY_NO_SOFT_ROUTE") !== undefined) fx.policy.router.softClaim = 0
     } else {
@@ -253,8 +280,6 @@ compareReplay("seed3333-production-ok", { undergrounds: true, splitters: false }
 function b26Replay(name: string): void {
   test(`replay ${name} (B26 weights): plans with undergrounds`, () => {
     const fx = load(name)
-    fx.policy.router = { ...EARLY_COMPACT.router, ...fx.policy.router }
-    fx.policy.placement = { ...EARLY_COMPACT.placement, ...fx.policy.placement, growthBand: EARLY_COMPACT.placement.growthBand, growthBandUnits: EARLY_COMPACT.placement.growthBandUnits, growthBlocked: EARLY_COMPACT.placement.growthBlocked }
     fx.policy.router.bundleFactor = EARLY_COMPACT.router.bundleFactor
     fx.policy.router.softClaim = EARLY_COMPACT.router.softClaim
     fx.policy.placement.softClaim = EARLY_COMPACT.placement.softClaim
@@ -472,6 +497,64 @@ test("B51: a smelter input that lost its tap feed is sealed; an open input is no
   }
   print(`    [b51] open inputs: ${open.join(" ")}`)
   ok(open.length > 0, "other inputs lead out")
+})
+
+// B52 (seed 3333, D58 resume, g20): the far mine n40's ore route to the new smelter n41 ran north-south through the
+// steam block n1's growth strip (its next units, west of it), right next to it: the block could never grow again. The
+// router's soft-claim cost was 0.5 a tile; it is now high next to the module and lower for each farther unit. An
+// underground pays only its two ends, so at 10 a tile with a 0.8 decay the route still crossed unit 1 (4 ends): the
+// detour west and the other units' tiles cost more. 10 / 0.5 crosses unit 5 (sweep: decay <= 0.5 at 8-20, or 0.6 at 20+).
+test("B52: a route keeps out of the steam block's nearest growth units", () => {
+  const fx = load("s3333-b52-growth-strip")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  // The base was captured before B52: `cloneLayout` gives its soft claims their growth units.
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  // The capture's terrain covers the request region only; the shared mine n40 it completes is ~330 tiles out (planned
+  // in game on real terrain): outside the window reads free.
+  const view = fixtureView(fx)
+  const terrain: TerrainView = { block: (x, y) => { const b = view.block(x, y); return b === UNKNOWN ? FREE : b }, ore: (x, y) => view.ore(x, y) }
+  startTrace()
+  runJob(job, terrain, F, fx.policy, 100000)
+  finishReplay("s3333-b52-growth-strip", job, job.phase === "done")
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const n1 = findModule(job.layout, "n1")!
+  const units = growthUnitRects(n1)
+  const route = job.layout.routes["route:iron-ore>iron-plate*>logistic-science-pack>labs#3=>iron-plate*>logistic-science-pack>labs#3.in-ore"]
+  ok(route !== undefined, "the ore route is planned")
+  const hits = units.map(() => 0)
+  for (const k of route.tiles) {
+    const [x, y] = [keyX(k), keyY(k)]
+    for (let i = 0; i < units.length; i++) {
+      const r = units[i]
+      if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+        hits[i]++
+        if (os.getenv("REPLAY_DUMP") !== undefined) print(`    [b52] unit ${i + 1}: ${x},${y} soft ${job.layout.soft?.[k] ?? "-"} unit ${job.layout.softUnit?.[k] ?? "-"}`)
+      }
+    }
+  }
+  if (os.getenv("REPLAY_MAP_B52") !== undefined) {
+    const L = job.layout
+    for (let y = -22; y <= 10; y++) {
+      let row = ""
+      for (let x = 405; x <= 505; x++) {
+        const k = tkey(x, y)
+        const tb = terrain.block(x, y)
+        let c = "."
+        if (route.tiles.indexOf(k) >= 0) c = "@"
+        else if (L.routeOcc[k] !== undefined) c = L.routes[L.routeOcc[k]]?.fixed ? "=" : "-"
+        else if (L.occ[k] !== undefined) c = string.sub(L.occ[k], 1, 2) === "m:" ? "M" : "x"
+        else if (L.reserved[k] !== undefined) c = "r"
+        else if (L.mine?.[k] !== undefined) c = "m"
+        else if (tb !== FREE && tb !== TREE && tb !== ROCK) c = "#"
+        else if (L.soft?.[k] === "n1") c = string.format("%x", (L.softUnit?.[k] ?? 0) % 16)
+        else if (L.soft?.[k] !== undefined) c = "s"
+        row += c
+      }
+      print(`    ${string.format("%4d", y)} ${row}`)
+    }
+  }
+  print(`    [b52] soft ${fx.policy.router.softClaim} decay ${fx.policy.router.softClaimDecay}: ${route.tiles.length} route tiles; in n1's growth units 1..${units.length}: ${hits.join(" ")}`)
+  ok(hits[0] === 0 && hits[1] === 0, `no route tile in the two nearest growth units (${hits.join(" ")})`)
 })
 
 run("plan-replay")

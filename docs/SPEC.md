@@ -82,6 +82,7 @@ Two layers, by analogy:
 | D56 | Radar (2026-10-20, user decision, approved in-session; was P41) | The user: "We can keep the existing chunk generation exploration system, and just have them place a radar for realism for a human player observing." Plans keep using the chunks the planner asks the engine to generate; once a radar can be built and the faction has power, it places one radar at its base. The radar is for show (a player-like base): no plan depends on what it charts. |
 | D57 | Faster mine site search (2026-10-20, user decision, approved in-session; was P42) | The user approved P42 (a)-(d): "Go with the proposed spec to make the mine search faster. 1, 2, 3, 4." (a) A **patch index** of free ore (not built over, not in a drill area or mine claim) ranks the patches a new mine may use; the window search runs only over a patch's box plus a margin. (b) A summed-area pre-check skips patches and windows without enough free ore for one drill area. (c) A patch found to have no room is remembered until the ground near it changes (terrain rescan). (d) A new patch's mine is laid out by the D52 whole-patch planner. Ranking (asked in-session, the user chose "New field costs +50"): a patch where the faction already has a mine is preferred over opening a fresh field unless the fresh field is 50+ tiles closer (setting, magic-numbers table). Each consumer still gets its own mine (point-to-point, B33). |
 | D58 | Long routes and the planner budget (2026-10-20, user decision, approved in-session) | Shown that seed 3333's far-mine routes took ~3.6M router expansions, the user chose: "Let's do two-level routing for long distances and do (3), but in a flexible way where any planning entry can take the entire mod's budget if there is nothing competing. Otherwise, they share." (1) A connection whose ends are `longRoute` (128) tiles or more apart is routed over `coarseCell` (8) tile cells first, then tile by tile inside a corridor of those cells (`corridorCells` 1 around the path, one more at the ends) with a weighted heuristic (`corridorWeight` 1.5); with no way through the corridor, the whole window is searched. (2) `planner-work-per-tick` is the whole mod's planner budget: the plans running share it equally, work one leaves passes to the next, and one plan alone gets all of it (default raised 100 → 400). |
+| D59 | Soft-claim cost by growth unit (2026-10-20, user decision, approved in-session) | B52: a route crossed the steam block's next growth unit for 0.5 a tile. The user: "I would set it to 10 or so depending on testing which can be done later. What would be even better, is have it diminish a bit every after every single expansion unit, so there more incentive to not block the most immediate and closest to expansion units." The router's soft-claim cost (`planner-router-soft-claim`) defaults to **10** (was 0.5, D50) for a tile in another module's next growth unit, multiplied by `planner-router-soft-claim-decay` for each unit farther out. The decay's default **0.5** is the agent's choice from a replay sweep (proposed; the user asked for "a bit"): an underground crossing pays only its ends, and on seed 3333's g20 replay 10 / 0.55–0.8 still put 4 underground ends in the next unit. Placement's soft-claim weight is unchanged. |
 
 ## 3. v1 Definition of Done
 
@@ -436,7 +437,8 @@ Default to configurable (D18). Settings live in three places:
 - **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
   `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
   the plan's own routing work).
-- **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
+- **Planner weights (M5d, D50; D59):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (10, D59; was 0.5),
+  `planner-router-soft-claim-decay` (0.5 per growth unit, D59),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
   B26 (proposed, P38): `planner-placement-growth-band` (4), `planner-placement-growth-band-units` (2),
   `planner-placement-growth-blocked` (3).
@@ -904,6 +906,9 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 ## Changelog
 
 - v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
+- v0.26 (2026-10-20, user decision in-session): D59 (router soft-claim cost 10 next to a module, lower for each growth unit farther out).
+  The router's seal check (a cost-free flood from both ends that proves "no path" when one end is boxed in) is the
+  approach the user picked in-session the same day; its cap `router.sealCheck` (2000 states) is proposed.
 - v0.25 (2026-10-20, user decision in-session): D58 (two-level routing for long connections; one planner budget for the whole mod, shared by the plans running).
 - v0.24 (2026-10-20, user decisions in-session): D56 (a radar for realism; chunk-generation exploration stays), D57 (faster mine site search: patch index, pre-check, dead-patch memory, whole-patch layout; a fresh field costs +50 tiles).
 - v0.23 (2026-10-20, user decision in-session): D55 (a worked-out whole-patch mine moves to the next free part of its own patch; with none left, the mine is relocated and re-planned on fresh ore).

@@ -55,6 +55,16 @@ test("blocked growth is reported but does not hold another goal", () => {
   eq(result.decisions[0].action, "start")
 })
 
+test("B52: a growth waits for any other goal still building (the mall's routes would be rerouted under it)", () => {
+  const grow = spec("grow", { growth: { role: "power", have: 1, need: 2, units: 1, power: true, failed: 0 } })
+  for (const kind of ["mall", "repair", "temp", "radar"] as GoalSelectionSpec["kind"][]) {
+    const result = selectGoals([grow], state({ active: { [kind]: true } }))
+    eq(result.decisions[0].action, "skip", kind)
+    eq(result.decisions[0].waiting, `grow waits for ${kind}`, kind)
+  }
+  eq(selectGoals([grow], state({ active: { grow: false } })).decisions[0].action, "start", "nothing building")
+})
+
 test("a planning goal freezes new starts", () => {
   const result = selectGoals([spec("power")], state({ planning: true }))
   eq(result.decisions.length, 0)

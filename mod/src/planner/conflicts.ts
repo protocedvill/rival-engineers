@@ -31,6 +31,23 @@ export interface BuildCheck {
   missing: EntitySpec[]
   /** Parts with a missing entity or a ghost blocked by another force's entity (one per part). */
   conflicts: PartConflict[]
+  /**
+   * B52: planned belts, undergrounds, splitters and inserters whose own entity of that name stands there facing another
+   * way (another goal's stale copy of a rerouted route turned it): pick it up, then place the planned one.
+   */
+  misdirected: { spec: EntitySpec; entity: LuaEntity }[]
+}
+
+/** Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side). */
+const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true }
+
+/** B52: an own entity of `e`'s name at its position that faces another way (or is the other underground end). */
+function ownMisdirected(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
+  const found = findEntities(surface, { name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+  if (found === undefined || !DIRECTED[found.type]) return undefined
+  if (found.direction !== e.dir) return found
+  if (e.ioType !== undefined && found.type === "underground-belt" && found.belt_to_ground_type !== e.ioType) return found
+  return undefined
 }
 
 /** Tile keys under an entity spec (its prototype's footprint at its direction). */
@@ -64,10 +81,15 @@ function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
 export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
+  const misdirected: { spec: EntitySpec; entity: LuaEntity }[] = []
   const seen: Record<string, boolean> = {}
   for (const e of partEntities(layout, parts)) {
     if (only !== undefined && !only(e)) continue
-    if (ownBuilt(surface, force, e) !== undefined) continue
+    if (ownBuilt(surface, force, e) !== undefined) {
+      const wrong = ownMisdirected(surface, force, e)
+      if (wrong !== undefined) misdirected.push({ spec: e, entity: wrong })
+      continue
+    }
     const ghost = ownGhost(surface, force, e)
     if (ghost === undefined) missing.push(e)
     if (seen[e.owner]) continue
@@ -77,7 +99,7 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
     const b = foreign[0]
     conflicts.push({ kind: partKind(layout, e.owner), id: e.owner, blocker: `${b.name === "entity-ghost" ? `${b.ghost_name} ghost` : b.name} of ${b.force.name}`, at: { x: e.x, y: e.y } })
   }
-  return { missing, conflicts }
+  return { missing, conflicts, misdirected }
 }
 
 /**

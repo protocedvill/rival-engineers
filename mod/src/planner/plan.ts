@@ -7,7 +7,7 @@
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
-import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
@@ -247,13 +247,14 @@ export function cloneLayout(l: LayoutState): LayoutState {
   for (const [k, list] of pairs(l.spans)) spans[k as string] = [...(list as LayoutState["spans"][string])]
   const routes: Record<string, Route> = {}
   for (const [k, r] of pairs(l.routes)) routes[k as string] = { ...(r as Route) }
-  return {
+  const out: LayoutState = {
     modules: l.modules.map((m) => ({ ...m, minePlan: m.minePlan !== undefined ? { ...m.minePlan, claim: [...m.minePlan.claim], occupied: [...m.minePlan.occupied] } : undefined })),
     occ: copy(l.occ),
     reserved: copy(l.reserved),
     routeOcc: copy(l.routeOcc),
     corridor: copy(l.corridor),
     soft: l.soft !== undefined ? copy(l.soft) : undefined,
+    softUnit: l.softUnit !== undefined ? copy(l.softUnit) : {},
     mine: l.mine !== undefined ? copy(l.mine) : undefined,
     spans,
     routes,
@@ -262,6 +263,9 @@ export function cloneLayout(l: LayoutState): LayoutState {
     poleLines: l.poleLines !== undefined ? l.poleLines.map((x) => ({ ...x, poles: [...x.poles] })) : undefined,
     evictedPoles: l.evictedPoles !== undefined ? l.evictedPoles.map((p) => ({ ...p })) : undefined,
   }
+  // B52: soft claims marked before growth units were recorded (older saves and captures) get theirs.
+  fillSoftUnits(out)
+  return out
 }
 
 /**
@@ -669,7 +673,9 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
     // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
     // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
-    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9) {
+    // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
+    const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
+    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
       cur.winScale = (cur.winScale ?? 1) * 3
       cur.rip = false
       const req = routeRequest(job, c, policy, {}, cur.winScale)

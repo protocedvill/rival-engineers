@@ -90,6 +90,7 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     smelting: c.layoutSmelting,
     placementSoftClaim: c.plannerPlacementSoftClaim,
     routerSoftClaim: c.plannerRouterSoftClaim,
+    routerSoftClaimDecay: c.plannerRouterSoftClaimDecay,
     routerBundleFactor: c.plannerRouterBundleFactor,
     placementGrowthBand: c.plannerPlacementGrowthBand,
     placementGrowthBandUnits: c.plannerPlacementGrowthBandUnits,

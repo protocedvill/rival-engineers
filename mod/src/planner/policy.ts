@@ -41,8 +41,23 @@ export interface RouterWeights {
    * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
    */
   bundleFactor?: number
-  /** B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim). */
+  /**
+   * B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim), in its next growth
+   * unit. B52: was 0.5; a route crossed the steam block's whole growth strip for 7 extra (user: "10 or so").
+   */
   softClaim?: number
+  /**
+   * B52 (user, 2026-10-20: "diminish a bit after every single expansion unit"): the soft-claim cost is multiplied by this
+   * for each growth unit farther out. An underground crossing pays only its ends, so the far units must be much cheaper
+   * than the near one: on seed 3333's g20 replay 10 / 0.5 crossed unit 5, 10 / 0.55 still unit 1.
+   */
+  softClaimDecay?: number
+  /**
+   * Seal check (user, 2026-10-20): before a route search, a relaxed flood from both ends proves "no path" when one end
+   * is boxed in, at the cost of that end's enclosed tiles. It gives up (the search runs as before) after this many
+   * tiles. 0: off.
+   */
+  sealCheck?: number
   /**
    * Two-level routing (user, 2026-10-20): a connection whose ends are at least this far apart (Manhattan tiles) is
    * routed over `coarseCell`-tile cells first, then tile by tile inside a corridor of those cells. 0: off.
@@ -254,7 +269,9 @@ export const EARLY_COMPACT: LayoutPolicy = {
     margin: 24,
     underModules: false,
     bundleFactor: 0.9,
-    softClaim: 0.5,
+    softClaim: 10,
+    softClaimDecay: 0.5,
+    sealCheck: 2000,
     longRoute: 128,
     coarseCell: 8,
     corridorCells: 1,
@@ -274,6 +291,7 @@ export interface PolicyOverrides {
   /** D50: soft-claim and bundling weights (settings; absent or negative = keep the policy's value). */
   placementSoftClaim?: number
   routerSoftClaim?: number
+  routerSoftClaimDecay?: number
   routerBundleFactor?: number
   /** B26: near growth band weight, its depth in units, and the per-unit cost of a blocked own band (negative = keep). */
   placementGrowthBand?: number
@@ -319,6 +337,7 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.placementNewField !== undefined && overrides.placementNewField >= 0) p.placement = { ...p.placement, newField: overrides.placementNewField }
   if (overrides.poleEvict !== undefined && overrides.poleEvict >= 0) p.obstacles = { ...p.obstacles, poleEvict: overrides.poleEvict }
   if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
+  if (overrides.routerSoftClaimDecay !== undefined && overrides.routerSoftClaimDecay >= 0) p.router = { ...p.router, softClaimDecay: overrides.routerSoftClaimDecay }
   if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p
 }

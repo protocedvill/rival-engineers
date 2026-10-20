@@ -304,7 +304,10 @@ function evaluate(n: LogicalNode, meter: NodeMeter): void {
     const perSample = meter.machines.length > 0 ? samples / meter.machines.length : 0
     const w = perSample > 0 ? (cur.energy - old.energy) / perSample : 0
     outputs = [{ item: "electricity", perSecond: w }]
-    load = n.powerW > 0 && gens > 0 ? w / n.powerW : 0
+    // B52: against what is built (the capacity follows growth; powerW was the first unit's).
+    const cap = rateIn(n.capacity.outputs, "electricity")
+    const built = cap > 0 ? cap : n.powerW
+    load = built > 0 && gens > 0 ? w / built : 0
   } else if (crafters) {
     const items: string[] = []
     for (const r of [...n.capacity.outputs, ...n.planned.outputs]) if (items.indexOf(r.item) < 0) items.push(r.item)

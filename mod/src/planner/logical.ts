@@ -218,7 +218,8 @@ export function powerBalance(g: LogicalGraph, built?: boolean): { supplyW: numbe
   for (const id of g.nodeOrder) {
     const n = g.nodes[id]
     if (built === true && n.lifecycle !== "built") continue
-    if (n.kind === "power") supplyW += n.powerW
+    // B52: a grown plant's capacity (saves from before the fix kept the first unit's powerW).
+    if (n.kind === "power") supplyW += math.max(n.powerW, rateIn(n.capacity.outputs, "electricity"))
     else demandW += n.powerW
   }
   return { supplyW, demandW }
