@@ -1,5 +1,5 @@
 import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
-import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -193,6 +193,15 @@ test("D38: a chest cell (temporary factory): chest → inserter → assembler �
   eq(red.expand, undefined, "not expandable (temporary)")
 })
 
+test("radar cell (D56): one radar and its pole, 4 × 3, powered, no belts", () => {
+  const m = radarCell(F, {})
+  eq(m.footprint.w * 10 + m.footprint.h, 43, "4 × 3")
+  eq(m.ports.length, 1, "one port")
+  eq(m.ports[0].kind, "power", "the power port")
+  near(inp(m, "electricity"), 300000, 1e-6, "300 kW")
+  eq(m.entities.filter((e) => e.name === "radar").length, 1, "one radar")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
@@ -213,6 +222,7 @@ function allGenerated(): ModuleDef[] {
     assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" }),
     assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest" }),
     circuitBlock(F, { units: 2, buffer: "iron-chest" }),
+    radarCell(F, {}),
     redLine(F, { units: 3 }),
     circuitBlock(F, { units: 2 }),
     labArray(F, { labs: 6, packs: ["automation-science-pack"] }),

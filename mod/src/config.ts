@@ -152,6 +152,8 @@ export interface Config {
   plannerPlacementGrowthBandUnits: number
   /** B26: placement cost per growth unit an expandable module's own band would refuse (policy placement.growthBlocked). */
   plannerPlacementGrowthBlocked: number
+  /** D57: extra distance (tiles) a new mine pays to open a field the faction does not mine yet (policy placement.newField). */
+  plannerPlacementNewField: number
   /** B37: placement/routing cost per pole-line tile taken; the line is evicted and re-poled (policy obstacles.poleEvict). */
   plannerPoleEvictCost: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
@@ -188,6 +190,8 @@ export interface Config {
   factoryPowerFuelMinutes: number
   /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
   factoryFuelFallback: boolean
+  /** D56: place one radar at the base once power is built (for realism; plans never depend on it). */
+  factoryRadar: boolean
   /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
   preemptFuelSeconds: number
   /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */

@@ -1279,3 +1279,69 @@ Tests (T1 `growth-geometry`):
 There is no T2 test of the relocation itself: it uses the same `relocate` as D54's burner-outpost replacement. The
 re-soak (below) is the end-to-end check. No new magic numbers. The seed area is the drill's mining radius (game data),
 and the drill cap and the acceptance rule come from the mine's own plan.
+
+## M6b.22: B49/B50 relocation follow-ups, D57 faster mine site search, D56 radar (2026-10-20)
+
+The D55 re-soak `m6-d55-73d7ac7` (2/3, the same as `m6-b48-879fb9b`): seed 11 done at 255.4 min, seed 222 at 296.6 min.
+Seed 3333 was stopped at 137 min by fail-fast. D55 did run there. The iron mine n27 was worked out (7 ore tiles left
+in its patch against 34 its drills still reach), had no better part of its patch, and was relocated. Two bugs
+followed:
+
+- **B49.** n35, the second green cluster's iron mine, was a D52 alias of n27: it had no module of its own and fed
+  through a tap on n27's route. It stayed in the graph after n27 was removed, so the design only asked to connect
+  `n35.out`, and 8 plans failed with "no belt-out port n35.out". `fuel.ts` `relocate` now also drops every node that
+  fed only through the relocated mine's dropped routes and has no module of its own. The design plans those roles
+  again ("1 aliased nodes dropped" on the resume).
+- **B50.** The new iron mine then failed with "no feasible position" at every region radius up to 378. The home field
+  was built out: about 520 of its 630 iron tiles lay in n16's and n27's drill areas, and the free rest was scattered
+  (96 tiles). Iron fields of 4.2M and 2.9M ore lay about 324 and 335 tiles out, inside the region. The site search
+  took the nearest ore tile as its only target and searched windows at most 192 tiles around it. Each failed attempt
+  cost 1–5 min of wall time (up to ~30 s of AI per game minute).
+
+The user asked why the field was a blocker, said the search looked inefficient, and approved in-session (2026-10-20)
+the faster search P42 (a)–(d) → SPEC **D57**. The user chose "New field costs +50" for the ranking. They also
+proposed a radar and chose to keep chunk-generation exploration with a radar for realism → SPEC **D56**.
+
+D57 changes (`planner/placement.ts`, `planner/terrain.ts`, `planner/runtime.ts`, `planner/plan.ts`,
+`strategy/factory.ts`):
+- (a) A mine's site phase now builds a **patch index** of the region: the connected patches (2-tile join, as in
+  `world/resources.ts`) of *free* ore of its resource. Free means not under a structure, route, reservation or another
+  mine's claim, with trees and rocks counted as the policy clears them. The ore tiles come from the terrain cache's
+  per-chunk ore tables (`TerrainView.oreTiles`), not from a new entity search. Patches are ranked by distance from the
+  request centre to their nearest free tile, plus `newField` (50) for a fresh field. A fresh field has no mine of
+  this resource on or next to it. Each patch gets one window search over its own box. B50 is fixed by trying the
+  patches in order.
+- (b) Patches with less free ore than the template's drill areas need at `minOreCoverage` are never searched.
+- (c) A patch with no room is remembered under a terrain stamp (`TerrainView.stamp`: the chunk count and the newest
+  scan tick under its window). The memory goes plan → job → `FactoryState.deadPatches` and back into later
+  requests, and is skipped until a chunk under it is scanned again. It is not recorded when a module this plan
+  placed lies over the patch.
+- (d) This was already the case: the template placement only picks the spot, and `prepareWholePatchPlacement` lays a
+  new mine out with the D52 whole-patch planner. No separate path was added.
+- The user asked how Factorio's map-view resource search works (FFF #426). It scans every charted chunk on a separate
+  thread and keeps no ore index; mods cannot call it. Our terrain cache already scans each chunk once (dirty chunks
+  again), so reading the map is not where the time went. Bootstrap `scanPatches` still pulls every resource entity
+  in its radius on each rescan; it was left as it is.
+
+D56: a `radar` generator (one radar and its small pole, 4×3, a power port) and a `radar` goal kind.
+`strategy/factory.ts` `radarGoal` starts one radar goal once power is built and the radar recipe is enabled. The
+radar is planned and powered like any module (role `radar`), with at most 2 failed attempts. The setting
+`factory-radar` (default on) turns it off. Plans never depend on what it charts.
+
+Tests (T1):
+- `planner` "placement B50 / D57: a mine whose nearest patch has no room goes on to the next patch (seed 3333)".
+- `planner` "placement D57 (b): a patch with too little free ore for the drill areas is never searched".
+- `planner` "placement D57 (c): a patch remembered as full under the same terrain stamp is skipped". It also checks
+  that the patch is searched again once the stamp changes.
+- `planner` "placement D57: a fresh field counts `newField` tiles farther than a field the faction already mines".
+  With `newField` 0 the nearer fresh field wins.
+- `modules` "radar cell (D56)", and the radar joins the generated-module layout invariants.
+
+### Magic numbers for the user (M6b.22)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Fresh-field extra distance | `policy.ts` `placement.newField` | 50 tiles | The user's figure ("such like 50 or so"), 2026-10-20. | yes: `planner-placement-new-field` |
+| Patch join distance | `placement.ts` `PATCH_JOIN` | 2 tiles (Chebyshev) | The same join as `world/resources.ts` `JOIN`, so both see the same patches. | no |
+| Radar goal failures | `factory.ts` `RADAR_MAX_FAILED` | 2 | It is cosmetic (D56): give up after two failed plans instead of retrying forever. A guess. | no |
+| Radar on/off | `factory-radar` | on | D56. | yes |

@@ -81,6 +81,11 @@ export interface PlacementWeights {
    * its footprint and margin ring, and a whole-patch mine's claim, must not wall the lane in.
    */
   portEscape?: number
+  /**
+   * D57: a new mine ranks the patches it may use by distance; a patch where the faction has no mine yet (a fresh
+   * field) counts this many tiles farther.
+   */
+  newField?: number
 }
 
 export interface LayoutPolicy {
@@ -240,7 +245,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     bundleFactor: 0.9,
     softClaim: 0.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 8 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 8, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 
@@ -261,6 +266,8 @@ export interface PolicyOverrides {
   placementGrowthBlocked?: number
   /** B37: cost per pole-line tile a placement or route takes (negative = keep). */
   poleEvict?: number
+  /** D57: extra tiles a new mine pays for a fresh field (negative = keep). */
+  placementNewField?: number
 }
 
 /**
@@ -294,6 +301,7 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.placementGrowthBand !== undefined && overrides.placementGrowthBand >= 0) p.placement = { ...p.placement, growthBand: overrides.placementGrowthBand }
   if (overrides.placementGrowthBandUnits !== undefined && overrides.placementGrowthBandUnits >= 0) p.placement = { ...p.placement, growthBandUnits: overrides.placementGrowthBandUnits }
   if (overrides.placementGrowthBlocked !== undefined && overrides.placementGrowthBlocked >= 0) p.placement = { ...p.placement, growthBlocked: overrides.placementGrowthBlocked }
+  if (overrides.placementNewField !== undefined && overrides.placementNewField >= 0) p.placement = { ...p.placement, newField: overrides.placementNewField }
   if (overrides.poleEvict !== undefined && overrides.poleEvict >= 0) p.obstacles = { ...p.obstacles, poleEvict: overrides.poleEvict }
   if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
   if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }

@@ -676,6 +676,15 @@ data.extend([
   },
   {
     type: "double-setting",
+    name: Settings.plannerPlacementNewField,
+    setting_type: "runtime-global",
+    default_value: 50,
+    minimum_value: 0,
+    maximum_value: 10000,
+    order: "l-kb",
+  },
+  {
+    type: "double-setting",
     name: Settings.plannerPoleEvictCost,
     setting_type: "runtime-global",
     default_value: 0.5,
@@ -804,6 +813,13 @@ data.extend([
     setting_type: "runtime-global",
     default_value: true,
     order: "j-bh",
+  },
+  {
+    type: "bool-setting",
+    name: Settings.factoryRadar,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "j-bi",
   },
   // B31: when an urgent job may pull a busy crew member off its batch.
   {

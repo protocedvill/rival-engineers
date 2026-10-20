@@ -462,6 +462,74 @@ test("placement: mining outpost lands on its patch with its drills over ore", ()
   }
 })
 
+/** A thin iron strip (2 rows: no drill area gets enough ore) near the centre and a full patch at x 320..339. */
+function deadAndFarRows(): string[] {
+  const rows = field(360, 40)
+  for (let y = 19; y < 21; y++) rows[y] = string.rep(".", 12) + string.rep("i", 40) + rows[y].substring(52)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 320) + string.rep("i", 20) + rows[y].substring(340)
+  return rows
+}
+
+test("placement B50 / D57: a mine whose nearest patch has no room goes on to the next patch (seed 3333)", () => {
+  const terrain = asciiTerrain(deadAndFarRows())
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const s = placeNow({ id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }, newLayout(), terrain, policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 310, `on the far patch (x ${s.result!.origin.x})`)
+  eq(s.patches?.length, 2, "two patches with enough free ore")
+  eq(s.patchesTried, 2, "the strip first, then the far patch")
+})
+
+test("placement D57 (b): a patch with too little free ore for the drill areas is never searched", () => {
+  const rows = field(80, 40)
+  for (let y = 18; y < 21; y++) rows[y] = string.rep(".", 12) + "iii" + rows[y].substring(15)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 50) + string.rep("i", 20) + rows[y].substring(70)
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const s = placeNow({ id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 80, h: 40 } }, newLayout(), asciiTerrain(rows), policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  eq(s.patches?.length, 1, "the 3×3 remnant is no patch")
+  eq(s.patchesTried, 1, "one window search")
+})
+
+test("placement D57 (c): a patch remembered as full under the same terrain stamp is skipped", () => {
+  const base = asciiTerrain(deadAndFarRows())
+  const terrain = { block: base.block, ore: base.ore, stamp: () => "s1" }
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }
+  const first = placeNow(req, newLayout(), terrain, policy())
+  eq(first.phase, "done", `placed (${first.reason})`)
+  let dead = 0
+  for (const [k] of pairs(first.deadFound ?? {})) if (string.find(k as string, "iron-ore:12,", 1, true)[0] !== undefined) dead++
+  eq(dead, 1, "the strip is remembered")
+  const again = placeNow({ ...req, dead: first.deadFound }, newLayout(), terrain, policy())
+  eq(again.phase, "done", `placed again (${again.reason})`)
+  eq(again.result!.origin.x, first.result!.origin.x, "same place")
+  ok(again.candidates < first.candidates, `fewer candidates (${again.candidates} < ${first.candidates})`)
+  const changed = placeNow({ ...req, dead: first.deadFound }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
+  eq(changed.candidates, first.candidates, "searched again once the terrain changed")
+})
+
+test("placement D57: a fresh field counts `newField` tiles farther than a field the faction already mines", () => {
+  // Fresh patch A at x 160..179 (60 tiles from the centre); patch B at x 200..239 holds an existing mine (100 tiles).
+  const rows = field(260, 40)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 160) + string.rep("i", 20) + rows[y].substring(180, 200) + string.rep("i", 40) + rows[y].substring(240)
+  const terrain = asciiTerrain(rows)
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 100, y: 20 }, region: { x: 0, y: 0, w: 260, h: 40 } }
+  const layout = (): LayoutState => {
+    const st = newLayout()
+    const old = place(st, { ...def, id: "old" }, 228, 11)
+    old.fixed = true
+    return st
+  }
+  const s = placeNow(req, layout(), terrain, policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 195, `on the field already mined (x ${s.result!.origin.x})`)
+  const p0 = policy()
+  const s0 = placeNow(req, layout(), terrain, { ...p0, placement: { ...p0.placement, newField: 0 } })
+  ok(s0.result!.origin.x < 185, `newField 0: the nearer fresh field (x ${s0.result!.origin.x})`)
+})
+
 test("placement: mining outpost on a mixed patch keeps every drill area free of the second ore (B6)", () => {
   // Iron with copper specks every 6 tiles, except a pure corner: only the corner may take the outpost.
   const rows = field(80, 80)

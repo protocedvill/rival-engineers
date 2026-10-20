@@ -54,6 +54,8 @@ export interface PlanRequest {
   compare?: CompareOptions
   /** Rectangles no module of this request may overlap (D38: temporary factories keep clear of the core's modules). */
   avoid?: Rect[]
+  /** D57 (c): ore patches a mine found no room on before (`patchKey` → terrain stamp); skipped while unchanged. */
+  deadPatches?: Record<string, string>
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -129,6 +131,8 @@ export interface PlanJob {
   placement?: PlacementSearch
   /** Request id → placed module id (an expanded module answers for the request). */
   alias: Record<string, string>
+  /** D57 (c): patches this plan's mines found no room on (the strategy remembers them for later plans). */
+  deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number }
@@ -453,11 +457,12 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   const id = job.replaceQueue[0]
   if (job.placement === undefined) {
     const mreq = moduleRequest(job, id)
-    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
@@ -570,11 +575,12 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         if (t !== undefined) center = { x: t.x, y: t.y }
       }
     }
-    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
@@ -753,6 +759,14 @@ function unroutedCopy(job: PlanJob): LayoutState {
 function portItem(job: PlanJob, ref: PortRef): string | undefined {
   const m = findModule(job.layout, resolve(job, ref).module)
   return m !== undefined ? findPort(m, ref.port)?.item : undefined
+}
+
+/** D57 (c): the patches a placement found no room on, for the strategy to remember. */
+function keepDeadPatches(job: PlanJob, s: PlacementSearch): void {
+  for (const [k, v] of pairs(s.deadFound ?? {})) {
+    job.deadPatches ??= {}
+    job.deadPatches[k as string] = v as string
+  }
 }
 
 /** A routing-only job over `layout` for `request` (aliases of expanded requests carried over). */

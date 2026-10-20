@@ -95,6 +95,7 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     placementGrowthBandUnits: c.plannerPlacementGrowthBandUnits,
     placementGrowthBlocked: c.plannerPlacementGrowthBlocked,
     poleEvict: c.plannerPoleEvictCost,
+    placementNewField: c.plannerPlacementNewField,
   })
 }
 
@@ -198,6 +199,11 @@ export function claimView(name: string | undefined, surface: string, base: Terra
       if (o !== undefined && fields.length > 0 && claimed(fields, tkey(x, y))) return `claimed:${o}`
       return o
     },
+    oreTiles:
+      base.oreTiles !== undefined
+        ? (resource, rect) => (fields.length > 0 ? base.oreTiles!(resource, rect).filter((k) => !claimed(fields, k)) : base.oreTiles!(resource, rect))
+        : undefined,
+    stamp: base.stamp,
   }
 }
 

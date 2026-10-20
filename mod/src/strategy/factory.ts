@@ -160,6 +160,8 @@ export interface FactoryState {
   fuelRelocations?: number
   /** B19: built producers whose routes could not take a tap: new consumers don't share them. */
   noTap?: Record<string, boolean>
+  /** D57 (c): ore patches (`patchKey`) a mine found no room on, with the terrain stamp then; skipped until it changes. */
+  deadPatches?: Record<string, string>
   /** M6: cluster-1 roles that can't grow far enough → the share of the stage target cluster 1 can still serve. */
   cluster1Caps?: Record<string, number>
   /** M6: failed expansions per role this stage (a grow that keeps failing no longer holds the stage). */
@@ -292,6 +294,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
+  radarGoal(ctx)
   advanceGoals(ctx, d)
   research(ctx, d)
   handFeed(ctx)
@@ -490,7 +493,7 @@ export interface FactoryGoalSelectionSnapshot {
 function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
   const active: Partial<Record<GoalKind, boolean>> = {}
   const completed: Partial<Record<GoalKind, boolean>> = {}
-  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp"] as GoalKind[]) {
+  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar"] as GoalKind[]) {
     active[kind] = activeGoal(f, kind) !== undefined
     completed[kind] = built(f, kind)
   }
@@ -819,6 +822,8 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const off = offsets[tries % offsets.length]
   const center = { x: f.center.x + off[0], y: f.center.y + off[1] }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // D57 (c): patches earlier plans' mines found no room on.
+  if (f.deadPatches !== undefined) request.deadPatches = { ...f.deadPatches }
   // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
   // factory still has to connect (seed 11: cells next to the labs' pack input made production unroutable).
   if (g.kind === "temp") request.avoid = f.layout.modules.map((m) => ({ x: m.rect.x - TEMP_CLEARANCE, y: m.rect.y - TEMP_CLEARANCE, w: m.rect.w + 2 * TEMP_CLEARANCE, h: m.rect.h + 2 * TEMP_CLEARANCE }))
@@ -906,6 +911,10 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     return
   }
   if (entry.phase === "scan" || entry.phase === "plan") return
+  for (const [k, v] of pairs(entry.job?.deadPatches ?? {})) {
+    f.deadPatches ??= {}
+    f.deadPatches[k as string] = v as string
+  }
   // Planned against a terrain scan: another faction (or a player) may have claimed or built on its ground since.
   const contest = entry.phase === "done" ? contested(ctx, entry) : undefined
   // D36: a finished plan, or one that failed to route without undergrounds but routes with them (infinitely shorter).
@@ -1904,6 +1913,31 @@ function tempFactories(ctx: Ctx): void {
   }
   log(`[rival-engineers] faction ${ctx.faction.name}: D38 temporary factories: ${nodes.map((n) => n.role).join(", ")}`)
   startGoal(ctx, { kind: "temp", nodes, edges: [], techs: [] })
+}
+
+/** D56: radar goals that may fail before the faction stops trying. */
+const RADAR_MAX_FAILED = 2
+/** D56: the radar module's graph role. */
+const RADAR_ROLE = "radar"
+
+/**
+ * D56 (user, 2026-10-20): once power is built and the radar can be made, one radar module goes up at the base, planned
+ * and powered like any module. It is for realism: plans keep using the chunks the planner explores.
+ */
+function radarGoal(ctx: Ctx): void {
+  const f = ctx.f
+  if (!ctx.config.factoryRadar || planning(f) !== undefined || activeGoal(f, "radar") !== undefined || !built(f, "power")) return
+  if (LG.nodeByRole(f.graph, RADAR_ROLE) !== undefined || lastOf(f, "radar")?.status === "done") return
+  let failed = 0
+  for (const g of f.goals) if (g.kind === "radar" && g.status === "failed") failed++
+  if (failed >= RADAR_MAX_FAILED) return
+  const radar = ctx.entities.radar ?? "radar"
+  if (ctx.force.recipes[prototypeFacts.recipeForItem(radar) ?? radar]?.enabled !== true) return
+  const params = { radar }
+  const def = makeModule("radar", params)
+  const node: DesignNode = { role: RADAR_ROLE, kind: "sink", generator: "radar", params, def, item: radar, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
+  log(`[rival-engineers] faction ${ctx.faction.name}: D56 radar goal`)
+  startGoal(ctx, { kind: "radar", nodes: [node], edges: [], techs: [] })
 }
 
 /** Deconstructs a temporary cell (its small poles stay) and drops its node; its layout footprint stays reserved. */

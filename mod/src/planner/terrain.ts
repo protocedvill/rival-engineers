@@ -239,5 +239,38 @@ export function terrainView(t: TerrainState): TerrainView {
       const i = c.ore[(y - cy * 32) * 32 + (x - cx * 32)]
       return i !== undefined ? resources[i - 1] : undefined
     },
+    oreTiles: (resource, rect) => {
+      const out: number[] = []
+      const id = t.resourceIndex[resource]
+      if (id === undefined) return out
+      for (let cx = math.floor(rect.x / 32); cx <= math.floor((rect.x + rect.w - 1) / 32); cx++) {
+        for (let cy = math.floor(rect.y / 32); cy <= math.floor((rect.y + rect.h - 1) / 32); cy++) {
+          const c = chunks[tkey(cx, cy)]
+          if (c === undefined) continue
+          for (const [i, r] of pairs(c.ore)) {
+            if (r !== id) continue
+            const x = cx * 32 + ((i as number) % 32)
+            const y = cy * 32 + math.floor((i as number) / 32)
+            if (x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h) out.push(tkey(x, y))
+          }
+        }
+      }
+      // pairs order is not deterministic across loads: sort.
+      out.sort((a, b) => a - b)
+      return out
+    },
+    stamp: (rect) => {
+      let n = 0
+      let last = 0
+      for (let cx = math.floor(rect.x / 32); cx <= math.floor((rect.x + rect.w - 1) / 32); cx++) {
+        for (let cy = math.floor(rect.y / 32); cy <= math.floor((rect.y + rect.h - 1) / 32); cy++) {
+          const c = chunks[tkey(cx, cy)]
+          if (c === undefined) continue
+          n++
+          last = math.max(last, c.tick)
+        }
+      }
+      return `${n}@${last}`
+    },
   }
 }

@@ -123,20 +123,28 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   // with them (ripRoute), so edges whose physical route is gone are dropped too.
   const gone: Record<string, boolean> = {}
   for (const rid of r.routes) gone[rid] = true
+  // D52 aliases: a node that shared its whole-patch mine has no module of its own and fed through its routes; it goes
+  // with it (the design plans its role again), or later goals connect to its missing port.
+  const drop: LogicalNode[] = [n]
   for (const eid of [...f.graph.edgeOrder]) {
     const e = f.graph.edges[eid]
     if (e.kind !== "belt") continue
     let lost = false
     for (const p of e.physical ?? []) if (gone[p]) lost = true
-    if (lost) LG.removeEdge(f.graph, eid)
+    if (!lost) continue
+    LG.removeEdge(f.graph, eid)
+    const from = e.from !== undefined ? f.graph.nodes[e.from] : undefined
+    if (from !== undefined && drop.indexOf(from) < 0 && findModule(f.layout, from.id) === undefined) drop.push(from)
   }
-  LG.removeNode(f.graph, n.id)
-  if (f.growFails !== undefined) delete f.growFails[n.role]
-  if (f.noTap !== undefined) delete f.noTap[n.role]
-  if (f.cluster1Caps !== undefined) delete f.cluster1Caps[n.role]
+  for (const d of drop) {
+    LG.removeNode(f.graph, d.id)
+    if (f.growFails !== undefined) delete f.growFails[d.role]
+    if (f.noTap !== undefined) delete f.noTap[d.role]
+    if (f.cluster1Caps !== undefined) delete f.cluster1Caps[d.role]
+  }
   f.fuelRelocations = (f.fuelRelocations ?? 0) + 1
   resyncReserved(ctx.faction, f.layout)
   // Its ore tiles are worked out: the terrain is scanned again before the next plan.
   markDirty(ctx.faction.surface, { x: m.rect.x - 8, y: m.rect.y - 8 }, { x: m.rect.x + m.rect.w + 8, y: m.rect.y + m.rect.h + 8 })
-  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped; the design plans a new one`)
+  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped${drop.length > 1 ? `, ${drop.length - 1} aliased nodes dropped` : ""}; the design plans a new one`)
 }

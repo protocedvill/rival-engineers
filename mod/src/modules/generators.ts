@@ -822,9 +822,38 @@ export function chestCell(facts: ProtoFacts, p: ChestCellParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Radar (D56: placed for realism; plans never depend on what it charts)
+
+export interface RadarParams extends CommonParams {
+  radar?: string
+}
+
+/** D56: one radar (3×3) with a small pole beside it: a 4×3 powered module, no belts. */
+export function radarCell(facts: ProtoFacts, p: RadarParams): ModuleDef {
+  const radar = p.radar ?? "radar"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  L.add(radar, 1.5, 1.5)
+  L.poleAt(3.5, 1.5)
+  const draft: ModuleDraft = {
+    id: `radar/${radar}/${L.pole}`,
+    source: "generated",
+    generator: "radar",
+    provenance: "generator radar (Rival Engineers)",
+    description: `one ${radar} (D56)`,
+    footprint: { w: 4, h: 3 },
+    entities: L.entities,
+    ports: [{ id: "power", kind: "power", pos: { x: 3.5, y: 1.5 }, dir: EAST }],
+    rotatable: true,
+    mirrorable: true,
+    params: { radar },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Registry
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -837,7 +866,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "circuit-block") return circuitBlock(facts, P)
   if (name === "lab-array") return labArray(facts, P)
   if (name === "chest-cell") return chestCell(facts, P)
+  if (name === "radar") return radarCell(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar"]

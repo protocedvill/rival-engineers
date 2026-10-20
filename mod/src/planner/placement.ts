@@ -35,6 +35,21 @@ export interface PlacementRequest {
    * Their ports sit at their growing end, where a partner belongs; growth reroutes their connection anyway.
    */
   softExempt?: Record<string, boolean>
+  /** D57: patches (`patchKey`) a mine found no room on, with the terrain stamp they were searched under. */
+  dead?: Record<string, string>
+}
+
+/** D57: a connected patch of free ore a new mine may use. */
+export interface SitePatch {
+  key: string
+  tiles: number
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  /** Distance from the request centre to its nearest free ore tile, plus `newField` for a fresh field. */
+  rank: number
+  fresh: boolean
 }
 
 interface TDef {
@@ -50,6 +65,13 @@ export interface PlacementSearch {
   /** Site search: ring radius reached, and the target point found. */
   ring: number
   target?: Vec
+  /** D57 (mines): the ranked free-ore patches, the next one to try, the one being searched, and those found full. */
+  patches?: SitePatch[]
+  patchIdx?: number
+  patch?: SitePatch & { r: number }
+  deadFound?: Record<string, string>
+  /** D57: patches tried (searched or skipped as remembered dead). */
+  patchesTried?: number
   radiusIdx: number
   tdefs: TDef[]
   /** Window (world) and the summed-area tables over it, (w + 1) × (h + 1). */
@@ -160,6 +182,141 @@ export function newPlacement(req: PlacementRequest): PlacementSearch {
 const TOP_K = 3
 
 /** Whether a tile is a site point: water with land next to it (shore), or ore of the resource. */
+export function patchKey(resource: string, p: { x1: number; y1: number; x2: number; y2: number }): string {
+  return `${resource}:${p.x1},${p.y1},${p.x2},${p.y2}`
+}
+
+/** Tiles closer than this (Chebyshev) belong to one patch, as in `world/resources.ts`. */
+const PATCH_JOIN = 2
+
+/**
+ * D57 (a, b): the connected patches of free ore of the mine's resource in the region: ore not under a structure, route,
+ * reservation or another mine's claim (trees and rocks as the policy clears them). Patches with too little free ore
+ * for the template's drill areas at `minOreCoverage` are left out. Ranked by distance to the request centre, a fresh
+ * field (no mine of this resource on or next to it) `newField` tiles farther (the user, 2026-10-20). Returns the work.
+ */
+function buildPatches(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): number {
+  const resource = s.req.def.anchor?.resource
+  const region = s.req.region
+  s.patches = []
+  s.patchIdx = 0
+  if (resource === undefined) return 1
+  const treeHard = policy.obstacles.trees !== "clear"
+  const rockHard = policy.obstacles.rocks !== "clear"
+  const mine = state.mine ?? {}
+  const free = (x: number, y: number, k: number): boolean => {
+    const b = terrain.block(x, y)
+    if (b >= OWN || b === WATER || (b === TREE && treeHard) || (b === ROCK && rockHard)) return false
+    const o = state.occ[k]
+    if ((o !== undefined && !isPoleTag(o)) || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined) return false
+    return mine[k] === undefined || mine[k] === s.req.id
+  }
+  const keys: number[] = []
+  if (terrain.oreTiles !== undefined) {
+    for (const k of terrain.oreTiles(resource, region)) keys.push(k)
+  } else {
+    for (let y = region.y; y < region.y + region.h; y++) for (let x = region.x; x < region.x + region.w; x++) if (terrain.ore(x, y) === resource) keys.push(tkey(x, y))
+  }
+  const isFree: Record<number, boolean> = {}
+  for (const k of keys) if (free(keyX(k), keyY(k), k)) isFree[k] = true
+  let need = 0
+  for (const a of s.req.def.anchor?.miningAreas ?? []) need += math.ceil(policy.minOreCoverage * a.w * a.h)
+  // Mines of this resource already in the layout: a patch on or next to one is not a fresh field.
+  const mines: Rect[] = []
+  for (const m of state.modules) if (m.id !== s.req.id && isMining(m.canonical) && m.canonical.anchor?.resource === resource) mines.push(inflate(m.rect, PATCH_JOIN + 1))
+  const newField = policy.placement.newField ?? 0
+  const seen: Record<number, boolean> = {}
+  const c = s.req.center
+  for (const k0 of keys) {
+    if (!isFree[k0] || seen[k0]) continue
+    seen[k0] = true
+    const stack = [k0]
+    let n = 0
+    let x1 = keyX(k0)
+    let y1 = keyY(k0)
+    let x2 = x1
+    let y2 = y1
+    let near = math.huge
+    while (stack.length > 0) {
+      const k = stack.pop()!
+      const x = keyX(k)
+      const y = keyY(k)
+      n++
+      x1 = math.min(x1, x)
+      y1 = math.min(y1, y)
+      x2 = math.max(x2, x)
+      y2 = math.max(y2, y)
+      near = math.min(near, math.sqrt((x - c.x) * (x - c.x) + (y - c.y) * (y - c.y)))
+      for (let dx = -PATCH_JOIN; dx <= PATCH_JOIN; dx++) {
+        for (let dy = -PATCH_JOIN; dy <= PATCH_JOIN; dy++) {
+          const j = tkey(x + dx, y + dy)
+          if (isFree[j] && !seen[j]) {
+            seen[j] = true
+            stack.push(j)
+          }
+        }
+      }
+    }
+    if (n < need) continue
+    const box = { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 }
+    let fresh = true
+    for (const r of mines) if (r.x < box.x + box.w && box.x < r.x + r.w && r.y < box.y + box.h && box.y < r.y + r.h) fresh = false
+    s.patches.push({ key: patchKey(resource, { x1, y1, x2, y2 }), tiles: n, x1, y1, x2, y2, rank: near + (fresh ? newField : 0), fresh })
+  }
+  s.patches.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.x1 !== b.x1 ? a.x1 - b.x1 : a.y1 - b.y1))
+  return 1 + keys.length / 8
+}
+
+/** The window rect a patch is searched over (for its terrain stamp). */
+function patchArea(p: SitePatch, margin: number): Rect {
+  return { x: p.x1 - margin, y: p.y1 - margin, w: p.x2 - p.x1 + 1 + 2 * margin, h: p.y2 - p.y1 + 1 + 2 * margin }
+}
+
+/**
+ * D57: starts the window search on the next ranked patch, skipping (c) those remembered as having no room under the
+ * same terrain; fails once none is left. Returns the work.
+ */
+function nextPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): number {
+  let used = 0
+  if (s.patches === undefined) used += buildPatches(s, state, terrain, policy)
+  const list = s.patches!
+  while (s.patchIdx! < list.length) {
+    const p = list[s.patchIdx!]
+    s.patchIdx = s.patchIdx! + 1
+    s.patchesTried = (s.patchesTried ?? 0) + 1
+    used++
+    const dead = s.req.dead?.[p.key]
+    if (dead !== undefined && terrain.stamp !== undefined && dead === terrain.stamp(patchArea(p, maxDim(s)))) continue
+    // Module centres anywhere over the patch's box (and half a footprint past it).
+    const r = math.ceil(math.max(p.x2 - p.x1 + 1, p.y2 - p.y1 + 1) / 2) + 1
+    s.patch = { ...p, r }
+    s.target = { x: math.floor((p.x1 + p.x2 + 1) / 2), y: math.floor((p.y1 + p.y2 + 1) / 2) }
+    s.radiusIdx = 0
+    startWindow(s, state, policy)
+    return used
+  }
+  s.phase = "failed"
+  s.reason = list.length === 0 ? `no free ${s.req.def.anchor?.resource ?? "ore"} patch in the region` : `no feasible position (${s.patchesTried ?? 0} of ${list.length} patches tried)`
+  if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+  return used
+}
+
+/**
+ * D57 (c): a patch with no room is remembered under its terrain stamp, unless a module this plan placed (not fixed:
+ * not built) lies over it: then it is full only for this plan.
+ */
+function noteDeadPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainView): void {
+  const p = s.patch
+  if (p === undefined || terrain.stamp === undefined) return
+  const area = patchArea(p, maxDim(s))
+  for (const m of state.modules) {
+    if (m.fixed || m.id === s.req.id) continue
+    if (m.rect.x < area.x + area.w && area.x < m.rect.x + m.rect.w && m.rect.y < area.y + area.h && area.y < m.rect.y + m.rect.h) return
+  }
+  s.deadFound ??= {}
+  s.deadFound[p.key] = terrain.stamp(area)
+}
+
 function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): boolean {
   if (def.site === "shore") {
     if (terrain.block(x, y) !== WATER) return false
@@ -178,6 +335,8 @@ function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): 
  */
 const OUTPOST_FAR_RADIUS = 192
 function radii(s: PlacementSearch, policy: LayoutPolicy): number[] {
+  // D57: a mine searches one window over the patch it is trying.
+  if (s.patch !== undefined) return [s.patch.r]
   if (s.req.def.site !== "resource-patch") return policy.searchRadii
   const last = policy.searchRadii[policy.searchRadii.length - 1] ?? 0
   return last >= OUTPOST_FAR_RADIUS ? policy.searchRadii : [...policy.searchRadii, OUTPOST_FAR_RADIUS]
@@ -592,6 +751,10 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
 export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
   let used = 0
   while (used < budget && (s.phase === "site" || s.phase === "sat" || s.phase === "scan")) {
+    if (s.phase === "site" && isMining(s.req.def)) {
+      used += nextPatch(s, state, terrain, policy)
+      continue
+    }
     if (s.phase === "site") {
       // Ring by ring around the centre: the nearest shore tile or ore tile of the resource.
       const c = s.req.center
@@ -692,6 +855,13 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       } else if (s.radiusIdx + 1 < radii(s, policy).length) {
         s.radiusIdx++
         startWindow(s, state, policy)
+      } else if (s.patch !== undefined) {
+        // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
+        noteDeadPatch(s, state, terrain)
+        s.patch = undefined
+        s.target = undefined
+        s.radiusIdx = 0
+        s.phase = "site"
       } else {
         s.phase = "failed"
         s.reason = "no feasible position"
