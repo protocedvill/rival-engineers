@@ -54,6 +54,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   every argument. Declare callback types as `(this: void, ...) => ...`.
 - **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
   spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
+- **A named import of an exported `let` is a load-time copy**: `import { x } from "./m"` compiles to `local x = ____m.x`,
+  so later reassignments in `m` are never seen (telemetry logged no `[re-profile]` lines). Import the module
+  (`import * as m`) and read `m.x`.
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
