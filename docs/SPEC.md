@@ -908,7 +908,9 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 - v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
 - v0.26 (2026-10-20, user decision in-session): D59 (router soft-claim cost 10 next to a module, lower for each growth unit farther out).
   The router's seal check (a cost-free flood from both ends that proves "no path" when one end is boxed in) is the
-  approach the user picked in-session the same day; its cap `router.sealCheck` (2000 states) is proposed.
+  approach the user picked in-session the same day. A retry after "no path" runs it to the end (the user: "if either
+  end are enclosed, then consider it done and a fail"); the first search's cap `router.sealCheck` (2000 states) is
+  proposed.
 - v0.25 (2026-10-20, user decision in-session): D58 (two-level routing for long connections; one planner budget for the whole mod, shared by the plans running).
 - v0.24 (2026-10-20, user decisions in-session): D56 (a radar for realism; chunk-generation exploration stays), D57 (faster mine site search: patch index, pre-check, dead-patch memory, whole-patch layout; a fresh field costs +50 tiles).
 - v0.23 (2026-10-20, user decision in-session): D55 (a worked-out whole-patch mine moves to the next free part of its own patch; with none left, the mine is relocated and re-planned on fresh ore).

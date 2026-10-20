@@ -79,6 +79,8 @@ export interface Search {
   cellsW: number
   /** The corridor search found no path and the whole window was searched instead. */
   widened?: boolean
+  /** Tile costs by window tile, cached for the search's life (the layout does not change while it runs). */
+  tc: Record<number, number>
   /** Heuristic weight: 1 (exact A*), `corridorWeight` while inside a corridor. */
   hw?: number
   /** Seal check still running (see `stepSeal`). */
@@ -308,7 +310,7 @@ function tapCandidates(state: LayoutState, terrain: TerrainView, policy: LayoutP
   return out
 }
 
-export function newSearch(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, rip: boolean): Search {
+export function newSearch(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, rip: boolean, retry = false): Search {
   // Window: the endpoints (and tapped routes) plus a margin.
   let x1 = req.goal.x
   let y1 = req.goal.y
@@ -347,10 +349,13 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
     tapStarts: [],
     cell: C,
     cellsW: math.ceil((x2 - x1 + 2 * m + 1) / C),
+    tc: {},
   }
   s.goalS = encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))
   for (const id of req.taps ?? []) for (const c of tapCandidates(state, terrain, policy, req, rip, id)) s.tapStarts.push(c)
-  const sealCap = w.sealCheck ?? 0
+  // A retry after "no path" runs the seal check to the end (`sealRetry`, 0: no cap): proving the pocket closed there
+  // skips the wider windows, while a first search only pays the small cap.
+  const sealCap = (w.sealCheck ?? 0) <= 0 ? 0 : retry ? (w.sealRetry ?? 0) > 0 ? w.sealRetry! : math.huge : w.sealCheck!
   if (sealCap > 0) s.seal = newSeal(s, state, terrain, policy, sealCap)
   // Two-level routing: a long connection searches cells first (`stepCoarse`), then tiles inside their corridor.
   const starts: { x: number; y: number }[] = []
@@ -426,7 +431,7 @@ function sealPass(s: Search, seal: Seal, state: LayoutState, terrain: TerrainVie
     const b = blockerTile(s.req.goal)
     if (b.x === x && b.y === y) ok = false
   }
-  if (ok) ok = tileCost(state, terrain, policy, s.req, s.rip, x, y) >= 0
+  if (ok) ok = cachedCost(s, state, terrain, policy, x, y) >= 0
   seal.pass[t] = ok
   return ok
 }
@@ -524,6 +529,17 @@ function stepSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: L
     else sealBackward(s, seal, state, terrain, policy, seal.rq[seal.ri++])
   }
   return used
+}
+
+/** `tileCost` of a window tile, cached for the search. */
+function cachedCost(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): number {
+  const t = sealTile(s, x, y)
+  if (t < 0) return tileCost(state, terrain, policy, s.req, s.rip, x, y)
+  const c = s.tc[t]
+  if (c !== undefined) return c
+  const v = tileCost(state, terrain, policy, s.req, s.rip, x, y)
+  s.tc[t] = v
+  return v
 }
 
 function seedFine(s: Search): void {
@@ -669,7 +685,7 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
   }
   const cost = (x: number, y: number): number => {
     if (blocked[tkey(x, y)]) return -1
-    return tileCost(state, terrain, policy, req, s.rip, x, y)
+    return cachedCost(s, state, terrain, policy, x, y)
   }
   const push = (parent: number, x: number, y: number, d: number, g: number, mv: number): void => {
     if (!inWindow(s, x, y)) return

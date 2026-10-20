@@ -1500,12 +1500,47 @@ the side, so the check met after 21 steps and never proved anything. Flooding (t
 | m6a2-seed222-green-line (fails, as before) | 205 s, routing work 1,733,248, 18 searches | < 1 s, routing work 66, 6 searches (the goal's pocket is 4 tiles) |
 | the "freed" variants of both (route) | 9.9k / 449 work | 10.9k / 480 (the check's own cost) |
 
-Full T1: 8 min 16 s. What remains slow is the two `m6a2-seed222-mall-iron` replays that *succeed* (about 85 s each,
-35% of T1): 685k A* expansions over 12 searches. They are as slow with the captured (pre-D59) weights. A profile
-shows plain A* work (heap 15%, keys and window checks 25%, `tileCost` 41%). The cause is the heuristic: it assumes
-0.81 a tile (corridor × bundle factor) while ore tiles cost about 4, so A* floods the iron field. Proposed next: a
-heuristic from a reverse Dijkstra over the coarse cells two-level routing already builds (each cell at its cheapest
-tile, still admissible). Not done here.
+Full T1 then took 8 min 16 s. What remained slow was the two `m6a2-seed222-mall-iron` replays that *succeed* (about 85
+s each, 35% of T1). A profile showed plain A* work (heap 15%, keys and window checks 25%, `tileCost` 41%).
+
+**Guide experiments (not kept).** The A* heuristic assumes 0.81 a tile (corridor × bundle factor) while ore tiles cost
+about 4, so the first suspect was a weak guide. Swept on every replay (19 tests, wall time with T2 running):
+
+| Variant | Time | Result |
+|---|---|---|
+| today's guide | 222 s | baseline |
+| cell guide, cheapest tile of each 8×8 cell (a reverse A* over cells, resumed on demand) | 240 s | more work, no gain: almost every cell has a cheap tile, so it rarely beats 0.81 |
+| cell guide, mean tile (not a lower bound) | 234 s | breaks the seed11 no-underground comparison (no longer routes) |
+| tie-breaking toward the goal (h × 1.001) | 222 s | no effect |
+| weighted A*, h × 1.2 | 196 s | the only gain (B52 −22% work), routes as long; not adopted (it trades path cost) |
+
+mall-iron stayed at ~700k routing work in all of them: it was not searching, it was failing. A per-search trace showed
+97% of its work in one connection (`iron-plate*>mall => mall.in-iron-plate`) failing six times up the retry ladder
+(22k, 23k, 136k, 136k, 178k, 179k expansions at windows ×1, ×3, ×9, each with and without rip) before the module is
+placed again and the route takes 6 expansions. The goal's pocket was enclosed but bigger than the seal check's cap.
+
+**The seal check runs to the end on retries** (the user asked: "if either end are enclosed, then consider it done and a
+fail"). A connection's first search keeps the 2000-state cap (a reachable route pays little); a retry after "no path"
+(the rip pass and the wider windows) runs the check with no cap (`router.sealRetry`, 0). Sweep on every replay:
+
+| First search / retries | Time | mall-iron-shared routing work | Routes that succeed |
+|---|---|---|---|
+| 2000 / 2000 (before) | 201 s | 699,700 | baseline |
+| **2000 / no cap** | **104 s** | **40,971** | unchanged (identical work) |
+| 8000 / 8000 | 106 s | 25,329 | +6% to +78% work |
+| 8000 / no cap | 108 s | 25,329 | +6% to +78% work |
+| no cap / no cap | 111 s | 27,971 | B52 +19%, no-underground cluster +35% |
+
+Outcomes and route lengths are identical in every variant. With no cap on retries, two replays that fail many times
+pay more (the no-underground cluster +28%, the seed3333 comparison +20%): their retries prove nothing because a way
+exists in rip mode, and the cost-blind floods meet late.
+
+**Tile-cost cache**: a search caches `tileCost` by window tile (the layout does not change while one search runs; it
+lives as long as the search). All replays give identical results with and without it; it saves 14% (118 → 102 s).
+In game, terrain read once per search could go stale over the ticks a search runs (a tree mined meanwhile): the route
+is checked again when it is built, as before.
+
+Full T1 now takes 4 min 58 s (8 min 16 s before; the slowest tests are now the planner seal-check test at 17 s and the B52 replay at 11 s).
 
 **Replays use today's weights** (user, in-session 2026-10-20: captures "static in time" would cause problems). `load`
 replaces a capture's policy with the current `EARLY_COMPACT` copy, keeping only the plan's topology, smelting and
@@ -1524,5 +1559,6 @@ exists".
 
 | Name | Where | Value | Why this value | Setting? |
 |---|---|---|---|---|
-| Seal check cap | `policy.ts` `router.sealCheck` | 2000 states (about 500 tiles × 4 headings); 0 turns it off | Proves the captured boxed-in ports (4 tiles on green-line) with room to spare; a meet usually comes within 100 states, so a reachable route pays little. Not swept. | no |
+| Seal check cap (first search) | `policy.ts` `router.sealCheck` | 2000 states (about 500 tiles × 4 headings); 0 turns it off | Swept 2000–uncapped: higher caps cost routes that succeed 6–78% more work and gain nothing once retries run uncapped. | no |
+| Seal check cap (retries after "no path") | `router.sealRetry` | 0 (no cap) | The user's rule: an enclosed end is a fail. 8000 gave the same mall-iron gain. | no |
 

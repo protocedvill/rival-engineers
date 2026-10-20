@@ -58,6 +58,8 @@ export interface RouterWeights {
    * tiles. 0: off.
    */
   sealCheck?: number
+  /** Seal check cap on a retry after "no path" (rip pass, wider windows): 0 runs it to the end. */
+  sealRetry?: number
   /**
    * Two-level routing (user, 2026-10-20): a connection whose ends are at least this far apart (Manhattan tiles) is
    * routed over `coarseCell`-tile cells first, then tile by tile inside a corridor of those cells. 0: off.
@@ -272,6 +274,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     softClaim: 10,
     softClaimDecay: 0.5,
     sealCheck: 2000,
+    sealRetry: 0,
     longRoute: 128,
     coarseCell: 8,
     corridorCells: 1,

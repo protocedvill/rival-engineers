@@ -655,7 +655,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   const st = cur.search.status
   if (st === "running") return used
   const c = connection(job, cur.conn)
-  const restart = (rip: boolean): void => {
+  const restart = (rip: boolean, retry = false): void => {
     const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
     if (typeof req === "string") {
       job.failures[cur.conn] = req
@@ -664,7 +664,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       return
     }
     cur.rip = rip
-    cur.search = newSearch(job.layout, terrain, policy, req, rip)
+    cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
     job.stats.searches++
   }
   if (st === "failed") {
@@ -680,12 +680,12 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       cur.rip = false
       const req = routeRequest(job, c, policy, {}, cur.winScale)
       if (typeof req !== "string") {
-        cur.search = newSearch(job.layout, terrain, policy, req, false)
+        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
         job.stats.searches++
         return used
       }
     }
-    if (!cur.rip) restart(true)
+    if (!cur.rip) restart(true, cur.search.reason === "no path")
     else {
       const reason = cur.search.reason ?? "no path"
       // Traced before tryReplace changes the layout; a re-placement only retries the connection.
