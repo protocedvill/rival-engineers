@@ -85,6 +85,7 @@ Two layers, by analogy:
 | D59 | Soft-claim cost by growth unit (2026-10-20, user decision, approved in-session) | B52: a route crossed the steam block's next growth unit for 0.5 a tile. The user: "I would set it to 10 or so depending on testing which can be done later. What would be even better, is have it diminish a bit every after every single expansion unit, so there more incentive to not block the most immediate and closest to expansion units." The router's soft-claim cost (`planner-router-soft-claim`) defaults to **10** (was 0.5, D50) for a tile in another module's next growth unit, multiplied by `planner-router-soft-claim-decay` for each unit farther out. The decay's default **0.5** is the agent's choice from a replay sweep (proposed; the user asked for "a bit"): an underground crossing pays only its ends, and on seed 3333's g20 replay 10 / 0.55–0.8 still put 4 underground ends in the next unit. Placement's soft-claim weight is unchanged. |
 | D60 | Site-retry pause (2026-10-20, user decision, approved in-session) | B53: a goal whose module finds no site in its region (e.g. no shore for a steam block) failed all its plans and an identical goal started at once, forever, spinning the planner. Proposed a back-off; the user: "Yeah the 5 minute backoff is fine" and "it should also log pretty clearly so we aren't surprised later". After a goal fails all its plans with "no … site in the region", goals of its kind wait `factory-site-retry-minutes` (default **5**, 0 = retry at once); the pause and its end are logged as "SITE RETRY PAUSE (B53)" and shown in the factory's waiting list. |
 | D61 | Power first (2026-10-21, user decision, approved in-session) | B54: a goal that re-laid a built module's pole line placed the new poles among its other work and left the module unpowered for 25–30 game-min. The user: "make placing any new power networks the first priority". A factory build's electric-pole place jobs (new, re-laid and module poles), hand-crafts of poles and the gathering of their materials (wood) get `factory-power-build-priority` (default **150**; the bootstrap's highest is fuel 100), never below the build's own priority. |
+| D62 | Radar exploration arms (2026-10-21, user decision, approved in-session; extends D56) | Seed 46464 failed at ~115 game-min: the only copper patch within 384 tiles was mined out and nothing looked farther. The user: "what should happen in a case like this is what a normal human player would do. They would string a power line out into the distance, placing down a radar so the area is explored." (1) **Home zone:** within 3 × `scan-radius` (384 tiles) of the hub, plans and the bootstrap keep generating and scanning chunks themselves ("Keep the cheaty scan for the home base, since failures would be unrecoverable at that stage of the game"); the plan region ladder is capped at the same radius. Beyond it, the planner knows only chunks the faction's force has charted (radars, `on_sector_scanned`) and ground its crew explores while building (2). (2) **Trigger and arms:** when a mine module finds no free patch of its ore, the faction builds a **radar outpost**: one radar module plus a pole line from the base network, on one arm (N, E, S, W round robin, one outpost at a time). The first outpost of an arm goes ~400 tiles from the hub, each later one ~200 tiles farther along the arm. The crew explores the strip of the pole line and the radar site as it builds ("The player should just explore the terrain while building it"); a cliff or water at the spot moves the radar a little. (3) **Next arm:** once the new radar's nearby square is charted and scanned and still shows no usable patch, the next arm gets an outpost; earlier radars keep sector-scanning and a patch they find later is used by the next retry. Outposts stay (a later mine reuses the pole line). (4) **Search:** one mine search over the home square plus all charted ground, patches still ranked by distance from the hub. Ore found far away gets a plain mine with a long belt to the existing smelters ("Keep using belts for this implementation even though pathfinding will be rough"); remote outposts with trains are a later phase. (5) **Waiting:** the blocked goal waits on "exploring" and does not count toward fail-fast; in a normal game exploration goes on forever ("shouldn't fail in a normal game, just go forever, since eventually it will run into a success"). Soaks fail fast after 1 game-hour stuck exploring. Distances are agent guesses the user accepted ("Spacing is fine"); listed in the M6 report's magic numbers. |
 
 ## 3. v1 Definition of Done
 
@@ -394,7 +395,7 @@ tag → filter → in-game validation gate.
   - **H6** sites go on the patch chosen by distance and size from the depot, on the patch tiles nearest it,
     facing it, one tile apart, on tiles free of trees, rocks and active hand-mining.
   - **H7 exploration:** when a needed resource (or trees) has no known patch, the area around the base is
-    generated 64 tiles farther (up to 3 × `scan-radius`) and rescanned.
+    generated 64 tiles farther (up to 3 × `scan-radius`) and rescanned. Past that home zone, radar outposts explore (D62).
 - **World knowledge:** crew don't chart. At start the chunks within `scan-radius` (128) of the base are generated,
   as for a player exploring, and scanned into resource patches (clusters of one resource, tiles within 2 of each
   other); exploration (H7) and replanning rescan.
@@ -623,7 +624,8 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
 oil, blue science and bots (crew switches to construction robots) · **P4** inter-faction diplomacy and war
-(Biter Battles-style arenas as test maps) · **P5** Space Age · optional **external strategist**
+(Biter Battles-style arenas as test maps) · **remote outposts** (trains to far fields, on-site smelting; D62 uses
+long belts in v1) · **P5** Space Age · optional **external strategist**
 (LLM over RCON) for server-only experiments.
 
 ## 9. Agent operating model
@@ -908,6 +910,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.29 (2026-10-21, user decision in-session): D62 (radar outposts on N/E/S/W arms explore past the 384-tile home zone when a mine finds no ore; the home zone keeps chunk generation).
 - v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
 - v0.28 (2026-10-21, user decision in-session): D61 (a factory build's poles are placed and crafted before every other job).
 - v0.27 (2026-10-20, user decision in-session): D60 (a goal with no site in its region pauses its kind for 5 game-minutes, logged).
