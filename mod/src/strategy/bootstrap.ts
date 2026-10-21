@@ -5,6 +5,7 @@ import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
+import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
@@ -52,7 +53,8 @@ const CRAFT_CHUNK_RAW = 60
 const PRIORITY = { fuel: 100, place: 90, feed: 55, craft: 50, gather: 20 }
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
-const EXPLORE_MAX = 3
+/** D62: bootstrap exploration stops at the home zone; past it, radar outposts explore. */
+const EXPLORE_MAX = HOME_SCANS
 /** D43: a new mining site must hold this many times the depletion lead time of ore, or it would be replaced at once. */
 const SITE_MIN_LIFE = 2
 const PRIORITY_RETIRE = 60

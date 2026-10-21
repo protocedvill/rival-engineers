@@ -1690,3 +1690,99 @@ Full T2 147/147 and T1 20/20 on both commits. With seed 98765 (v1-done 198.7 in 
 | Name | Where | Value | Why this value | Setting? |
 |---|---|---|---|---|
 | Power build priority | `jobs/faction.ts` `addPlaceJob`, `strategy/bootstrap.ts` `craft` and pole-material gathers (D61) | 150 | Above every other job (bootstrap fuel 100, build 90), as the user asked; any value above 100 does the same today. | yes (`factory-power-build-priority`, new) |
+
+## M6b.28: B57 walled-in port lanes, acceptance soak, D62 radar exploration arms (2026-10-21)
+
+**Soak `m6-accept-5b9550c`** (5b9550c, `m6.toml`, seeds 11, 222, 3333, 44444, 555555, `-j 3`, `--snapshots 20`): 3/5.
+222 v1-done 231.2, 3333 284.1, 44444 185.3. 555555 stopped at 44 min and 11 at 92 min, both on 8 plan failures in a
+row ("no path"): the router's seal check proved an end walled in.
+
+**Diagnosis (B57).** 555555: the labs' unfed green-science input sat in a pocket walled in by the power coal mine's
+claim and the red-science plan g6's modules and routes (112 tiles when g6 planned). 11: the green cluster's iron mine
+was placed with its output facing into a 221-tile pocket. B45's lane test asked for only 8 free steps (both pockets
+reach farther), checked only other modules' ports at placement and never the plan's own routes, and its flood went
+where belts can't (along underground spans, past exits that turn at once).
+
+**Fixes** (the user approved all four in-session on 2026-10-21: "looks good go ahead and implement"; 0787461):
+
+- `laneWayOut` follows the router's belt rules: an underground is entered straight, its exit tile must be free, its
+  span may not overlap another on the same line or pass under a module; farthest-first, with the port's partner as a
+  goal. `portEscape` 8 → 32 (fuel.ts `LANE_ESCAPE` too).
+- Placement rejects a candidate whose own port lanes have no way out ("own-lane-sealed"), checked only for a new best.
+  Each open port caches its lane path; B45 rechecks it only when a placement touches it.
+- A plan that walls in a base module's open lane restarts once from its first placement with that lane reserved
+  (`lane:` reservations, removed when the plan finishes).
+- A route failure sealed on the start side moves the producer first; one sealed on the goal side at a built module
+  relocates that module (`relocateSealed`, fuel.ts `relocate`) and the goal plans again.
+- Traces and replay dumps say which end ran out and after how many tiles.
+
+Replays: `m6acc-555555-g6-red` (the red plan now leaves the labs' green input a way out), `m6acc-555555-green-labs`
+and `m6acc-11-green-iron` (the failed plans, expected to fail), T1 `planner` B57 ×4. Full T1 20/20 and T2 147/147
+before the soak. `soak.py --port-base` gives a second concurrent soak its own server ports.
+
+**Soak `m6-accept-b57`** (0787461's code, `m6.toml`; failed seeds kept, passing ones replaced by fresh ones;
+1212121 and 8080808 ran as `m6-accept-b57x` at the same time at the user's request: five games at once, so wall times
+and ms/tick are not comparable):
+
+| Seed | Result | Notes |
+|---|---|---|
+| 11 | **v1-done 208.3** | was stopped at 92 |
+| 555555 | **v1-done 232.7** | was stopped at 44; g15 (green) planned on attempt 4 after "route crosses itself" ×2 and "blocked by" ×1 |
+| 8080808 | **v1-done 183.8** | new |
+| 1212121 | stopped by hand at ~282: science stuck at ~16 + 16/min (best 63% of the bar) | new; **B58** (open): cluster 3's copper smelter gets no coal, the repair finds nothing missing; not diagnosed |
+| 46464 | stopped at 115: 8 plan failures, "no free copper-ore patch in the region" | new; see below |
+
+3/5 reached v1-done (11, 555555, 8080808): both B57 seeds pass.
+
+**Seed 46464** (replay `m6acc-46464-green-copper`, expected to fail): the third green line's copper mine had no patch.
+The only copper the faction knows (357 tiles, ~70 tiles from the hub) is under the copper mine n18 (252 tiles) and the
+bootstrap copper site (78); 27 are free and a 2-drill mine needs ~30. The region ladder reached radius 378 and the
+bootstrap explored to 384 (3 × `scan-radius`) in its first minutes: no other copper within ~378 tiles. Not B57: the
+patch list is built before any lane check. Nothing explored farther.
+
+**D62** (the user, in-session 2026-10-21; SPEC v0.29): radar outposts on N, E, S, W arms explore past the 384-tile home
+zone when a mine finds no free patch; implementation in progress (M6b.29).
+
+### Magic numbers for the user (M6b.28)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Port lane escape | `planner/policy.ts` `portEscape` (B45/B57) | 32 (was 8) | Longer than both pockets seen (21 and ~15 tiles of reach); a lane that gets 32 belt steps away is open in practice. Agent guess. | no |
+| Fuel lane escape | `strategy/fuel.ts` `LANE_ESCAPE` (B51/B57) | 32 (was 8) | Same test as `portEscape` for relocations. Agent guess. | no |
+| Lane underground hop | `planner/placement.ts` `LANE_HOP` | 5 | Game data (transport-belt underground length); exempt. | no |
+| Exploration step | `strategy/bootstrap.ts` `EXPLORE_STEP` (H7, M3) | 64 tiles | Never escalated: one ring of two chunks per step. Agent guess from M3. | no |
+| Exploration cap | `strategy/bootstrap.ts` `EXPLORE_MAX` (H7, M3; D62 `HOME_SCANS`) | 3 × `scan-radius` = 384 | Never escalated before; no reason was recorded in M3 (synchronous chunk generation costs ~0.5 s per step). D62 keeps it as the home zone, which the user accepted. | no |
+
+## M6b.29: D62 radar exploration arms, first part; faction radars don't chart (2026-10-21)
+
+**Done** (T1 21/21; full T2 147 passed + the radar test, which failed as first written and passes rewritten as the engine-fact pin below):
+
+- `strategy/arms.ts` (pure, T1 `arms`): arm targets (N, E, S, W; first at 400 tiles, then every 200), the strip the
+  crew explores along an arm, the home square, the known-chunk rule, the no-patch failure text.
+- `planner/terrain.ts` / `runtime.ts`: a factory plan scans its region only where `known` allows (home zone, explored
+  strips, charted chunks); everything else stays UNKNOWN to the planner. Plan regions are capped at the home zone.
+- `strategy/explore.ts` (the D56 base radar moved here too: `factory.lua` was at 202 main-chunk locals, now 184): a
+  goal whose mine finds no free patch after its last attempt starts a search; one radar outpost goal at a time (radar
+  module + pole line, the radar placed near the arm target, a nudge on retries); the searching goal kind waits until
+  the outpost is built and its nearby square charted (or `ARM_SCAN_WAIT`), plans again, and a plan of that kind ends
+  the search. Logs `EXPLORING (D62)` / `EXPLORE (D62) over`.
+- `soak.py` fail-fast `exploring_minutes` (60 in `m6.toml`, the user's number).
+- T1 `power` "D62": a radar 400 tiles out gets its pole line (65 poles, ~75k work) along a strip with a lake and
+  cliffs, never onto unknown ground.
+
+**Finding: a radar charts nothing for a force with no players.** T2 engine test: powered, the same radar charted its
+7×7 nearby square within 60 s for the `player` force and 0 chunks for a script-created force like the factions'. As
+built, an outpost's radar reveals nothing: the search would wait `ARM_SCAN_WAIT` per outpost and only the arm strips
+would count as explored. D62 is blocked on how faction radars reveal ground: SPEC §11 P43 (proposed options: emulate
+the radar with `force.chart`, keep our own record, or count an outpost's reach as explored). Not soaked.
+
+### Magic numbers for the user (M6b.29)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Home zone | `strategy/arms.ts` `HOME_SCANS` × `scan-radius` | 3 × 128 = 384 tiles | Today's bootstrap cap; the user accepted keeping it ("That's fine"). | `scan-radius` yes; the factor no |
+| First outpost | `arms.ts` `ARM_FIRST` | 400 tiles | Just past the home zone. Agent guess the user accepted ("Spacing is fine"). | no |
+| Outpost spacing | `arms.ts` `ARM_SPACING` | 200 tiles | Nearby squares (224 tiles) about touch. Agent guess the user accepted. | no |
+| Strip half width | `arms.ts` `ARM_STRIP_HALF` | 32 tiles | One chunk either side of the arm: room for the pole line's detours and the radar's nudge. Agent guess. | no |
+| Scan wait | `arms.ts` `ARM_SCAN_WAIT` | 5 game-min | The nearby square charts in under a minute (player force); a cap so a radar that never charts doesn't hold the search. Agent guess. | no |
+| Stuck exploring | `tools/harness/m6.toml` `exploring_minutes` | 60 game-min | The user: "Give up can be after 1h in-game time stuck on exploration for fast-fail". Soak only. | soak config |

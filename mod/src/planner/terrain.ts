@@ -85,13 +85,18 @@ function enqueue(t: TerrainState, cx: number, cy: number): void {
   t.queue.push(k)
 }
 
-/** Queues every chunk overlapping `area` (world tiles) that is not scanned yet. */
-export function requestArea(t: TerrainState, area: Rect): void {
+/**
+ * Queues every chunk overlapping `area` (world tiles) that is not scanned yet. D62: with `known`, only the chunks it
+ * allows (the rest stay UNKNOWN to the planner).
+ */
+export function requestArea(t: TerrainState, area: Rect, known?: (this: void, cx: number, cy: number) => boolean): void {
   const cx1 = math.floor(area.x / 32)
   const cy1 = math.floor(area.y / 32)
   const cx2 = math.floor((area.x + area.w - 1) / 32)
   const cy2 = math.floor((area.y + area.h - 1) / 32)
-  for (let cy = cy1; cy <= cy2; cy++) for (let cx = cx1; cx <= cx2; cx++) if (t.chunks[tkey(cx, cy)] === undefined) enqueue(t, cx, cy)
+  for (let cy = cy1; cy <= cy2; cy++) {
+    for (let cx = cx1; cx <= cx2; cx++) if (t.chunks[tkey(cx, cy)] === undefined && (known === undefined || known(cx, cy))) enqueue(t, cx, cy)
+  }
 }
 
 export function terrainReady(t: TerrainState): boolean {

@@ -53,13 +53,16 @@ SOAK_DIR = ROOT / ".factorio-test" / "soak"
 TICKS_PER_HOUR = 216000
 DEFAULT_DONE_MILESTONE = "first-electricity-materials"  # the mod's soak-done-milestone default (M3)
 # Fail fast (run.fail_fast in a config): stop a seed as soon as its log shows it is stuck, instead of running to the cap.
-FAIL_FAST_KEYS = ("stalls", "consecutive_plan_failures", "ghost_rounds")
+FAIL_FAST_KEYS = ("stalls", "consecutive_plan_failures", "ghost_rounds", "exploring_minutes")
 STALL_LINE = re.compile(r"STALL at tick (\d+)[^:]*: (.*)")
 PLAN_FAILED = re.compile(r"goal (g\d+) plan failed")
 PLAN_OK = re.compile(r"goal g\d+ \(\w+\) planned in")
 GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
+# D62: a search for ore past the home zone (radar outposts) starts and ends.
+EXPLORE_START = re.compile(r"EXPLORING \(D62\) since tick (\d+)")
+EXPLORE_OVER = re.compile(r"EXPLORE \(D62\) over")
 FAILURE_LOG_TAIL_LINES = 200
 
 
@@ -286,6 +289,7 @@ class FailFast:
         self.stalls = 0
         self.plan_failures = 0
         self.tick = 0
+        self.exploring_since = None
 
     def poll(self):
         if not self.log_file.exists():
@@ -308,6 +312,14 @@ class FailFast:
             m = MILESTONE_LINE.search(line)
             if m:
                 self.milestones.add(m.group(1))
+            m = EXPLORE_START.search(line)
+            if m:
+                self.exploring_since = int(m.group(1))
+            if EXPLORE_OVER.search(line):
+                self.exploring_since = None
+            limit = self.rules.get("exploring_minutes")
+            if limit and self.exploring_since is not None and self.tick - self.exploring_since > limit * 3600:
+                reason = reason or f"exploring for ore (D62) for over {limit} game-min since tick {self.exploring_since}"
             if STALL_LINE.search(line):
                 self.stalls += 1
                 if self.rules.get("stalls") and self.stalls >= self.rules["stalls"]:

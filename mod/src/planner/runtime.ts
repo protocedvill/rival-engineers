@@ -22,6 +22,7 @@ import { isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
+import { chunkKnown, KnownGround } from "../strategy/arms"
 import { countWork, findEntities } from "../work"
 
 export interface BuildState {
@@ -118,6 +119,8 @@ export interface StartPlanOptions {
   baseFaction?: string
   maxUnderground?: number
   topology?: string
+  /** D62: scan only this ground of the region (home zone, explored strips, charted chunks); all of it when unset. */
+  known?: KnownGround
 }
 
 /** Starts a layout job: scan the request's region, then place and route, all under the per-tick budgets. */
@@ -125,7 +128,12 @@ export function startPlan(o: StartPlanOptions): PlannerEntry {
   const p = planner()
   if (p.entries[o.id] !== undefined) error(`planner job ${o.id} exists`)
   const t = (o.terrain !== undefined ? storage.terrains?.[o.terrain] : undefined) ?? newTerrain(`plan:${o.id}`, o.surface, o.force)
-  requestArea(t, o.request.region)
+  const known = o.known
+  if (known !== undefined) {
+    const force = game.forces[o.force]
+    const surface = game.surfaces[o.surface]
+    requestArea(t, o.request.region, (cx, cy) => chunkKnown(cx, cy, known, (x, y) => force !== undefined && surface !== undefined && force.is_chunk_charted(surface, { x, y })))
+  } else requestArea(t, o.request.region)
   const entry: PlannerEntry = {
     id: o.id,
     surface: o.surface,

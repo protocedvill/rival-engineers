@@ -1,3 +1,4 @@
+import { LuaEntity, LuaForce, MapPosition } from "factorio:runtime"
 import { PathfinderWaypoint } from "factorio:runtime"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
 import { at, createLab, everyTickFor, itemCount, spawnEngineer } from "./lab"
@@ -198,6 +199,44 @@ describe("player-less character", () => {
       const researched = force.technologies["automation-science-pack"].researched
       log(`[spike] craft-item trigger (lab) after a player-less hand-craft: researched = ${researched}`)
       assert(!researched, "the engine fired the trigger: the crew's emulation (strategy/factory.ts) is no longer needed")
+    })
+  })
+  test("D62 finding: a powered radar charts for the player force but not for a force with no players", () => {
+    const surface = game.create_surface("d62-radar", { seed: 4242, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
+    const force = game.forces["d62-radar"] ?? game.create_force("d62-radar")
+    const setUp = (pos: MapPosition, f: LuaForce): LuaEntity => {
+      surface.request_to_generate_chunks(pos, 0)
+      surface.force_generate_chunk_requests()
+      for (const e of surface.find_entities_filtered({ area: [[pos.x - 6, pos.y - 6], [pos.x + 6, pos.y + 6]] })) if (e.type !== "resource") e.destroy()
+      const radar = surface.create_entity({ name: "radar", position: pos, force: f })!
+      const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: pos.x + 4, y: pos.y }, force: f })!
+      // A script-created interface makes nothing until told to.
+      eei.electric_buffer_size = 1e8
+      eei.power_production = 1e6
+      surface.create_entity({ name: "small-electric-pole", position: { x: pos.x + 2, y: pos.y - 1 }, force: f })
+      return radar
+    }
+    // Far from the surface's starting area: nothing generated there yet.
+    const a = { x: 1600.5, y: 1600.5 }
+    const b = { x: 1920.5, y: 1600.5 }
+    const ra = setUp(a, force)
+    setUp(b, game.forces.player)
+    const charted = (f: LuaForce, pos: MapPosition): number => {
+      let n = 0
+      const cx = math.floor(pos.x / 32)
+      const cy = math.floor(pos.y / 32)
+      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) if (f.is_chunk_charted(surface, { x: cx + dx, y: cy + dy })) n++
+      return n
+    }
+    after_ticks(60, () => assert(ra.energy > 0, `radar powered (energy ${ra.energy})`))
+    after_ticks(3600, () => {
+      const p = charted(game.forces.player, b)
+      const q = charted(force, a)
+      log(`[d62] nearby square after 60 s: player force ${p}/49 charted, player-less force ${q}/49 (players: ${force.players.length})`)
+      assert(p === 49, `the player force's radar charts its nearby square: ${p}/49`)
+      // D62 depends on this: if it changes, faction radars chart by themselves and the emulation is not needed.
+      assert(q === 0, `a player-less force's radar charted ${q}/49: the engine charts for it now`)
+      game.delete_surface(surface)
     })
   })
 })

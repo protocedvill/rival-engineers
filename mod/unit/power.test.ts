@@ -1,4 +1,4 @@
-import { labArray, miningOutpost, steamBlock } from "../src/modules/generators"
+import { labArray, miningOutpost, radarCell, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { ModuleDef } from "../src/modules/types"
 import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
@@ -196,6 +196,28 @@ test("unreachable consumer (walled in by water): reported, not crashing", () => 
   eq(job.phase, "done", "done")
   ok(job.failures.labs !== undefined, "failure recorded")
   eq(unpoweredModules(layout, F).join(","), "labs", "still unpowered")
+})
+
+test("D62: a radar outpost 400 tiles out gets a pole line along its explored strip, around a lake, never onto unknown ground", () => {
+  const layout = newLayout()
+  // Home zone x 0..119, y 400..519 (the steam block in it); the arm's strip runs north from it, x 30..94, to y -20.
+  place(layout, "steam", steam, 50, 460)
+  place(layout, "radar", radarCell(F, {}), 60, 0)
+  const blocks: Record<number, number> = {}
+  // A lake across most of the strip at y 200..230 (a gap on its west side), and scattered cliffs.
+  for (let y = 200; y <= 230; y++) for (let x = 40; x <= 94; x++) blocks[tkey(x, y)] = WATER
+  for (let y = 0; y < 400; y += 37) for (let x = 30; x <= 94; x += 11) blocks[tkey(x, y)] = CLIFF
+  const known = (x: number, y: number): boolean => (x >= 0 && x < 120 && y >= 400 && y < 520) || (x >= 30 && x <= 94 && y >= -20 && y < 400)
+  const view: TerrainView = { block: (x, y) => (!known(x, y) ? UNKNOWN : (blocks[tkey(x, y)] ?? FREE)), ore: () => undefined }
+  const job = polesNow(layout, view, F, POLICY)
+  eq(job.phase, "done", "done")
+  eq(unpoweredModules(layout, F).length, 0, `radar powered (${job.failures.radar ?? ""})`)
+  eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
+  const n = layout.poles?.length ?? 0
+  // About 460 tiles at up to 7.5 per hop, plus the detour: 62 at best.
+  ok(n >= 60 && n <= 90, `${n} poles`)
+  // 65 poles for about 75k work when written: less than a typical production plan.
+  ok(job.work < 300000, `work ${job.work}`)
 })
 
 run("power")

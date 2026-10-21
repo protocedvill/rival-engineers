@@ -36,6 +36,7 @@ import type { MeterState } from "./measure"
 import * as DS from "./design"
 import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKind, GoalSpec } from "./design"
 import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
+import * as EX from "./explore"
 export { parseStages } from "./stage"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
@@ -108,6 +109,8 @@ export interface FactoryGoal {
   /** B20: leftover-ghost rounds in a row that placed nothing, and the leftover count of the last round. */
   stuck?: number
   lastLeft?: number
+  /** D62: a radar outpost goal: where its radar goes, on which arm, and the strip the crew explores to get there. */
+  site?: { x: number; y: number; arm: number; step: number; strip: Rect }
 }
 
 export interface FactoryState {
@@ -172,6 +175,13 @@ export interface FactoryState {
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
+  /**
+   * D62: a search for ore past the home zone. `kind` goals wait while an outpost is built (`outpost`) and its radar's
+   * nearby square is charted (`scan`), then plan again (`retry`); a plan of that kind ends the search.
+   */
+  explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number }
+  /** D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. */
+  arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
 }
 
 declare global {
@@ -297,7 +307,9 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
-  radarGoal(ctx)
+  const hooks: EX.ExploreHooks = { busy: () => (planning(f) !== undefined ? "the current plan" : !built(f, "power") ? "power" : undefined), startRadar: (role, site) => startRadar(ctx, role, site) }
+  EX.baseRadar(ctx, hooks)
+  EX.exploreStep(ctx, hooks)
   advanceGoals(ctx, d)
   research(ctx, d)
   handFeed(ctx)
@@ -579,6 +591,11 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       f.siteRetry![spec.kind] = undefined
       log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53) over: planning ${spec.kind} goals again`)
     }
+    const held = EX.exploreHolds(ctx, spec.kind)
+    if (held !== undefined) {
+      ctx.waiting.push(held)
+      continue
+    }
     if (spec.kind === "grow") {
       if (startGrow(ctx, spec) === true) return
       continue
@@ -588,7 +605,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   }
 }
 
-function startGoal(ctx: Ctx, spec: GoalSpec): void {
+function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): void {
   const f = ctx.f
   const g: FactoryGoal = {
     id: `g${f.nextGoal++}`,
@@ -602,6 +619,7 @@ function startGoal(ctx: Ctx, spec: GoalSpec): void {
     createdTick: ctx.tick,
     placed: 0,
     rounds: 0,
+    site,
   }
   f.goals.push(g)
   planGoal(ctx, g)
@@ -839,14 +857,17 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     if (from === undefined || to === undefined) continue
     connections.push({ id: e.role, from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt })
   }
-  const r = g.radius
-  const region: Rect = { x: f.center.x - r, y: f.center.y - r, w: 2 * r, h: 2 * r }
+  // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
+  // with a mine every outpost's radar reach and strip.
+  const r = math.min(g.radius, EX.homeRadius(ctx))
+  const region = EX.planRegion(ctx, g, r)
   // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
   // retry is not the same plan again: the hub, then 24 tiles off it in turn (deterministic).
   const tries = g.attempts - 1 + MAX_PLAN_ATTEMPTS * failedBefore(f, g.kind)
   const offsets = [[0, 0], [24, 0], [0, 24], [-24, 0], [0, -24], [24, 24], [-24, -24], [24, -24], [-24, 24]]
   const off = offsets[tries % offsets.length]
-  const center = { x: f.center.x + off[0], y: f.center.y + off[1] }
+  // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
+  const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
   // D57 (c): patches earlier plans' mines found no room on.
   if (f.deadPatches !== undefined) request.deadPatches = { ...f.deadPatches }
@@ -869,7 +890,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     for (const id of f.graph.edgeOrder) if (f.graph.edges[id].kind === "belt" && f.graph.edges[id].from === p.id) sharedProducer = true
   }
   const topology = (f.taps !== undefined && next(f.taps)[0] !== undefined) || sharedProducer ? "splitter-tap" : undefined
-  RT.startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology })
+  RT.startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology, known: EX.knownGround(ctx, g) })
   g.plan = id
   g.status = "planning"
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) attempt ${g.attempts}: ${g.nodes.length} modules, ${connections.length} connections, region radius ${r}`)
@@ -999,6 +1020,14 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       g.reason = `replan after relocating ${moved}: ${g.reason}`
       return
     }
+    // D62: no free patch of an ore anywhere the faction knows: explore past the home zone with a radar outpost (on
+    // the last attempt, or at once while a search is on: the region already holds everything explored).
+    const [ore] = contest === undefined && g.site === undefined ? string.match(g.reason ?? "", "no free (%S+) patch in the region") : [undefined]
+    if (ore !== undefined && (g.attempts >= MAX_PLAN_ATTEMPTS || f.explore !== undefined)) {
+      g.status = "failed"
+      EX.exploreFor(ctx, g, ore)
+      return
+    }
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
       g.status = "failed"
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
@@ -1117,6 +1146,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
   const entry = RT.getPlannerEntry(g.plan!)!
   const job = entry.job!
+  EX.exploreDone(ctx, g)
   // With frame dumps on (soaks), every adopted plan's input too (before its layout becomes the base): plan-replay
   // fixtures for planner changes (D36 / B2).
   if (ctx.config.frameDumpIntervalTicks > 0) RT.exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
@@ -2012,29 +2042,14 @@ function tempFactories(ctx: Ctx): void {
   startGoal(ctx, { kind: "temp", nodes, edges: [], techs: [] })
 }
 
-/** D56: radar goals that may fail before the faction stops trying. */
-const RADAR_MAX_FAILED = 2
-/** D56: the radar module's graph role. */
-const RADAR_ROLE = "radar"
-
-/**
- * D56 (user, 2026-10-20): once power is built and the radar can be made, one radar module goes up at the base, planned
- * and powered like any module. It is for realism: plans keep using the chunks the planner explores.
- */
-function radarGoal(ctx: Ctx): void {
-  const f = ctx.f
-  if (!ctx.config.factoryRadar || planning(f) !== undefined || activeGoal(f, "radar") !== undefined || !built(f, "power")) return
-  if (LG.nodeByRole(f.graph, RADAR_ROLE) !== undefined || lastOf(f, "radar")?.status === "done") return
-  let failed = 0
-  for (const g of f.goals) if (g.kind === "radar" && g.status === "failed") failed++
-  if (failed >= RADAR_MAX_FAILED) return
+/** D56 / D62: starts a radar goal (the base radar, or an outpost at `site`); returns its id. */
+function startRadar(ctx: Ctx, role: string, site?: FactoryGoal["site"]): string {
   const radar = ctx.entities.radar ?? "radar"
-  if (ctx.force.recipes[prototypeFacts.recipeForItem(radar) ?? radar]?.enabled !== true) return
   const params = { radar }
   const def = makeModule("radar", params)
-  const node: DesignNode = { role: RADAR_ROLE, kind: "sink", generator: "radar", params, def, item: radar, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
-  log(`[rival-engineers] faction ${ctx.faction.name}: D56 radar goal`)
-  startGoal(ctx, { kind: "radar", nodes: [node], edges: [], techs: [] })
+  const node: DesignNode = { role, kind: "sink", generator: "radar", params, def, item: radar, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
+  startGoal(ctx, { kind: "radar", nodes: [node], edges: [], techs: [] }, site)
+  return `g${ctx.f.nextGoal - 1}`
 }
 
 /** Deconstructs a temporary cell (its small poles stay) and drops its node; its layout footprint stays reserved. */
