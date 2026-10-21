@@ -194,6 +194,8 @@ export interface Config {
   /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
   factoryPowerFuelMinutes: number
   factorySiteRetryMinutes: number
+  /** B54: Job Board priority of electric-pole place jobs in factory builds (above every other job: power first). */
+  factoryPowerBuildPriority: number
   /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
   factoryFuelFallback: boolean
   /** D56: place one radar at the base once power is built (for realism; plans never depend on it). */

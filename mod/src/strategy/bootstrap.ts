@@ -1216,6 +1216,9 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   let affordable = math.huge
   for (const r in one.raw) affordable = math.min(affordable, math.floor(math.max(0, ctx.stock[r] ?? 0) / one.raw[r]))
   const chunk = math.max(1, math.min(math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)), affordable))
+  // B54 (user decision 2026-10-21): poles for a power network are crafted first, like their place jobs.
+  const placed = prototypes.item[item]?.place_result
+  const priority = placed?.type === "electric-pole" ? math.max(PRIORITY.craft, ctx.config.factoryPowerBuildPriority) : PRIORITY.craft
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n
@@ -1231,7 +1234,7 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
         kind: "craft",
         pos: ctx.depot?.position ?? ctx.brain.hub ?? ctx.brain.base,
         materials,
-        priority: PRIORITY.craft,
+        priority,
         payload: { kind: "craft", recipe: recipeName, count: n, item, deliverTo: ctx.depot },
       },
       ctx.tick,

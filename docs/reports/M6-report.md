@@ -1618,3 +1618,61 @@ power goal on its waterless lab. Coal-pair test 928 → 70 s.
 | Lab fuel priming | `test/modules.test.ts` `PRIME_FUEL` | 5 coal per burner machine | The lab's existing refuel amount. Test only. | no |
 | Cold-start validation | `test/modules.test.ts` `COLD_START` | `smelter iron 12` | The column size the AI builds; the hoarding shows most there. Test only. | no |
 
+
+## M6b.27: profiled soak, B54 power gaps, B55 mine output pole, B56 stale route belts (2026-10-21)
+
+**Profiling fix (008ac34).** The first profiled soak logged no `[re-profile]` lines: `telemetry.ts` imported the
+exported `let partProfilers` by name, which TSTL compiles to a load-time copy (always nil). It reads it through the
+module now; `soak.py` prints each seed's top three subsystems and warns (stdout and scorecard) when a seed logged AI
+time but no profile lines. Not fixed: the `telemetry` part itself is never logged (the write swaps the profilers while
+its own part is being timed).
+
+**Soak `m6-prof`** (82ebc36 + 008ac34, `m6.toml`, seeds 3333, 6666666, 98765, `-j 3`, `--snapshots 20`,
+`--no-fail-fast`; ms/tick inflated by -j 3):
+
+| Seed | Result | Game min | Science at the end (red/green per min) | AI ms/tick | Top subsystems (ms/tick avg) | Planner worst minute |
+|---|---|---|---|---|---|---|
+| 98765 | **v1-done 198.7** (sustained 153) | 199 | ~36 / ~36 | 3.91 | crew 2.31, planner 0.53, brain 0.42 | 23.9 ms/tick @97 |
+| 3333 | stopped at 186 (diagnosis) | 186 | ~10 / ~11 | 3.74 | crew 1.80, planner 0.80, brain 0.43 | 44.4 @149 |
+| 6666666 | stopped at 171 (diagnosis) | 171 | ~8 / ~8 | 4.33 | crew 1.68, planner 1.57, brain 0.41 | 92.4 @115 |
+
+On both stopped seeds cluster 1 ran at its design rate (~11 + 11/min) and clusters 2 and 3 delivered almost nothing.
+Planner spikes coincide with failing or long plans for new clusters and a replacement mine. Crew time grows with the
+base (0.24 → ~2 ms/tick).
+
+**Diagnosis** (graph and entity dumps every 10 game-min, a probe of the min-100/160 saves via `--helper-lua`):
+
+1. **B54, power gaps (both seeds).** Seed 3333: g16 (~98 min) evicted the 4 poles linking cluster 2's iron mine n28
+   (B37) and re-laid them as ghosts; they were built ~130 min. Seed 6666666: g15 did the same to the mall's iron mine
+   n25 (~85 → ~110 min). The reconciler's repair found "nothing missing" (the poles were another goal's ghosts).
+2. **B55, a mine completion's pole on its own output (seed 6666666).** Probe of the min-100 save: tile (-42,-356), the
+   out port's outside tile and the mall route's first tile, is `occ:m:n25`; a small-pole ghost stands on it. The D52
+   pole placer gets a one-tile perimeter ring and nothing kept that tile free; B25 let the route give way. Repair g17:
+   BUILD STUCK, `cannot-place transport-belt at -41.5,-355.5`, 11 rounds. Mall and cluster 2 starved from ~110 min.
+3. **B56, a reroute's old belts (seed 3333).** g17 re-planned n39 → n37 (coal) after n27's relocation; the new route
+   goes under a copper belt with an underground exit at (442,-47), where the old copy's belt still stood (and another
+   old belt at (442,-48)). The exit's ghost was never created; n37 unfuelled 100% from ~150 min; three repairs failed.
+
+Other observations, not acted on: seed 3333's cluster-2 iron mine was worked out ~10 game-min after it got power (D55
+found 7 ore tiles under its drills); `coal>power short (1/3.48): cannot grow` is in every seed's waiting list,
+including the passing one.
+
+**Fixes** (the user, in-session 2026-10-21: "for the power problem, make placing any new power networks the first
+priority. 2, 3 go with recommended fix"):
+
+- **B54 / D61:** `addPlaceJob` gives a factory build's electric-pole place jobs `factory-power-build-priority` (150,
+  never below the build's own); the bootstrap's hand-crafts of poles get it too. T2 `jobs` "B54". Gathering the raw
+  materials (wood, copper) keeps its own priority.
+- **B55:** `materializeMinePlan` blocks the out port's outside tile for both stages' poles; `tryExpand` refuses a
+  completion whose full plan (from an older save) covers it. T1 `mine-plan` "B55" (2: a sweep of patch shapes, rows
+  and consumer sides that hit it before the fix — 9×8 patch, 4 rows, consumer north — and the completion guard).
+- **B56:** `conflicts.ts` `staleUnderRoutes` / `staleBeltsUnder`: a build's clear phase picks up the faction's own
+  belts, undergrounds and splitters on its routes' tiles that are not the planned piece (another kind or place, or the
+  same belt facing another way); `checkBuild` reports them as `stale` and the repair picks them up, then places the
+  planned piece. T2 `conflicts` "B56".
+
+### Magic numbers for the user (M6b.27)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Power build priority | `jobs/faction.ts` `addPlaceJob`, `strategy/bootstrap.ts` `craft` (D61) | 150 | Above every other job (bootstrap fuel 100, build 90), as the user asked; any value above 100 does the same today. | yes (`factory-power-build-priority`, new) |

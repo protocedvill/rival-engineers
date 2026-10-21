@@ -11,7 +11,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
-import { tkey, Vec } from "./grid"
+import { keyX, keyY, tkey, Vec } from "./grid"
 import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
 import { removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
@@ -36,6 +36,35 @@ export interface BuildCheck {
    * way (another goal's stale copy of a rerouted route turned it): pick it up, then place the planned one.
    */
   misdirected: { spec: EntitySpec; entity: LuaEntity }[]
+  /**
+   * B56: planned route pieces with no own entity or ghost, standing on the faction's own belt pieces of another kind
+   * or place (an older copy of a rerouted connection): the ghost can't be created over them. Pick them up, then place.
+   */
+  stale: { spec: EntitySpec; entities: LuaEntity[] }[]
+}
+
+const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
+
+/**
+ * B56: the faction's own belts, undergrounds and splitters on `e`'s tiles that are not `e` itself (seed 3333: a reroute
+ * planned an underground exit where the old copy's belt still stood, so its ghost was never created and the coal never
+ * arrived; repairs failed on the same ghost forever).
+ */
+export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<number, boolean> = {}
+  for (const k of specTiles(e)) {
+    const x = keyX(k)
+    const y = keyY(k)
+    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: BELT_TYPES, force })) {
+      if (b.unit_number === undefined || seen[b.unit_number]) continue
+      seen[b.unit_number] = true
+      // The planned piece itself (B52's misdirected check handles a wrong direction of the same name).
+      if (b.name === e.name && b.position.x === e.x && b.position.y === e.y) continue
+      out.push(b)
+    }
+  }
+  return out
 }
 
 /** Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side). */
@@ -77,11 +106,35 @@ function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
   return "pole"
 }
 
+/**
+ * B56: before a build stamps its routes, the faction's own belt pieces on their tiles that are not the planned piece
+ * (another kind, another place, or the same belt facing another way): the ghost could not be created over them.
+ */
+export function staleUnderRoutes(surface: LuaSurface, force: string, layout: LayoutState, routes: string[]): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<number, boolean> = {}
+  const push = (e: LuaEntity): void => {
+    if (e.unit_number === undefined || seen[e.unit_number]) return
+    seen[e.unit_number] = true
+    out.push(e)
+  }
+  for (const e of partEntities(layout, { modules: [], routes, poles: [] })) {
+    if (ownBuilt(surface, force, e) !== undefined) {
+      const wrong = ownMisdirected(surface, force, e)
+      if (wrong !== undefined) push(wrong)
+      continue
+    }
+    for (const b of staleBeltsUnder(surface, force, e)) push(b)
+  }
+  return out
+}
+
 /** Checks `parts` of `layout` against the world (see the file comment). */
 export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
   const misdirected: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const stale: { spec: EntitySpec; entities: LuaEntity[] }[] = []
   const seen: Record<string, boolean> = {}
   for (const e of partEntities(layout, parts)) {
     if (only !== undefined && !only(e)) continue
@@ -91,7 +144,11 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
       continue
     }
     const ghost = ownGhost(surface, force, e)
-    if (ghost === undefined) missing.push(e)
+    if (ghost === undefined) {
+      const under = layout.routes[e.owner] !== undefined ? staleBeltsUnder(surface, force, e) : []
+      if (under.length > 0) stale.push({ spec: e, entities: under })
+      else missing.push(e)
+    }
     if (seen[e.owner]) continue
     const foreign = foreignEntitiesOn(surface, force, specTiles(e))
     if (foreign.length === 0) continue
@@ -99,7 +156,7 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
     const b = foreign[0]
     conflicts.push({ kind: partKind(layout, e.owner), id: e.owner, blocker: `${b.name === "entity-ghost" ? `${b.ghost_name} ghost` : b.name} of ${b.force.name}`, at: { x: e.x, y: e.y } })
   }
-  return { missing, conflicts, misdirected }
+  return { missing, conflicts, misdirected, stale }
 }
 
 /**

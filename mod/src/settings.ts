@@ -818,6 +818,15 @@ data.extend([
   },
   {
     type: "int-setting",
+    name: Settings.factoryPowerBuildPriority,
+    setting_type: "runtime-global",
+    default_value: 150,
+    minimum_value: 0,
+    maximum_value: 1000,
+    order: "j-gb",
+  },
+  {
+    type: "int-setting",
     name: Settings.factoryPowerFuelMinutes,
     setting_type: "runtime-global",
     default_value: 10,

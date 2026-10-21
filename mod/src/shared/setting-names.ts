@@ -95,6 +95,7 @@ export const Settings = {
   buildStuckRounds: "rival-engineers-build-stuck-rounds",
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",
   factorySiteRetryMinutes: "rival-engineers-factory-site-retry-minutes",
+  factoryPowerBuildPriority: "rival-engineers-factory-power-build-priority",
   factoryFuelFallback: "rival-engineers-factory-fuel-fallback",
   factoryRadar: "rival-engineers-factory-radar",
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",

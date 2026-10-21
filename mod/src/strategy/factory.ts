@@ -1765,13 +1765,15 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
     for (const s of own.missing) check.missing.push(s)
   }
-  if (check.missing.length === 0 && check.misdirected.length === 0) {
+  if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0) {
     say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
     return
   }
   // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
+  // B56: so are the faction's own stale belt pieces standing where a missing route piece goes.
   const clearJobs: number[] = []
   for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
+  for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
   const g: FactoryGoal = {
     id: `g${f.nextGoal++}`,
@@ -1787,10 +1789,11 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     placed: 0,
     rounds: 0,
     reason: r.why,
-    growBuild: { phase: clearJobs.length > 0 ? "clear" : "place", clearJobs, add: check.misdirected.map((w) => w.spec), ghosts: d.ghosts, placeJobs: d.placeJobs },
+    growBuild: { phase: clearJobs.length > 0 ? "clear" : "place", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec)], ghosts: d.ghosts, placeJobs: d.placeJobs },
   }
   f.goals.push(g)
-  const turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
+  let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
+  if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
   say(`goal ${g.id} re-places ${check.missing.length} entities${turned}${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
 }
 

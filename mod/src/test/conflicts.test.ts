@@ -6,7 +6,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, staleUnderRoutes } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -219,6 +219,39 @@ describe("faction conflicts", () => {
       if (s.find_entities_filtered({ ghost_name: e.name, position: { x: e.x, y: e.y }, force: a.force, limit: 1 })[0] !== undefined) stray++
     }
     assert(stray === 0, `${stray} old route pieces left`)
+  })
+
+  test("B56: own stale belt pieces on a route's tiles are found, picked up, and the planned pieces then placed", () => {
+    // Seed 3333 (m6-prof, 2026-10-21): a reroute planned an underground exit where the old copy's belt still stood. Its
+    // ghost was never created, the coal fell into the underground entrance with no exit, and every repair failed on it.
+    const lab = createLab(64)
+    const a = faction(lab, "stale", 30, 0)
+    const s = lab.surface
+    const { layout, ghosts } = smeltingLab(lab, a.force)
+    revive(ghosts)
+    const specs = partEntities(layout, { modules: [], routes: ["route:ore"], poles: [] }).filter((e) => e.name === "transport-belt")
+    assert(specs.length > 10, `${specs.length} belts`)
+    // One planned belt replaced by an own underground (another kind), another turned the wrong way (B52's case).
+    const kind = specs[5]
+    const turn = specs[8]
+    s.find_entities_filtered({ name: "transport-belt", position: { x: kind.x, y: kind.y }, force: a.force })[0].destroy()
+    const ug = s.create_entity({ name: "underground-belt", position: { x: kind.x, y: kind.y }, direction: kind.dir as never, type: "output", force: a.force })!
+    assert(ug !== undefined, "stale underground placed")
+    const turned = s.find_entities_filtered({ name: "transport-belt", position: { x: turn.x, y: turn.y }, force: a.force })[0]
+    turned.direction = ((turn.dir + 8) % 16) as never
+    const check = checkBuild(s, a.force, layout, allParts(layout))
+    assert(check.stale.length === 1 && check.stale[0].entities[0] === ug, `stale ${serpent.line(check.stale.map((x) => x.spec))}`)
+    assert(check.missing.length === 0, `the piece under the stale underground is not plain missing (${check.missing.length})`)
+    assert(check.misdirected.length === 1, `misdirected ${check.misdirected.length}`)
+    const under = staleUnderRoutes(s, a.force, layout, ["route:ore"])
+    assert(under.length === 2 && under.indexOf(ug) >= 0 && under.indexOf(turned) >= 0, `stale under the route: ${under.length}`)
+    // The crew picks them up; then the planned pieces go in and the route connects again.
+    for (const e of under) e.destroy()
+    const d = applyDiff(s, a, [], [check.stale[0].spec, check.misdirected[0].spec], {})
+    assert(d.failed.length === 0, `ghosts: ${d.failed.join("; ")}`)
+    revive(d.ghosts)
+    const broken = followRoute(s, layout, layout.routes["route:ore"])
+    assert(broken === undefined, `route connects again: ${broken}`)
   })
 
   test("a module whose ground another force took is given up: built entities deconstructed, parts dropped", () => {

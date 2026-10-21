@@ -5,6 +5,7 @@
 // The Factory Graph of a plan is exported to JSON for tools/render (D29).
 
 import { evictableTiles } from "../strategy/evict"
+import { staleUnderRoutes } from "./conflicts"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { getConfig } from "../config"
 import { getJob } from "../jobs/board"
@@ -426,7 +427,18 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
   // B15: entities of evicted bootstrap sites under the plan.
   for (const e of opts.clear ?? []) if (e.valid) clearJobs.push(addClearJob(faction, e, opts.priority))
   // B19: a new splitter tap on a built route replaces that route's belt: pick the belt up first.
-  for (const e of tappedBelts(surface, entry.job.layout, opts.parts, faction.force)) clearJobs.push(addClearJob(faction, e, opts.priority))
+  const queued: Record<number, boolean> = {}
+  for (const e of tappedBelts(surface, entry.job.layout, opts.parts, faction.force)) {
+    if (e.unit_number !== undefined) queued[e.unit_number] = true
+    clearJobs.push(addClearJob(faction, e, opts.priority))
+  }
+  // B56: the faction's own stale belt pieces on the new routes' tiles (an older copy of a rerouted connection).
+  if (opts.parts !== undefined) {
+    for (const e of staleUnderRoutes(surface, faction.force, entry.job.layout, opts.parts.routes)) {
+      if (e.unit_number !== undefined && queued[e.unit_number]) continue
+      clearJobs.push(addClearJob(faction, e, opts.priority))
+    }
+  }
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
   return entry.build
 }

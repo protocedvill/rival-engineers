@@ -162,6 +162,10 @@ export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: Pl
   const proto = ghost.ghost_prototype as LuaEntityPrototype
   const toPlace = proto.items_to_place_this?.[0]
   if (!toPlace) return undefined
+  // B54 (user decision 2026-10-21): a factory build's poles come before everything else. A build that re-lays a pole
+  // line has already picked up the old one, so every module it powered waits on these poles.
+  let priority = options.priority
+  if (priority !== undefined && proto.type === "electric-pole") priority = math.max(priority, getConfig().factoryPowerBuildPriority)
   const job = addJob(
     faction.board,
     {
@@ -170,7 +174,7 @@ export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: Pl
       footprint: tileRect(ghost.bounding_box),
       materials: [{ item: toPlace.name, count: 1 }],
       deps: options.deps,
-      priority: options.priority,
+      priority,
       payload: { kind: "place", item: toPlace.name, entity: proto.name, position: ghost.position, direction: ghost.direction, ghost, ghostKey: key },
     },
     game.tick,

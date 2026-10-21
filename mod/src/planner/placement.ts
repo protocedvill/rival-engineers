@@ -1373,9 +1373,15 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
     // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
     // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
     // would be stricter than the planning-time one that accepted them.)
+    // B55: the tile its output route starts on is never the mine's, whatever B25 lets give way (a full plan made
+    // before the fix could put a pole there).
+    const fullOut = m.minePlan.full.ports.find((p) => p.id === "out")
+    const outside = fullOut !== undefined ? portOutside(m, fullOut) : undefined
     for (const e of m.minePlan.full.entities) {
       if (current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)]) continue
       const er = entityRect(e, facts)
+      if (outside !== undefined && outside.x >= m.origin.x + er.x && outside.x < m.origin.x + er.x + er.w && outside.y >= m.origin.y + er.y && outside.y < m.origin.y + er.y + er.h)
+        return { ok: false, reason: `planned mine covers its output at ${outside.x},${outside.y}`, movedPorts: [], moved: [] }
       for (let x = m.origin.x + er.x; x < m.origin.x + er.x + er.w; x++) {
         for (let y = m.origin.y + er.y; y < m.origin.y + er.y + er.h; y++) {
           const kk = tkey(x, y)

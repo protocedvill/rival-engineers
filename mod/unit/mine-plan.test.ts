@@ -2,7 +2,7 @@ import { EntityFacts } from "../src/modules/facts"
 import { miningOutpost } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { EAST, NORTH, SOUTH, WEST } from "../src/modules/types"
-import { entityRect } from "../src/modules/geometry"
+import { entityRect, portOutsideTile } from "../src/modules/geometry"
 import { partEntities } from "../src/planner/build-list"
 import { FREE, keyX, keyY, Rect, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { commitModule, modulesOnTiles, newLayout, PlacedModule } from "../src/planner/layout"
@@ -223,6 +223,68 @@ test("B21 an incomplete stage's poles never stand on the complete plan's belt pa
     }
     ok(poles > 0, "the partial stage has a power network")
   }
+})
+
+test("B55: no stage of a whole-patch mine stands on the tile its output belt leaves through", () => {
+  // Seed 6666666 (m6-prof, 2026-10-21): completing the mall's partial iron mine put a small pole on the tile just
+  // outside its out port (inside the mine's rect: the pole placer gets a one-tile perimeter ring), where the built
+  // output route started. B25 lets own routes on the mine's own tiles give way, so the completion picked the belt up,
+  // the repair could never re-place it, and the mall and a green cluster starved for the rest of the run.
+  let checked = 0
+  let failures = 0
+  for (const w of [9, 12, 15, 21]) {
+    for (const h of [8, 12, 20]) {
+      const region = { x: 0, y: 0, w: 80, h: 80 }
+      const inside = (x: number, y: number): boolean => x >= 20 && x < 20 + w && y >= 20 && y < 20 + h
+      const view = terrain(region, (x, y) => (inside(x, y) ? "iron-ore" : undefined))
+      const patch = connectedPatch(view, "iron-ore", [{ x: 21, y: 21 }], region)
+      if (patch === undefined) continue
+      const plan = planWholePatch(view, patch, DRILL)
+      if (plan.drills.length < 2) continue
+      for (const rows of [2, 4]) {
+        const base = miningOutpost(F, { resource: "iron-ore", rows, sides: 1 })
+        for (const near of [{ x: -50, y: 30 }, { x: 150, y: 30 }, { x: 30, y: -50 }, { x: 30, y: 150 }]) {
+          const stages = materializeMinePlan(base, plan, F, near)
+          if (stages === undefined) continue
+          for (const def of [stages.initial, stages.full]) {
+            const out = portOutsideTile(def.ports[0])
+            const ox = math.floor(out.x)
+            const oy = math.floor(out.y)
+            for (const e of def.entities) {
+              const r = entityRect(e, F)
+              if (ox >= r.x && ox < r.x + r.w && oy >= r.y && oy < r.y + r.h) {
+                failures++
+                if (failures <= 5) ok(false, `${w}x${h} rows=${rows} near ${near.x},${near.y}: ${e.name} at ${e.x},${e.y} on the out port's outside tile ${ox},${oy}`)
+              }
+            }
+            checked++
+          }
+        }
+      }
+    }
+  }
+  eq(failures, 0, `entities on an out port's outside tile (${checked} stages checked)`)
+  ok(checked >= 60, `${checked} stages checked`)
+})
+
+test("B55: a completion whose full plan covers its own output tile is refused", () => {
+  // A full plan made before the B55 fix (an old save) can still hold a pole on the out port's outside tile.
+  const region = { x: 0, y: 0, w: 100, h: 80 }
+  const view = terrain(region, (x, y) => (x >= 20 && x < 56 && y >= 18 && y < 58 ? "iron-ore" : undefined))
+  const policy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const, searchRadii: [0] }
+  const raw = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), rotatable: false, mirrorable: false }
+  const state = newLayout()
+  const placed = placeNow({ id: "mine", def: raw, targets: {}, center: { x: 25, y: 25 }, region }, state, view, policy)
+  eq(placed.phase, "done", `small placement (${placed.reason})`)
+  const m = placed.result!
+  prepareWholePatchPlacement(m, view, F, region, policy)
+  ok(m.minePlan !== undefined, "whole-patch plan attached")
+  commitModule(state, m, F, policy.corridor.preferred)
+  const out = portOutsideTile(m.minePlan!.full.ports[0])
+  m.minePlan!.full = { ...m.minePlan!.full, entities: [...m.minePlan!.full.entities, { name: "small-electric-pole", x: math.floor(out.x) + 0.5, y: math.floor(out.y) + 0.5 }] }
+  const r = tryExpand(state, view, F, policy, "mine", 1)
+  ok(!r.ok, "completion refused")
+  ok(string.find(r.reason ?? "", "covers its output", 1, true)[0] !== undefined, `reason: ${r.reason}`)
 })
 
 run("mine-plan")

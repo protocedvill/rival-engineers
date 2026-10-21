@@ -84,6 +84,7 @@ Two layers, by analogy:
 | D58 | Long routes and the planner budget (2026-10-20, user decision, approved in-session) | Shown that seed 3333's far-mine routes took ~3.6M router expansions, the user chose: "Let's do two-level routing for long distances and do (3), but in a flexible way where any planning entry can take the entire mod's budget if there is nothing competing. Otherwise, they share." (1) A connection whose ends are `longRoute` (128) tiles or more apart is routed over `coarseCell` (8) tile cells first, then tile by tile inside a corridor of those cells (`corridorCells` 1 around the path, one more at the ends) with a weighted heuristic (`corridorWeight` 1.5); with no way through the corridor, the whole window is searched. (2) `planner-work-per-tick` is the whole mod's planner budget: the plans running share it equally, work one leaves passes to the next, and one plan alone gets all of it (default raised 100 → 400). |
 | D59 | Soft-claim cost by growth unit (2026-10-20, user decision, approved in-session) | B52: a route crossed the steam block's next growth unit for 0.5 a tile. The user: "I would set it to 10 or so depending on testing which can be done later. What would be even better, is have it diminish a bit every after every single expansion unit, so there more incentive to not block the most immediate and closest to expansion units." The router's soft-claim cost (`planner-router-soft-claim`) defaults to **10** (was 0.5, D50) for a tile in another module's next growth unit, multiplied by `planner-router-soft-claim-decay` for each unit farther out. The decay's default **0.5** is the agent's choice from a replay sweep (proposed; the user asked for "a bit"): an underground crossing pays only its ends, and on seed 3333's g20 replay 10 / 0.55–0.8 still put 4 underground ends in the next unit. Placement's soft-claim weight is unchanged. |
 | D60 | Site-retry pause (2026-10-20, user decision, approved in-session) | B53: a goal whose module finds no site in its region (e.g. no shore for a steam block) failed all its plans and an identical goal started at once, forever, spinning the planner. Proposed a back-off; the user: "Yeah the 5 minute backoff is fine" and "it should also log pretty clearly so we aren't surprised later". After a goal fails all its plans with "no … site in the region", goals of its kind wait `factory-site-retry-minutes` (default **5**, 0 = retry at once); the pause and its end are logged as "SITE RETRY PAUSE (B53)" and shown in the factory's waiting list. |
+| D61 | Power first (2026-10-21, user decision, approved in-session) | B54: a goal that re-laid a built module's pole line placed the new poles among its other work and left the module unpowered for 25–30 game-min. The user: "make placing any new power networks the first priority". A factory build's electric-pole place jobs (new, re-laid and module poles) and hand-crafts of poles get `factory-power-build-priority` (default **150**; the bootstrap's highest is fuel 100), never below the build's own priority. |
 
 ## 3. v1 Definition of Done
 
@@ -445,7 +446,7 @@ Default to configurable (D18). Settings live in three places:
   `planner-placement-growth-blocked` (3).
 - **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
   `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10),
-  `factory-site-retry-minutes` (5, D60).
+  `factory-site-retry-minutes` (5, D60), `factory-power-build-priority` (150, D61).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
   `module-buffer-slots` (2, D51), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
   = none), `bootstrap-factory-wait-seconds` (60), `bootstrap-temp-cell-feed-priority` (40, B18; 0 = off),
@@ -908,6 +909,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 ## Changelog
 
 - v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
+- v0.28 (2026-10-21, user decision in-session): D61 (a factory build's poles are placed and crafted before every other job).
 - v0.27 (2026-10-20, user decision in-session): D60 (a goal with no site in its region pauses its kind for 5 game-minutes, logged).
 - v0.26 (2026-10-20, user decision in-session): D59 (router soft-claim cost 10 next to a module, lower for each growth unit farther out).
   The router's seal check (a cost-free flood from both ends that proves "no path" when one end is boxed in) is the

@@ -8,7 +8,7 @@
 import { finalizeModule } from "../modules/build"
 import { EntityFacts, ProtoFacts } from "../modules/facts"
 import { laneCapacity } from "../modules/generators"
-import { entityRect, tileKey } from "../modules/geometry"
+import { entityRect, portOutsideTile, tileKey } from "../modules/geometry"
 import { placePoles } from "../modules/poles"
 import { EAST, ModuleDef, ModuleEntity, NORTH, Port, SOUTH, WEST } from "../modules/types"
 import { OWN, Rect, rectContains, TerrainView, tkey, Vec } from "./grid"
@@ -483,13 +483,19 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     const r = entityRect(e, facts)
     for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) futureBlocked[tileKey(x, y)] = true
   }
+  // B55: the out port's outside tile lies in the poles' perimeter ring, and the output route starts there: no pole of
+  // either stage may take it (seed 6666666: the completion's pole picked the built route's first belt up for good).
+  const outPort: Port = { id: "out", kind: "belt-out", pos: output, dir: alongDir(plan.axis, alongSign), item: facts.resourceProduct(plan.patch.resource) }
+  const outside = portOutsideTile(outPort)
+  const outsideKey = tileKey(math.floor(outside.x), math.floor(outside.y))
+  futureBlocked[outsideKey] = true
   const initialPoles = pole !== undefined ? placePoles(footprint, [...initialInfrastructure, ...initialDrills], facts, pole, futureBlocked) : []
   for (const e of initialPoles) initialInfrastructure.push(e)
   if (pole !== undefined) {
     for (const e of initialPoles) normInfra.push(e)
-    for (const e of placePoles(footprint, [...normInfra, ...normDrills], facts, pole)) normInfra.push(e)
+    for (const e of placePoles(footprint, [...normInfra, ...normDrills], facts, pole, { [outsideKey]: true })) normInfra.push(e)
   }
-  const ports: Port[] = [{ id: "out", kind: "belt-out", pos: output, dir: alongDir(plan.axis, alongSign), item: facts.resourceProduct(plan.patch.resource) }]
+  const ports: Port[] = [outPort]
   const firstPole = initialInfrastructure.find((e) => e.name === pole)
   if (firstPole !== undefined) ports.push({ id: "power", kind: "power", pos: { x: firstPole.x, y: firstPole.y }, dir: NORTH })
   const make = (id: string, entities: ModuleEntity[]): ModuleDef => finalizeModule({

@@ -2,7 +2,7 @@ import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob } from "../jobs/board"
-import { addClearJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
+import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { setAiProfiler } from "../profiling"
 import { at, createLab, itemCount, Lab } from "./lab"
@@ -166,6 +166,25 @@ describe("job board", () => {
     clearConfigOverrides()
     const config = getConfig()
     assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+  })
+
+  test("B54: a factory build's pole place jobs come before every other job (power first)", () => {
+    // Seeds 3333 and 6666666 (m6-prof, 2026-10-21): a goal re-laid a built module's pole line and placed the new poles
+    // at build priority among its other work: the module had no power for 25-30 game-minutes.
+    const lab = createLab(24)
+    const faction = createFaction(newFactionName("power-first"), { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    faction.paused = true
+    const ghost = (name: string, x: number): LuaEntity =>
+      lab.surface.create_entity({ name: "entity-ghost", inner_name: name, position: at(lab, x, 4), force: faction.force })!
+    const pole = addPlaceJob(faction, ghost("small-electric-pole", 0.5), { priority: 90 })!
+    const belt = addPlaceJob(faction, ghost("transport-belt", 3.5), { priority: 90 })!
+    const loose = addPlaceJob(faction, ghost("small-electric-pole", 6.5), {})!
+    assert(faction.board.jobs[pole].priority === getConfig().factoryPowerBuildPriority, `a build's pole: ${faction.board.jobs[pole].priority}`)
+    assert(faction.board.jobs[belt].priority === 90, `a build's belt keeps the build priority: ${faction.board.jobs[belt].priority}`)
+    assert(faction.board.jobs[loose].priority === 0, `a pole outside a factory build (no priority) is unchanged: ${faction.board.jobs[loose].priority}`)
+    setConfigOverride("factoryPowerBuildPriority", 40)
+    const low = addPlaceJob(faction, ghost("small-electric-pole", 9.5), { priority: 90 })!
+    assert(faction.board.jobs[low].priority === 90, `never below the build's own priority: ${faction.board.jobs[low].priority}`)
   })
 
   test("two crew jointly build a 40-entity ghost layout from a stockpile", () => {
