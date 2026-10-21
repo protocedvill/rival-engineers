@@ -872,11 +872,15 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   generate the chunks of its search region, which is free exploration), or the radar only adds to that; (b) whether
   one radar goes up early at the base or only when the home fields run low.
 - **P43, faction radars don't chart (proposed, 2026-10-21; blocks D62):** in 2.0 a radar charts nothing for a force
-  with no players. Options: (a) emulate the radar: each powered faction radar charts its nearby square through
-  `force.chart` and one sector-scan chunk per `energy_per_sector` worth of its power, nearest first (game data);
-  (b) keep our own record of the chunks a powered faction radar covers, without charting; (c) count an outpost's
-  whole reach as explored once its radar is powered. Agent's lean: (a), which also shows the faction's map to an
-  observer.
+  with no players: no chart, no chunk generation, and `force.chart` only marks chunks requested. The radar still runs
+  its sector scan: `on_sector_scanned` fires for it at the normal rate (one chunk per ~33 s at full power), nearest
+  chunks first. Options: (a) **use the scan event**: each `on_sector_scanned` of a faction radar generates and scans
+  that chunk into the faction's terrain as explored, and the nearby square counts as explored once the radar is
+  powered (the engine paces it, so it is as slow as a real radar); (b) emulate the whole radar in script (our own
+  timer per radar, nearest-first order); (c) count an outpost's whole reach as explored once its radar is powered.
+  None of them shows the faction's map to an observer (charting needs a player on the force). Agent's lean: (a). Not
+  measured yet: whether the scan moves outward over time when its chunks never get charted (5 scans in 3 game-min
+  stayed within 1 chunk of the radar).
 - **P42, faster mine site search (resolved → D57, 2026-10-20):** a mine's placement now goes on from a dead ore
   site to the next one (B50), but each site still costs a window search of up to ~430² tiles, 4 plan attempts per
   goal (seed 3333: ~200 s wall per attempt). Proposed: (a) a per-faction **patch index** (connected patches from

@@ -201,6 +201,81 @@ describe("player-less character", () => {
       assert(!researched, "the engine fired the trigger: the crew's emulation (strategy/factory.ts) is no longer needed")
     })
   })
+  test("D62 finding: a player-less force's radar still sector-scans (events fire) but charts and generates nothing, even through force.chart", () => {
+    async(3600 * 4)
+    const surface = game.create_surface("d62-diag", { seed: 4242, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
+    const npf = game.forces["d62-diag"] ?? game.create_force("d62-diag")
+    const pf = game.forces.player
+    const scans: Record<string, number> = {}
+    const scanDist: Record<string, number[]> = {}
+    const charted: Record<string, number> = {}
+    script.on_event(defines.events.on_sector_scanned, (e) => {
+      const f = e.radar.force.name
+      scans[f] = (scans[f] ?? 0) + 1
+      const r = e.radar.position
+      const d = math.max(math.abs(e.chunk_position.x - math.floor(r.x / 32)), math.abs(e.chunk_position.y - math.floor(r.y / 32)))
+      ;(scanDist[f] ??= []).push(d)
+    })
+    script.on_event(defines.events.on_chunk_charted, (e) => {
+      if (e.surface_index !== surface.index) return
+      charted[e.force.name] = (charted[e.force.name] ?? 0) + 1
+    })
+    const setUp = (pos: MapPosition, f: LuaForce): LuaEntity => {
+      surface.request_to_generate_chunks(pos, 0)
+      surface.force_generate_chunk_requests()
+      for (const e of surface.find_entities_filtered({ area: [[pos.x - 6, pos.y - 6], [pos.x + 6, pos.y + 6]] })) if (e.type !== "resource") e.destroy()
+      const radar = surface.create_entity({ name: "radar", position: pos, force: f })!
+      const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: pos.x + 4, y: pos.y }, force: f })!
+      eei.electric_buffer_size = 1e8
+      eei.power_production = 1e6
+      surface.create_entity({ name: "small-electric-pole", position: { x: pos.x + 2, y: pos.y - 1 }, force: f })
+      return radar
+    }
+    const a = { x: 1600.5, y: 1600.5 }
+    const b = { x: 1920.5, y: 1600.5 }
+    setUp(a, npf)
+    setUp(b, pf)
+    const count = (f: LuaForce, pos: MapPosition, what: string): number => {
+      let n = 0
+      const cx = math.floor(pos.x / 32)
+      const cy = math.floor(pos.y / 32)
+      for (let dy = -3; dy <= 3; dy++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          const c = { x: cx + dx, y: cy + dy }
+          if (what === "charted" && f.is_chunk_charted(surface, c)) n++
+          if (what === "requested" && f.is_chunk_requested_for_charting(surface, c)) n++
+          if (what === "generated" && surface.is_chunk_generated(c)) n++
+          if (what === "visible" && f.is_chunk_visible(surface, c)) n++
+        }
+      }
+      return n
+    }
+    const report = (label: string): void => {
+      for (const [f, pos] of [[npf, a], [pf, b]] as [LuaForce, MapPosition][]) {
+        log(`[d62] ${label} ${f.name}: charted ${count(f, pos, "charted")} requested ${count(f, pos, "requested")} visible ${count(f, pos, "visible")} generated ${count(f, pos, "generated")}/49; sector scans ${scans[f.name] ?? 0} at rings ${(scanDist[f.name] ?? []).join(",")}; chunk_charted events ${charted[f.name] ?? 0}`)
+      }
+    }
+    after_ticks(600, () => report("10s"))
+    after_ticks(3600 * 3, () => {
+      report("3min")
+      // 10 MJ per sector at 300 kW: one scan about every 33 s, for either force.
+      assert((scans[npf.name] ?? 0) >= 4, `player-less radar sector-scans: ${scans[npf.name] ?? 0} events`)
+      assert(count(npf, a, "charted") === 0 && count(npf, a, "requested") > 0, "player-less: scanned chunks are requested for charting, never charted")
+      assert(count(npf, a, "generated") === 1, "player-less: the radar generates nothing")
+      assert(count(pf, b, "charted") === 49 && count(pf, b, "generated") === 49, "player force: nearby square charted and generated")
+      // A script chart of the player-less force's nearby square.
+      npf.chart(surface, [[a.x - 112, a.y - 112], [a.x + 112, a.y + 112]])
+    })
+    after_ticks(3600 * 3 + 300, () => {
+      report("after force.chart")
+      assert(count(npf, a, "charted") === 0 && count(npf, a, "requested") === 49, "player-less: force.chart only requests")
+      script.on_event(defines.events.on_sector_scanned, undefined)
+      script.on_event(defines.events.on_chunk_charted, undefined)
+      game.delete_surface(surface)
+      done()
+    })
+  })
+
   test("D62 finding: a powered radar charts for the player force but not for a force with no players", () => {
     const surface = game.create_surface("d62-radar", { seed: 4242, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
     const force = game.forces["d62-radar"] ?? game.create_force("d62-radar")
