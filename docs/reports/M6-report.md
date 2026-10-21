@@ -1796,3 +1796,16 @@ distinct chunks nearest first in rings (0, 8 × ring 1, 16 × ring 2, 24 × ring
 known-ground rule accepts them; a powered outpost radar's nearby square counts as explored at once (its sector scans
 take ~28 game-min to cover it). T2 "P43 (a)" (handler and known-ground rule), T1 `arms`.
 
+
+**Verification** (38cbbc2): T1 21/21, T2 150/150. Seed 46464 resumed from its `m6-accept-b57` min-100 save
+(`--no-fail-fast --hours 4`; with fail-fast on, a resumed run fails its milestone deadlines at once, because those
+milestones were logged before the save: a harness gap, not fixed):
+
+| Game min | Event |
+|---|---|
+| ~115 | g16's copper mine: no free patch after 4 attempts → `EXPLORING (D62)` |
+| ~115 → 130 | outpost N1 (400 tiles north): planned first try, 47 poles; powered, nearby square explored; no copper |
+| ~131 → 144 | outpost E1 (400 tiles east): 44 poles; powered |
+| ~146 | g20 (green production, attempt 2) planned with a copper mine on the newly explored ground: `EXPLORE (D62) over` after 2 outposts, 31 game-min. Work 1.37M (typical plans 0.1–0.7M): the long belts are expensive. |
+
+Still running when committed: whether the far mine's build lifts science to the v1 bar.
