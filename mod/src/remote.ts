@@ -64,6 +64,20 @@ export function registerRemoteInterface(): void {
       const events = mustFaction(name).board.claimLog
       return events.map((e) => ({ ...e }))
     },
+    /** Debug probe (B54): the board's active jobs whose item or recipe contains `item`, with priority, deps and claim. */
+    job_debug: (name: string, item: string) => {
+      const board = mustFaction(name).board
+      const out: unknown[] = []
+      for (const id of board.active) {
+        const j = board.jobs[id]
+        const p = j.payload as { item?: string; recipe?: string }
+        const what = p.item ?? p.recipe ?? ""
+        if (string.find(what, item, 1, true)[0] === undefined) continue
+        const deps = j.deps.map((d) => `${d}:${board.jobs[d]?.payload.kind ?? "?"}:${board.jobs[d]?.status ?? "gone"}`)
+        out.push({ id, kind: j.payload.kind, what, status: j.status, priority: j.priority, deps, claimedBy: j.claimedBy, attempts: j.attempts, reason: j.reason, pos: j.pos })
+      }
+      return out
+    },
     /** Cross-layer goal → planner → build → Job Board links plus stable blocker codes and invariant violations. */
     diagnostics: (name: string) => factionDiagnostics(name),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */

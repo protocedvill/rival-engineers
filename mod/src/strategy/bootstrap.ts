@@ -210,6 +210,8 @@ interface Ctx {
   waiting: string[]
   /** B38: this think's shortfalls and the path `produce` took for each (copied to `brain.shortfalls`). */
   shortfalls: Record<string, { demand: number; stock: number; pending: number; action: string }>
+  /** D61: raw materials of poles being crafted this think: gathered at the power priority. */
+  powerItems: Record<string, boolean>
 }
 
 function think(faction: FactionState, brain: BrainState, config: Config, tick: number): void {
@@ -225,6 +227,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     pending: {},
     demand: {},
     order: [],
+    powerItems: {},
     oreInbound: {},
     shortfalls: {},
     gathers: 0,
@@ -1023,6 +1026,14 @@ function registerSupplies(ctx: Ctx): void {
 // Reconcile (H4)
 
 function reconcile(ctx: Ctx): void {
+  // D61: the materials of pole crafts already on the board are power materials too (a craft job in progress counts as
+  // pending, so `craft` is not called for it again).
+  for (const id of ctx.faction.board.active) {
+    const j = ctx.faction.board.jobs[id]
+    if (j.payload.kind !== "craft" || j.payload.item === undefined) continue
+    if (prototypes.item[j.payload.item]?.place_result?.type !== "electric-pole") continue
+    for (const m of j.materials) ctx.powerItems[m.item] = true
+  }
   // Item goals among the active window are demand too.
   let active = 0
   for (const goal of ctx.brain.goals) {
@@ -1042,6 +1053,12 @@ function reconcile(ctx: Ctx): void {
     if (short <= 0) continue
     ctx.shortfalls[item] = { demand: ctx.demand[item], stock: ctx.stock[item] ?? 0, pending: ctx.pending[item] ?? 0, action: "?" }
     produce(ctx, item, short)
+  }
+  // D61: gathers already open for a pole's material move up too (they count as pending, so no new ones were added).
+  const board = ctx.faction.board
+  for (const id of board.active) {
+    const j = board.jobs[id]
+    if (j.status === "open" && j.payload.kind === "gather" && ctx.powerItems[j.payload.item]) j.priority = math.max(j.priority, gatherPriority(ctx, j.payload.item))
   }
 }
 
@@ -1218,7 +1235,10 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   const chunk = math.max(1, math.min(math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)), affordable))
   // B54 (user decision 2026-10-21): poles for a power network are crafted first, like their place jobs.
   const placed = prototypes.item[item]?.place_result
-  const priority = placed?.type === "electric-pole" ? math.max(PRIORITY.craft, ctx.config.factoryPowerBuildPriority) : PRIORITY.craft
+  const power = placed?.type === "electric-pole"
+  const priority = power ? math.max(PRIORITY.craft, ctx.config.factoryPowerBuildPriority) : PRIORITY.craft
+  // ...and so is what they are made of (B54: the poles waited 25 game-min on wood gathered at priority 20).
+  if (power) for (const r in one.raw) ctx.powerItems[r] = true
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n
@@ -1297,6 +1317,10 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
   return undefined
 }
 
+function gatherPriority(ctx: Ctx, item: string): number {
+  return ctx.powerItems[item] ? math.max(PRIORITY.gather, ctx.config.factoryPowerBuildPriority) : PRIORITY.gather
+}
+
 function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefined): void {
   const cap = ctx.faction.crew.length
   // Which resource gives this item?
@@ -1340,7 +1364,7 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
     addKeyed(ctx, key, {
       kind: "gather",
       pos: target.position,
-      priority: PRIORITY.gather,
+      priority: gatherPriority(ctx, item),
       payload: { kind: "gather", item, count, target, deliverTo: into },
     })
     if (isWood) ctx.woodGathers++

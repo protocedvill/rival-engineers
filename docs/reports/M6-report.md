@@ -1661,8 +1661,12 @@ including the passing one.
 priority. 2, 3 go with recommended fix"):
 
 - **B54 / D61:** `addPlaceJob` gives a factory build's electric-pole place jobs `factory-power-build-priority` (150,
-  never below the build's own); the bootstrap's hand-crafts of poles get it too. T2 `jobs` "B54". Gathering the raw
-  materials (wood, copper) keeps its own priority.
+  never below the build's own); the bootstrap's hand-crafts of poles get it too. T2 `jobs` "B54". **Not enough on its
+  own:** resumed from min-80, the gaps were as long as before (3333 ~100 → ~125, 6666666 ~90 → ~115). A `job_debug`
+  remote showed why: 22 pole place jobs at priority 150 sat open with no poles in stock and no wood in the depot; wood
+  is gathered at the bootstrap's lowest priority (20). Follow-up: the materials of poles being crafted (new crafts and
+  pole craft jobs already on the board) are gathered at the power priority too, open gathers included. From the same
+  min-100 save the 22 poles were placed by min 104.5 (was ~125).
 - **B55:** `materializeMinePlan` blocks the out port's outside tile for both stages' poles; `tryExpand` refuses a
   completion whose full plan (from an older save) covers it. T1 `mine-plan` "B55" (2: a sweep of patch shapes, rows
   and consumer sides that hit it before the fix — 9×8 patch, 4 rows, consumer north — and the completion guard).
@@ -1671,8 +1675,18 @@ priority. 2, 3 go with recommended fix"):
   same belt facing another way); `checkBuild` reports them as `stale` and the repair picks them up, then places the
   planned piece. T2 `conflicts` "B56".
 
+**Verification** (resumed from each seed's `m6-prof` min-80 save, `-j 1`):
+
+| Seed | m6-prof (before) | B55 + B56 + pole priority (964e95e) | + pole materials first |
+|---|---|---|---|
+| 3333 | stuck ~10/min, stopped at 186 | v1-done 227.8 | **v1-done 221.8** |
+| 6666666 | stuck ~8/min, stopped at 171 | v1-done 219.3 | **v1-done 222.3** |
+| power gap, cluster-2 / mall iron mine | ~98 → ~130 / ~85 → ~110 | ~100 → ~125 / ~90 → ~115 | unpowered at the min-100 / min-90 sample only, ok 10 min later |
+
+Full T2 147/147 and T1 20/20 on both commits. With seed 98765 (v1-done 198.7 in m6-prof) the three seeds now pass.
+
 ### Magic numbers for the user (M6b.27)
 
 | Name | Where | Value | Why this value | Setting? |
 |---|---|---|---|---|
-| Power build priority | `jobs/faction.ts` `addPlaceJob`, `strategy/bootstrap.ts` `craft` (D61) | 150 | Above every other job (bootstrap fuel 100, build 90), as the user asked; any value above 100 does the same today. | yes (`factory-power-build-priority`, new) |
+| Power build priority | `jobs/faction.ts` `addPlaceJob`, `strategy/bootstrap.ts` `craft` and pole-material gathers (D61) | 150 | Above every other job (bootstrap fuel 100, build 90), as the user asked; any value above 100 does the same today. | yes (`factory-power-build-priority`, new) |
