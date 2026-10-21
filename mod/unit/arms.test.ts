@@ -1,4 +1,5 @@
 import { ARM_FIRST, ARM_SPACING, ARM_STRIP_HALF, armStrip, armTarget, chunkKnown, chunksAround, homeRect, noPatchResource, rectUnion } from "../src/strategy/arms"
+import { tkey } from "../src/planner/grid"
 import { eq, ok, run, test } from "./harness"
 
 /** Compares plain {x, y, w?, h?} records field by field (eq compares tables by identity). */
@@ -42,6 +43,10 @@ test("D62: chunks are known in the home zone and explored strips; elsewhere only
   ok(chunkKnown(0, -20, known, isCharted), "in the explored strip")
   ok(!chunkKnown(5, -20, known, isCharted), "beside the strip")
   ok(chunkKnown(20, 20, known, isCharted), "charted")
+  // P43 (a): chunks the faction's radars scanned (they chart nothing for a player-less force).
+  const scanned = { ...known, scanned: { [tkey(30, 30)]: true } }
+  ok(chunkKnown(30, 30, scanned, isCharted), "radar-scanned")
+  ok(!chunkKnown(31, 30, scanned, isCharted), "next to a radar-scanned chunk")
 })
 
 test("D62: a radar's nearby square and the no-patch failure text", () => {

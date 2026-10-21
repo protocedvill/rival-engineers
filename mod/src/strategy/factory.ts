@@ -182,6 +182,8 @@ export interface FactoryState {
   explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number }
   /** D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. */
   arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
+  /** P43 (a): chunks the faction's radars scanned (sector scans, and powered outposts' nearby squares), by `tkey`. */
+  radarChunks?: Record<number, boolean>
 }
 
 declare global {

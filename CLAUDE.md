@@ -193,8 +193,8 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   job over it (T2 factory test B41).
 - **A radar charts nothing for a force with no players** (2.0): powered, the same radar charts and generates its
   7×7-chunk nearby square for the `player` force and nothing for a script-created force (our factions). It still
-  sector-scans (one `on_sector_scanned` per ~33 s, nearest chunks first); the chunk is only marked requested for
-  charting, never charted or generated. `force.chart` on such a force only requests too. (A forum post quotes a
+  sector-scans (one `on_sector_scanned` per ~33 s; nearest first in rings, no chunk twice: 53 scans in 30 game-min
+  reached ring 4); the chunk is only marked requested for charting, never charted or generated (D62 (a) uses the event). `force.chart` on such a force only requests too. (A forum post quotes a
   developer: charting is skipped for forces without players.) Pinned by two engine-capabilities tests ("D62 finding").
   A script-created `electric-energy-interface` makes no power until `power_production` and `electric_buffer_size` are set.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are

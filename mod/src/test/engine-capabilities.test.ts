@@ -1,6 +1,9 @@
 import { LuaEntity, LuaForce, MapPosition } from "factorio:runtime"
 import { PathfinderWaypoint } from "factorio:runtime"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
+import { tkey } from "../planner/grid"
+import { chunkKnown } from "../strategy/arms"
+import { onSectorScanned } from "../strategy/explore"
 import { at, createLab, everyTickFor, itemCount, spawnEngineer } from "./lab"
 
 // M0 spike: can a character entity with NO attached player perform every player action the crew
@@ -209,6 +212,9 @@ describe("player-less character", () => {
     const scans: Record<string, number> = {}
     const scanDist: Record<string, number[]> = {}
     const charted: Record<string, number> = {}
+    // Restored afterwards: the mod handles on_sector_scanned itself (P43 (a)).
+    const modScan = script.get_event_handler(defines.events.on_sector_scanned)
+    const modCharted = script.get_event_handler(defines.events.on_chunk_charted)
     script.on_event(defines.events.on_sector_scanned, (e) => {
       const f = e.radar.force.name
       scans[f] = (scans[f] ?? 0) + 1
@@ -269,11 +275,36 @@ describe("player-less character", () => {
     after_ticks(3600 * 3 + 300, () => {
       report("after force.chart")
       assert(count(npf, a, "charted") === 0 && count(npf, a, "requested") === 49, "player-less: force.chart only requests")
-      script.on_event(defines.events.on_sector_scanned, undefined)
-      script.on_event(defines.events.on_chunk_charted, undefined)
+      script.on_event(defines.events.on_sector_scanned, modScan as never)
+      script.on_event(defines.events.on_chunk_charted, modCharted as never)
       game.delete_surface(surface)
       done()
     })
+  })
+
+  test("P43 (a): a faction radar's sector scan makes the chunk known ground for that faction's plans", () => {
+    const lab = createLab()
+    const force = game.forces["p43-scan"] ?? game.create_force("p43-scan")
+    const radar = lab.surface.create_entity({ name: "radar", position: at(lab, 0.5, 0.5), force })!
+    assert(script.get_event_handler(defines.events.on_sector_scanned) !== undefined, "the mod handles on_sector_scanned")
+    // A stand-in faction, only for this synchronous call (tick handlers never see it).
+    const name = "p43-test"
+    const factions = storage.factions as Record<string, unknown>
+    const factories = (storage.factories ??= {}) as Record<string, unknown>
+    factions[name] = { force: force.name }
+    factories[name] = {}
+    storage.factionOrder.push(name)
+    const chunk = { x: 7, y: -3 }
+    onSectorScanned({ radar, chunk_position: chunk, area: { left_top: { x: 224, y: -96 }, right_bottom: { x: 256, y: -64 } }, name: defines.events.on_sector_scanned, tick: game.tick } as never)
+    const got = (factories[name] as { radarChunks?: Record<number, boolean> }).radarChunks
+    storage.factionOrder.pop()
+    delete factions[name]
+    delete factories[name]
+    radar.destroy()
+    assert(got?.[tkey(chunk.x, chunk.y)] === true, "scanned chunk recorded")
+    const known = { home: { x: 0, y: 0, w: 64, h: 64 }, explored: [], scanned: got }
+    assert(chunkKnown(chunk.x, chunk.y, known, () => false), "known to the planner")
+    assert(!chunkKnown(chunk.x + 1, chunk.y, known, () => false), "its neighbour is not")
   })
 
   test("D62 finding: a powered radar charts for the player force but not for a force with no players", () => {

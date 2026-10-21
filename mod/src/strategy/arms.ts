@@ -3,7 +3,7 @@
 // strips its crew explored while laying an arm's pole line. When a mine finds no free patch of its ore, the faction
 // builds one radar outpost at a time on the N, E, S, W arms in turn. Pure helpers: no Factorio globals (T1-tested).
 
-import { Rect, Vec } from "../planner/grid"
+import { Rect, tkey, Vec } from "../planner/grid"
 
 /** Home zone radius in scan radii (3 × 128 = 384 tiles): bootstrap exploration (H7) and plan regions stop there. */
 export const HOME_SCANS = 3
@@ -62,12 +62,18 @@ function chunkTouches(cx: number, cy: number, r: Rect): boolean {
 export interface KnownGround {
   home: Rect
   explored: Rect[]
+  /** P43 (a): chunks the faction's radars scanned (`tkey` of the chunk position). */
+  scanned?: Record<number, boolean>
 }
 
-/** May the planner scan chunk (cx, cy)? Home zone and explored strips always; elsewhere only charted chunks. */
+/**
+ * May the planner scan chunk (cx, cy)? Home zone and explored strips always; elsewhere only chunks the faction's radars
+ * scanned, or charted ones (a radar charts nothing for a force with no players: P43).
+ */
 export function chunkKnown(cx: number, cy: number, known: KnownGround, charted: (this: void, cx: number, cy: number) => boolean): boolean {
   if (chunkTouches(cx, cy, known.home)) return true
   for (const r of known.explored) if (chunkTouches(cx, cy, r)) return true
+  if (known.scanned?.[tkey(cx, cy)] === true) return true
   return charted(cx, cy)
 }
 

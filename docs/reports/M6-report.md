@@ -1786,3 +1786,13 @@ the radar with `force.chart`, keep our own record, or count an outpost's reach a
 | Strip half width | `arms.ts` `ARM_STRIP_HALF` | 32 tiles | One chunk either side of the arm: room for the pole line's detours and the radar's nudge. Agent guess. | no |
 | Scan wait | `arms.ts` `ARM_SCAN_WAIT` | 5 game-min | The nearby square charts in under a minute (player force); a cap so a radar that never charts doesn't hold the search. Agent guess. | no |
 | Stuck exploring | `tools/harness/m6.toml` `exploring_minutes` | 60 game-min | The user: "Give up can be after 1h in-game time stuck on exploration for fast-fail". Soak only. | soak config |
+
+**P43 → D62 (a)** (the user, in-session 2026-10-21: "go with (a)"). Research: a forum post quotes a developer that the
+engine skips charting for forces without players. Two T2 pins measured it: the player-less radar sector-scans at the
+normal rate and raises `on_sector_scanned`, but the chunk is only marked requested for charting; nothing is charted or
+generated, and `force.chart` only requests. A 30-game-min run (not kept in the suite: ~3 min of test time) scanned 53
+distinct chunks nearest first in rings (0, 8 × ring 1, 16 × ring 2, 24 × ring 3, then ring 4). Implemented:
+`explore.ts` `onSectorScanned` records each faction radar's scanned chunk (`FactoryState.radarChunks`); the planner's
+known-ground rule accepts them; a powered outpost radar's nearby square counts as explored at once (its sector scans
+take ~28 game-min to cover it). T2 "P43 (a)" (handler and known-ground rule), T1 `arms`.
+

@@ -1,10 +1,10 @@
 // Radars (D56) and exploration past the home zone (D62). Kept out of factory.ts (its Lua main chunk is near the
 // 200-local limit); the factory passes its context and a few hooks.
 
-import { LuaForce, LuaSurface } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface, OnSectorScannedEvent } from "factorio:runtime"
 import { Config } from "../config"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { Rect, Vec } from "../planner/grid"
+import { Rect, tkey, Vec } from "../planner/grid"
 import { findModule } from "../planner/layout"
 import * as LG from "../planner/logical"
 import * as Arms from "./arms"
@@ -73,7 +73,32 @@ export function planRegion(ctx: ExploreCtx, g: FactoryGoal, r: number): Rect {
 export function knownGround(ctx: ExploreCtx, g: FactoryGoal): Arms.KnownGround {
   const explored = [...(ctx.f.arms?.strips ?? [])]
   if (g.site !== undefined) explored.push(g.site.strip)
-  return { home: Arms.homeRect(ctx.f.center, homeRadius(ctx)), explored }
+  return { home: Arms.homeRect(ctx.f.center, homeRadius(ctx)), explored, scanned: ctx.f.radarChunks }
+}
+
+/**
+ * P43 (a) (user, 2026-10-21): a radar charts nothing for a force with no players, but its sector scan still runs
+ * (nearest chunks first, one per ~33 s at full power) and raises this event: the scanned chunk becomes known ground for
+ * its faction's plans (generated and scanned when a plan needs it).
+ */
+export function onSectorScanned(e: OnSectorScannedEvent): void {
+  const radar = e.radar
+  if (!radar.valid) return
+  const force = radar.force.name
+  for (const name of storage.factionOrder) {
+    if (storage.factions[name]?.force !== force) continue
+    const f = storage.factories?.[name]
+    if (f === undefined) return
+    f.radarChunks ??= {}
+    f.radarChunks[tkey(e.chunk_position.x, e.chunk_position.y)] = true
+    return
+  }
+}
+
+/** The outpost's radar entity near `pos`, if it is still there. */
+function radarAt(ctx: ExploreCtx, pos: Vec): LuaEntity | undefined {
+  for (const e of ctx.surface.find_entities_filtered({ area: [[pos.x - 3, pos.y - 3], [pos.x + 3, pos.y + 3]], type: "radar", force: ctx.force })) if (e.valid) return e
+  return undefined
 }
 
 /**
@@ -140,14 +165,20 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
   const ex = f.explore
   if (ex === undefined || ex.phase === "retry") return
   if (ex.phase === "scan") {
-    const radar = ex.radar!
-    let left = 0
-    for (const c of Arms.chunksAround(radar, radarReach(ctx).nearby)) if (!ctx.force.is_chunk_charted(ctx.surface, c)) left++
-    if (left > 0 && ctx.tick < ex.scanUntil!) {
-      ctx.waiting.push(`exploring for ${ex.resource} (D62): ${left} chunks around the outpost radar not charted yet`)
+    // P43 (a): a powered outpost radar's nearby square counts as explored at once (the engine's nearby scan, which
+    // charts nothing for a player-less force); its sector scans add farther chunks over time (onSectorScanned).
+    const pos = ex.radar!
+    const radar = radarAt(ctx, pos)
+    const powered = radar !== undefined && radar.energy > 0
+    if (!powered && ctx.tick < ex.scanUntil!) {
+      ctx.waiting.push(`exploring for ${ex.resource} (D62): the outpost radar at ${pos.x},${pos.y} has no power yet`)
       return
     }
-    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): outpost radar at ${radar.x},${radar.y} charted its nearby square${left > 0 ? ` but ${left} chunks (gave up waiting)` : ""}; ${ex.kind} goals plan again`)
+    if (powered) {
+      f.radarChunks ??= {}
+      for (const c of Arms.chunksAround(radar!.position, radarReach(ctx).nearby)) f.radarChunks[tkey(c.x, c.y)] = true
+    }
+    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): outpost radar at ${pos.x},${pos.y} ${powered ? "powered: its nearby square is explored" : radar === undefined ? "not found (gave up waiting)" : "still unpowered (gave up waiting)"}; ${ex.kind} goals plan again`)
     ex.phase = "retry"
     return
   }

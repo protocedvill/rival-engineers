@@ -11,6 +11,7 @@ import { registerRemoteInterface } from "./remote"
 import { registerReview } from "./review/index"
 import { initStorage } from "./storage-init"
 import { onResearchFinished } from "./strategy/bootstrap"
+import { onSectorScanned } from "./strategy/explore"
 import { onTick } from "./tick"
 
 script.on_init(() => {
@@ -26,6 +27,8 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, invalidateConfig)
 script.on_event(defines.events.on_script_path_request_finished, onPathRequestFinished)
 script.on_event(defines.events.on_tick, onTick)
 script.on_event(defines.events.on_research_finished, (e) => onResearchFinished(e.research.force, e.research.name))
+// P43 (a): faction radars chart nothing (no players on the force); their sector scans are the faction's exploration.
+script.on_event(defines.events.on_sector_scanned, onSectorScanned)
 // The terrain model rescans chunks where entities appear or disappear (SPEC §5.6: incremental, budgeted).
 for (const ev of [
   defines.events.on_built_entity,
