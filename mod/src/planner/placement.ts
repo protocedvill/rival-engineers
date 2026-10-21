@@ -12,7 +12,7 @@ import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
@@ -104,7 +104,7 @@ export interface PlacementSearch {
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
   /** B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate. */
-  openPorts?: { x: number; y: number; ok?: boolean }[]
+  openPorts?: { x: number; y: number; ok?: boolean; path?: Vec[] }[]
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
@@ -404,36 +404,115 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
 }
 
 /**
- * B45: a way out of a port lane ending at `start`: the shortest path over `free` ground to a tile `need` steps
- * (Manhattan) away, or undefined if the lane is walled in (seed 222, D54: the power plant's coal mine, its claim and its
- * margin sealed the labs' pack input, and every later production plan failed on "no path").
+ * B57: how far an underground may jump on a lane's way out: the `transport-belt` tier's underground (game data, 5). A
+ * lane walled in by one belt or a short claim is not sealed: the router goes under it.
  */
-export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number): Vec[] | undefined {
+export const LANE_HOP = 5
+
+/**
+ * B57: what a lane's way out may go under (an underground's span): anything but a module or unknown ground; and, as the
+ * router, not along another underground's span on the same line (seed 11: a pocket "led out" along a route's spans).
+ */
+export interface LaneHop {
+  under: (this: void, x: number, y: number) => boolean
+  max: number
+  state?: LayoutState
+}
+
+/** B57: an underground from (x, y) heading `d` to (ex, ey) overlaps no other underground on its line. */
+function spanFree(state: LayoutState | undefined, x: number, y: number, ex: number, ey: number, d: number): boolean {
+  if (state === undefined) return true
+  const a = d % 2 === 1 ? math.min(x, ex) : math.min(y, ey)
+  const b = d % 2 === 1 ? math.max(x, ex) : math.max(y, ey)
+  return spanConflicts(state, lineKey(x, y, d), a, b).length === 0
+}
+
+/**
+ * B45: a way out of a port lane ending at `start`: a path over `free` ground (and, with `hop`, undergrounds under what
+ * `hop.under` allows, as the router's seal check) to a tile `need` steps (Manhattan) away, or undefined if the lane is
+ * walled in (seed 222, D54: the power plant's coal mine, its claim and its margin sealed the labs' pack input, and every
+ * later production plan failed on "no path").
+ * With `goal`, reaching it (or a tile next to it) also counts: a lane to a partner in the same pocket is not sealed.
+ * B57: farthest-first (a bucket per distance), not breadth-first: on open ground it walks about `need` tiles straight
+ * out, so a far `need` stays cheap, and it only explores a whole pocket when the lane is in one (8 steps let a 112-tile
+ * pocket through on seed 555555 and a 221-tile one on seed 11).
+ */
+export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): Vec[] | undefined {
   const from: Record<number, number> = { [tkey(start.x, start.y)]: -1 }
-  const queue: Vec[] = [start]
-  let i = 0
-  while (i < queue.length) {
-    const c = queue[i++]
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const x = c.x + dx
-      const y = c.y + dy
-      const k = tkey(x, y)
-      if (from[k] !== undefined || !free(x, y)) continue
-      from[k] = tkey(c.x, c.y)
-      if (math.abs(x - start.x) + math.abs(y - start.y) >= need) {
-        const path: Vec[] = []
-        for (let at = k; at !== -1; at = from[at]) path.push({ x: keyX(at), y: keyY(at) })
-        return path
+  const buckets: Vec[][] = [[start]]
+  let top = 0
+  const path = (k: number): Vec[] => {
+    const out: Vec[] = []
+    for (let at = k; at !== -1; at = from[at]) out.push({ x: keyX(at), y: keyY(at) })
+    return out
+  }
+  while (top >= 0) {
+    const c = buckets[top]?.pop()
+    if (c === undefined) {
+      top--
+      continue
+    }
+    const ck = tkey(c.x, c.y)
+    for (let d = 0; d < 4; d++) {
+      // A step, then (with `hop`) the underground exits 2..max tiles on, over tiles it may go under. As the router, an
+      // underground is entered straight: the tile behind its entrance is ground too (or the entrance is the lane end).
+      const straight = (c.x === start.x && c.y === start.y) || free(c.x - DX[d], c.y - DY[d])
+      // The exit belt feeds only the tile straight on: a hop lands there, past its exit.
+      for (let n = 1; n <= (hop !== undefined && straight ? hop.max : 1); n++) {
+        const ex = c.x + DX[d] * n
+        const ey = c.y + DY[d] * n
+        if (n > 1 && !hop!.under(ex - DX[d], ey - DY[d])) break
+        const x = n > 1 ? ex + DX[d] : ex
+        const y = n > 1 ? ey + DY[d] : ey
+        const k = tkey(x, y)
+        if (from[k] !== undefined || !free(x, y)) continue
+        if (n > 1) {
+          const ek = tkey(ex, ey)
+          if (from[ek] !== undefined || !free(ex, ey) || !spanFree(hop!.state, c.x, c.y, ex, ey, d)) continue
+          from[ek] = ck
+          from[k] = ek
+        } else from[k] = ck
+        const dist = math.abs(x - start.x) + math.abs(y - start.y)
+        if (dist >= need || (goal !== undefined && math.abs(x - goal.x) + math.abs(y - goal.y) <= 1)) return path(k)
+        const b = buckets[dist]
+        if (b === undefined) buckets[dist] = [{ x, y }]
+        else b.push({ x, y })
+        if (dist > top) top = dist
       }
-      queue.push({ x, y })
     }
   }
   return undefined
 }
 
 /**
+ * B51 / B57: the ground a lane of port `tag` may lead out over in a layout (not a module, route, mine claim or another
+ * port's reservation; trees and rocks pass), and what its undergrounds may go under (anything but a module).
+ */
+export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
+  const free = (x: number, y: number): boolean => {
+    const k = tkey(x, y)
+    const o = state.occ[k]
+    if ((o !== undefined && !isPoleTag(o)) || state.routeOcc[k] !== undefined || state.mine?.[k] !== undefined) return false
+    const r = state.reserved[k]
+    if (r !== undefined && r !== tag && r !== laneTag(tag)) return false
+    const b = terrain.block(x, y)
+    return r === tag || r === laneTag(tag) || b === FREE || b === TREE || b === ROCK
+  }
+  const under = (x: number, y: number): boolean => {
+    const o = state.occ[tkey(x, y)]
+    return !(o !== undefined && string.sub(o, 1, 2) === "m:") && terrain.block(x, y) !== UNKNOWN
+  }
+  return { free, hop: { under, max: LANE_HOP, state } }
+}
+
+/** B57: the reservation tag of a protected lane's way out (a plan keeps it clear; see plan.ts `guardLanes`). */
+export function laneTag(port: string): string {
+  return `lane:${port}`
+}
+
+/**
  * B51: the belt inputs of module `id` not in `fed` whose lane (from the approach tile) no longer leads `need` steps out
- * over ground a route could use: not a module, route, mine claim or another port's reservation; trees and rocks pass.
+ * over ground a route could use (`layoutLaneGround`).
  */
 export function sealedInputs(state: LayoutState, terrain: TerrainView, id: string, fed: Record<string, boolean>, need: number): string[] {
   const m = findModule(state, id)
@@ -441,36 +520,61 @@ export function sealedInputs(state: LayoutState, terrain: TerrainView, id: strin
   if (m === undefined) return out
   for (const p of m.def.ports) {
     if (p.kind !== "belt-in" || fed[p.id]) continue
-    const tag = portTag(m.id, p.id)
-    const free = (x: number, y: number): boolean => {
-      const k = tkey(x, y)
-      const o = state.occ[k]
-      if ((o !== undefined && !isPoleTag(o)) || state.routeOcc[k] !== undefined || state.mine?.[k] !== undefined) return false
-      const r = state.reserved[k]
-      if (r !== undefined && r !== tag) return false
-      const b = terrain.block(x, y)
-      return r === tag || b === FREE || b === TREE || b === ROCK
-    }
-    if (!laneLeadsOut(portApproach(m, p), free, need)) out.push(p.id)
+    const g = layoutLaneGround(state, terrain, portTag(m.id, p.id))
+    if (!laneLeadsOut(portApproach(m, p), g.free, need, g.hop)) out.push(p.id)
   }
   return out
 }
 
-export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number): boolean {
-  return laneWayOut(start, free, need) !== undefined
+export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): boolean {
+  return laneWayOut(start, free, need, hop, goal) !== undefined
 }
 
-/** B45: the open port lanes near `blocked` (Chebyshev distance `need` + 1) that lead out without it but not with it. */
-function sealsPortLane(s: PlacementSearch, blocked: Rect, need: number): boolean {
+/**
+ * B45: whether `blocked` walls in an open port lane that leads out without it. B57: each lane's way out is found once
+ * (`openPorts[].path`); only a candidate that touches it is checked again.
+ */
+function sealsPortLane(s: PlacementSearch, state: LayoutState | undefined, blocked: Rect, need: number): boolean {
   const ports = s.openPorts ?? []
   if (ports.length === 0) return false
   const hardAt = (x: number, y: number): boolean => (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
+  const hop: LaneHop = { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of ports) {
-    if (p.x < blocked.x - need - 1 || p.x > blocked.x + blocked.w + need || p.y < blocked.y - need - 1 || p.y > blocked.y + blocked.h + need) continue
-    if (p.ok === undefined) p.ok = laneLeadsOut(p, (x, y) => !hardAt(x, y), need)
+    if (p.ok === undefined) {
+      p.path = laneWayOut(p, (x, y) => !hardAt(x, y), need, hop)
+      p.ok = p.path !== undefined
+    }
     if (!p.ok) continue
-    if (!laneLeadsOut(p, (x, y) => !hardAt(x, y) && !rectContains(blocked, x, y), need)) return true
+    let touches = false
+    for (const t of p.path!) if (rectContains(blocked, t.x, t.y)) touches = true
+    if (!touches) continue
+    if (!laneLeadsOut(p, (x, y) => !hardAt(x, y) && !rectContains(blocked, x, y), need, { under: (x, y) => hop.under(x, y) && !rectContains(blocked, x, y), max: LANE_HOP, state })) return true
   }
+  return false
+}
+
+/**
+ * B57 (seed 11): each of the candidate's own belt ports must have a lane that leads out past its own footprint, or to
+ * its connection's target (the iron mine for green science faced into a 221-tile pocket; only one tile of clearance
+ * was checked).
+ */
+function ownLanesOut(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, td: TDef, ox: number, oy: number): boolean {
+  const need = policy.placement.portEscape ?? 0
+  if (need <= 0) return true
+  const rect = { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }
+  const free = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
+  for (const p of td.ports) {
+    // Reaching the port's connection (its target) is enough: the partner may share the pocket.
+    if (!laneLeadsOut({ x: ox + p.ox + p.nx, y: oy + p.oy + p.ny }, free, need, hop, s.req.targets[p.id])) return false
+  }
+  return true
+}
+
+/** B57: `ownLanesOut`, only for a candidate that would become the best (a flood per port is too dear for every one). */
+function sealGate(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, td: TDef, ox: number, oy: number): boolean {
+  if (ownLanesOut(s, state, policy, td, ox, oy)) return true
+  reject(s, "own-lane-sealed", ox, oy)
   return false
 }
 
@@ -642,7 +746,7 @@ export function placementFailureCertificate(s: PlacementSearch): Record<string, 
   return s.rejections ?? {}
 }
 
-function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number): { score: number; coverage: number; clear: number } | undefined {
+function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number, state: LayoutState): { score: number; coverage: number; clear: number } | undefined {
   const def = td.def
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
   if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) {
@@ -752,7 +856,7 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
   }
   // B45: nor wall in another module's unconnected port lane (its margin ring reads as own ground to later plans).
   const escape = policy.placement.portEscape ?? 0
-  if (escape > 0 && sealsPortLane(s, inflate(rect, 1), escape)) {
+  if (escape > 0 && sealsPortLane(s, state, inflate(rect, 1), escape)) {
     return reject(s, "port-sealed", ox, oy)
   }
   const adjacent = sum(s, "mods", inflate(rect, policy.corridor.preferred + 1)) ?? 0
@@ -860,10 +964,10 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         s.stride = 0
       } else {
         const c = s.refine[s.ri]
-        const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy)
+        const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy, state)
         s.candidates = (s.candidates ?? 0) + 1
         if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
-        if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
+        if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, s.tdefs[c.ti], c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
         s.ri++
         used++
         continue
@@ -931,11 +1035,11 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
     const cy = math.floor(s.ci / n) * s.stride
     const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
     const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
-    const e = evaluate(s, policy, td, ox, oy)
+    const e = evaluate(s, policy, td, ox, oy, state)
     s.candidates = (s.candidates ?? 0) + 1
     if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
     if (e !== undefined) {
-      if (s.best === undefined || e.score < s.best.score - 1e-9) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
+      if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
       if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
     }
     used++
@@ -1004,9 +1108,9 @@ function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainV
   return reason
 }
 
-function candidateTrace(s: PlacementSearch, policy: LayoutPolicy, ti: number, ox: number, oy: number): CandidateTrace | undefined {
+function candidateTrace(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, ti: number, ox: number, oy: number): CandidateTrace | undefined {
   const td = s.tdefs[ti]
-  const e = evaluate(s, policy, td, ox, oy)
+  const e = evaluate(s, policy, td, ox, oy, state)
   if (e === undefined || lastF === undefined) return undefined
   return { transform: tname(td.t), origin: { x: ox, y: oy }, rect: { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }, score: e.score, terms: placementTerms(lastF, policy), features: lastF }
 }
@@ -1018,7 +1122,7 @@ function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainVie
   if (sink === undefined) return
   const top: CandidateTrace[] = []
   for (const c of acc.top) {
-    const t = candidateTrace(s, policy, c.ti, c.ox, c.oy)
+    const t = candidateTrace(s, state, policy, c.ti, c.ox, c.oy)
     if (t !== undefined) top.push(t)
   }
   const rejected: Record<string, { count: number; examples: RejectTrace[] }> = {}
@@ -1038,7 +1142,7 @@ function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainVie
     radius: radii(s, policy)[s.radiusIdx],
     candidates: s.candidates,
     feasible: acc.feasible,
-    chosen: s.best !== undefined ? candidateTrace(s, policy, s.best.ti, s.best.ox, s.best.oy) : undefined,
+    chosen: s.best !== undefined ? candidateTrace(s, state, policy, s.best.ti, s.best.ox, s.best.oy) : undefined,
     top,
     rejected,
   })
@@ -1158,7 +1262,13 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
     const b = terrain.block(x, y)
     return !taken(x, y) && (b === FREE || b === TREE || b === ROCK)
   }
-  const lanes = escape > 0 ? openPortEnds(state!, m.id).filter((a) => laneLeadsOut(a, ground, escape)) : []
+  // B57: undergrounds may go under anything but a module (here: nor the planned mine and its margin).
+  const under = (x: number, y: number): boolean => {
+    const o = state?.occ[tkey(x, y)]
+    return !(o !== undefined && string.sub(o, 1, 2) === "m:" && o !== `m:${m.id}`) && terrain.block(x, y) !== UNKNOWN
+  }
+  const hop: LaneHop = { under, max: LANE_HOP, state }
+  const lanes = escape > 0 ? openPortEnds(state!, m.id).filter((a) => laneLeadsOut(a, ground, escape, hop)) : []
   const keepOut: Record<number, boolean> = {}
   const planView: TerrainView = { block: (x, y) => (keepOut[tkey(x, y)] ? FOREIGN : view.block(x, y)), ore: view.ore }
   let built: ReturnType<typeof materializeMinePlan>
@@ -1170,9 +1280,9 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
     for (const k of moduleMargin({ ...m, minePlan: { full: built.full, claim: built.claim, occupied: built.occupied, complete: false } })) margin[k] = true
     let sealed = false
     for (const a of lanes) {
-      if (laneLeadsOut(a, (x, y) => ground(x, y) && !margin[tkey(x, y)], escape)) continue
+      if (laneLeadsOut(a, (x, y) => ground(x, y) && !margin[tkey(x, y)], escape, { under: (x, y) => under(x, y) && !margin[tkey(x, y)], max: LANE_HOP, state })) continue
       sealed = true
-      for (const t of laneWayOut(a, ground, escape)!) for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) keepOut[tkey(t.x + dx, t.y + dy)] = true
+      for (const t of laneWayOut(a, ground, escape, hop)!) for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) keepOut[tkey(t.x + dx, t.y + dy)] = true
     }
     if (!sealed) break
     if (attempt === 1) return strip()

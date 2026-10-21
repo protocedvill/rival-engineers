@@ -557,4 +557,34 @@ test("B52: a route keeps out of the steam block's nearest growth units", () => {
   ok(hits[0] === 0 && hits[1] === 0, `no route tile in the two nearest growth units (${hits.join(" ")})`)
 })
 
+// B57 (soak m6-accept-5b9550c, seed 555555 g12): the labs' green-science input (n2) sits in a pocket walled in by
+// earlier plans; the seal check proves every route to it impossible. No plan can succeed: the factory relocates the
+// labs (factory.ts `relocateSealed`) instead of failing every green plan.
+replay("m6acc-555555-green-labs", { expect: "failed" })
+// B57 (same soak, seed 11 g20): the green cluster's iron mine n36 faced its output into a 221-tile pocket (only one
+// tile of clearance was checked). Its own lanes must now lead out, and the patch's only two positions don't: the mine
+// finds no position on this patch (the game's next attempts widen the region, D57 skips the dead patch) instead of a
+// plan that can never route.
+replay("m6acc-11-green-iron", { expect: "failed" })
+replay("m6acc-46464-green-copper", { expect: "failed" })
+
+// B57 (seed 555555 g6, the plan that walled the labs' green input in): its red-science modules and routes closed the
+// pocket west of the labs. A plan that walls in a base lane that led out is planned again with that lane kept clear.
+test("B57: the red-science plan leaves the labs' unfed green input a way out", () => {
+  const fx = load("m6acc-555555-g6-red")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  runJob(job, view, F, fx.policy, 100000)
+  const guarded = (job.evidence ?? []).some((e) => string.find(e.reason, "B57", 1, true)[0] !== undefined)
+  const sealed = sealedInputs(job.layout, view, "n2", { "in-automation-science-pack": true }, fx.policy.placement.portEscape ?? 0)
+  print(`  m6acc-555555-g6-red: ${job.phase}, ${guarded ? "planned again with the lane kept clear" : "lanes never walled in"}; n2 sealed inputs: ${sealed.join(" ")}`)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  ok(sealed.length === 0, `the labs' green input leads out (sealed: ${sealed.join(" ")})`)
+  let left = 0
+  for (const [, r] of pairs(job.layout.reserved)) if (string.sub(r, 1, 5) === "lane:") left++
+  ok(left === 0, `no lane reservation left in the adopted layout (${left})`)
+})
+
 run("plan-replay")
+

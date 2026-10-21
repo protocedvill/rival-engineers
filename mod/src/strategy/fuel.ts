@@ -117,8 +117,8 @@ interface FuelCtx {
   tick: number
 }
 
-/** B51: how far (Manhattan steps over free ground) an input lane must lead out, as B45's `portEscape`. */
-const LANE_ESCAPE = 8
+/** B51: how far (Manhattan steps over free ground) an input lane must lead out, as B45's `portEscape` (B57: 32). */
+const LANE_ESCAPE = 32
 
 /**
  * B51 (seed 3333): the modules among `ids` with a belt input that no edge feeds any more and whose lane no longer leads

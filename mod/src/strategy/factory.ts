@@ -15,7 +15,8 @@ import { findModule, growthArea, LayoutState, modulesOnTiles, newLayout, PlacedM
 import { recordDiagnostic } from "../diagnostic-events"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
-import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
+import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest } from "../planner/plan"
+import { sealedInputs } from "../planner/placement"
 import { powerRoles } from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
@@ -990,6 +991,14 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       RT.exportPlanInput(entry, `${name}.input.lua`)
     }
     RT.removePlan(entry.id)
+    // B57: a built module's open input proved walled in: no plan can feed it, so it moves and the goal plans again.
+    const moved = contest === undefined ? relocateSealed(ctx, g, entry.job?.evidence ?? []) : undefined
+    if (moved !== undefined) {
+      g.status = "failed"
+      g.deferred = true
+      g.reason = `replan after relocating ${moved}: ${g.reason}`
+      return
+    }
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
       g.status = "failed"
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
@@ -1652,6 +1661,41 @@ export function reconcileNow(faction: FactionState, f: FactoryState, config: Con
   f.meter.lastSample = -math.huge
   measureAndReconcile(ctx)
   if (ctx.waiting.length > 0) f.waiting = ctx.waiting
+}
+
+/**
+ * B57 (seed 555555): the plan's seal check proved the goal end of a connection walled in, and that end is a built
+ * module's unconnected input (the labs' green-science input in a pocket). No plan can feed it there: relocate the module
+ * (as P36 / B51: deconstructed, out of the layout and graph; the design plans it again). Checked again on the faction's
+ * own layout first (the failed plan's own modules may be what walled it in), and not while another goal builds a
+ * connection to or from it. Returns the relocated role.
+ */
+function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): string | undefined {
+  const f = ctx.f
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return undefined
+  const escape = policyFor(ctx.config).placement.portEscape ?? 0
+  if (escape <= 0) return undefined
+  const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
+  for (const ev of evidence) {
+    if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
+    const id = ev.sealed.port.module
+    const n = f.graph.nodes[id]
+    if (n === undefined || findModule(f.layout, id) === undefined) continue
+    if (sealedInputs(f.layout, view, id, {}, escape).indexOf(ev.sealed.port.port) < 0) continue
+    let busy: string | undefined
+    for (const o of f.goals) {
+      if (o === g || (o.status !== "building" && o.status !== "planning")) continue
+      for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
+    }
+    if (busy !== undefined) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B57 ${n.role} (${id}) has its ${ev.sealed.port.port} lane walled in; relocation waits for goal ${busy}`)
+      continue
+    }
+    relocate(ctx, n, `B57 ${n.role}`, `has its ${ev.sealed.port.port} lane walled in (goal ${g.id}: ${ev.subject})`)
+    return n.role
+  }
+  return undefined
 }
 
 /**

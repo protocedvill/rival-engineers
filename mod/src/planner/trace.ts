@@ -58,6 +58,8 @@ export interface RouteFailureTrace {
   expansions?: number
   /** Tiles the search reached. */
   explored?: number
+  /** The seal check's proof of "no path": the end that ran out, its enclosed tiles, and whether the window cut it. */
+  sealed?: { side: "start" | "goal"; tiles: number; edge: boolean }
   /** What blocks the tiles next to the explored region, most tiles first (with one example tile each). */
   walls?: { blocker: string; tiles: number; example: string }[]
   /** Start / goal tile and their 4 neighbours, described. */
@@ -171,6 +173,7 @@ export function traceRouteFailure(state: LayoutState, terrain: TerrainView, poli
   t.rip = search.rip
   t.window = { x: search.x0, y: search.y0, w: search.w, h: search.h }
   t.expansions = search.expansions
+  t.sealed = search.sealed
   if (req.start !== undefined) t.start = `${req.start.x},${req.start.y} dir ${req.start.dir}`
   t.goal = `${req.goal.x},${req.goal.y} dir ${req.goal.dir}${req.goal.side !== undefined ? ` side ${req.goal.side}` : ""}`
   const explored: Record<number, boolean> = {}

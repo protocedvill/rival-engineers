@@ -6,7 +6,7 @@ import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
-import { placeNow } from "../src/planner/placement"
+import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
@@ -864,6 +864,61 @@ test("grid: tile keys round-trip negative and large coordinates", () => {
     eq(keyX(k), x, "x")
     eq(keyY(k), y, "y")
   }
+})
+
+// B57: the lane test (placement.ts `laneWayOut`): farthest-first, undergrounds as the router has them. Grid: '.' ground,
+// '=' a belt (not ground, an underground may go under it), '#' a module (neither); off the grid is open ground.
+function laneGrid(rows: string[]): { free: (this: void, x: number, y: number) => boolean; under: (this: void, x: number, y: number) => boolean; calls: { n: number } } {
+  const calls = { n: 0 }
+  const at = (x: number, y: number): string => {
+    const r = rows[y]
+    if (r === undefined || x < 0 || x >= r.length) return "."
+    return string.sub(r, x + 1, x + 1)
+  }
+  return {
+    free: (x, y) => {
+      calls.n++
+      return at(x, y) === "."
+    },
+    under: (x, y) => at(x, y) !== "#",
+    calls,
+  }
+}
+
+test("B57: a lane in a pocket walled by modules is sealed; one walled by a belt leads out under it", () => {
+  const boxed = laneGrid(["#######", "#.....#", "#.....#", "#.....#", "#######"])
+  ok(laneWayOut({ x: 3, y: 2 }, boxed.free, 32, { under: boxed.under, max: LANE_HOP }) === undefined, "a module-walled pocket is sealed")
+  ok(laneWayOut({ x: 3, y: 2 }, boxed.free, 2, { under: boxed.under, max: LANE_HOP }) !== undefined, "it does reach 2 steps (the old test's blind spot)")
+  const belted = laneGrid(["=======", "=.....=", "=.....=", "=.....=", "======="])
+  ok(laneWayOut({ x: 3, y: 2 }, belted.free, 32) === undefined, "without undergrounds a belt ring seals it")
+  const path = laneWayOut({ x: 3, y: 2 }, belted.free, 32, { under: belted.under, max: LANE_HOP })
+  ok(path !== undefined, "with undergrounds it leads out under the belt")
+})
+
+test("B57: an underground is entered straight and its exit feeds the tile straight on", () => {
+  // The only gap is under the belt at x 3; the tile behind the entrance (3,2) and past the exit (3,6) decide.
+  const ok1 = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###.###", "###.###", "#######"])
+  ok(laneWayOut({ x: 3, y: 1 }, ok1.free, 32, { under: ok1.under, max: LANE_HOP }) === undefined, "an exit into a dead end leads nowhere")
+  const open = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###...#", "###.###", "###.###"])
+  ok(laneWayOut({ x: 3, y: 1 }, open.free, 32, { under: open.under, max: LANE_HOP }) !== undefined, "an exit with ground straight on leads out")
+  const side = laneGrid(["#######", "#.#####", "#.....#", "###=###", "###.###", "###.###", "###.###"])
+  // (3,2) is entered from the west only: an underground south from it would need (3,1) behind it.
+  ok(laneWayOut({ x: 1, y: 1 }, side.free, 32, { under: side.under, max: LANE_HOP }) === undefined, "no underground entered from the side")
+})
+
+test("B57: a hop may not overlap another underground on its line", () => {
+  const g = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###.###", "###.###", "###.###"])
+  const state = newLayout()
+  state.spans["v3"] = [{ a: 2, b: 6, route: "r" }]
+  ok(laneWayOut({ x: 3, y: 1 }, g.free, 32, { under: g.under, max: LANE_HOP }) !== undefined, "without the span it leads out")
+  ok(laneWayOut({ x: 3, y: 1 }, g.free, 32, { under: g.under, max: LANE_HOP, state }) === undefined, "a route's span on x 3 blocks it")
+})
+
+test("B57: on open ground the lane test walks about `need` tiles, not the whole diamond", () => {
+  const g = laneGrid([])
+  const path = laneWayOut({ x: 0, y: 0 }, g.free, 32, { under: g.under, max: LANE_HOP })
+  ok(path !== undefined && path.length <= 34, `a short way out (${path?.length})`)
+  ok(g.calls.n < 400, `${g.calls.n} tiles looked at`)
 })
 
 run("planner")

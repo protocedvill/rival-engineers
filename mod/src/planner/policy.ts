@@ -105,8 +105,10 @@ export interface PlacementWeights {
    */
   growthBlocked?: number
   /**
-   * B45: a placement must leave every other module's unconnected port lane at least this many reachable tiles (0: off):
-   * its footprint and margin ring, and a whole-patch mine's claim, must not wall the lane in.
+   * B45: a placement must leave every other module's unconnected port lane leading at least this many steps (Manhattan)
+   * out (0: off): its footprint and margin ring, and a whole-patch mine's claim, must not wall the lane in. B57: its own
+   * port lanes too, and a plan's routes (plan.ts `guardLanes`). 8 let a 112-tile pocket (seed 555555) and a 221-tile one
+   * (seed 11) count as open.
    */
   portEscape?: number
   /**
@@ -280,7 +282,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorCells: 1,
     corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 8, newField: 50 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 

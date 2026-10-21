@@ -7,8 +7,8 @@
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
+import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
@@ -110,7 +110,16 @@ export interface PlanStats {
 
 export type PlanEvidence =
   | { kind: "placement"; subject: string; reason: string; candidates: number; rejections: Record<string, { count: number; sample: Vec }> }
-  | { kind: "route"; subject: string; reason: string; rip: boolean; windowScale: number; expansions: number }
+  | {
+      kind: "route"
+      subject: string
+      reason: string
+      rip: boolean
+      windowScale: number
+      expansions: number
+      /** B57: the seal check proved this end walled in (inside the window): its port, resolved. */
+      sealed?: { side: "start" | "goal"; port: PortRef }
+    }
 
 export interface PlanJob {
   request: PlanRequest
@@ -155,6 +164,14 @@ export interface PlanJob {
   compare?: { queue: CompareResult["kind"][]; current?: { kind: CompareResult["kind"]; job: PlanJob; cap: number; base: number; merged?: Record<string, string[]>; dropped?: string[] }; results: CompareResult[] }
   /** D36: routing failed; the underground comparison still runs (the infinite case), then the plan fails. */
   routingFailed?: boolean
+  /**
+   * B57: the base's unconnected port lanes that led out when the plan started (port tag, lane end, way out), and the base
+   * layout to plan again from if the plan walls one in (`guardLanes`). Undefined until the first step.
+   */
+  lanes?: { tag: string; module: string; port: string; path: Vec[] }[]
+  laneBase?: LayoutState
+  /** B57: tiles the plan, planned again, keeps clear for those lanes (reserved `lane:<port>`, dropped when it ends). */
+  laneKeep?: number[]
 }
 
 function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
@@ -320,7 +337,14 @@ function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): v
 
 function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
   job.evidence ??= []
-  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions })
+  const sl = search.sealed
+  let sealed: { side: "start" | "goal"; port: PortRef } | undefined
+  if (sl !== undefined && !sl.edge) {
+    const c = connection(job, conn)
+    const ref = sl.side === "goal" ? c.to : c.from
+    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref) }
+  }
+  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
 }
 
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
@@ -398,7 +422,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   const tp = tm ? findPort(tm, to.port) : undefined
   if (!tm || !tp || tp.kind !== "belt-in") return `no belt-in port ${to.module}.${to.port}`
   const goalTile = portTile(tm, tp)
-  const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true }
+  const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true, [laneTag(portTag(tm.id, tp.id))]: true }
   const req: RouteRequest = {
     id: `route:${c.id}`,
     conn: c.id,
@@ -418,6 +442,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return `item mismatch ${fp.item} → ${tp.item}`
     req.from = from
     own[portTag(fm.id, fp.id)] = true
+    own[laneTag(portTag(fm.id, fp.id))] = true
     const taps = sameSource(job, from)
     if (taps.length > 0) {
       if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
@@ -487,13 +512,15 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
 }
 
 /**
- * A connection that rip-up could not route: take out one of its modules (the consumer first; never a site-anchored,
- * built or expanded one, at most twice each) with every route touching it, and place it again away from its old
- * footprint. Returns false if no module can move.
+ * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
+ * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
+ * route touching it, and place it again away from its old footprint. Returns false if no module can move.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts): boolean {
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, search?: Search): boolean {
   const ids = [c.to.module]
   if (c.from !== undefined) ids.push(c.from.module)
+  // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
+  if (search?.sealed !== undefined && !search.sealed.edge && search.sealed.side === "start" && c.from !== undefined) ids.reverse()
   for (const mid of ids) {
     if (job.alias[mid] !== undefined) continue
     const m = findModule(job.layout, mid)
@@ -618,6 +645,91 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   return used
 }
 
+/** B57: the base's unconnected belt ports whose lane leads `portEscape` steps out, with that way out. */
+function openLanes(layout: LayoutState, terrain: TerrainView, need: number): { tag: string; module: string; port: string; path: Vec[] }[] {
+  const out: { tag: string; module: string; port: string; path: Vec[] }[] = []
+  for (const m of layout.modules) {
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      if (layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+      const tag = portTag(m.id, p.id)
+      const a = portApproach(m, p)
+      if (layout.reserved[tkey(a.x, a.y)] !== tag) continue
+      const g = layoutLaneGround(layout, terrain, tag)
+      const path = laneWayOut(a, g.free, need, g.hop)
+      if (path !== undefined) out.push({ tag, module: m.id, port: p.id, path })
+    }
+  }
+  return out
+}
+
+/**
+ * B57 (seed 555555): a plan must not wall in an unconnected port lane of the base that led out before it (the labs'
+ * green-science input, walled in by a red-science plan's modules and routes; every green plan then failed on "no
+ * path"). Placement checks its modules (B45), but routes are only known now. When the routed plan seals such a lane,
+ * it is planned again, once, from the base with each sealed lane's way out reserved (`lane:<port>`: only routes to that
+ * port may use it; undergrounds pass under it). Returns true when it restarts.
+ */
+function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): boolean {
+  const need = policy.placement.portEscape ?? 0
+  if (need <= 0 || job.lanes === undefined || job.laneBase === undefined || job.laneKeep !== undefined) return false
+  const sealed: { tag: string; path: Vec[] }[] = []
+  for (const lane of job.lanes) {
+    // The path runs from its far end back to the lane end.
+    const end = lane.path[lane.path.length - 1]
+    const m = findModule(job.layout, lane.module)
+    const p = m !== undefined ? findPort(m, lane.port) : undefined
+    if (m === undefined || p === undefined) continue
+    // Fed by this plan: no longer an open lane.
+    const o = portOutside(m, p)
+    if (job.layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+    const g = layoutLaneGround(job.layout, terrain, lane.tag)
+    if (laneWayOut(end, g.free, need, g.hop) === undefined) sealed.push(lane)
+  }
+  if (sealed.length === 0) return false
+  const stats = job.stats
+  const evidence = job.evidence
+  const dead = job.deadPatches
+  const fresh = newPlanJob(job.request, job.tier, job.laneBase, job.tiers)
+  const keep: number[] = []
+  for (const lane of sealed) {
+    for (const t of lane.path) {
+      const k = tkey(t.x, t.y)
+      if (fresh.layout.reserved[k] !== undefined) continue
+      fresh.layout.reserved[k] = laneTag(lane.tag)
+      keep.push(k)
+    }
+  }
+  if (planTrace.sink !== undefined) traceEvent(`B57: the plan walls in ${sealed.map((l) => l.tag).join(", ")}: planned again with ${keep.length} lane tiles kept clear`)
+  job.layout = fresh.layout
+  job.phase = "place"
+  job.poleJob = undefined
+  job.order = fresh.order
+  job.ordered = undefined
+  job.placeIdx = 0
+  job.placement = undefined
+  job.alias = {}
+  job.queue = []
+  job.ripCount = {}
+  job.current = undefined
+  job.failures = {}
+  job.expanded = {}
+  job.wholeFail = undefined
+  job.replaceQueue = []
+  job.replaced = fresh.replaced
+  job.avoid = {}
+  job.compare = undefined
+  job.routingFailed = undefined
+  job.stats = stats
+  job.evidence = evidence
+  job.deadPatches = dead
+  job.laneKeep = keep
+  job.evidence ??= []
+  job.evidence.push({ kind: "route", subject: sealed.map((l) => l.tag).join(","), reason: "B57: walled in an open port lane; planned again keeping it clear", rip: false, windowScale: 1, expansions: 0 })
+  return true
+}
+
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   if (job.current === undefined) {
     const id = job.queue.shift()
@@ -626,6 +738,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
       // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
       if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
+      else if (guardLanes(job, terrain, policy)) return 1
       else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
       if (failed) job.routingFailed = true
       return 0
@@ -690,7 +803,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       const reason = cur.search.reason ?? "no path"
       // Traced before tryReplace changes the layout; a re-placement only retries the connection.
       const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = reason
+      if (!tryReplace(job, c, facts, cur.search)) job.failures[cur.conn] = reason
       else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
       job.current = undefined
     }
@@ -1001,6 +1114,13 @@ function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
 /** Advances the job by about `budget` work units. Returns true when it has finished (done or failed). */
 export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): boolean {
   let used = 0
+  // B57: the base's open lanes, before the plan changes anything (comparison branches route on a copy: not theirs).
+  if (job.lanes === undefined && job.phase === "place" && job.placeIdx === 0 && job.compareProbe !== true) {
+    const need = policy.placement.portEscape ?? 0
+    job.lanes = need > 0 && job.layout.modules.length > 0 ? openLanes(job.layout, terrain, need) : []
+    if (job.lanes.length > 0) job.laneBase = cloneLayout(job.layout)
+    used += job.lanes.length
+  }
   while (used < budget && (job.phase === "place" || job.phase === "route" || job.phase === "compare" || job.phase === "poles")) {
     const before = used
     if (job.phase === "place") used += placeStep(job, terrain, facts, policy, budget - used)
@@ -1012,7 +1132,13 @@ export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
   job.stats.steps++
   job.stats.work += used
   job.stats.maxStepWork = math.max(job.stats.maxStepWork, used)
-  return job.phase === "done" || job.phase === "failed"
+  const finished = job.phase === "done" || job.phase === "failed"
+  if (finished && job.laneBase !== undefined) {
+    // B57: the lane reservations only bind this plan; the base copy is no longer needed.
+    for (const k of job.laneKeep ?? []) if (string.sub(job.layout.reserved[k] ?? "", 1, 5) === "lane:") delete job.layout.reserved[k]
+    job.laneBase = undefined
+  }
+  return finished
 }
 
 /** Runs a plan to completion (tests, tools). */

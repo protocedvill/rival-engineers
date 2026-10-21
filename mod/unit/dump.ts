@@ -152,7 +152,7 @@ export function summary(name: string, job: PlanJob, sink: PlanTraceSink | undefi
   if (sink.routeFailures.length > 0) {
     L.push("", "route failures:")
     for (const f of sink.routeFailures) {
-      L.push(`  ${f.conn} [${f.branch}]: ${f.reason}${f.window !== undefined ? `; ${f.rip ? "rip pass, " : ""}window ${f.window.x},${f.window.y} ${f.window.w}x${f.window.h}, ${f.expansions} expansions, ${f.explored} tiles reached` : ""}`)
+      L.push(`  ${f.conn} [${f.branch}]: ${f.reason}${f.window !== undefined ? `; ${f.rip ? "rip pass, " : ""}window ${f.window.x},${f.window.y} ${f.window.w}x${f.window.h}, ${f.expansions} expansions, ${f.explored} tiles reached${f.sealed !== undefined ? `; sealed: the ${f.sealed.side} side ran out after ${f.sealed.tiles} tiles${f.sealed.edge ? " (cut by the window)" : ""}` : ""}` : ""}`)
       if (f.start !== undefined || f.goal !== undefined) L.push(`    start ${f.start ?? "(taps)"} → goal ${f.goal ?? "?"}`)
       for (const w of f.walls ?? []) L.push(`    walled by ${w.blocker}: ${w.tiles} tiles (e.g. ${w.example})`)
       for (const a of f.around ?? []) L.push(`    ${a}`)

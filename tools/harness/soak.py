@@ -601,6 +601,8 @@ def main():
     parser.add_argument("--name", help="run name (output directory under out/soak/; one config only)")
     parser.add_argument("-j", "--jobs", type=int, help="concurrent Factorio runs (default: $SOAK_JOBS, else half the cores)")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--port-base", type=int, default=34200,
+                        help="first server port for --snapshots runs (give a second concurrent soak its own range)")
     parser.add_argument("--gif", action="store_true", help="render a timelapse GIF per seed and faction")
     parser.add_argument("--no-fail-fast", action="store_true", help="ignore the config's run.fail_fast rules")
     parser.add_argument("--snapshots", type=int, metavar="MIN",
@@ -636,7 +638,7 @@ def main():
     started = time.time()
     print(f"{len(tasks)} run(s), {jobs} at a time", flush=True)
 
-    ports = {(c["run"]["name"], s): 34200 + i for i, (c, s) in enumerate(tasks)}
+    ports = {(c["run"]["name"], s): args.port_base + i for i, (c, s) in enumerate(tasks)}
 
     def task(cfg, seed):
         name = cfg["run"]["name"]
