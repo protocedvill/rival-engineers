@@ -69,6 +69,7 @@ phase name and the resume/stale decision. `strategy/adoption-runtime.ts` writes 
 helpers; `factory.ts` advances the record and clears it at the commit point (the goal becoming `building`). Adoption is
 safe to repeat: graph additions replace by id, evictions and reservations are idempotent, `entry.build` is reused and
 completed-mine entities are deduped, so a Lua error part-way resumes on the next tick instead of double-applying.
+`strategy/relocation.ts` is the pure wait boundary between a relocation and its replacement goal: `FactoryState.relocation` records the relocation's clear jobs, and `startGoal` defers a goal whose node roles are still being deconstructed. Planning in the same think as the relocation sees the old footprint as `OWN` and can burn every attempt on a fragment of the patch (B59, seed 3333).
 `world/claim-index.ts` is the typed owner/kind boundary for a faction's world claims: `BrainState.reserved` gains a
 paired `reservedBy` tag (`site:`, `module:`, `route:`, `pole:`, `mine:`) maintained by `syncWorldClaims`, and
 `factoryDiagnostics` reports tagged reservations whose owner is gone or whose tag is one-sided. Ore fields use the same

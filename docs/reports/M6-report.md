@@ -2336,3 +2336,18 @@ Final brand slices for the claim/index and job boundaries. Not an acceptance res
 - Brands are erased; the `ids` suite pins constructor identity.
 
 Validation: typecheck and build pass; T1 **27/27**; full T2 **151 passed, 0 failed** in 349.8 s wall.
+
+
+## M6b.40: B59 relocation wait and depleted no-expand mines (working tree, 2026-10-22)
+
+B59 diagnosis from the `m6-final3` seed-3333 fail-fast (tick 950900) and the targeted reruns.
+
+- **Race:** D55 gives up a depleted mine and the design starts its replacement goal in the same think. The old footprint is still `OWN` until the relocation's clear jobs run, so the plan sees a fragment of the patch and burns its attempts (`no feasible position (1 of 1 patches tried)`). `FactoryState.relocation` records the clear jobs; `startGoal` defers a goal whose node roles are still being deconstructed and continues with other goals.
+- **Second cause:** a depleted mine with no `expand` and no whole-patch plan repeated `cannot grow: no expandable module` and starved its consumers. The D55 path now tries `reclaimWholePatch` first (reuse the footprint, keep the routes, add drills) and relocates only when the patch has no better part left.
+- New pure boundary `strategy/relocation.ts`; T1 `relocation.test.ts`. `factory.ts` stays under the 185-local guard (namespace import; the fuel/lab minute constants are grouped to make room).
+
+Validation:
+- `b59-fix3` seed 3333: **pass**, v1-done at **271.1 game-min**, best science window **1.086**, 0 stalls, 0 replans.
+- `npm run test:unit -- --no-build`: **28/28** files.
+- Full T2: **151 passed, 0 failed**.
+- Full 5-seed acceptance soak on the final commit: pending.

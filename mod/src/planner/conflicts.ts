@@ -204,7 +204,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * built entities get clear jobs (the crew deconstructs them and keeps the items), and they leave the layout, with the
  * routes to and from removed modules and the pole lines of removed poles. Returns the tiles freed and the clear jobs.
  */
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: number[]; routes: RouteId[] } {
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[] } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
   const routes = [...parts.routes]

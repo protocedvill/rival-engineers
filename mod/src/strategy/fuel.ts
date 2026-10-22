@@ -145,6 +145,11 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)
+  // D55/P36: the replacement goal waits for these clear jobs; until then the old footprint is still `OWN` on the map.
+  if (r.clearJobs.length > 0) {
+    f.relocation ??= {}
+    f.relocation[n.role] = r.clearJobs
+  }
   // Belt edges from it lose their routes (their consumers get producers again from the design); taps on its routes went
   // with them (ripRoute), so edges whose physical route is gone are dropped too.
   const gone: Record<string, boolean> = {}

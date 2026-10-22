@@ -42,6 +42,7 @@ import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKin
 import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
 import { nextGoalStatus } from "./goal-lifecycle"
 import type { GoalStatus } from "./goal-lifecycle"
+import * as REL from "./relocation"
 import * as AR from "./adoption-runtime"
 import * as EX from "./explore"
 export { parseStages } from "./stage"
@@ -175,6 +176,8 @@ export interface FactoryState {
   fallback?: Record<string, boolean>
   /** P36 (a, proposed): steam-block fuel producers replaced because their ore ran low (telemetry). */
   fuelRelocations?: number
+  /** D55/P36: roles whose old module is being deconstructed, with the clear jobs a replacement goal waits for. */
+  relocation?: Record<string, IDS.JobId[]>
   /** B19: built producers whose routes could not take a tap: new consumers don't share them. */
   noTap?: Record<string, boolean>
   /** D57 (c): ore patches (`patchKey`) a mine found no room on, with the terrain stamp then; skipped until it changes. */
@@ -211,10 +214,8 @@ declare global {
 const designCache: Record<string, { key: string; design: Design }> = {}
 
 const UPKEEP_INTERVAL = 300
-const FUEL_LOW_MINUTES = 2
-const FUEL_TOP_MINUTES = 8
-const LAB_LOW = 2
-const LAB_FEED = 5
+const FUEL_MINUTES = { low: 2, top: 8 }
+const LAB = { low: 2, feed: 5 }
 const MAX_PLAN_ATTEMPTS = 4
 /** P36 (b): plan attempts a new fuel producer must fail to place before its consumers tap a built one. */
 const FUEL_FALLBACK_ATTEMPTS = 2
@@ -619,13 +620,23 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       if (startGrow(ctx, spec) === true) return
       continue
     }
-    startGoal(ctx, spec)
-    return
+    if (startGoal(ctx, spec)) return
   }
 }
 
-function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): void {
+function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): boolean {
   const f = ctx.f
+  // D55/P36: don't plan a replacement while the old module's clear jobs are still on the board. Its footprint is still
+  // `OWN` in the terrain view, so the only free part of the patch would fail placement and the goal would burn every
+  // attempt in a few game-seconds (seed 3333: coal>power, 266 entities, 8 plan failures in a row).
+  if (f.relocation !== undefined && !REL.pruneRelocations(f.relocation, ctx.faction.board.active)) f.relocation = undefined
+  const roles: string[] = []
+  for (const n of spec.nodes) roles.push(n.role)
+  const held = REL.pendingRelocation(f.relocation, roles, ctx.faction.board.active)
+  if (held !== undefined) {
+    ctx.waiting.push(`${held}: waits for its old module to be deconstructed`)
+    return false
+  }
   const g: FactoryGoal = {
     id: IDS.goalId(`g${f.nextGoal++}`),
     kind: spec.kind,
@@ -642,6 +653,7 @@ function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): void {
   }
   f.goals.push(g)
   planGoal(ctx, g)
+  return true
 }
 
 /**
@@ -1555,6 +1567,11 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
   const f = ctx.f
   const b = entry.build!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, b.parts!, b.priority)
+  // D55/P36: its roles' replacement goals wait for the same clear jobs (the old footprint is still `OWN`).
+  if (r.clearJobs.length > 0) {
+    f.relocation ??= {}
+    for (const n of g.nodes) f.relocation[n.role] = r.clearJobs
+  }
   const reserved = ctx.faction.brain!.reserved
   for (const k of r.tiles) delete reserved[k]
   for (const id of b.parts!.modules) {
@@ -1824,9 +1841,10 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     if (blockedByPlan || (busyGrow !== undefined && busyGrow.growth?.node === r.node)) return
     const n = f.graph.nodes[r.node!]
     const m = n !== undefined ? LO.findModule(f.layout, n.id) : undefined
-    // D55 (user, 2026-10-20): a worked-out mine that can't expand in place (a completed whole-patch mine) moves to the
-    // next free part of its own patch; with nothing better left there, it is given up and planned again elsewhere.
-    if (r.key.startsWith("deplete:") && n !== undefined && m !== undefined && m.minePlan?.complete === true) {
+    // D55 (user, 2026-10-20): a worked-out mine that can't expand in place (a completed whole-patch mine, or a partial one
+    // with no `expand`) first moves to the next free part of its own patch; with nothing better left there, it is given
+    // up and planned again elsewhere.
+    if (r.key.startsWith("deplete:") && n !== undefined && m !== undefined && (m.minePlan?.complete === true || (m.minePlan !== undefined && m.canonical.expand === undefined))) {
       const before = f.goals.length
       const moved = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: 0, have: 0, reclaim: true } })
       // B52: it reroutes a connection still being built: try again later.
@@ -1838,7 +1856,18 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
       relocateDepleted(ctx, n, ctx.waiting[ctx.waiting.length - 1] ?? "its patch is used up", say)
       return
     }
-    if (n === undefined || m === undefined || m.canonical.expand === undefined) {
+    if (n === undefined || m === undefined) {
+      say("cannot grow: no expandable module")
+      return
+    }
+    if (m.canonical.expand === undefined) {
+      // D55: a depleted mine with neither an in-place `expand` nor a whole-patch plan (a shared mine) is given up and
+      // planned again elsewhere. Without this it repeats "cannot grow" every check while its consumers starve
+      // (B59, seed 3333: n39, logistic science).
+      if (r.key.startsWith("deplete:")) {
+        relocateDepleted(ctx, n, ctx.waiting[ctx.waiting.length - 1] ?? "its ore is used up", say)
+        return
+      }
       say("cannot grow: no expandable module")
       return
     }
@@ -2011,13 +2040,13 @@ function handFeed(ctx: Ctx): void {
           if (job !== undefined && job.status === "open") failJob(ctx.faction.board, id!, "automated", ctx.tick)
           continue
         }
-        if (inv.get_item_count(ing.name) >= LAB_LOW || keyActive(ctx, key)) continue
+        if (inv.get_item_count(ing.name) >= LAB.low || keyActive(ctx, key)) continue
         addKeyed(ctx, key, {
           kind: "fuel",
           pos: lab.position,
-          materials: [{ item: ing.name, count: LAB_FEED }],
+          materials: [{ item: ing.name, count: LAB.feed }],
           priority: 95,
-          payload: { kind: "fuel", item: ing.name, count: LAB_FEED, target: lab, partial: true },
+          payload: { kind: "fuel", item: ing.name, count: LAB.feed, target: lab, partial: true },
         })
       }
     }
@@ -2142,11 +2171,11 @@ function upkeep(ctx: Ctx): void {
       const inv = e.get_fuel_inventory()
       if (inv === undefined) continue
       const perTick = e.prototype.get_max_energy_usage() ?? 0
-      const low = math.max(1, math.ceil((FUEL_LOW_MINUTES * 3600 * perTick) / fuelValue))
+      const low = math.max(1, math.ceil((FUEL_MINUTES.low * 3600 * perTick) / fuelValue))
       const have = inv.get_item_count(fuel)
       const key = `upkeep:${e.unit_number}`
       if (have >= low || keyActive(ctx, key)) continue
-      const top = math.max(low + 1, math.ceil((FUEL_TOP_MINUTES * 3600 * perTick) / fuelValue))
+      const top = math.max(low + 1, math.ceil((FUEL_MINUTES.top * 3600 * perTick) / fuelValue))
       const count = math.min(top - have, prototypes.item[fuel].stack_size)
       addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
     }
