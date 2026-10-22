@@ -519,11 +519,20 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
 }
 
 /**
+ * B28: the ground a re-placed module must leave. The old footprint alone is not enough: a candidate just beside it can
+ * sit in the same pocket, so the failed feed repeats. Pad by the route margin, which is the distance at which a
+ * detour would have been found if one existed.
+ */
+export function replacementAvoid(rect: Rect, margin: number): Rect {
+  return { x: rect.x - margin, y: rect.y - margin, w: rect.w + 2 * margin, h: rect.h + 2 * margin }
+}
+
+/**
  * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
  * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
  * route touching it, and place it again away from its old footprint. Returns false if no module can move.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, search?: Search): boolean {
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, search?: Search): boolean {
   const ids = [c.to.module]
   if (c.from !== undefined) ids.push(c.from.module)
   // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
@@ -543,7 +552,10 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, searc
     unmarkModule(job.layout, m, facts)
     job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
     job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
-    job.avoid[mid] = [...(job.avoid[mid] ?? []), m.rect]
+    // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
+    // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
+    const pad = search?.sealed !== undefined ? policy.router.margin : 0
+    job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
     job.replaceQueue.push(mid)
     if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
     if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
@@ -808,7 +820,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       const reason = cur.search.reason ?? "no path"
       // Traced before tryReplace changes the layout; a re-placement only retries the connection.
       const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-      if (!tryReplace(job, c, facts, cur.search)) job.failures[cur.conn] = reason
+      if (!tryReplace(job, c, facts, policy, cur.search)) job.failures[cur.conn] = reason
       else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
       job.current = undefined
     }
@@ -835,7 +847,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     const n = job.ripCount[vr.conn] ?? 0
     if (n >= policy.router.maxRipups) {
       routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
-      if (!tryReplace(job, c, facts)) {
+      if (!tryReplace(job, c, facts, policy)) {
         job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
         traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
       }

@@ -7,10 +7,10 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, lineKey, newLayout, PlacedModule, Route, spanConflicts, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
-import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
+import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
@@ -1119,6 +1119,87 @@ test("B57: on open ground the lane test walks about `need` tiles, not the whole 
   const path = laneWayOut({ x: 0, y: 0 }, g.free, 32, { under: g.under, max: LANE_HOP })
   ok(path !== undefined && path.length <= 34, `a short way out (${path?.length})`)
   ok(g.calls.n < 400, `${g.calls.n} tiles looked at`)
+})
+
+
+test("B58: an underground span may not run under a splitter tap's input tile", () => {
+  const layout = newLayout()
+  const route = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "coal",
+    to: { module: "n37", port: "in-fuel" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  const root = route("root", "coal-root")
+  root.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }]
+  root.tiles = [tkey(5, 5)]
+  commitRoute(layout, root)
+  const tap = route("tap", "coal-tap", "root")
+  tap.steps = [{ kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 }]
+  tap.tiles = [tkey(5, 5), tkey(5, 6)]
+  commitRoute(layout, tap)
+  ok(spanConflicts(layout, lineKey(5, 5, 1), 4, 6).indexOf("tap") >= 0, "the span covers the tap")
+  ok(spanConflicts(layout, lineKey(5, 0, 1), 4, 6).indexOf("tap") < 0, "another line is free")
+})
+
+
+test("B58: replacing a route rips its splitter taps", () => {
+  const layout = newLayout()
+  const route = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "coal",
+    to: { module: "n37", port: "in-fuel" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  const root = route("root", "coal-root")
+  root.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }]
+  root.tiles = [tkey(5, 5)]
+  commitRoute(layout, root)
+  const tap = route("tap", "coal-tap", "root")
+  tap.steps = [{ kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 }]
+  tap.tiles = [tkey(5, 5), tkey(5, 6)]
+  commitRoute(layout, tap)
+  const replacement = route("root", "coal-root")
+  replacement.steps = [{ kind: "ug-in", x: 5, y: 5, dir: 1 }, { kind: "ug-out", x: 7, y: 5, dir: 1 }]
+  replacement.tiles = [tkey(5, 5), tkey(7, 5)]
+  replacement.spans = [{ line: "h5", span: { a: 5, b: 7, route: "root" } }]
+  commitRoute(layout, replacement)
+  ok(layout.routes["tap"] === undefined, "the stale tap is ripped with the replaced route")
+})
+
+
+test("B28: a re-placed module leaves its old footprint plus the route margin", () => {
+  const old = { x: 10, y: 20, w: 5, h: 4 }
+  const away = replacementAvoid(old, 24)
+  eq(away.x, -14, "left")
+  eq(away.y, -4, "top")
+  eq(away.w, 53, "width")
+  eq(away.h, 52, "height")
+  // A candidate just outside the old rectangle is still excluded: that is the same pocket that failed.
+  ok(away.x <= old.x + old.w && old.x + old.w <= away.x + away.w, "the old right edge is inside")
+  ok(away.y <= old.y + old.h && old.y + old.h <= away.y + away.h, "the old bottom edge is inside")
 })
 
 run("planner")

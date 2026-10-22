@@ -2363,3 +2363,22 @@ Validation:
   Seed 222 exercised the reclaim path (`goal g20 moves it to the next part of its patch (D55)`); seeds 3333 and
   555555 exercised the relocation fallback (n26 and n42). Work counts: 49 flagged against the soft baseline, mostly
   router/scan counters; the acceptance gate is pass/fail on v1-done, not the soft work gate.
+
+
+## M6b.41: B58 splitter tap on a replaced route (working tree, 2026-10-22)
+
+The min-160 graph dump showed the coal feed `n39 -> n37` was a splitter tap whose splitter tile was covered by the
+parent route's underground span. Its west input was the underground end, not a belt, so it received nothing while the
+logical edge still looked connected and the repair said "nothing missing".
+
+- `commitRoute` now rips an existing route (and, recursively, its splitter taps) before replacing it in place.
+- `spanConflicts` treats a tap's splitter tile as a conflict, so a later underground span blocks or rips the tap.
+
+T1 `planner` B58 ×2; full T2 151/151. Seed 1212121 `b58-fix2`: **v1-done 212.7 game-min**, 0 stalls.
+
+## M6b.42: B28 sealed replacement leaves the pocket (working tree, 2026-10-22)
+
+Part 2 of B28: `tryReplace` excluded only the old footprint, so it could choose an adjacent site in the same pocket and
+repeat the unroutable feed. A sealed failure now avoids `replacementAvoid(old rect, router.margin)`; ordinary
+congestion keeps the tight rectangle because padding every replacement broke the `seed3333-production-ok` comparison.
+T1 adds `replacementAvoid`; the affected replay plans again. Review and options: `docs/analysis/B28-review.md`.
