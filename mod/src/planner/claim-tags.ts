@@ -1,6 +1,7 @@
 // The string spelling of LayoutState's index claims, in one leaf module. layout.ts (the canonical writer) and
 // claims.ts (the typed reader and owner checker) share these, so an add and its matching remove cannot drift apart.
 
+
 /** A module's footprint tile: "m:<module id>". */
 export function moduleTag(id: string): string {
   return `m:${id}`

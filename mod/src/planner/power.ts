@@ -8,6 +8,8 @@
 // is a list of pole lines added to the LayoutState (`layout.poles`), so routes and later plans keep off them, and the
 // build list stamps them. Pure: no Factorio globals.
 
+import { moduleId } from "../shared/ids"
+import type { ModuleId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { claimPoleTile, poleClaimConflict, releasePoleTile } from "./claims"
 import { FREE, ROCK, TerrainView, tkey, TREE } from "./grid"
@@ -43,7 +45,7 @@ export interface PoleJob {
 }
 
 interface PoleSearch {
-  target: string
+  target: ModuleId
   /** Window margin around the endpoints; a failed search is retried with a wider one. */
   margin: number
   /** Target component poles. */
@@ -145,9 +147,9 @@ function layoutPoles(layout: LayoutState, facts: ProtoFacts): PoleNode[] {
 }
 
 /** Modules that make electricity (a generator entity inside) and modules that need it (a power port). */
-export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: string[]; consumers: string[] } {
-  const sources: string[] = []
-  const consumers: string[] = []
+export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: ModuleId[]; consumers: ModuleId[] } {
+  const sources: ModuleId[] = []
+  const consumers: ModuleId[] = []
   for (const m of layout.modules) {
     let gen = false
     for (const e of m.def.entities) if (facts.entity(e.name)?.type === "generator") gen = true
@@ -280,7 +282,7 @@ function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boo
   const x1 = math.ceil(math.max(gx2, best.src.x) + margin)
   const y1 = math.ceil(math.max(gy2, best.src.y) + margin)
   const s: PoleSearch = {
-    target: best.owner,
+    target: moduleId(best.owner),
     margin,
     goals,
     gx1,

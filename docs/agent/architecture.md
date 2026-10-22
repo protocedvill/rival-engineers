@@ -84,8 +84,11 @@ the same module (a mine's own growth area): `claimMineTile` releases another own
 still reports a persisted disagreement.
 `shared/ids.ts` declares the branded identifiers for values that cross layers. A brand is erased at runtime, so saves
 and Lua comparisons keep their old shape. `GoalId` is migrated end to end (`FactoryGoal.id`, the goal lifecycle, the
-adoption record and diagnostic events); module, route, pole-line, job and claim brands are declared for the same
-incremental migration. Construct at the owner and read old saves through the constructor; do not cast at use sites.
+adoption record and diagnostic events). `ModuleId` covers placed module instances (`PlacedModule.id`), goal and
+graph node ids, graph edge endpoints and stored claim owners; module *definition* ids (`ModuleDef.id`,
+`LogicalNode.module`) stay unbranded. Planner request and port ids stay strings until the route/connection slice.
+Route, pole-line, job and claim brands are declared for the same incremental migration. Construct at the owner and
+read old saves through the constructor; do not cast at use sites.
 Stable outcome codes stay separate from prose: `DiagnosticDecision` types every telemetry decision
 (`adoption-resumed`, `stale-plan-rejected`, …) and `PlanDeltaRejectionCode` names the plan-delta rejections, with the
 human explanation in `reason`/`detail`. `mod/unit/model-sequences.test.ts` chains the boundaries in the order the

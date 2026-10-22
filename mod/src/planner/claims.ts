@@ -2,6 +2,8 @@
 // stay separate: this module gives them one ownership vocabulary without adding a second stored representation.
 
 import { interactionTag, isLaneReservation, isOwnPortReservation, isPoleTag, moduleTag, poleTag } from "./claim-tags"
+import { moduleId } from "../shared/ids"
+import type { ModuleId } from "../shared/ids"
 import { keyX, keyY } from "./grid"
 import type { LayoutState } from "./layout"
 
@@ -216,7 +218,7 @@ export function releaseRouteTile(state: LayoutState, key: number, id: string): b
 export function claimMineTile(state: LayoutState, key: number, owner: string): boolean {
   state.mine ??= {}
   if (state.mine[key] !== undefined || state.occ[key] !== undefined) return false
-  state.mine[key] = owner
+  state.mine[key] = moduleId(owner)
   // The mine hard-claims this ground, so another module's soft growth claim on it is stale. Release it here; keeping
   // it would make the tile read as free to soft queries while the hard claim refuses every growth.
   const softState = state.soft
@@ -247,7 +249,7 @@ export function claimSoftTile(state: LayoutState, key: number, owner: string, un
   // Another module's mine ground is hard: it may not gain a soft claim beside its own hard one.
   const mine = state.mine?.[key]
   if (mine !== undefined && mine !== owner) return false
-  state.soft[key] = owner
+  state.soft[key] = moduleId(owner)
   state.softUnit ??= {}
   state.softUnit[key] = unit
   return true
@@ -266,7 +268,7 @@ export function releaseSoftClaims(state: LayoutState, owner: string): number {
   return n
 }
 
-function hasModule(state: LayoutState, id: string): boolean {
+function hasModule(state: LayoutState, id: ModuleId): boolean {
   for (const m of state.modules) if (m.id === id) return true
   return false
 }
@@ -277,7 +279,7 @@ function hasPoleLine(state: LayoutState, id: string): boolean {
 }
 
 /** Resolves `p:<module>.<port>` without assuming module ids contain no dots. */
-function reservationModule(state: LayoutState, tag: string): string | undefined {
+function reservationModule(state: LayoutState, tag: string): ModuleId | undefined {
   const raw = isLaneReservation(tag) ? string.sub(tag, 6) : tag
   if (string.sub(raw, 1, 2) !== "p:") return undefined
   for (const m of state.modules) if (isOwnPortReservation(raw, m.id)) return m.id
@@ -290,8 +292,8 @@ export function checkClaimOwners(state: LayoutState): string[] {
   for (const [key, tag] of pairs(state.occ)) {
     const k = key as number
     const claim = occupancyClaim(tag as string)
-    if (claim.kind === "module" && !hasModule(state, claim.owner)) problems.push(`occ ${keyX(k)},${keyY(k)} names missing module ${claim.owner}`)
-    else if (claim.kind === "interaction" && !hasModule(state, claim.owner)) problems.push(`occ ${keyX(k)},${keyY(k)} names missing interaction owner ${claim.owner}`)
+    if (claim.kind === "module" && !hasModule(state, moduleId(claim.owner))) problems.push(`occ ${keyX(k)},${keyY(k)} names missing module ${claim.owner}`)
+    else if (claim.kind === "interaction" && !hasModule(state, moduleId(claim.owner))) problems.push(`occ ${keyX(k)},${keyY(k)} names missing interaction owner ${claim.owner}`)
     else if (claim.kind === "pole-line" && !hasPoleLine(state, claim.owner)) problems.push(`occ ${keyX(k)},${keyY(k)} names missing pole line ${claim.owner}`)
   }
   for (const [key, tag] of pairs(state.reserved)) {
@@ -300,14 +302,14 @@ export function checkClaimOwners(state: LayoutState): string[] {
     if (reservationModule(state, raw) === undefined) problems.push(`reservation ${keyX(key as number)},${keyY(key as number)} names missing port owner ${raw}`)
   }
   for (const [key, owner] of pairs(state.mine ?? {})) {
-    if (!hasModule(state, owner as string)) problems.push(`mine claim ${keyX(key as number)},${keyY(key as number)} names missing module ${owner as string}`)
+    if (!hasModule(state, moduleId(owner as string))) problems.push(`mine claim ${keyX(key as number)},${keyY(key as number)} names missing module ${owner as string}`)
     // A mine claims its ground both hard (`mine`) and for its own growth (`soft`). Another module's soft claim left on
     // a mine tile is stale: growth cannot use it (the hard claim refuses) but it makes the tile look free to soft
     // queries, so report the disagreement instead of letting it accumulate.
     const soft = state.soft?.[key as number]
     if (soft !== undefined && soft !== owner) problems.push(`mine claim ${keyX(key as number)},${keyY(key as number)} owned by ${owner as string} is soft-claimed by ${soft as string}`)
   }
-  for (const [key, owner] of pairs(state.soft ?? {})) if (!hasModule(state, owner as string)) problems.push(`soft claim ${keyX(key as number)},${keyY(key as number)} names missing module ${owner as string}`)
+  for (const [key, owner] of pairs(state.soft ?? {})) if (!hasModule(state, moduleId(owner as string))) problems.push(`soft claim ${keyX(key as number)},${keyY(key as number)} names missing module ${owner as string}`)
   for (const [key] of pairs(state.softUnit ?? {})) if (state.soft?.[key as number] === undefined) problems.push(`soft unit ${keyX(key as number)},${keyY(key as number)} has no soft claim`)
   return problems
 }

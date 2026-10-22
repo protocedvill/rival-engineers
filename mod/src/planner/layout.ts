@@ -6,6 +6,7 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
+import type { ModuleId } from "../shared/ids"
 import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
 import { isPoleTag, moduleTag, poleTag, portTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
@@ -16,7 +17,7 @@ export { releasePoleTile }
 
 export interface PlacedModule {
   /** Instance id (unique in the layout). */
-  id: string
+  id: ModuleId
   /** The module in its canonical orientation (for expansion), and as placed (transformed, module-local). */
   canonical: ModuleDef
   def: ModuleDef
@@ -106,7 +107,7 @@ export interface PlannedPole {
 export interface PoleLine {
   id: string
   /** The module joined to the network, and the owner of the powered pole it was joined from. */
-  to: string
+  to: ModuleId
   from: string
   poles: string[]
 }
@@ -131,7 +132,7 @@ export interface LayoutState {
    * B9 soft claims (D48 (4)): tiles an expandable module (`ModuleDef.expand`) can still grow into, up to its unit cap →
    * that module's id. Placement and routing pay a cost there (policy weights), nothing blocks.
    */
-  soft?: Record<number, string>
+  soft?: Record<number, ModuleId>
   /**
    * B52: the growth unit a soft-claimed tile belongs to (0: the unit next to the module). Routes pay less for each unit
    * farther out (`softClaimDecay`). Absent (a mine's claim, a layout from before B52): unit 0.
@@ -141,7 +142,7 @@ export interface LayoutState {
    * D52 (3): a mining outpost's planned room to grow (its growth area: tile → outpost id) is a hard claim: no other
    * module, no other module's route and no pole may take it (the user saw poles block mine expansion).
    */
-  mine?: Record<number, string>
+  mine?: Record<number, ModuleId>
   /** Underground spans per line ("h<y>" or "v<x>"). */
   spans: Record<string, UgSpan[]>
   routes: Record<string, Route>

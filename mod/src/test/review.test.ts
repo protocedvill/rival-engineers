@@ -1,5 +1,6 @@
 import { LuaRenderObject, PlayerIndex, Tags } from "factorio:runtime"
 import { miningOutpost, smelterColumn } from "../modules/generators"
+import { moduleId } from "../shared/ids"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { FREE, TerrainView } from "../planner/grid"
 import { commitModule, newLayout, PlacedModule } from "../planner/layout"
@@ -135,14 +136,14 @@ describe("review tools", () => {
     const layout = newLayout()
     // A 4-furnace iron column: its growth units on the end tryExpand uses.
     const col = smelterColumn(prototypeFacts, { recipe: "iron-plate", furnaces: 4 })
-    const sm: PlacedModule = { id: "s", canonical: col, def: col, transform: { rot: 0, mirror: false }, origin: { x: ox - 40, y: oy - 40 }, rect: { x: ox - 40, y: oy - 40, w: col.footprint.w, h: col.footprint.h } }
+    const sm: PlacedModule = { id: moduleId("s"), canonical: col, def: col, transform: { rot: 0, mirror: false }, origin: { x: ox - 40, y: oy - 40 }, rect: { x: ox - 40, y: oy - 40, w: col.footprint.w, h: col.footprint.h } }
     commitModule(layout, sm, prototypeFacts, policy.corridor.preferred)
     // An iron patch (also on the surface, for the outline) and a mine planned over it.
     const ore = { x: ox, y: oy, w: 18, h: 15 }
     for (let x = ore.x; x < ore.x + ore.w; x++) for (let y = ore.y; y < ore.y + ore.h; y++) lab.surface.create_entity({ name: "iron-ore", position: { x: x + 0.5, y: y + 0.5 }, amount: 1000 })
     const view: TerrainView = { block: () => FREE, ore: (x, y) => (x >= ore.x && y >= ore.y && x < ore.x + ore.w && y < ore.y + ore.h ? "iron-ore" : undefined) }
     const raw = miningOutpost(prototypeFacts, { resource: "iron-ore", rows: 2, sides: 1 })
-    const mine: PlacedModule = { id: "mine", canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: ox + 2, y: oy + 2 }, rect: { x: ox + 2, y: oy + 2, w: raw.footprint.w, h: raw.footprint.h } }
+    const mine: PlacedModule = { id: moduleId("mine"), canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: ox + 2, y: oy + 2 }, rect: { x: ox + 2, y: oy + 2, w: raw.footprint.w, h: raw.footprint.h } }
     prepareWholePatchPlacement(mine, view, prototypeFacts, { x: ox - 48, y: oy - 48, w: 96, h: 96 }, policy, layout)
     assert(mine.minePlan !== undefined, "the mine has its whole-patch plan")
     commitModule(layout, mine, prototypeFacts, policy.corridor.preferred)

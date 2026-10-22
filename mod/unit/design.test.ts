@@ -1,5 +1,6 @@
 import { generate, GeneratorName } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
+import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addNode, LogicalGraph, newGraph } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
@@ -114,7 +115,7 @@ function graphWith(d: ReturnType<typeof design>, roles: string[], capacity: Reco
     if (roles.indexOf(n.role) < 0) continue
     const cap = capacity[n.role] ?? n.capacity
     addNode(g, {
-      id: `n${g.nextId++}`,
+      id: moduleId(`n${g.nextId++}`),
       role: n.role,
       kind: n.kind,
       item: n.item,

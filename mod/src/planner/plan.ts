@@ -15,6 +15,7 @@ import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
+import { moduleId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
@@ -353,7 +354,7 @@ function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean,
 }
 
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
-  return { module: job.alias[ref.module] ?? ref.module, port: ref.port }
+  return { module: moduleId(job.alias[ref.module] ?? ref.module), port: ref.port }
 }
 
 /** D50: the modules `id` connects to (placed or not): their soft claims don't push it away. */
@@ -488,7 +489,7 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
 }
 
 function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
-  const id = job.replaceQueue[0]
+  const id = moduleId(job.replaceQueue[0])
   if (job.placement === undefined) {
     const mreq = moduleRequest(job, id)
     job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id), dead: job.request.deadPatches })
@@ -562,7 +563,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.ordered = true
     if (policy.smelting === "near-ore") job.order = nearOreOrder(job.request, job.order, facts)
   }
-  const id = job.order[job.placeIdx]
+  const id = moduleId(job.order[job.placeIdx])
   const mreq = moduleRequest(job, id)
   if (job.placement === undefined) {
     // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to

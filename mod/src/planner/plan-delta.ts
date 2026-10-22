@@ -4,6 +4,7 @@ import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import { checkClaimOwners } from "./claims"
 import { checkLayoutIndexes, layoutRevision } from "./layout"
 import type { LayoutState } from "./layout"
+import type { ModuleId } from "../shared/ids"
 
 /** The planner fields needed to prepare adoption. Kept narrow so fixtures need not construct a whole running job. */
 export interface PlanDeltaInput {
@@ -30,12 +31,12 @@ export interface PlanClaimDelta {
   /** Ground the candidate takes: new part tiles plus whole-patch mine claims, deduped in partTiles order. */
   takenTiles: number[]
   /** Added modules with a whole-patch mine plan: the module id and its claim tiles, in `add.modules` order. */
-  mineClaims: { module: string; tiles: number[] }[]
+  mineClaims: { module: ModuleId; tiles: number[] }[]
 }
 
 /** A built module whose whole-patch mine the plan completed: the entities the adapter must add. */
 export interface PlanMineCompletion {
-  module: string
+  module: ModuleId
   /** The completed mine's entities, in candidate part order. */
   entities: EntitySpec[]
 }
@@ -92,7 +93,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
   const claimProblems = checkClaimOwners(input.layout)
   if (claimProblems.length > 0) return { status: "rejected", code: "invalid-layout-claims", problems: claimProblems, detail: claimProblems.join("; ") }
 
-  const addModules: string[] = []
+  const addModules: ModuleId[] = []
   for (const m of input.layout.modules) if (!input.baseModules[m.id]) addModules.push(m.id)
   const addRoutes: string[] = []
   for (const id of input.layout.routeOrder) if (!input.baseRoutes[id]) addRoutes.push(id)
@@ -102,7 +103,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
   const addPoles: string[] = []
   for (const id of input.addedPoles ?? []) if (candidatePoles[id]) addPoles.push(id)
 
-  const removeModules: string[] = []
+  const removeModules: ModuleId[] = []
   for (const m of current.modules) if (input.layout.modules.every((candidate) => candidate.id !== m.id)) removeModules.push(m.id)
   const removeRoutes: string[] = []
   for (const id of current.routeOrder) if (input.layout.routes[id] === undefined) removeRoutes.push(id)
@@ -132,7 +133,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
   const takenTiles = partTiles(input.layout, add)
   const takenSeen: Record<number, boolean> = {}
   for (const k of takenTiles) takenSeen[k] = true
-  const mineClaims: { module: string; tiles: number[] }[] = []
+  const mineClaims: { module: ModuleId; tiles: number[] }[] = []
   for (const m of input.layout.modules) {
     if (!addSet[m.id] || m.minePlan === undefined) continue
     const tiles = [...m.minePlan.claim]

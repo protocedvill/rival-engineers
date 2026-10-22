@@ -24,6 +24,7 @@ import {
   routeClaimConflict,
 } from "../src/planner/claims"
 import { laneTag, portTag } from "../src/planner/claim-tags"
+import { moduleId } from "../src/shared/ids"
 import { tkey } from "../src/planner/grid"
 import { newLayout, Route } from "../src/planner/layout"
 import { eq, ok, run, test } from "./harness"
@@ -34,8 +35,8 @@ test("claims expose every existing index through one typed vocabulary", () => {
   state.occ[k] = "x:poles:g1:0"
   state.reserved[k] = "lane:p:m1.in"
   state.routeOcc[k] = "route:r1"
-  state.mine = { [k]: "m1" }
-  state.soft = { [k]: "m1" }
+  state.mine = { [k]: moduleId("m1") }
+  state.soft = { [k]: moduleId("m1") }
   const claims = claimsAt(state, k)
   eq(claims.map((c) => c.kind).join(","), "pole-line,lane-reservation,route,mine-growth,soft-growth")
   eq(claims.map((c) => c.strength).join(","), "evictable,hard,evictable,hard,soft")
@@ -154,7 +155,7 @@ test("claim ownership checks find orphaned and one-sided index entries", () => {
   const state = newLayout()
   state.occ[tkey(1, 1)] = "m:gone"
   state.reserved[tkey(2, 1)] = "p:gone.in"
-  state.mine = { [tkey(3, 1)]: "gone" }
+  state.mine = { [tkey(3, 1)]: moduleId("gone") }
   state.softUnit = { [tkey(4, 1)]: 2 }
   const problems = checkClaimOwners(state)
   ok(problems.some((p) => p.indexOf("missing module gone") >= 0), problems.join("; "))
@@ -165,10 +166,10 @@ test("claim ownership checks find orphaned and one-sided index entries", () => {
 test("a mine tile may be soft-claimed by its own module, not by another", () => {
   const state = newLayout()
   const k = tkey(5, 5)
-  state.mine = { [k]: "m1" }
-  state.soft = { [k]: "m1" }
+  state.mine = { [k]: moduleId("m1") }
+  state.soft = { [k]: moduleId("m1") }
   ok(!checkClaimOwners(state).some((p) => p.indexOf("soft-claimed by") >= 0), "the mine's own growth claim agrees")
-  state.soft[k] = "m2"
+  state.soft![k] = moduleId("m2")
   const problems = checkClaimOwners(state)
   ok(problems.some((p) => p.indexOf("mine claim 5,5 owned by m1 is soft-claimed by m2") >= 0), problems.join("; "))
 })

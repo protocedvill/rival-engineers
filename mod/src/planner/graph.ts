@@ -9,6 +9,7 @@ import { availableTiers, BeltTier, checkEdge, CapacityCheck, decideOverflow, Ove
 import { Rect, Vec } from "./grid"
 import { findModule, findPort, LayoutState, portTile, PortRef, RouteStep } from "./layout"
 import { LayoutPolicy } from "./policy"
+import type { ModuleId } from "../shared/ids"
 
 export interface PhysPort {
   id: string
@@ -23,7 +24,7 @@ export interface PhysPort {
 }
 
 export interface PhysNode {
-  id: string
+  id: ModuleId
   module: string
   generator?: string
   recipe?: string

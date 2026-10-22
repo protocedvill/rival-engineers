@@ -1,5 +1,6 @@
 import { miningOutpost, smelterColumn } from "../src/modules/generators"
 import { transformModule } from "../src/modules/geometry"
+import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
@@ -28,7 +29,7 @@ function oreField(w: number, h: number, fromY: number): TerrainView {
 }
 
 function place(l: LayoutState, id: string, def: ModuleDef, x: number, y: number): PlacedModule {
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(l, m, F, 2)
   return m
 }
@@ -155,7 +156,7 @@ test("a mining outpost may grow beside another mine, but not beside a non-mining
   const l = newLayout()
   place(l, "a", mine, 50, 70)
   const rotated = transformModule(mine, { rot: 2, mirror: false })
-  const b: PlacedModule = { id: "b", canonical: mine, def: rotated, transform: { rot: 2, mirror: false }, origin: { x: 50, y: 83 }, rect: { x: 50, y: 83, w: rotated.footprint.w, h: rotated.footprint.h }, fixed: true }
+  const b: PlacedModule = { id: moduleId("b"), canonical: mine, def: rotated, transform: { rot: 2, mirror: false }, origin: { x: 50, y: 83 }, rect: { x: 50, y: 83, w: rotated.footprint.w, h: rotated.footprint.h }, fixed: true }
   commitModule(l, b, F, 2)
   const besideMine = planGrowth(l, view, F, POLICY, TIER, "a", 1)
   ok(besideMine.ok, `mine adjacency allowed: ${besideMine.reason}`)

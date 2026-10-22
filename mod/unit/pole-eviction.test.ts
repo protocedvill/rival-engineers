@@ -1,5 +1,6 @@
 import { labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
+import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { CLIFF, FREE, rectContains, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { planGrowth } from "../src/planner/grow"
@@ -23,7 +24,7 @@ function free(w: number, h: number): TerrainView {
 }
 
 function place(l: LayoutState, id: string, def: ModuleDef, x: number, y: number): PlacedModule {
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(l, m, F, 2)
   return m
 }

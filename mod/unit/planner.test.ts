@@ -1,5 +1,6 @@
 import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
+import { moduleId } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
 import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
@@ -55,7 +56,7 @@ function machine(id: string, name = "burner-mining-drill"): ModuleDef {
 
 function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  const m: PlacedModule = { id: moduleId(def.id), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
   commitModule(state, m, F, 0)
   return m
 }
@@ -201,7 +202,7 @@ test("plan delta derives logical and claim evidence once, in deterministic order
   commitRoute(job.layout, route("r2", "b", "r1"))
   claimPoleTile(job.layout, tkey(8, 2), "poles:g1:0")
   job.layout.poles = [{ id: "p1", name: "small-electric-pole", x: 8, y: 2, line: "poles:g1:0" }]
-  job.layout.poleLines = [{ id: "poles:g1:0", to: "added", from: "?", poles: ["p1"] }]
+  job.layout.poleLines = [{ id: "poles:g1:0", to: moduleId("added"), from: "?", poles: ["p1"] }]
 
   const input = {
     sourceRevision: job.sourceRevision,

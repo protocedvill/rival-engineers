@@ -1,5 +1,6 @@
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { spawnFaction } from "../autospawn"
+import { moduleId } from "../shared/ids"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
@@ -323,7 +324,7 @@ describe("burner bootstrap", () => {
         const def = generatedModule("mining-outpost", { resource: "stone", rows: 2, sides: 1 })
         const o = at(lab, 0, 0)
         const region = { x: math.floor(o.x) - 30, y: math.floor(o.y) - 30, w: 60, h: 60 }
-        startPlan({ id, surface: lab.surface.name, force: faction.force, faction: faction.name, baseFaction: faction.name, request: { modules: [{ id: "out", def }], connections: [], center: at(lab, 10, -11), region } })
+        startPlan({ id, surface: lab.surface.name, force: faction.force, faction: faction.name, baseFaction: faction.name, request: { modules: [{ id: moduleId("out"), def }], connections: [], center: at(lab, 10, -11), region } })
         return false
       }
       const entry = getPlannerEntry(id)!

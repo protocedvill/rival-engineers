@@ -3,6 +3,7 @@
 // keeps one unit test green but breaks the hand-off fails here.
 
 import { IDENTITY } from "../src/modules/geometry"
+import { moduleId } from "../src/shared/ids"
 import { EAST, ModuleDef, Port } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
@@ -30,7 +31,7 @@ function sink(id: string, dir: number, item = "iron-plate"): ModuleDef {
 }
 
 function place(layout: ReturnType<typeof newLayout>, def: ModuleDef, x: number, y: number): PlacedModule {
-  const m: PlacedModule = { id: def.id, canonical: def, def, transform: IDENTITY, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h } }
+  const m: PlacedModule = { id: moduleId(def.id), canonical: def, def, transform: IDENTITY, origin: { x, y }, rect: { x, y, w: def.footprint.w, h: def.footprint.h } }
   commitModule(layout, m, F, 0)
   return m
 }
@@ -112,7 +113,7 @@ test("sequence: an adopted routed plan is abandoned and replanned on the freed g
   const base = newLayout()
   place(base, source("producer", EAST), 10, 10)
   place(base, sink("consumer", EAST), 20, 10)
-  const conns: ConnectionRequest[] = [{ id: "line", from: { module: "producer", port: "out" }, to: { module: "consumer", port: "in" } }]
+  const conns: ConnectionRequest[] = [{ id: "line", from: { module: moduleId("producer"), port: "out" }, to: { module: moduleId("consumer"), port: "in" } }]
   const job = runJob(routingJob(request([], conns), base), view, F, POLICY)
   eq(job.phase, "done", "the route was planned")
 

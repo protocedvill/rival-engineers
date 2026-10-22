@@ -1,5 +1,6 @@
 import { EntityFacts } from "../src/modules/facts"
 import { miningOutpost } from "../src/modules/generators"
+import { moduleId } from "../src/shared/ids"
 import { powerCheck } from "../src/modules/poles"
 import { EAST, NORTH, SOUTH, WEST } from "../src/modules/types"
 import { entityRect, portOutsideTile } from "../src/modules/geometry"
@@ -166,7 +167,7 @@ test("D52 placement reserves the exact 2D plan and growth completes it without m
 test("B21 finds an older module under a later whole-patch claim", () => {
   const base = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
   const old: PlacedModule = {
-    id: "temp",
+    id: moduleId("temp"),
     canonical: base,
     def: base,
     transform: { rot: 0, mirror: false },
@@ -174,7 +175,7 @@ test("B21 finds an older module under a later whole-patch claim", () => {
     rect: { x: 10, y: 10, w: 5, h: 5 },
   }
   const mine: PlacedModule = {
-    id: "mine",
+    id: moduleId("mine"),
     canonical: base,
     def: base,
     transform: { rot: 0, mirror: false },

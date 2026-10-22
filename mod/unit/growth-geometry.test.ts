@@ -5,6 +5,7 @@
 // the patch part they claim at maximum drill coverage. Pure: generated modules, synthetic and captured ore patches.
 
 import { expandModule } from "../src/modules/build"
+import { moduleId } from "../src/shared/ids"
 import { assemblerRow, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { transformEntity, transformModule, Transform } from "../src/modules/geometry"
 import { CuratedModuleFile, ModuleDef, ModuleEntity } from "../src/modules/types"
@@ -114,7 +115,7 @@ for (const mirror of [false, true]) for (const rot of [0, 1, 2, 3]) TRANSFORMS.p
 
 function place(def: ModuleDef, t: Transform, x: number, y: number): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  return { id: "m", canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  return { id: moduleId("m"), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
 }
 
 function openTerrain(resource?: string): TerrainView {
@@ -287,7 +288,7 @@ test("B33 a strip mine that can't take a plan claims growth only over its ore", 
   const view = patchTerrain(region, (x, y) => (x >= 30 && x < 39 && y >= 10 && y < 30 ? "iron-ore" : undefined), (x, y) => (y === 20 || (x === 34 && y >= 17) ? 5 : undefined))
   const state = newLayout()
   const raw = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 }), rotatable: false, mirrorable: false }
-  const m: PlacedModule = { id: "mine", canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 9 }, rect: { x: 30, y: 9, w: raw.footprint.w, h: raw.footprint.h } }
+  const m: PlacedModule = { id: moduleId("mine"), canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 9 }, rect: { x: 30, y: 9, w: raw.footprint.w, h: raw.footprint.h } }
   prepareWholePatchPlacement(m, view, F, region, P2P, state)
   eq(m.minePlan, undefined, "no whole-patch plan (blocked)")
   commitModule(state, m, F, P2P.corridor.preferred)
@@ -307,7 +308,7 @@ test("B33 strip growth refuses a drill with no ore under it", () => {
   const view = patchTerrain(region, (x, y) => ((x >= 10 && x < 19 && y >= 1 && y < 20) || ((x === 10 || x === 18) && y >= 1 && y < 40) ? "iron-ore" : undefined))
   const raw = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 }), rotatable: false, mirrorable: false }
   const state = newLayout()
-  const m: PlacedModule = { id: "mine", canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: 10, y: 1 }, rect: { x: 10, y: 1, w: raw.footprint.w, h: raw.footprint.h } }
+  const m: PlacedModule = { id: moduleId("mine"), canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: 10, y: 1 }, rect: { x: 10, y: 1, w: raw.footprint.w, h: raw.footprint.h } }
   commitModule(state, m, F, P2P.corridor.preferred)
   ok(tryExpand(state, view, F, P2P, "mine", 1).ok, "the first unit (on ore) grows")
   ok(tryExpand(state, view, F, P2P, "mine", 1).ok, "the second unit (on ore) grows")
@@ -438,9 +439,9 @@ test("D55: planGrowth moves a worked-out mine to the next part of its patch and 
   placeMine(state, view, region, P2P, "mine", { x: 22, y: 54 })
   ok(tryExpand(state, view, F, P2P, "mine", 1).ok, "completed")
   const smelt = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
-  const sm: PlacedModule = { id: "smelt", canonical: smelt, def: smelt, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 10 }, rect: { x: 30, y: 10, w: smelt.footprint.w, h: smelt.footprint.h }, fixed: true }
+  const sm: PlacedModule = { id: moduleId("smelt"), canonical: smelt, def: smelt, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 10 }, rect: { x: 30, y: 10, w: smelt.footprint.w, h: smelt.footprint.h }, fixed: true }
   commitModule(state, sm, F, 2)
-  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 40, y: 40 }, region }, beltTiers(F)[0], state), view, F, P2P)
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: 40, y: 40 }, region }, beltTiers(F)[0], state), view, F, P2P)
   eq(job.phase, "done", "routed")
   const done = patchTerrain(region, workedOut(findModule(job.layout, "mine")!, ore))
   const g = planGrowth(job.layout, done, F, P2P, beltTiers(F)[0], "mine", 1, "small-electric-pole", "poles:t:", true)

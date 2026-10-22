@@ -1,5 +1,6 @@
 import { labArray, miningOutpost, radarCell, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
+import { moduleId } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
 import { commitModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
@@ -17,7 +18,7 @@ const POLICY = selectPolicy("early-compact", {})
 
 function place(state: LayoutState, id: string, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  const m: PlacedModule = { id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
   commitModule(state, m, F, 1)
   return m
 }
@@ -139,7 +140,7 @@ test("B43: a consumer whose trunk line was evicted joins through the line still 
   for (const p of layout.poles!) delete layout.occ[tkey(p.x, p.y)]
   layout.poles = keep.map((p, i) => ({ ...p, id: `poles:old:0.${i}`, line: "poles:old:0" }))
   for (const p of layout.poles) layout.occ[tkey(p.x, p.y)] = "x:poles:old:0"
-  layout.poleLines = [{ id: "poles:old:0", from: "poles:gone", to: "labs", poles: layout.poles.map((p) => p.id) }]
+  layout.poleLines = [{ id: "poles:old:0", from: "poles:gone", to: moduleId("labs"), poles: layout.poles.map((p) => p.id) }]
   // Every tile in wire reach of the labs' own poles is taken (a mine's growth room in the report).
   for (const e of m.def.entities) {
     if (e.name !== "small-electric-pole") continue

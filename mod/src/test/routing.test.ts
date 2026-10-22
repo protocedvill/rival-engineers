@@ -1,5 +1,6 @@
 import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides, setConfigOverride } from "../config"
+import { moduleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
@@ -63,7 +64,7 @@ function startRedResearch(force: LuaForce): string {
 }
 
 function labPacks(surface: LuaSurface, layout: LayoutState): number {
-  const m = findModule(layout, "labs")!
+  const m = findModule(layout, moduleId("labs"))!
   let n = 0
   for (const e of surface.find_entities_filtered({ type: "lab", area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })) {
     n += e.get_inventory(defines.inventory.lab_input)!.get_item_count("automation-science-pack")
@@ -133,7 +134,7 @@ function scriptBuild(surface: LuaSurface, entry: PlannerEntry): string[] {
 
 function siteProblems(surface: LuaSurface, layout: LayoutState): string[] {
   const out: string[] = []
-  const steam = findModule(layout, "steam")
+  const steam = findModule(layout, moduleId("steam"))
   if (steam) {
     for (const w of steam.def.anchor?.water ?? []) {
       for (let x = w.x; x < w.x + w.w; x++) {
@@ -143,7 +144,7 @@ function siteProblems(surface: LuaSurface, layout: LayoutState): string[] {
       }
     }
   }
-  const mine = findModule(layout, "outpost")
+  const mine = findModule(layout, moduleId("outpost"))
   if (mine) {
     for (const a of mine.def.anchor?.miningAreas ?? []) {
       const n = surface.count_entities_filtered({ name: "iron-ore", area: { left_top: { x: mine.origin.x + a.x, y: mine.origin.y + a.y }, right_bottom: { x: mine.origin.x + a.x + a.w, y: mine.origin.y + a.y + a.h } } })
@@ -407,7 +408,7 @@ describe("M4b routing", () => {
     })
     const layout = newLayout()
     const place = (def: ModuleDef, x: number, y: number): PlacedModule => {
-      const m: PlacedModule = { id: def.id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } }
+      const m: PlacedModule = { id: moduleId(def.id), canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } }
       commitModule(layout, m, prototypeFacts, 0)
       return m
     }
@@ -422,7 +423,7 @@ describe("M4b routing", () => {
     }
     const tiersList = beltTiers(prototypeFacts)
     const policy = selectPolicy("early-compact", {})
-    const request: PlanRequest = { modules: [], connections: [{ id: "flow", from: { module: "src", port: "out" }, to: { module: "dst", port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }
+    const request: PlanRequest = { modules: [], connections: [{ id: "flow", from: { module: moduleId("src"), port: "out" }, to: { module: moduleId("dst"), port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }
     const job = runJob(newRoutingJob(request, tiersList[0], layout), terrainView(terrain), prototypeFacts, policy)
     assert(job.phase === "done", "routed")
     const g = buildGraph(layout, policy, { tiers: tiersList, researched: { "logistics-2": true } })
@@ -507,13 +508,13 @@ describe("M4b routing", () => {
     const ox = math.floor(lab.origin.x)
     const oy = math.floor(lab.origin.y)
     const put = (def: ModuleDef, x: number, y: number): void => {
-      commitModule(layout, { id: def.id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } } as PlacedModule, prototypeFacts, 0)
+      commitModule(layout, { id: moduleId(def.id), canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } } as PlacedModule, prototypeFacts, 0)
     }
     put(a, ox - 20, oy - 40)
     put(b, ox + 20, oy - 40)
     const request: PlanRequest = {
       modules: [],
-      connections: [{ id: "c", from: { module: "a", port: "out" }, to: { module: "b", port: "in" } }],
+      connections: [{ id: "c", from: { module: moduleId("a"), port: "out" }, to: { module: moduleId("b"), port: "in" } }],
       center: { x: ox, y: oy },
       region: { x: ox - 58, y: oy - 58, w: 116, h: 116 },
       compare: { undergrounds: { tiers: beltTiers(prototypeFacts) }, workFactor: 2, minWork: 5000 },

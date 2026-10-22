@@ -71,7 +71,7 @@ export type { GoalStatus } from "./goal-lifecycle"
 export interface GoalNode {
   role: string
   /** Graph node id = module instance id. */
-  id: string
+  id: IDS.ModuleId
   kind: DesignNode["kind"]
   generator: ModuleKind
   params: Record<string, unknown>
@@ -501,7 +501,7 @@ function lastOf(f: FactoryState, kind: GoalKind): FactoryGoal | undefined {
 function goalNodes(g: GoalSpec, f: FactoryState): GoalNode[] {
   const out: GoalNode[] = []
   for (const n of g.nodes) {
-    out.push({ role: n.role, id: `n${f.graph.nextId++}`, kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW })
+    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW })
   }
   return out
 }
@@ -849,7 +849,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role} at tick ${ctx.tick}`)
 }
 
-function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undefined {
+function roleToId(f: FactoryState, g: FactoryGoal, role: string): IDS.ModuleId | undefined {
   for (const n of g.nodes) if (n.role === role) return n.id
   return LG.nodeByRole(f.graph, role)?.id
 }

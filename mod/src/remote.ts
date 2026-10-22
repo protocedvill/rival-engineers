@@ -1,4 +1,5 @@
 import { LuaEntity, MapPosition } from "factorio:runtime"
+import { moduleId } from "./shared/ids"
 import { spawnFaction, SpawnFactionOptions } from "./autospawn"
 import { cancel, createController, enqueue, getAction, isIdle } from "./character/controller"
 import { ActionSpec } from "./character/types"
@@ -166,7 +167,7 @@ export function registerRemoteInterface(): void {
         touching.push({ id: rid, to: r.to.module, from: r.from?.module ?? null, tapOf: r.tapOf ?? null, hasTile: r.tiles.indexOf(k) >= 0 })
       }
       const policy = entryPolicy({ request: { modules: [], connections: [], center: { x: 0, y: 0 }, region: { x: 0, y: 0, w: 0, h: 0 } }, policy: getConfig().layoutPolicy } as never)
-      const plan = planGrowth(base, claimView(faction.name, faction.surface, terrainView(t), false), prototypeFacts, policy, tiers()[0], module, units)
+      const plan = planGrowth(base, claimView(faction.name, faction.surface, terrainView(t), false), prototypeFacts, policy, tiers()[0], moduleId(module), units)
       const after = plan.ok ? plan.layout : base
       const ownerBefore = base.routeOcc[k]
       const ownerAfter = after.routeOcc[k]

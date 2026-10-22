@@ -1,5 +1,6 @@
 import { addEdge, addNode, LogicalGraph, LogicalNode, newGraph } from "../src/planner/logical"
 import { ReconcileParams } from "../src/strategy/reconcile"
+import { moduleId } from "../src/shared/ids"
 import { graphLayout } from "../src/review/graph-layout"
 import { eq, near, ok, run, test } from "./harness"
 
@@ -29,7 +30,7 @@ const P: ReconcileParams = {
 
 function node(g: LogicalGraph, id: string, kind: LogicalNode["kind"], item: string, planned: number, extra: Partial<LogicalNode> = {}): LogicalNode {
   return addNode(g, {
-    id,
+    id: moduleId(id),
     role: id,
     kind,
     item,
@@ -50,8 +51,8 @@ function belt(g: LogicalGraph, id: string, from: string | undefined, to: string,
     role: id,
     kind: "belt",
     item,
-    from,
-    to,
+    from: from !== undefined ? moduleId(from) : undefined,
+    to: moduleId(to),
     plannedRate: planned,
     physical: [`route:${id}`],
     measuredRate: measured?.rate,
@@ -69,7 +70,7 @@ test("layout: sources left, one level per dataflow step; power edges drawn but f
   node(g, "power", "power", "electricity", 1e6)
   belt(g, "e0", "mine", "smelt", "iron-ore", 4)
   belt(g, "e1", "smelt", "gears", "iron-plate", 2)
-  addEdge(g, { id: "p0", role: "power>base", kind: "power", item: "electricity", from: "power", to: "smelt", plannedRate: 1e6, physical: [] })
+  addEdge(g, { id: "p0", role: "power>base", kind: "power", item: "electricity", from: moduleId("power"), to: moduleId("smelt"), plannedRate: 1e6, physical: [] })
   const v1 = graphLayout(g, TICK, P)
   eq(v1.levels.length, 3, "three depth levels")
   eq(v1.levels[0].map((n) => n.id).join(","), "mine,power", "sources and generators at level 0")

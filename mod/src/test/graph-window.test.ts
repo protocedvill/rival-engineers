@@ -1,5 +1,6 @@
 import { LuaGuiElement, PlayerIndex, Tags } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
+import { moduleId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { addEdge, addNode } from "../planner/logical"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -15,7 +16,7 @@ import { at, createLab } from "./lab"
 function addChain(f: FactoryState): void {
   const tick = game.tick
   addNode(f.graph, {
-    id: "n1",
+    id: moduleId("n1"),
     role: "mine",
     kind: "outpost",
     item: "iron-ore",
@@ -29,7 +30,7 @@ function addChain(f: FactoryState): void {
     measured: { tick, window: 60, inputs: [], outputs: [{ item: "iron-ore", perSecond: 4 }], machines: 4, states: { working: 0.9, starved: 0, blocked: 0, unpowered: 0, unfuelled: 0, idle: 0.1 } },
   })
   addNode(f.graph, {
-    id: "n2",
+    id: moduleId("n2"),
     role: "smelt",
     kind: "module",
     item: "iron-plate",
@@ -45,8 +46,8 @@ function addChain(f: FactoryState): void {
     role: "mine>smelt",
     kind: "belt",
     item: "iron-ore",
-    from: "n1",
-    to: "n2",
+    from: moduleId("n1"),
+    to: moduleId("n2"),
     plannedRate: 4,
     physical: ["route:e1"],
     belt: "transport-belt",

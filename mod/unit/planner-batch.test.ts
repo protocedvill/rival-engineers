@@ -2,6 +2,7 @@
 // "research logistics first when it saves N tiles" comparisons).
 
 import { smelterColumn } from "../src/modules/generators"
+import { moduleId } from "../src/shared/ids"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
@@ -33,7 +34,7 @@ function sink(id: string, dir: number, item = "iron-plate"): ModuleDef {
 }
 function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY, corridor = 0): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  const m: PlacedModule = { id: moduleId(def.id), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
   commitModule(state, m, F, corridor)
   return m
 }

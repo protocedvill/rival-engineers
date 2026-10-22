@@ -1,5 +1,6 @@
 import { LuaEntity } from "factorio:runtime"
 import { clearConfigOverrides, setConfigOverride } from "../config"
+import { moduleId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
@@ -47,7 +48,7 @@ function scan(lab: Lab, id: string, force: string) {
 
 function place(layout: LayoutState, id: string, gen: Parameters<typeof generatedModule>[0], params: Record<string, unknown>, origin: Vec): PlacedModule {
   const def = generatedModule(gen, params)
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(layout, m, prototypeFacts, 2)
   return m
 }
@@ -72,9 +73,9 @@ function smeltingLab(lab: Lab, force: string): { layout: LayoutState; ghosts: Lu
   const layout = newLayout()
   place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
   place(layout, "mine", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
-  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
   assert(job.phase === "done", "ore routed")
-  const mods = stampParts(s, force, job.layout, { modules: ["smelt", "mine"], routes: [], poles: [] }, false)
+  const mods = stampParts(s, force, job.layout, { modules: [moduleId("smelt"), moduleId("mine")], routes: [], poles: [] }, false)
   assert(mods.failed.length === 0, mods.failed.join("; "))
   const route = stampParts(s, force, job.layout, { modules: [], routes: ["route:ore"], poles: [] }, true)
   assert(route.failed.length === 0, route.failed.join("; "))
@@ -261,7 +262,7 @@ describe("faction conflicts", () => {
     const { layout, ghosts } = smeltingLab(lab, a.force)
     revive(ghosts)
     // The smelter column's ground: pretend it was still ghosts, and another force built on one of its tiles.
-    const m = findModule(layout, "smelt")!
+    const m = findModule(layout, moduleId("smelt"))!
     for (const e of s.find_entities_filtered({ force: a.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })) {
       if (e.type === "furnace") {
         const p = e.position
@@ -277,9 +278,9 @@ describe("faction conflicts", () => {
     log(`[conflict] module check: ${serpent.line(check.conflicts)}`)
     assert(check.conflicts.some((c) => c.kind === "module" && c.id === "smelt"), `conflict ${serpent.line(check.conflicts)}`)
     const builtBefore = s.find_entities_filtered({ force: a.force, area: { left_top: { x: m.rect.x - 1, y: m.rect.y - 1 }, right_bottom: { x: m.rect.x + m.rect.w + 1, y: m.rect.y + m.rect.h + 1 } } }).filter((e) => e.type !== "entity-ghost").length
-    const r = abandonParts(s, a, layout, { modules: ["smelt"], routes: [], poles: [] })
+    const r = abandonParts(s, a, layout, { modules: [moduleId("smelt")], routes: [], poles: [] })
     log(`[conflict] abandoned: ${r.clearJobs.length} clear jobs, routes ${r.routes.join(",")}, ${r.tiles.length} tiles`)
-    assert(findModule(layout, "smelt") === undefined, "module left the layout")
+    assert(findModule(layout, moduleId("smelt")) === undefined, "module left the layout")
     assert(layout.routes["route:ore"] === undefined, "its route left the layout")
     assert(s.find_entities_filtered({ type: "entity-ghost", force: a.force }).length === 0, "its ghosts are gone")
     // Every built entity of the module and of the route into it gets a clear job (the crew deconstructs it).
@@ -315,7 +316,7 @@ describe("faction conflicts", () => {
     const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
     const id = "b19-tap"
     if (getPlannerEntry(id) !== undefined) removePlan(id)
-    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: "smelt2", def }], connections: [{ id: "ore2", from: { module: "mine", port: "out" }, to: { module: "smelt2", port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
+    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: "ore2", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
     let building = false
     async(60 * 60 * 30)
     on_tick(() => {
@@ -326,7 +327,7 @@ describe("faction conflicts", () => {
         assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
         const r = job.layout.routes["route:ore2"]
         assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
-        const parts = { modules: ["smelt2"], routes: ["route:ore2"], poles: [] as string[] }
+        const parts = { modules: [moduleId("smelt2")], routes: ["route:ore2"], poles: [] as string[] }
         const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
         assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
         startBuild(e, { parts, priority: 90 })

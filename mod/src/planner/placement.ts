@@ -7,6 +7,8 @@
 // candidates (every transform × origin within the radius) in O(1) each. Radii grow (policy.searchRadii) until one
 // candidate is feasible. Pure: no Factorio globals.
 
+import { moduleId } from "../shared/ids"
+
 import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modules/build"
 import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
@@ -998,7 +1000,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       if (s.best !== undefined) {
         const td = s.tdefs[s.best.ti]
         const m: PlacedModule = {
-          id: s.req.id,
+          id: moduleId(s.req.id),
           canonical: s.req.def,
           def: td.def,
           transform: td.t,

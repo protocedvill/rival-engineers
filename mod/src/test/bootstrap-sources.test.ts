@@ -1,5 +1,6 @@
 import { LuaEntity, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, setConfigOverride } from "../config"
+import { moduleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { addJob } from "../jobs/board"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -436,10 +437,10 @@ describe("B17 material sources", () => {
 function smelterModule(f: FactoryState, origin: MapPosition): { def: ModuleDef; m: PlacedModule } {
   const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
   const o = { x: math.floor(origin.x), y: math.floor(origin.y) }
-  const m: PlacedModule = { id: "smelter", canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId("smelter"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(f.layout, m, prototypeFacts, 1)
   addNode(f.graph, {
-    id: "smelter",
+    id: moduleId("smelter"),
     role: "iron-plate#1",
     kind: "module",
     module: def.id,

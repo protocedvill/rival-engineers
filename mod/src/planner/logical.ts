@@ -6,6 +6,7 @@
 // `storage` (strategy/factory.ts) and exported with the physical layer for tools/render (D29). Pure: no Factorio globals.
 
 import { Rate } from "../modules/types"
+import type { ModuleId } from "../shared/ids"
 
 export type NodeKind = "module" | "outpost" | "power" | "labs" | "sink" | "source"
 
@@ -67,7 +68,7 @@ export interface RootCause {
 }
 
 export interface LogicalNode {
-  id: string
+  id: ModuleId
   /** Stable role in the design ("labs", "automation-science-pack>labs", ...): how plans and diffs find it again. */
   role: string
   kind: NodeKind
@@ -108,9 +109,9 @@ export interface LogicalEdge {
   /** An item, or "electricity" for power edges. */
   item: string
   /** Producer node and port (absent: supplied from outside the graph, e.g. by the crew). */
-  from?: string
+  from?: ModuleId
   fromPort?: string
-  to: string
+  to: ModuleId
   toPort?: string
   /** Items/s (W for power) by plan, and at the next stage target (D27 headroom). */
   plannedRate: number

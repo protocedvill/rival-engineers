@@ -1,5 +1,6 @@
 import { addEdge, addNode, LogicalEdge, LogicalGraph, LogicalNode, newGraph, StateShares } from "../src/planner/logical"
 import { classify, edgeVerdict, newReconcileState, reconcile, ReconcileParams, recordRemedy } from "../src/strategy/reconcile"
+import { moduleId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 
 // T1: the reconciler (SPEC §5.8, D26): node classification from measured states and rates, the root-cause walk
@@ -29,7 +30,7 @@ function st(x: Partial<StateShares>): StateShares {
 
 function node(g: LogicalGraph, id: string, kind: LogicalNode["kind"], item: string, planned: number, states: StateShares, out: number, extra: Partial<LogicalNode> = {}): LogicalNode {
   return addNode(g, {
-    id,
+    id: moduleId(id),
     role: id,
     kind,
     item,
@@ -51,8 +52,8 @@ function belt(g: LogicalGraph, id: string, from: string | undefined, to: string,
     role: id,
     kind: "belt",
     item,
-    from,
-    to,
+    from: from !== undefined ? moduleId(from) : undefined,
+    to: moduleId(to),
     plannedRate: planned,
     physical: [`route:${id}`],
     measuredRate: measured?.rate,
@@ -138,7 +139,7 @@ test("starved chain: gears ← smelter ← outpost without power: the root cause
   belt(g2, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0.2, from: 0, to: 0 })
   const pw = node(g2, "pw", "power", "electricity", 1e6, st({ working: 1 }), 2e5)
   pw.measured!.load = 0.2
-  addEdge(g2, { id: "p", role: "p", kind: "power", item: "electricity", from: "pw", to: "mine", plannedRate: 1e5, physical: ["line1"] })
+  addEdge(g2, { id: "p", role: "p", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("mine"), plannedRate: 1e5, physical: ["line1"] })
   const r2 = settle(g2).r
   eq(g2.nodes.gears.cause!.what, "not connected", g2.nodes.gears.cause!.why)
   eq(r2.remedies.length, 1, "one remedy")
@@ -269,7 +270,7 @@ test("a feeder being grown (the steam block gaining boilers) keeps its consumers
   const g = newGraph()
   const pw = node(g, "pw", "power", "electricity", 1e6, st({ working: 1 }), 5e5, { builtTick: 0 })
   const a = node(g, "a", "module", "x", 1, st({ working: 1 }), 1)
-  addEdge(g, { id: "p", role: "p", kind: "power", item: "electricity", from: "pw", to: "a", plannedRate: 1e5, physical: [] })
+  addEdge(g, { id: "p", role: "p", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("a"), plannedRate: 1e5, physical: [] })
   pw.lifecycle = "building"
   settle(g)
   eq(a.status, "ok", "the consumer is still classified")

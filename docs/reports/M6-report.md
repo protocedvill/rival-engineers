@@ -2237,3 +2237,34 @@ code slice, and model-sequence regressions. Not an acceptance result or a commit
 - Shrink `strategy/factory.ts` (still ~2.3k lines) once preparation/validation sit behind those boundaries.
 - Surface `checkClaimOwners` in `factoryDiagnostics` for rejected plans (M6b.35 only runs it during validation).
 - B59 attribution and a fresh 5-seed acceptance soak remain the release gate.
+
+## M6b.36: ModuleId brand, first storage boundary (working tree, 2026-10-22)
+
+First slice of the remaining brand migrations. Not an acceptance result or a commit record.
+
+### Scope
+
+- `PlacedModule.id`, `GoalNode.id`, `LogicalNode.id` (and `LogicalEdge.from`/`to`), `PhysNode.id` are `ModuleId`.
+  The goal graph constructor and the planner's placement are the owners and call `moduleId(...)`.
+- Stored claim owners are branded: `LayoutState.mine` / `soft` values are `ModuleId`; the claim writers receive the
+  string and construct at the storage boundary (`claimMineTile`, `claimSoftTile`). `PoleLine.to`, `PoleSearch.target`
+  and `powerRoles` return/accept `ModuleId`.
+- Deliberately **not** branded yet: `ModuleRequest.id`, `PlacementRequest.id`, `PortRef.module`. They stay strings
+  until the route/connection slice, where their crossing boundary is defined; branding them now would churn every
+  fixture without adding a check. `ModuleDef.id`, `canonical.id` and `LogicalNode.module` are definition ids and must
+  never become `ModuleId`.
+- `mod/unit/ids.test.ts` pins the one invariant that matters for saves: every constructor is the identity at runtime,
+  so old values, Lua comparisons and telemetry are unchanged.
+
+### Validation
+
+- `npm run typecheck`: pass (architecture check included).
+- `npm run build`: pass under the 185-local guard.
+- `npm run test:unit -- --no-build`: **27/27 files passed** (new `ids` suite).
+- Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 746.0 s wall (5289.0 s of
+  test time).
+
+### Next
+
+- Route/connection slice (`RouteId` + `ConnectionId`), then pole line/pole, claim tags, and job ids.
+- `strategy/factory.ts` shrink and the diagnostic `checkClaimOwners` wiring remain after the id slices.

@@ -1,5 +1,7 @@
 import { LuaForce, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
+import { moduleId } from "../shared/ids"
+import type { ModuleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
@@ -60,7 +62,7 @@ function scan(lab: Lab, force: string) {
 }
 
 function placeDef(layout: LayoutState, id: string, def: ModuleDef, origin: Vec): PlacedModule {
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(layout, m, prototypeFacts, 2)
   return m
 }
@@ -84,7 +86,7 @@ function node(g: LogicalGraph, m: PlacedModule, kind: NodeKind, item: string, pl
   })
 }
 
-function edge(g: LogicalGraph, id: string, from: string, fromPort: string, to: string, toPort: string, item: string, rate: number): void {
+function edge(g: LogicalGraph, id: string, from: ModuleId, fromPort: string, to: ModuleId, toPort: string, item: string, rate: number): void {
   addEdge(g, { id, role: id, kind: "belt", item, from, fromPort, to, toPort, plannedRate: rate, physical: [`route:${id}`], belt: "transport-belt" })
 }
 
@@ -129,22 +131,22 @@ function chainLab(): Chain {
   const smelt = placeDef(layout, "smelt", generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 }), { x: ox - 5, y: oy - 8 })
   const gears = placeDef(layout, "gears", generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 2 }), { x: ox + 14, y: oy - 30 })
   const conns = [
-    { id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
-    { id: "plates", from: { module: "smelt", port: "out" }, to: { module: "gears", port: "in-iron-plate" } },
+    { id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } },
+    { id: "plates", from: { module: moduleId("smelt"), port: "out" }, to: { module: moduleId("gears"), port: "in-iron-plate" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: ox, y: oy }, region: { x: ox - 48, y: oy - 48, w: 96, h: 96 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
   assert(job.phase === "done", "routed")
-  const r = stampParts(s, faction.force, job.layout, { modules: ["mine", "smelt", "gears"], routes: ["route:ore", "route:plates"], poles: [] }, false)
+  const r = stampParts(s, faction.force, job.layout, { modules: [moduleId("mine"), moduleId("smelt"), moduleId("gears")], routes: ["route:ore", "route:plates"], poles: [] }, false)
   assert(r.failed.length === 0, r.failed.join("; "))
   f.layout = job.layout
   const tick = game.tick
   const mineRate = rateOut(mine.def, "iron-ore")
-  node(f.graph, findModule(job.layout, "mine")!, "outpost", "iron-ore", mineRate, tick)
-  node(f.graph, findModule(job.layout, "smelt")!, "module", "iron-plate", math.min(mineRate, rateOut(smelt.def, "iron-plate")), tick)
-  node(f.graph, findModule(job.layout, "gears")!, "module", "iron-gear-wheel", rateOut(gears.def, "iron-gear-wheel") * 0.5, tick)
-  edge(f.graph, "ore", "mine", "out", "smelt", "in-ore", "iron-ore", mineRate)
-  edge(f.graph, "plates", "smelt", "out", "gears", "in-iron-plate", "iron-plate", rateOut(smelt.def, "iron-plate"))
-  return { lab, faction, f, mine: findModule(job.layout, "mine")!, smelt: findModule(job.layout, "smelt")!, gears: findModule(job.layout, "gears")! }
+  node(f.graph, findModule(job.layout, moduleId("mine"))!, "outpost", "iron-ore", mineRate, tick)
+  node(f.graph, findModule(job.layout, moduleId("smelt"))!, "module", "iron-plate", math.min(mineRate, rateOut(smelt.def, "iron-plate")), tick)
+  node(f.graph, findModule(job.layout, moduleId("gears"))!, "module", "iron-gear-wheel", rateOut(gears.def, "iron-gear-wheel") * 0.5, tick)
+  edge(f.graph, "ore", moduleId("mine"), "out", moduleId("smelt"), "in-ore", "iron-ore", mineRate)
+  edge(f.graph, "plates", moduleId("smelt"), "out", moduleId("gears"), "in-iron-plate", "iron-plate", rateOut(smelt.def, "iron-plate"))
+  return { lab, faction, f, mine: findModule(job.layout, moduleId("mine"))!, smelt: findModule(job.layout, moduleId("smelt"))!, gears: findModule(job.layout, moduleId("gears"))! }
 }
 
 function rateOut(def: ModuleDef, item: string): number {
@@ -313,18 +315,18 @@ describe("M5b reconciler", () => {
     const labs = placeDef(layout, "labs", labDef, { x: ox, y: oy - 4 })
     const src = placeDef(layout, "src", srcDef, { x: ox - 12, y: oy })
     const t = scan(lab, faction.force)
-    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "packs", from: { module: "src", port: "out" }, to: { module: "labs", port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "packs", from: { module: moduleId("src"), port: "out" }, to: { module: moduleId("labs"), port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
     assert(job.phase === "done", "routed")
-    const built = stampParts(s, faction.force, job.layout, { modules: ["labs", "src"], routes: ["route:packs"], poles: [] }, false)
+    const built = stampParts(s, faction.force, job.layout, { modules: [moduleId("labs"), moduleId("src")], routes: ["route:packs"], poles: [] }, false)
     assert(built.failed.length === 0, built.failed.join("; "))
-    power(s, force, findModule(job.layout, "labs")!)
+    power(s, force, findModule(job.layout, moduleId("labs"))!)
     f.layout = job.layout
     const g = f.graph
     const tick = game.tick
     node(g, src, "source", RED, 25, tick)
     node(g, labs, "labs", "research-unit", 25, tick)
     g.nodes.labs.planned.inputs = [{ item: RED, perSecond: 25 }]
-    edge(g, "packs", "src", "out", "labs", "in", RED, 25)
+    edge(g, "packs", moduleId("src"), "out", moduleId("labs"), "in", RED, 25)
     const belt = s.find_entities_filtered({ position: { x: src.origin.x + 0.5, y: src.origin.y + 0.5 }, type: "transport-belt" })[0]
     const fs = [{ item: RED, lines: [belt.get_transport_line(1), belt.get_transport_line(2)], perTick: 25 / 60, credit: 0, next: 0 }]
     // Research that never ends: automation again whenever it finishes.
@@ -395,16 +397,16 @@ describe("M5b reconciler", () => {
     const layout = newLayout()
     const poor = placeDef(layout, "poor", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox - 15, y: oy + 24 })
     const rich = placeDef(layout, "rich", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox + 15, y: oy + 24 })
-    const r = stampParts(s, faction.force, layout, { modules: ["poor", "rich"], routes: [], poles: [] }, false)
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("poor"), moduleId("rich")], routes: [], poles: [] }, false)
     assert(r.failed.length === 0, r.failed.join("; "))
     f.layout = layout
     const tick = game.tick
     node(f.graph, poor, "module", "coal", 1, tick)
     node(f.graph, rich, "module", "coal", 1, tick)
-    addNode(f.graph, { id: "pw", role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
-    addNode(f.graph, { id: "pw2", role: "power#2", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
-    edge(f.graph, "coal>power=>power.in-fuel", "poor", "out", "pw", "in-fuel", "coal", 1)
-    edge(f.graph, "coal>power#2=>power#2.in-fuel", "rich", "out", "pw2", "in-fuel", "coal", 1)
+    addNode(f.graph, { id: moduleId("pw"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addNode(f.graph, { id: moduleId("pw2"), role: "power#2", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    edge(f.graph, "coal>power=>power.in-fuel", moduleId("poor"), "out", moduleId("pw"), "in-fuel", "coal", 1)
+    edge(f.graph, "coal>power#2=>power#2.in-fuel", moduleId("rich"), "out", moduleId("pw2"), "in-fuel", "coal", 1)
     for (let x = poor.rect.x; x < poor.rect.x + poor.rect.w; x++) for (let y = poor.rect.y; y < poor.rect.y + poor.rect.h; y++) faction.brain!.reserved[tkey(x, y)] = true
     const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
     assert(checkPowerFuel(ctx, true) === undefined, "not while a plan works on a copy of the layout")
@@ -412,7 +414,7 @@ describe("M5b reconciler", () => {
     const gone = checkPowerFuel(ctx, false)
     assert(gone === "poor", `the poor outpost is given up (${gone})`)
     assert(f.graph.nodes["poor"] === undefined && f.graph.edges["coal>power=>power.in-fuel"] === undefined, "its node and edge leave the graph")
-    assert(findModule(f.layout, "poor") === undefined && findModule(f.layout, "rich") !== undefined, "it leaves the layout, the rich one stays")
+    assert(findModule(f.layout, moduleId("poor")) === undefined && findModule(f.layout, moduleId("rich")) !== undefined, "it leaves the layout, the rich one stays")
     assert(!powerFuelled(f.graph, f.graph.nodes["pw"]) && powerFuelled(f.graph, f.graph.nodes["pw2"]), "the first steam block has no fuel supply now (the crew fuels its boilers)")
     let clears = 0
     for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
@@ -427,7 +429,7 @@ describe("M5b reconciler", () => {
     const s = lab.surface
     const layout = newLayout()
     const steam = placeDef(layout, "pw", generatedModule("steam-block", { boilers: 2 }), { x: math.floor(lab.origin.x) - 10, y: math.floor(lab.origin.y) - 10 })
-    const r = stampParts(s, faction.force, layout, { modules: ["pw"], routes: [], poles: [] }, false)
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("pw")], routes: [], poles: [] }, false)
     assert(r.failed.length === 0, r.failed.join("; "))
     f.layout = layout
     const boilers = s.find_entities_filtered({ name: "boiler", force: faction.force, area: [{ x: steam.rect.x, y: steam.rect.y }, { x: steam.rect.x + steam.rect.w, y: steam.rect.y + steam.rect.h }] })
@@ -454,8 +456,8 @@ describe("M5b reconciler", () => {
     const s = c.lab.surface
     const g = c.f.graph
     const tick = game.tick
-    addNode(g, { id: "pw", role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
-    addEdge(g, { id: "e:power=>gears", role: "power=>gears", kind: "power", item: "electricity", from: "pw", to: "gears", plannedRate: 0, physical: [] })
+    addNode(g, { id: moduleId("pw"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addEdge(g, { id: "e:power=>gears", role: "power=>gears", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("gears"), plannedRate: 0, physical: [] })
     const m = c.gears
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     const poles = s.find_entities_filtered({ area, type: "electric-pole" })
@@ -484,7 +486,7 @@ describe("M5b reconciler", () => {
     for (let x = -12; x < 12; x++) for (let y = -12; y < 12; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
     const layout = newLayout()
     const mine = placeDef(layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2, drill: "electric-mining-drill" }), { x: math.floor(lab.origin.x) - 4, y: math.floor(lab.origin.y) - 6 })
-    const r = stampParts(s, faction.force, layout, { modules: ["mine"], routes: [], poles: [] }, false)
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("mine")], routes: [], poles: [] }, false)
     assert(r.failed.length === 0, r.failed.join("; "))
     f.layout = layout
     node(f.graph, mine, "outpost", "iron-ore", 1, game.tick)

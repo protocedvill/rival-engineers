@@ -1,5 +1,6 @@
 import { clearConfigOverrides, setConfigOverride } from "../config"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
+import { moduleId } from "../shared/ids"
 import { Job } from "../jobs/board"
 import { FactionState, JobPayload } from "../jobs/types"
 import { LuaEntity } from "factorio:runtime"
@@ -24,9 +25,9 @@ function buildGearCell(lab: Lab, faction: FactionState, recipe = "iron-gear-whee
   const f = getFactory(faction.name) ?? startFactory(faction)
   const def = generatedModule("chest-cell", { recipe, machine: "assembling-machine-1", chest: "iron-chest" })
   const origin = { x: math.floor(lab.origin.x) + 10, y: math.floor(lab.origin.y) - 2 + dy }
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(f.layout, m, prototypeFacts, 1)
-  const r = stampParts(lab.surface, faction.force, f.layout, { modules: [id], routes: [], poles: [] }, false)
+  const r = stampParts(lab.surface, faction.force, f.layout, { modules: [moduleId(id)], routes: [], poles: [] }, false)
   assert(r.failed.length === 0, `stamped: ${r.failed.join("; ")}`)
   const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: { x: origin.x + 1, y: origin.y - 2 }, force: faction.force })!
   eei.power_production = 1e6
@@ -34,7 +35,7 @@ function buildGearCell(lab: Lab, faction: FactionState, recipe = "iron-gear-whee
   lab.surface.create_entity({ name: "small-electric-pole", position: { x: origin.x + 0.5, y: origin.y - 0.5 }, force: faction.force })
   const item = prototypes.recipe[recipe].main_product?.name ?? recipe
   addNode(f.graph, {
-    id,
+    id: moduleId(id),
     role: `temp:${item}#1`,
     kind: "sink",
     module: def.id,
