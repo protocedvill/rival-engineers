@@ -2060,8 +2060,8 @@ validation on the dirty tree; it is not an acceptance result or a commit record.
 ### Next
 
 Remaining from the approved direction: make the adapter's Factorio-facing phases reconcilable (an intent record that
-survives an interrupted adoption), and give bootstrap reservations and world ore claims a typed boundary. Both stay
-proposed until separately approved.
+survives an interrupted adoption), and give bootstrap reservations and world ore claims a typed boundary. Both were
+implemented as M6b.34 below.
 
 ### Acceptance soak `m6-final2` (interrupted harness, reconstructed result)
 
@@ -2134,3 +2134,52 @@ M6b: architecture hardening — goal lifecycle, layout revision, plan deltas, ty
 The full T2 run was started with `--no-build` so it did not rewrite `mod/build` while the soak read it; it passed
 150/150 (see above). The commit leaves B59 as the only open item from this work; the remaining proposals above
 continue from a clean tree.
+
+## M6b.34: adoption-phase record and typed world claims (working tree, 2026-10-22)
+
+User asked to work through items 1 and 2 of M6b.33's next list. This records implementation and validation on the
+dirty tree; it is not an acceptance result or a commit record.
+
+### 1. Reconcilable adoption phases
+
+- `strategy/adoption-intent.ts` (pure, T1-tested) owns the phase vocabulary `prepared → state → world → build`, the
+  forward-only advance, and the resume/stale decision. `FactoryState.adoption` persists the record; old saves have no
+  such field.
+- `strategy/adoption-runtime.ts` holds the factory-side glue (kept out of `factory.ts` for the 185-local guard):
+  `reconcile` clears a record whose goal is no longer planning or whose plan vanished (the post-commit crash window)
+  and emits `adoption-intent-cleared`; `begin` emits `adoption-resumed` or `adoption-intent-orphaned`; `advance`
+  records each phase; `queueClear` dedupes clear jobs.
+- `factory.ts` reconciles at the start of every think, begins the record before the layout swap, advances after the
+  state, world and build phases, and clears it immediately after `transitionGoal(..., "building")`.
+- A resumed adoption re-runs from the top safely: graph `addNode`/`addEdge` replace by id, `evictSites` skips
+  retired/failed sites, `dropPlannedPoles` is idempotent, `entry.build` is reused instead of re-created, completed-mine
+  entities are deduped against `extraAdd`, and `startBuild`'s clear jobs are deduped with `clearJobFor`.
+- Tests: T1 `adoption-intent` (4) and T2 `factory` "M6b: a persisted adoption record survives a save and is cleared
+  once its goal committed" (sets a record for a committed goal, saves/reloads, and asserts the next think clears it
+  with the diagnostic).
+
+### 2. Typed bootstrap reservations and world ore claims
+
+- `world/claim-index.ts` (pure, T1-tested) is the typed owner/kind boundary: tag spelling (`site:`, `module:`, `route:`,
+  `pole:`, `mine:`), paired `reserveWorldTile`/`releaseWorldTile`, `syncWorldClaims` (rebuild from live sites plus the
+  layout's module footprints/margins, routes, poles and mine claims; drops stale tiles and orphaned owners), and
+  `checkWorldClaimOwners` (tagged orphans, one-sided entries, malformed tags; untagged old-save tiles stay
+  compatible). Ore fields get typed helpers used by `claimOreField`.
+- `BrainState.reservedBy?: Record<number, string>` pairs each reservation with its owner. `resyncReserved` is now a
+  thin wrapper over `syncWorldClaims`; bootstrap site reservation/release and eviction go through the helpers.
+- `factoryDiagnostics` builds the live-owner set (non-retired sites plus layout modules, routes, poles and mines) and
+  reports `world-claim` invariants, so an orphaned tag or a one-sided owner shows up in telemetry and `npm run
+  diagnose`.
+- The owner index adds one string per reserved tile to new saves (Lua interns the repeated tags). There is no new
+  tuning number; old saves keep the previous behaviour and are not reported.
+
+### Validation
+
+- `npm run typecheck`: pass.
+- `npm run build`: pass under the 185-local guard (the first attempt reached 186; moving the adoption glue into its
+  own module and namespacing `planner/grow` brought it back).
+- `npm run test:unit -- --no-build`: **25/25 files passed**, including the new `adoption-intent` (4) and
+  `world-claim-index` (3) suites; planner 41 and claims 6 unchanged.
+- Targeted T2: the new save/reload adoption test passes.
+- Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 1075.0 s wall (4498.6 s of
+  test time).

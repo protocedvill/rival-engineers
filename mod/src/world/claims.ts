@@ -1,5 +1,6 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { keyX, keyY, tkey } from "../planner/grid"
+import { claimOreFieldTile, hasOreFieldTile } from "./claim-index"
 import { findEntities } from "../work"
 
 // Ground claims between factions (M5a.2). A faction's `brain.reserved` tiles are its claim on the ground: bootstrap
@@ -46,14 +47,14 @@ const FIELD_RADIUS = 160
  * `fields`. A no-op when the tile is claimed already. Returns the number of tiles added.
  */
 export function claimOreField(surface: LuaSurface, fields: Record<number, boolean>, name: string, x: number, y: number): number {
-  if (fields[tkey(x, y)]) return 0
+  if (hasOreFieldTile(fields, tkey(x, y))) return 0
   const found = findEntities(surface, { name, area: [[x - FIELD_RADIUS, y - FIELD_RADIUS], [x + FIELD_RADIUS, y + FIELD_RADIUS]] })
   const present: Record<number, boolean> = {}
   for (const e of found) present[tkey(math.floor(e.position.x), math.floor(e.position.y))] = true
   if (!present[tkey(x, y)]) return 0
   let added = 0
   const stack: number[] = [x, y]
-  fields[tkey(x, y)] = true
+  claimOreFieldTile(fields, tkey(x, y))
   while (stack.length > 0) {
     const ty = stack.pop()!
     const tx = stack.pop()!
@@ -62,7 +63,7 @@ export function claimOreField(surface: LuaSurface, fields: Record<number, boolea
       for (let dy = -FIELD_JOIN; dy <= FIELD_JOIN; dy++) {
         const k = tkey(tx + dx, ty + dy)
         if (present[k] && !fields[k]) {
-          fields[k] = true
+          claimOreFieldTile(fields, k)
           stack.push(tx + dx, ty + dy)
         }
       }

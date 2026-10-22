@@ -4,6 +4,7 @@ import { boardDiagnostics, DiagnosticCrew, DiagnosticJob, DiagnosticViolation } 
 import { detectChurn, DiagnosticEventBuckets, recentDiagnosticBuckets, ChurnFinding } from "./diagnostic-events"
 import { findModule } from "./planner/layout"
 import { PlanEvidence, PlanStats } from "./planner/plan"
+import { checkWorldClaimOwners, mineClaim, moduleClaim, poleClaim, routeClaim, siteClaim } from "./world/claim-index"
 
 // Read-only causal views and invariant checks. These deliberately do not participate in decisions: telemetry and
 // remote probes may call them without changing the simulation. Reason codes are stable so host-side tools do not have
@@ -100,6 +101,21 @@ export function factionDiagnostics(name: string, maxJobs = 64): FactionDiagnosti
       for (const id of [...(entry?.build?.clearJobs ?? []), ...(entry?.build?.placeJobs ?? []), ...(goal.growBuild?.clearJobs ?? []), ...(goal.growBuild?.placeJobs ?? [])]) if (faction.board.jobs[id] === undefined) diagnosed.invariants.push({ code: "build-job-missing", detail: `goal ${goal.id} references absent job ${id}` })
     }
     for (const [, node] of pairs(factory.graph.nodes)) if ((node.lifecycle === "building" || node.lifecycle === "built") && node.module !== undefined && findModule(factory.layout, node.id) === undefined) diagnosed.invariants.push({ code: "logical-module-missing", detail: `node ${node.id} (${node.role}) is ${node.lifecycle} without layout module` })
+  }
+  // World claims: every tagged reservation must name a live site, module, route, pole or mine. Untagged tiles are
+  // compatible old-save entries and stay unreported; one-sided owner entries are always a bug.
+  const brain = faction.brain
+  if (brain !== undefined) {
+    const live: Record<string, boolean> = {}
+    for (const site of brain.sites) if (site.status !== "retired") live[siteClaim(site.id)] = true
+    const layout = factory?.layout
+    if (layout !== undefined) {
+      for (const m of layout.modules) live[moduleClaim(m.id)] = true
+      for (const id of layout.routeOrder) live[routeClaim(id)] = true
+      for (const p of layout.poles ?? []) live[poleClaim(p.id)] = true
+      for (const [, owner] of pairs(layout.mine ?? {})) live[mineClaim(owner as string)] = true
+    }
+    for (const problem of checkWorldClaimOwners(brain, live)) diagnosed.invariants.push({ code: "world-claim", detail: problem })
   }
   let preemptions = 0
   let preemptTaken = 0

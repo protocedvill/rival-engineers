@@ -64,6 +64,15 @@ evidence (the ground the plan takes, new whole-patch mine claims) and completed-
 mine the plan completed adds) before `strategy/factory.ts` changes persistent state or creates Factorio work. The
 adapter consumes that prepared evidence instead of re-deriving it from the layout; its phase order is documented on
 `adoptPlan`, and every persistent or engine effect happens after validation.
+`strategy/adoption-intent.ts` is the pure vocabulary for a persisted adoption record (`FactoryState.adoption`): the
+phase name and the resume/stale decision. `strategy/adoption-runtime.ts` writes the diagnostics and the idempotency
+helpers; `factory.ts` advances the record and clears it at the commit point (the goal becoming `building`). Adoption is
+safe to repeat: graph additions replace by id, evictions and reservations are idempotent, `entry.build` is reused and
+completed-mine entities are deduped, so a Lua error part-way resumes on the next tick instead of double-applying.
+`world/claim-index.ts` is the typed owner/kind boundary for a faction's world claims: `BrainState.reserved` gains a
+paired `reservedBy` tag (`site:`, `module:`, `route:`, `pole:`, `mine:`) maintained by `syncWorldClaims`, and
+`factoryDiagnostics` reports tagged reservations whose owner is gone or whose tag is one-sided. Ore fields use the same
+module's typed helpers. Old saves have no `reservedBy`; their untagged tiles stay compatible and are not reported.
 `planner/claims.ts` is the typed read/check/write boundary for spatial ownership. Router, power and placement policy
 ask it for conflicts instead of interpreting the raw occupancy tables independently, while `checkClaimOwners` rejects
 orphaned occupancy, reservation, mine and soft-growth claims before a plan is adopted. Its paired add/remove helpers

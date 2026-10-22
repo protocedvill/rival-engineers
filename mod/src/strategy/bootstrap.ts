@@ -7,6 +7,7 @@ import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
 import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
+import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-index"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
@@ -517,14 +518,14 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
   return undefined
 }
 
-function reserveParts(ctx: Ctx, parts: PlannedPart[], margin: number): number[] {
+function reserveParts(ctx: Ctx, parts: PlannedPart[], margin: number, owner: string): number[] {
   const keys: number[] = []
   for (const p of parts) {
     for (let x = p.x1 - margin; x < p.x2 + margin; x++) {
       for (let y = p.y1 - margin; y < p.y2 + margin; y++) {
         const k = tkey(x, y)
         if (!ctx.brain.reserved[k]) {
-          ctx.brain.reserved[k] = true
+          reserveWorldTile(ctx.brain, k, owner)
           keys.push(k)
         }
       }
@@ -545,7 +546,7 @@ function createSite(ctx: Ctx, kind: SiteKind, parts: PlannedPart[], resource?: s
     }
     ghosts.push(ghost)
   }
-  site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1)
+  site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1, siteClaim(site.id))
   if (resource !== undefined) {
     ctx.brain.oreFields ??= {}
     for (const p of parts) if (p.onOre) claimOreField(ctx.surface, ctx.brain.oreFields, resource, p.x1, p.y1)
@@ -650,7 +651,7 @@ function retireSite(ctx: Ctx, site: Site): void {
   // Its ground is free again: release the reservation now (the next resyncReserved would anyway; M6a.2, seed 222:
   // retired sites 2/4/14 kept reserving their tiles and read as OWN walls for good). The standing parts are still
   // protected by the terrain scan until the crew picks them up.
-  for (const k of site.tiles) delete ctx.brain.reserved[k]
+  for (const k of site.tiles) releaseWorldTile(ctx.brain, k)
   site.tiles = []
   // Its ore is (nearly) worked out: planners scan that ground again before they count on it (M6a.2, seed 222).
   for (const part of site.parts) markDirty(ctx.faction.surface, { x: part.position.x - 4, y: part.position.y - 4 }, { x: part.position.x + 4, y: part.position.y + 4 })
@@ -1541,7 +1542,7 @@ export function replan(ctx: Ctx): void {
       const ghost: LuaEntity | undefined = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
       if (ghost !== undefined) destroyEntity(ghost)
     }
-    for (const k of site.tiles) delete brain.reserved[k]
+    for (const k of site.tiles) releaseWorldTile(brain, k)
   }
   for (const goal of brain.goals) {
     if (goal.kind !== "site" || goal.done) continue

@@ -8,7 +8,7 @@ import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
-import { maxExpandable, planGrowth } from "../planner/grow"
+import * as GROW from "../planner/grow"
 import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import * as LO from "../planner/layout"
@@ -41,6 +41,7 @@ import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKin
 import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
 import { nextGoalStatus } from "./goal-lifecycle"
 import type { GoalStatus } from "./goal-lifecycle"
+import * as AR from "./adoption-runtime"
 import * as EX from "./explore"
 export { parseStages } from "./stage"
 export type { GoalStatus } from "./goal-lifecycle"
@@ -141,6 +142,11 @@ export interface FactoryState {
   progressSteps: number
   progressTick: number
   lastUpkeep: number
+  /**
+   * A plan adoption that has begun but not committed (the goal is not yet `building`). Persisted so a Lua error
+   * part-way is detected on the next tick and the idempotent adoption resumes; cleared at the commit point.
+   */
+  adoption?: AR.AdoptionIntent
   /**
    * D36: the technology that unlocks undergrounds is a prerequisite of production and mall goals, researched with
    * hand-fed packs like the other unblocking techs: a plan with undergrounds was at least `logistics-underground-min-saving`
@@ -303,6 +309,7 @@ interface Ctx {
 }
 
 function think(faction: FactionState, f: FactoryState, config: Config): void {
+  AR.reconcile(faction, f)
   const ctx: Ctx = {
     faction,
     f,
@@ -662,7 +669,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   }
   const policy = policyFor(ctx.config)
   const tier = RT.tiers()[0]
-  const plan = planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`, gr.reclaim === true)
+  const plan = GROW.planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`, gr.reclaim === true)
   if (!plan.ok) {
     f.growthDiagnostics ??= {}
     f.growthDiagnostics[gr.node] = { tick: ctx.tick, reason: plan.reason ?? "unknown", units: gr.units }
@@ -1187,14 +1194,17 @@ export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefi
  *   3. pick up bootstrap sites and pole lines the plan's ground evicts (world effects);
  *   4. reserve the taken ground for the bootstrap and claim the new mines' ore fields;
  *   5. start the build job from the delta's physical parts, then add the completed mines' entities.
- * A Lua error after phase 2 would leave the layout swapped and the goal still planning; the plan entry survives, so
- * the next tick retries adoption. Keep phase 2 last among the pure steps and fail before phase 3 wherever possible.
+ * The record in `f.adoption` (adoption-intent.ts) marks the phases. A Lua error part-way leaves it persisted; the next
+ * tick sees the goal still planning and re-runs adoption, whose phases are made safe to repeat (idempotent graph adds,
+ * evictions and reservations; `entry.build` is reused; completed-mine entities are deduped). The record is cleared at
+ * the commit point (the goal becoming `building`).
  */
 function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   const f = ctx.f
   const entry = RT.getPlannerEntry(g.plan!)!
   const job = entry.job!
   const layout = delta.layout
+  const intent = AR.begin(ctx.faction, f, g, entry.id, ctx.tick)
   EX.exploreDone(ctx, g)
   // With frame dumps on (soaks), every adopted plan's input too (before its layout becomes the base): plan-replay
   // fixtures for planner changes (D36 / B2).
@@ -1234,6 +1244,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     LG.addEdge(f.graph, { id: `e:${e.role}`, role: e.role, kind: "belt", item: e.item, from, fromPort: e.fromPort, to, toPort: e.toPort, plannedRate: e.rate, headroomRate: e.headroomRate, physical, belt: e.belt, overflow: e.decision.action !== "none" ? e.decision.action : undefined })
   }
   powerEdges(f, delta.logical.poleLines)
+  AR.advance(intent, "state")
   // B15 / D51: bootstrap mining sites on the plan's ground make way (picked up first, rebuilt elsewhere).
   // B23 / D52: a whole-patch mine's claim covers its unbuilt footprint too; a site standing on it would block the
   // mine's completion (m6a2-b21l, seed 222: the mall's iron line found the patch full of retired sites). The delta
@@ -1271,6 +1282,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   }
   if ((layout.evictedPoles?.length ?? 0) > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${layout.evictedPoles!.length} poles (B37)`)
   f.layout.evictedPoles = undefined
+  AR.advance(intent, "world")
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
   const reserved = ctx.faction.brain!.reserved
   for (const k of partTiles(layout, parts)) reserved[k] = true
@@ -1280,15 +1292,20 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     claimModuleFields(ctx, m)
   }
   resyncReserved(ctx.faction, layout)
+  AR.advance(intent, "build")
   const fuel = ctx.faction.brain!.catalog.fuel
-  const b = RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
+  // A resumed adoption reuses the build job this plan already started instead of duplicating its clear targets.
+  const b = entry.build ?? RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
   // B23: a request that completed a built whole-patch mine (wholePatchCandidate): the mine is a base module, so its
   // new entities are not in `parts`. Build them the growth way: evict and clear what stands on the new ground, then
   // ghost and place (`stepBuild` stamps `extraAdd` once the clear is done). The out port of a completed mine is the
-  // partial mine's, so no routes move.
+  // partial mine's, so no routes move. A resumed adoption skips entities it already queued in `extraAdd`.
+  const alreadyAdded: Record<string, boolean> = {}
+  for (const s of b.extraAdd ?? []) alreadyAdded[`${s.name}@${s.x},${s.y}`] = true
   for (const completion of delta.mineCompletions) {
     const add: EntitySpec[] = []
     for (const s of completion.entities) {
+      if (alreadyAdded[`${s.name}@${s.x},${s.y}`]) continue
       const found = findEntities(ctx.surface, { name: s.name, position: { x: s.x, y: s.y }, force: ctx.faction.force, limit: 1 })
       if (found.length > 0) continue
       add.push(s)
@@ -1296,8 +1313,8 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     if (add.length === 0) continue
     const mineTaken: Record<number, boolean> = {}
     for (const s of add) mineTaken[tkey(math.floor(s.x), math.floor(s.y))] = true
-    for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
-    for (const e of RT.obstaclesUnder(ctx.surface, layout, { modules: [completion.module], routes: [], poles: [] })) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+    for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+    for (const e of RT.obstaclesUnder(ctx.surface, layout, { modules: [completion.module], routes: [], poles: [] })) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
     // B25: the completion's new entities replace the faction's own earlier structures on their tiles (pole lines
     // and routes placed before the mine's claim): pick them up first, then ghost. The reconcile layer turns the
     // broken edge into a repair goal.
@@ -1308,7 +1325,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
         // B37: an evicted pole is already queued.
         if (e.unit_number !== undefined && queued[e.unit_number]) continue
         if (e.unit_number !== undefined) queued[e.unit_number] = true
-        b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+        AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
       }
     }
     // B47: one plan can complete several shared mines; each one's entities join the list (seed 3333: g14 completed n6
@@ -1317,6 +1334,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${completion.module}: ${add.length} entities to build`)
   }
   transitionGoal(g, "building")
+  if (f.adoption === intent) f.adoption = undefined
   g.plannedTick = ctx.tick
   const s = job.stats
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) planned in ${entry.scanTicks + entry.planTicks} ticks (work ${s.work}, ${s.searches} searches, ${s.ripups} rip-ups): ${parts.modules.length} modules, ${parts.routes.length} routes, ${parts.poles.length} poles`)
@@ -1830,7 +1848,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     const t = storage.terrains?.[f.terrain]
     let units = 1
     if (n.kind === "outpost" && t !== undefined) {
-      units = maxExpandable(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policyFor(ctx.config), n.id)
+      units = GROW.maxExpandable(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policyFor(ctx.config), n.id)
       // D55: nothing left to expand over: the mine is planned again elsewhere.
       if (units < 1) {
         if (r.key.startsWith("deplete:")) relocateDepleted(ctx, n, "no ore in its growth area", say)

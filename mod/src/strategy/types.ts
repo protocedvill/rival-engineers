@@ -89,6 +89,8 @@ export interface BrainState {
   goals: Goal[]
   /** Tile keys reserved by sites (footprint and margin). */
   reserved: Record<number, boolean>
+  /** Paired owner for `reserved` ("site:3", "module:n6", "route:...", "pole:...", "mine:..."). Absent in old saves. */
+  reservedBy?: Record<number, string>
   /** D46: tile keys of the ore fields this faction mines (bootstrap sites, mining modules); off limits to others. */
   oreFields?: Record<number, boolean>
   /** Dedupe: a maintenance key ("fuel:<unit>") → its active job id. */

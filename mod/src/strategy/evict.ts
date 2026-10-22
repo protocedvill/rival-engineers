@@ -1,7 +1,7 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { FactionState } from "../jobs/types"
 import { tkey } from "../planner/grid"
-import { factoryReserveTiles } from "../planner/build-list"
+import { releaseWorldTile, syncWorldClaims } from "../world/claim-index"
 import { LayoutState } from "../planner/layout"
 import { findEntities } from "../work"
 import { destroyEntity } from "../planner/terrain"
@@ -72,7 +72,7 @@ export function evictSites(faction: FactionState, surface: LuaSurface, keys: Rec
       }
     }
     // Its tiles are the factory's now (the caller reserves what it builds).
-    for (const k of site.tiles) delete brain.reserved[k]
+    for (const k of site.tiles) releaseWorldTile(brain, k)
     site.tiles = []
     // A replacement elsewhere, at the front of the goals (the site's own goal, if still open, is planned again).
     let open = false
@@ -110,20 +110,5 @@ export function isSitePart(brain: BrainState | undefined, e: LuaEntity): boolean
 export function resyncReserved(faction: FactionState, layout: LayoutState): number {
   const brain = faction.brain
   if (brain === undefined) return 0
-  const keep: Record<number, boolean> = {}
-  for (const site of brain.sites) {
-    // M6a.2 (seed 222): a retired site has been picked up, its ground is free again — its tiles read as OWN walls
-    // for good otherwise (sites 2/4/14 walled the lab's port approach). Failed sites keep their spot (bad ground).
-    if (site.status === "retired") continue
-    for (const k of site.tiles) keep[k] = true
-  }
-  for (const k of factoryReserveTiles(layout)) keep[k] = true
-  let dropped = 0
-  for (const [k] of pairs(brain.reserved)) {
-    if (keep[k as number]) continue
-    delete brain.reserved[k as number]
-    dropped++
-  }
-  for (const k of factoryReserveTiles(layout)) brain.reserved[k] = true
-  return dropped
+  return syncWorldClaims(brain, brain.sites, layout)
 }

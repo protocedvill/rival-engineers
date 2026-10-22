@@ -9,7 +9,7 @@ import { staleUnderRoutes } from "./conflicts"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { getConfig } from "../config"
 import { getJob } from "../jobs/board"
-import { addClearJob, addPlaceJob, getFaction } from "../jobs/faction"
+import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { stampModule } from "../modules/stamp"
 import { registerBuffer } from "../modules/buffers"
@@ -431,20 +431,25 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
   if (faction === undefined) error(`plan ${entry.id} has no faction`)
   const surface = game.surfaces[entry.surface]
   const clearJobs: number[] = []
-  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) clearJobs.push(addClearJob(faction, e, opts.priority))
+  // Re-entrant: an adoption resumed after a Lua error must not queue the same target twice.
+  const queueClear = (e: LuaEntity): void => {
+    if (e.valid && clearJobFor(faction, e) !== undefined) return
+    clearJobs.push(addClearJob(faction, e, opts.priority))
+  }
+  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) queueClear(e)
   // B15: entities of evicted bootstrap sites under the plan.
-  for (const e of opts.clear ?? []) if (e.valid) clearJobs.push(addClearJob(faction, e, opts.priority))
+  for (const e of opts.clear ?? []) if (e.valid) queueClear(e)
   // B19: a new splitter tap on a built route replaces that route's belt: pick the belt up first.
   const queued: Record<number, boolean> = {}
   for (const e of tappedBelts(surface, entry.job.layout, opts.parts, faction.force)) {
     if (e.unit_number !== undefined) queued[e.unit_number] = true
-    clearJobs.push(addClearJob(faction, e, opts.priority))
+    queueClear(e)
   }
   // B56: the faction's own stale belt pieces on the new routes' tiles (an older copy of a rerouted connection).
   if (opts.parts !== undefined) {
     for (const e of staleUnderRoutes(surface, faction.force, entry.job.layout, opts.parts.routes)) {
       if (e.unit_number !== undefined && queued[e.unit_number]) continue
-      clearJobs.push(addClearJob(faction, e, opts.priority))
+      queueClear(e)
     }
   }
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }

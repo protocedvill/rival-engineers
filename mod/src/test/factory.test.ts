@@ -1,6 +1,6 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { destroyFaction } from "../jobs/faction"
+import { createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts } from "../planner/build-list"
@@ -8,7 +8,9 @@ import { beltTiers } from "../planner/capacity"
 import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
-import { dropPlannedPoles } from "../strategy/factory"
+import { dropPlannedPoles, getFactory, startFactory } from "../strategy/factory"
+import { startBootstrap } from "../strategy/bootstrap"
+import { recentDiagnosticBuckets } from "../diagnostic-events"
 import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
@@ -72,6 +74,40 @@ describe("M5a power and growth", () => {
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
+  })
+
+  test("M6b: a persisted adoption record survives a save and is cleared once its goal committed", () => {
+    const lab = createLab(32)
+    const faction = createFaction("m6-adopt-reload", { position: at(lab, 0, 0), crew: 1 })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    f.goals.push({ id: "g1", kind: "labs", status: "building", nodes: [], edges: [], techs: [], attempts: 1, radius: 128, createdTick: game.tick, placed: 0, rounds: 0 })
+    storage.testScratch = { faction: faction.name }
+    // A crash after the commit point leaves this record behind; it must be detected, not double-applied.
+    async(60)
+    on_tick(() => {
+      f.adoption = { goal: "g1", plan: "p-interrupted", phase: "build", tick: game.tick }
+      storage.testScratch!.record = f.adoption
+      done()
+      return false
+    })
+  }).after_reload_script(() => {
+    const scratch = storage.testScratch!
+    const faction = storage.factions[scratch.faction as string]
+    const f = getFactory(faction.name)!
+    assert(f.adoption !== undefined, "the interrupted adoption record survives the save")
+    let waited = 0
+    on_tick(() => {
+      waited++
+      if (waited < 120) return
+      assert(f.adoption === undefined, "the next think clears the record once the goal is not planning")
+      const events = recentDiagnosticBuckets(faction).planner ?? []
+      assert(events.some((e) => e.decision === "adoption-intent-cleared"), "the clear is recorded as a diagnostic")
+      storage.testScratch = undefined
+      return false
+    })
   })
 
   test("power-up: steam block on a shore + planned pole line power a lab array 40 tiles away, built from ghosts", () => {
