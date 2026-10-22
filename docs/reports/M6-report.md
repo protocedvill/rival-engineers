@@ -2350,4 +2350,16 @@ Validation:
 - `b59-fix3` seed 3333: **pass**, v1-done at **271.1 game-min**, best science window **1.086**, 0 stalls, 0 replans.
 - `npm run test:unit -- --no-build`: **28/28** files.
 - Full T2: **151 passed, 0 failed**.
-- Full 5-seed acceptance soak on the final commit: pending.
+- Full 5-seed acceptance soak `m6-final4` on `ebc0938`: **5/5**, no stalls or replans.
+
+  | seed | v1-done (game-min) | best science window |
+  |---|---|---|
+  | 11 | 208.3 | 1.092 |
+  | 222 | 240.2 | 1.019 |
+  | 3333 | 271.1 | 1.086 |
+  | 44444 | 183.3 | 1.351 |
+  | 555555 | 222.7 | 1.168 |
+
+  Seed 222 exercised the reclaim path (`goal g20 moves it to the next part of its patch (D55)`); seeds 3333 and
+  555555 exercised the relocation fallback (n26 and n42). Work counts: 49 flagged against the soft baseline, mostly
+  router/scan counters; the acceptance gate is pass/fail on v1-done, not the soft work gate.
