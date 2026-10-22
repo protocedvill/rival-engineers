@@ -10,6 +10,7 @@ import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
 import { dropPlannedPoles, getFactory, startFactory } from "../strategy/factory"
 import { startBootstrap } from "../strategy/bootstrap"
+import { goalId } from "../shared/ids"
 import { recentDiagnosticBuckets } from "../diagnostic-events"
 import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
@@ -83,12 +84,12 @@ describe("M5a power and growth", () => {
     brain.nextThink = math.huge
     brain.milestones["first-electricity-materials"] = game.tick
     const f = startFactory(faction)
-    f.goals.push({ id: "g1", kind: "labs", status: "building", nodes: [], edges: [], techs: [], attempts: 1, radius: 128, createdTick: game.tick, placed: 0, rounds: 0 })
+    f.goals.push({ id: goalId("g1"), kind: "labs", status: "building", nodes: [], edges: [], techs: [], attempts: 1, radius: 128, createdTick: game.tick, placed: 0, rounds: 0 })
     storage.testScratch = { faction: faction.name }
     // A crash after the commit point leaves this record behind; it must be detected, not double-applied.
     async(60)
     on_tick(() => {
-      f.adoption = { goal: "g1", plan: "p-interrupted", phase: "build", tick: game.tick }
+      f.adoption = { goal: goalId("g1"), plan: "p-interrupted", phase: "build", tick: game.tick }
       storage.testScratch!.record = f.adoption
       done()
       return false

@@ -78,7 +78,19 @@ ask it for conflicts instead of interpreting the raw occupancy tables independen
 orphaned occupancy, reservation, mine and soft-growth claims before a plan is adopted. Its paired add/remove helpers
 own the tag spelling (from the leaf `planner/claim-tags.ts`) and make every removal conditional on the caller still
 owning the claim, so a stale cleanup cannot free another owner's tile. The underlying indexes remain separate because
-they have different persistence and cost semantics.
+they have different persistence and cost semantics. A tile may carry both a mine and a soft claim only when both name
+the same module (a mine's own growth area): `claimMineTile` releases another owner's stale soft claim and
+`claimSoftTile` refuses another owner's mine ground, so the rule holds at the write boundary; `checkClaimOwners`
+still reports a persisted disagreement.
+`shared/ids.ts` declares the branded identifiers for values that cross layers. A brand is erased at runtime, so saves
+and Lua comparisons keep their old shape. `GoalId` is migrated end to end (`FactoryGoal.id`, the goal lifecycle, the
+adoption record and diagnostic events); module, route, pole-line, job and claim brands are declared for the same
+incremental migration. Construct at the owner and read old saves through the constructor; do not cast at use sites.
+Stable outcome codes stay separate from prose: `DiagnosticDecision` types every telemetry decision
+(`adoption-resumed`, `stale-plan-rejected`, …) and `PlanDeltaRejectionCode` names the plan-delta rejections, with the
+human explanation in `reason`/`detail`. `mod/unit/model-sequences.test.ts` chains the boundaries in the order the
+runtime meets them (plan → interleaving → replan, adopt → abandon → replan, claims → abandon → reclaim) and asserts
+revision, indexes, claims and prepared evidence after each step.
 
 ## Completion checklist for architectural changes
 

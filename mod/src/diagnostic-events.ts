@@ -1,6 +1,14 @@
 // Bounded, structured decision history. Events are plain save-safe data: never put LuaObjects in this stream.
 
+import type { GoalId } from "./shared/ids"
+
 export type DiagnosticEventKind = "crew-plan" | "crew-supply" | "goal" | "planner" | "churn"
+
+/**
+ * Stable decision codes for host tools. Keep them free of prose and stable across saves; put the explanation in
+ * `reason`/`detail`. A new decision is added here so a typo cannot silently create a new code in telemetry.
+ */
+export type DiagnosticDecision = "idle" | "batch" | "haul" | "growth-rejected" | "adoption-resumed" | "adoption-intent-orphaned" | "adoption-intent-cleared" | "stale-plan-rejected" | "invalid-plan-delta"
 
 export interface DiagnosticEvent {
   seq?: number
@@ -10,9 +18,9 @@ export interface DiagnosticEvent {
   kind: DiagnosticEventKind
   member?: number
   job?: number
-  goal?: string
+  goal?: GoalId
   plan?: string
-  decision: string
+  decision: DiagnosticDecision
   reason?: string
   counts?: Record<string, number>
   data?: Record<string, unknown>

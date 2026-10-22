@@ -2183,3 +2183,57 @@ dirty tree; it is not an acceptance result or a commit record.
 - Targeted T2: the new save/reload adoption test passes.
 - Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 1075.0 s wall (4498.6 s of
   test time).
+
+## M6b.35: claim agreement, branded goal ids, decision codes and model sequences (working tree, 2026-10-22)
+
+Continues the M6b.33 follow-up list with items 1–3: the mine-vs-soft owner agreement, the first branded-ID and reason-
+code slice, and model-sequence regressions. Not an acceptance result or a commit record.
+
+### 1. Mine-vs-soft owner agreement
+
+- `claimMineTile` now releases another module's soft claim (and its unit) on the tile it hard-claims, and
+  `claimSoftTile` refuses a tile another module has claimed as mine. The disagreement is therefore prevented at the
+  write boundary, not only reported.
+- `checkClaimOwners` still reports a persisted/old-save state where the two owners differ. A mine's own ground is
+  claimed both ways on purpose (`layout.ts`), so only the disagreement is a problem: growth cannot use it (the hard
+  claim refuses) but soft queries would still read it as free.
+- Tests: `claims` adds same-owner acceptance, different-owner rejection, stale-soft release and the soft-write refusal.
+
+### 2. Branded ids and stable decision codes
+
+- `shared/ids.ts` declares branded `GoalId`, `ModuleId`, `RouteId`, `PoleLineId`, `JobId` and `ClaimTag`, with
+  constructors. Brands are compile-time only, so saves, Lua comparisons and diagnostics keep their runtime shape.
+- `GoalId` is migrated end to end: `FactoryGoal.id`, goal construction (`g${f.nextGoal++}`), `goal-lifecycle` calls,
+  the adoption record and diagnostic events. Module/route/pole/job/claim brands remain declared for later slices; the
+  policy is construct-at-the-owner, no casts at use sites.
+- `DiagnosticDecision` types every telemetry decision string (`idle`, `batch`, `haul`, `growth-rejected`,
+  `adoption-*`, `stale-plan-rejected`, `invalid-plan-delta`), so a typo cannot invent a code host tools must learn.
+  `PlanDeltaRejectionCode` names the plan-delta rejection codes; prose stays in `reason`/`detail`.
+- Tests: T1 typecheck/build; `adoption-intent` uses the branded constructor.
+
+### 3. Model-sequence regressions
+
+- New T1 suite `model-sequences` chains the boundaries in runtime order and asserts revision, indexes, claims and
+  prepared evidence after every step:
+  1. plan A → B commits → A rejected as `stale-base-revision` with no side effects → replan from B's revision adds
+     only the intended module;
+  2. routed plan → adopt the candidate revision → abandon its routes → claims and indexes clean → replan on the freed
+     ground;
+  3. module abandonment releases its footprint/claims → a replan takes the same ground with a ready delta.
+- Existing suites already cover growth rip-ups with splitter taps and the goal-transition matrix; the new suite covers
+  the hand-off between them.
+
+### Validation
+
+- `npm run typecheck`: pass (architecture check included).
+- `npm run build`: pass under the 185-local guard.
+- `npm run test:unit -- --no-build`: **26/26 files passed**; `claims` 8, `model-sequences` 3, `adoption-intent` 4.
+- Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 642.9 s wall (4721.8 s of
+  test time).
+
+### Next (refactor)
+
+- Migrate the remaining brands (module, route, pole line, job, claim) at their owners, one boundary at a time.
+- Shrink `strategy/factory.ts` (still ~2.3k lines) once preparation/validation sit behind those boundaries.
+- Surface `checkClaimOwners` in `factoryDiagnostics` for rejected plans (M6b.35 only runs it during validation).
+- B59 attribution and a fresh 5-seed acceptance soak remain the release gate.

@@ -136,6 +136,20 @@ test("mine and soft writes stay paired and refuse occupied ground", () => {
   eq(state.softUnit?.[a], undefined)
 })
 
+test("a mine claim clears another module's stale soft claim", () => {
+  const state = newLayout()
+  const a = tkey(1, 1)
+  const b = tkey(2, 1)
+  claimSoftTile(state, a, "m2", 1)
+  claimSoftTile(state, b, "m2", 1)
+  ok(claimMineTile(state, a, "m1"))
+  eq(state.soft?.[a], undefined, "the stale soft claim is released")
+  eq(state.softUnit?.[a], undefined, "its unit goes with it")
+  claimMineTile(state, b, "m1")
+  ok(!claimSoftTile(state, b, "m2", 1), "another module's mine ground refuses a soft claim")
+  ok(claimSoftTile(state, b, "m1", 0), "the mine's own growth claim is allowed")
+})
+
 test("claim ownership checks find orphaned and one-sided index entries", () => {
   const state = newLayout()
   state.occ[tkey(1, 1)] = "m:gone"
@@ -146,6 +160,17 @@ test("claim ownership checks find orphaned and one-sided index entries", () => {
   ok(problems.some((p) => p.indexOf("missing module gone") >= 0), problems.join("; "))
   ok(problems.some((p) => p.indexOf("missing port owner p:gone.in") >= 0), problems.join("; "))
   ok(problems.some((p) => p.indexOf("soft unit 4,1 has no soft claim") >= 0), problems.join("; "))
+})
+
+test("a mine tile may be soft-claimed by its own module, not by another", () => {
+  const state = newLayout()
+  const k = tkey(5, 5)
+  state.mine = { [k]: "m1" }
+  state.soft = { [k]: "m1" }
+  ok(!checkClaimOwners(state).some((p) => p.indexOf("soft-claimed by") >= 0), "the mine's own growth claim agrees")
+  state.soft[k] = "m2"
+  const problems = checkClaimOwners(state)
+  ok(problems.some((p) => p.indexOf("mine claim 5,5 owned by m1 is soft-claimed by m2") >= 0), problems.join("; "))
 })
 
 run("claims")

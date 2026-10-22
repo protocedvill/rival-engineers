@@ -16,6 +16,7 @@ import type { LayoutState, PlacedModule, PlannedPole } from "../planner/layout"
 import { preparePlanDelta } from "../planner/plan-delta"
 import type { PlanDelta } from "../planner/plan-delta"
 import { recordDiagnostic } from "../diagnostic-events"
+import * as IDS from "../shared/ids"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest } from "../planner/plan"
@@ -82,7 +83,7 @@ export interface GoalNode {
 }
 
 export interface FactoryGoal {
-  id: string
+  id: IDS.GoalId
   kind: GoalKind
   status: GoalStatus
   nodes: GoalNode[]
@@ -626,7 +627,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
 function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): void {
   const f = ctx.f
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: spec.kind,
     status: "planning",
     nodes: goalNodes(spec, f),
@@ -701,7 +702,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     }
   }
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "grow",
     status: "building",
     nodes: [],
@@ -1900,7 +1901,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "repair",
     status: "building",
     nodes: [],

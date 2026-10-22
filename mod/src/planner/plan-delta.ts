@@ -58,6 +58,9 @@ export interface PlanDelta {
   mineCompletions: PlanMineCompletion[]
 }
 
+/** Stable rejection codes: host tools match these; `detail`/`problems` carry the human explanation. */
+export type PlanDeltaRejectionCode = "stale-base-revision" | "invalid-layout-indexes" | "invalid-layout-claims"
+
 export type PlanDeltaRejection =
   | { status: "rejected"; code: "stale-base-revision"; sourceRevision: number; currentRevision: number; detail: string }
   | { status: "rejected"; code: "invalid-layout-indexes"; problems: string[]; detail: string }

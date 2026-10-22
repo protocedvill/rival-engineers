@@ -6,6 +6,7 @@
 // Pure: no Factorio globals, so the decision is T1-testable and survives a save/reload unchanged.
 
 import type { GoalStatus } from "./goal-lifecycle"
+import type { GoalId } from "../shared/ids"
 
 export type AdoptionPhase = "prepared" | "state" | "world" | "build"
 
@@ -13,7 +14,7 @@ export type AdoptionPhase = "prepared" | "state" | "world" | "build"
 export const ADOPTION_PHASES: AdoptionPhase[] = ["prepared", "state", "world", "build"]
 
 export interface AdoptionIntent {
-  goal: string
+  goal: GoalId
   plan: string
   /** The last phase that was entered; a resumed adoption re-runs from the top and every phase is idempotent. */
   phase: AdoptionPhase
@@ -21,7 +22,7 @@ export interface AdoptionIntent {
   tick: number
 }
 
-export function beginAdoption(goal: string, plan: string, tick: number): AdoptionIntent {
+export function beginAdoption(goal: GoalId, plan: string, tick: number): AdoptionIntent {
   return { goal, plan, phase: "prepared", tick }
 }
 
@@ -40,7 +41,7 @@ function phaseIndex(phase: AdoptionPhase): number {
 export type AdoptionResume = "fresh" | "resume" | "other"
 
 /** Whether a persisted record belongs to the adoption being attempted now. */
-export function adoptionResume(intent: AdoptionIntent | undefined, goal: string, plan: string): AdoptionResume {
+export function adoptionResume(intent: AdoptionIntent | undefined, goal: GoalId, plan: string): AdoptionResume {
   if (intent === undefined) return "fresh"
   if (intent.goal === goal && intent.plan === plan) return "resume"
   return "other"
