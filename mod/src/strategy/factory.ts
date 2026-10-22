@@ -103,15 +103,15 @@ export interface FactoryGoal {
   rounds: number
   lastRound?: number
   /** Clear jobs for trees/rocks found under leftover ghosts, by obstacle position. */
-  clearing?: Record<string, number>
+  clearing?: Record<string, IDS.JobId>
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
-  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
+  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[] }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
   deferred?: boolean
-  rework?: { clearJobs: number[]; add: EntitySpec[] }
+  rework?: { clearJobs: IDS.JobId[]; add: EntitySpec[] }
   /** B20: leftover-ghost rounds in a row that placed nothing, and the leftover count of the last round. */
   stuck?: number
   lastLeft?: number
@@ -741,7 +741,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     }
     e.physical = physical.length > 0 ? physical : [`route:${e.role}`]
   }
-  const clearJobs: number[] = []
+  const clearJobs: IDS.JobId[] = []
   const taken: Record<number, boolean> = {}
   for (const e of plan.add) {
     const p = prototypes.entity[e.name]
@@ -826,7 +826,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       }
       return
     }
-    const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
+    const fake = { placeJobs: [] as IDS.JobId[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
     replanGhosts(ctx, g, fake as never, left, ctx.f.layout)
     b.placeJobs = fake.placeJobs
     return
@@ -1896,7 +1896,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   }
   // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
   // B56: so are the faction's own stale belt pieces standing where a missing route piece goes.
-  const clearJobs: number[] = []
+  const clearJobs: IDS.JobId[] = []
   for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
   for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })

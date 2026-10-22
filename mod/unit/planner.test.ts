@@ -1,6 +1,6 @@
 import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
-import { connectionId, moduleId, routeId, poleId, poleLineId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
 import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
@@ -92,7 +92,7 @@ test("layout revisions survive clones and structural index drift is reported", (
   eq(checkLayoutIndexes(copy).problems.length, 0)
 
   const tile = tkey(2, 2)
-  copy.occ[tile] = "m:some-other-module"
+  copy.occ[tile] = layoutClaimTag("m:some-other-module")
   const problems = checkLayoutIndexes(copy).problems
   ok(problems.some((p) => p.indexOf("module source tile 2,2 indexed as m:some-other-module") >= 0), problems.join("; "))
 })
@@ -146,7 +146,7 @@ test("plan delta refuses a candidate whose derived indexes drifted", () => {
   const base = newLayout()
   place(base, source("base", EAST), 2, 2)
   const job = newPlanJob(request([], []), YELLOW, base)
-  job.layout.occ[tkey(2, 2)] = "m:wrong"
+  job.layout.occ[tkey(2, 2)] = layoutClaimTag("m:wrong")
   const result = preparePlanDelta({
     sourceRevision: job.sourceRevision,
     layout: job.layout,
@@ -160,7 +160,7 @@ test("plan delta refuses a candidate whose derived indexes drifted", () => {
   }
 
   const orphaned = newPlanJob(request([], []), YELLOW, base)
-  orphaned.layout.occ[tkey(8, 8)] = "m:missing"
+  orphaned.layout.occ[tkey(8, 8)] = layoutClaimTag("m:missing")
   const orphanResult = preparePlanDelta({
     sourceRevision: orphaned.sourceRevision,
     layout: orphaned.layout,

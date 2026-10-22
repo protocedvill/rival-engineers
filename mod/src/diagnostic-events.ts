@@ -1,6 +1,6 @@
 // Bounded, structured decision history. Events are plain save-safe data: never put LuaObjects in this stream.
 
-import type { GoalId } from "./shared/ids"
+import type { GoalId, JobId } from "./shared/ids"
 
 export type DiagnosticEventKind = "crew-plan" | "crew-supply" | "goal" | "planner" | "churn"
 
@@ -17,7 +17,7 @@ export interface DiagnosticEvent {
   repeats?: number
   kind: DiagnosticEventKind
   member?: number
-  job?: number
+  job?: JobId
   goal?: GoalId
   plan?: string
   decision: DiagnosticDecision

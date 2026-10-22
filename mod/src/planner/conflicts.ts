@@ -11,7 +11,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
-import type { RouteId } from "../shared/ids"
+import type { JobId, RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
 import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
 import { removePoleLines } from "./power"
@@ -164,9 +164,9 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
  * Makes the world follow a diff: own entities of `remove` get clear jobs (the crew picks them up and keeps the items),
  * own ghosts of it are removed; `add` gets ghosts and place jobs. Returns the new ghosts and job ids.
  */
-export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: number[]; clearJobs: number[]; failed: string[] } {
+export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
   const force = faction.force
-  const clearJobs: number[] = []
+  const clearJobs: JobId[] = []
   for (const e of remove) {
     const ghost = ownGhost(surface, force, e)
     if (ghost !== undefined) destroyEntity(ghost)
@@ -174,7 +174,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     if (built !== undefined) clearJobs.push(addClearJob(faction, built, opts.priority))
   }
   const ghosts: LuaEntity[] = []
-  const placeJobs: number[] = []
+  const placeJobs: JobId[] = []
   const failed: string[] = []
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue

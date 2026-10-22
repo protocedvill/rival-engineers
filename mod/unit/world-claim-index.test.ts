@@ -1,5 +1,5 @@
 import { IDENTITY } from "../src/modules/geometry"
-import { connectionId, moduleId, poleId, poleLineId, routeId } from "../src/shared/ids"
+import { connectionId, moduleId, poleId, poleLineId, routeId, worldClaimTag as asWorldClaimTag } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { tkey } from "../src/planner/grid"
 import { commitModule, commitRoute, newLayout, PlacedModule, Route } from "../src/planner/layout"
@@ -56,7 +56,7 @@ test("sync tags site and factory ground and drops stale reservations", () => {
   const table: WorldClaimTable = { reserved: {}, reservedBy: {} }
   // A stale reservation with its owner, and a direct delete that left an owner behind.
   reserveWorldTile(table, tkey(40, 40), "site:9")
-  table.reservedBy![tkey(41, 41)] = "site:9"
+  table.reservedBy![tkey(41, 41)] = asWorldClaimTag("site:9")
   const sites: ClaimSite[] = [
     { id: 3, status: "built", tiles: [tkey(-5, -5)] },
     { id: 4, status: "retired", tiles: [tkey(-6, -6)] },
@@ -78,7 +78,7 @@ test("owner checks report orphans, one-sided entries and malformed tags", () => 
   reserveWorldTile(table, tkey(1, 1), "module:gone")
   reserveWorldTile(table, tkey(2, 1), "site:2")
   reserveWorldTile(table, tkey(3, 1), "bogus:1")
-  table.reservedBy![tkey(4, 1)] = "site:3" // no reservation
+  table.reservedBy![tkey(4, 1)] = asWorldClaimTag("site:3") // no reservation
   table.reserved[tkey(5, 1)] = true // legacy, no owner
   const problems = checkWorldClaimOwners(table, { "site:2": true })
   ok(problems.some((p) => p.indexOf("names absent module:gone") >= 0), problems.join("; "))

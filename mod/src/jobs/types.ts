@@ -3,6 +3,7 @@ import { BrainState } from "../strategy/types"
 import { Board, ItemCount, Pos } from "./board"
 import type { SupplyPoint } from "./supply"
 import type { DiagnosticEventStore } from "../diagnostic-events"
+import type { JobId } from "../shared/ids"
 
 // Runtime shapes for factions, crew and the per-job data the board carries. All of it lives in
 // `storage`, so plain tables only.
@@ -50,7 +51,7 @@ export interface FactionState {
   stockpiles: LuaEntity[]
   board: Board<JobPayload>
   /** Ghost unit_number → place job id, so a ghost is planned once. */
-  ghostJobs: Record<number, number>
+  ghostJobs: Record<number, JobId>
   /** Paused factions don't claim new jobs (running work finishes). */
   paused: boolean
   /** Items crew members are on their way to take (legacy: reservations made before B32 carry no source). */

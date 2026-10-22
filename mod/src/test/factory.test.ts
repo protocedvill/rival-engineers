@@ -1,6 +1,6 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { moduleId, connectionId, poleId, poleLineId } from "../shared/ids"
+import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
@@ -388,8 +388,8 @@ describe("M5a power and growth", () => {
       { id: poleId("kept"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:b46:0") },
     ]
     layout.poleLines = [{ id: poleLineId("poles:b46:0"), from: "power", to: moduleId("consumer"), poles: [poleId("evicted"), poleId("kept")] }]
-    layout.occ[tkey(x, y)] = "x:poles:b46:0"
-    layout.occ[tkey(x + 6, y)] = "x:poles:b46:0"
+    layout.occ[tkey(x, y)] = layoutClaimTag("x:poles:b46:0")
+    layout.occ[tkey(x + 6, y)] = layoutClaimTag("x:poles:b46:0")
     const parts = { modules: [], routes: [], poles: [poleId("evicted"), poleId("kept")] }
     // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
     const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })

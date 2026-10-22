@@ -5,6 +5,7 @@
 // The Factory Graph of a plan is exported to JSON for tools/render (D29).
 
 import { evictableTiles } from "../strategy/evict"
+import type { JobId } from "../shared/ids"
 import { staleUnderRoutes } from "./conflicts"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { getConfig } from "../config"
@@ -28,8 +29,8 @@ import { countWork, findEntities } from "../work"
 export interface BuildState {
   phase: "clear" | "place" | "done"
   faction: string
-  clearJobs: number[]
-  placeJobs: number[]
+  clearJobs: JobId[]
+  placeJobs: JobId[]
   fuel?: { item: string; count: number }
   priority?: number
   failed: string[]
@@ -430,7 +431,7 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
   const faction = getFaction(entry.faction ?? "")
   if (faction === undefined) error(`plan ${entry.id} has no faction`)
   const surface = game.surfaces[entry.surface]
-  const clearJobs: number[] = []
+  const clearJobs: JobId[] = []
   // Re-entrant: an adoption resumed after a Lua error must not queue the same target twice.
   const queueClear = (e: LuaEntity): void => {
     if (e.valid && clearJobFor(faction, e) !== undefined) return

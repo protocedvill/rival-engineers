@@ -2,7 +2,7 @@
 // stay separate: this module gives them one ownership vocabulary without adding a second stored representation.
 
 import { interactionTag, isLaneReservation, isOwnPortReservation, isPoleTag, moduleTag, poleTag } from "./claim-tags"
-import { moduleId } from "../shared/ids"
+import { layoutClaimTag, moduleId } from "../shared/ids"
 import type { ModuleId, RouteId } from "../shared/ids"
 import { keyX, keyY } from "./grid"
 import type { LayoutState } from "./layout"
@@ -179,13 +179,13 @@ export function releasePoleTile(state: LayoutState, key: number, line: string): 
 
 /** Records a reservation. The caller has already refused the tile if another owner holds it. */
 export function reserveTile(state: LayoutState, key: number, tag: string): void {
-  state.reserved[key] = tag
+  state.reserved[key] = layoutClaimTag(tag)
 }
 
 /** Records a reservation only while no other reservation holds the tile. */
 export function reserveFreeTile(state: LayoutState, key: number, tag: string): boolean {
   if (state.reserved[key] !== undefined) return false
-  state.reserved[key] = tag
+  state.reserved[key] = layoutClaimTag(tag)
   return true
 }
 

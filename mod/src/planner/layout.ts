@@ -6,7 +6,7 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
-import type { ConnectionId, ModuleId, PoleId, PoleLineId, RouteId } from "../shared/ids"
+import type { ConnectionId, LayoutClaimTag, ModuleId, PoleId, PoleLineId, RouteId } from "../shared/ids"
 import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
 import { isPoleTag, moduleTag, poleTag, portTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
@@ -121,9 +121,9 @@ export interface LayoutState {
   revision?: number
   modules: PlacedModule[]
   /** Module footprints ("m:<id>") and tiles module entities interact with outside their footprint ("x:<id>"). */
-  occ: Record<number, string>
+  occ: Record<number, LayoutClaimTag>
   /** Port outside tiles ("p:<module>.<port>"): only the route of that port may use them. */
-  reserved: Record<number, string>
+  reserved: Record<number, LayoutClaimTag>
   /** Route tiles → route id. */
   routeOcc: Record<number, RouteId>
   /** Reserved routing corridors around modules (routes prefer them; other modules stay out of `corridor.min`). */

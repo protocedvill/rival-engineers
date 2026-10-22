@@ -4,12 +4,14 @@
 // without saying who owns it. Pure: no Factorio globals.
 
 import { keyX, keyY, tkey } from "../planner/grid"
+import { worldClaimTag as asWorldClaimTag } from "../shared/ids"
+import type { WorldClaimTag } from "../shared/ids"
 import { LayoutState, moduleMargin, moduleTiles } from "../planner/layout"
 
 /** A tile reservation table as stored in `BrainState`. `reservedBy` is absent in saves made before it existed. */
 export interface WorldClaimTable {
   reserved: Record<number, boolean>
-  reservedBy?: Record<number, string>
+  reservedBy?: Record<number, WorldClaimTag>
 }
 
 /** A bootstrap site as the claim sync needs it (the real `Site` satisfies this structurally). */
@@ -21,24 +23,24 @@ export interface ClaimSite {
 
 export type WorldClaimKind = "site" | "module" | "route" | "pole" | "mine"
 
-export function siteClaim(id: number): string {
-  return `site:${id}`
+export function siteClaim(id: number): WorldClaimTag {
+  return asWorldClaimTag(`site:${id}`)
 }
 
-export function moduleClaim(id: string): string {
-  return `module:${id}`
+export function moduleClaim(id: string): WorldClaimTag {
+  return asWorldClaimTag(`module:${id}`)
 }
 
-export function routeClaim(id: string): string {
-  return `route:${id}`
+export function routeClaim(id: string): WorldClaimTag {
+  return asWorldClaimTag(`route:${id}`)
 }
 
-export function poleClaim(id: string): string {
-  return `pole:${id}`
+export function poleClaim(id: string): WorldClaimTag {
+  return asWorldClaimTag(`pole:${id}`)
 }
 
-export function mineClaim(id: string): string {
-  return `mine:${id}`
+export function mineClaim(id: string): WorldClaimTag {
+  return asWorldClaimTag(`mine:${id}`)
 }
 
 /** The kind a tag names, or undefined for a malformed tag. */
@@ -59,7 +61,7 @@ export function claimOwner(tag: string): string {
 export function reserveWorldTile(table: WorldClaimTable, key: number, tag: string): void {
   table.reserved[key] = true
   table.reservedBy ??= {}
-  table.reservedBy[key] = tag
+  table.reservedBy[key] = asWorldClaimTag(tag)
 }
 
 /** Releases a tile and its owner. Returns whether the tile was reserved. */

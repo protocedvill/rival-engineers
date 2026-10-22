@@ -2321,3 +2321,18 @@ Third brand slice. Not an acceptance result or a commit record.
 ### Next
 
 - Claim tags (layout and world), then job ids; the request/port-id close-out and `factory.ts` shrink follow.
+
+## M6b.39: claim tags and job ids (working tree, 2026-10-22)
+
+Final brand slices for the claim/index and job boundaries. Not an acceptance result or a commit record.
+
+- `LayoutClaimTag` (`m:`, `x:`, `p:`, `lane:`) types `LayoutState.occ`/`reserved`; `WorldClaimTag` (`site:`,
+  `module:`, `route:`, `pole:`, `mine:`) types `BrainState.reservedBy` and the world claim index. The constructors in
+  `planner/claim-tags.ts` and `world/claim-index.ts` are the owners; predicates still accept plain strings.
+- `JobId` covers `Job.id`, `deps`, `JobSpec.deps`, `addClearJob`/`addPlaceJob` returns, build-job arrays, `SitePart.job`,
+  `ghostJobs`, `FactoryGoal.clearing` and diagnostic events. `Board.nextId` and the `jobs` table key stay numeric.
+- Still plain strings: `PoleLine.from` (owner marker) and `ModuleRequest.id`/`PlacementRequest.id`/`PortRef.module`
+  (request-local close-out), which do not cross a stored boundary.
+- Brands are erased; the `ids` suite pins constructor identity.
+
+Validation: typecheck and build pass; T1 **27/27**; full T2 **151 passed, 0 failed** in 349.8 s wall.

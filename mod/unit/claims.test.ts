@@ -24,7 +24,7 @@ import {
   routeClaimConflict,
 } from "../src/planner/claims"
 import { laneTag, portTag } from "../src/planner/claim-tags"
-import { moduleId, routeId } from "../src/shared/ids"
+import { moduleId, routeId, layoutClaimTag } from "../src/shared/ids"
 import { tkey } from "../src/planner/grid"
 import { newLayout, Route } from "../src/planner/layout"
 import { eq, ok, run, test } from "./harness"
@@ -32,8 +32,8 @@ import { eq, ok, run, test } from "./harness"
 test("claims expose every existing index through one typed vocabulary", () => {
   const state = newLayout()
   const k = tkey(3, 4)
-  state.occ[k] = "x:poles:g1:0"
-  state.reserved[k] = "lane:p:m1.in"
+  state.occ[k] = layoutClaimTag("x:poles:g1:0")
+  state.reserved[k] = layoutClaimTag("lane:p:m1.in")
   state.routeOcc[k] = routeId("route:r1")
   state.mine = { [k]: moduleId("m1") }
   state.soft = { [k]: moduleId("m1") }
@@ -45,13 +45,13 @@ test("claims expose every existing index through one typed vocabulary", () => {
 test("typed conflict queries preserve route, placement, pole and lane policies", () => {
   const state = newLayout()
   const k = tkey(1, 1)
-  state.occ[k] = "x:poles:g1:0"
+  state.occ[k] = layoutClaimTag("x:poles:g1:0")
   eq(routeClaimConflict(state, k, {}, undefined, "to", false), undefined, "routes evict poles")
   ok(poleClaimConflict(state, k)?.code === "occupied", "poles do not overlap poles")
   eq(placementClaimConflict(state, k), undefined, "placements evict poles")
 
   delete state.occ[k]
-  state.reserved[k] = "p:to.in"
+  state.reserved[k] = layoutClaimTag("p:to.in")
   eq(routeClaimConflict(state, k, { "p:to.in": true }, undefined, "to", false), undefined, "own port")
   ok(laneClaimConflict(state, k, "p:to.in", "lane:p:to.in") === undefined, "own lane")
   ok(placementClaimConflict(state, k)?.code === "reserved", "placement reservation")
@@ -153,8 +153,8 @@ test("a mine claim clears another module's stale soft claim", () => {
 
 test("claim ownership checks find orphaned and one-sided index entries", () => {
   const state = newLayout()
-  state.occ[tkey(1, 1)] = "m:gone"
-  state.reserved[tkey(2, 1)] = "p:gone.in"
+  state.occ[tkey(1, 1)] = layoutClaimTag("m:gone")
+  state.reserved[tkey(2, 1)] = layoutClaimTag("p:gone.in")
   state.mine = { [tkey(3, 1)]: moduleId("gone") }
   state.softUnit = { [tkey(4, 1)]: 2 }
   const problems = checkClaimOwners(state)

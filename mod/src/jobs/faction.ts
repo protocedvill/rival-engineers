@@ -1,5 +1,6 @@
 import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { createController, destroyController } from "../character/controller"
+import type { JobId } from "../shared/ids"
 import { getConfig } from "../config"
 import { addJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
@@ -156,7 +157,7 @@ export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {
  * Adds a place job for one ghost (once per ghost; returns the job id, or undefined if it already has one or nothing
  * places it), with optional dependencies (e.g. clear jobs on its tiles) and a fuel job for burners.
  */
-export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: PlanGhostsOptions & { deps?: number[] } = {}): number | undefined {
+export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: PlanGhostsOptions & { deps?: JobId[] } = {}): JobId | undefined {
   const key = ghost.unit_number!
   if (faction.ghostJobs[key] !== undefined) return undefined
   const proto = ghost.ghost_prototype as LuaEntityPrototype
@@ -199,7 +200,7 @@ export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: Pl
 }
 
 /** Adds a clear job: the crew mines a tree or rock (or picks up one of the faction's own entities). */
-export function addClearJob(faction: FactionState, target: LuaEntity, priority?: number): number {
+export function addClearJob(faction: FactionState, target: LuaEntity, priority?: number): JobId {
   const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, payload: { kind: "clear", target } }, game.tick)
   return job.id
 }

@@ -13,7 +13,8 @@ declare const routeIdBrand: unique symbol
 declare const poleIdBrand: unique symbol
 declare const poleLineIdBrand: unique symbol
 declare const jobIdBrand: unique symbol
-declare const claimTagBrand: unique symbol
+declare const layoutClaimTagBrand: unique symbol
+declare const worldClaimTagBrand: unique symbol
 
 /** A factory goal id (`g1`, …). */
 export type GoalId = string & { readonly [goalIdBrand]: true }
@@ -29,8 +30,10 @@ export type PoleId = string & { readonly [poleIdBrand]: true }
 export type PoleLineId = string & { readonly [poleLineIdBrand]: true }
 /** A Job Board job number. */
 export type JobId = number & { readonly [jobIdBrand]: true }
-/** A spatial claim tag (`m:`, `p:`, `lane:`, `route:`, …). */
-export type ClaimTag = string & { readonly [claimTagBrand]: true }
+/** A layout index tag (`m:`, `x:`, `p:`, `lane:`). */
+export type LayoutClaimTag = string & { readonly [layoutClaimTagBrand]: true }
+/** A world reservation tag (`site:`, `module:`, `route:`, `pole:`, `mine:`). */
+export type WorldClaimTag = string & { readonly [worldClaimTagBrand]: true }
 
 export function goalId(value: string): GoalId {
   return value as GoalId
@@ -60,6 +63,10 @@ export function jobId(value: number): JobId {
   return value as JobId
 }
 
-export function claimTag(value: string): ClaimTag {
-  return value as ClaimTag
+export function layoutClaimTag(value: string): LayoutClaimTag {
+  return value as LayoutClaimTag
+}
+
+export function worldClaimTag(value: string): WorldClaimTag {
+  return value as WorldClaimTag
 }

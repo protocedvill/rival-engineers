@@ -1,3 +1,4 @@
+import type { JobId } from "../src/shared/ids"
 import {
   addJob,
   Board,
@@ -22,7 +23,7 @@ import { eq, ok, run, test } from "./harness"
 
 const RELEASE = { penalize: true, maxAttempts: 3, retryTicks: 100 }
 
-function place(board: Board, x: number, y: number, priority = 0, deps: number[] = []): number {
+function place(board: Board, x: number, y: number, priority = 0, deps: JobId[] = []): JobId {
   const footprint: Rect = { x1: x - 0.5, y1: y - 0.5, x2: x + 0.5, y2: y + 0.5 }
   return addJob(board, { kind: "place", pos: { x, y }, footprint, priority, deps, payload: undefined }, 0).id
 }

@@ -1,4 +1,6 @@
 // Job Board scheduling logic (SPEC §5.2): pure data and functions, no Factorio globals, so T1 unit tests
+import { jobId } from "../shared/ids"
+import type { JobId } from "../shared/ids"
 // can run it outside the game (mod/unit/board.test.ts). The runtime side (mod/src/jobs/crew.ts) owns the
 // entities and controller actions; it keeps them in each job's `payload`.
 //
@@ -29,7 +31,7 @@ export type JobKind = "gather" | "craft" | "haul" | "place" | "fuel" | "clear"
 export type JobStatus = "open" | "claimed" | "done" | "failed"
 
 export interface Job<P = unknown> {
-  id: number
+  id: JobId
   kind: JobKind
   /** Where the work happens: nearest-first selection and locality batching measure from here. */
   pos: Pos
@@ -38,7 +40,7 @@ export interface Job<P = unknown> {
   /** Items the crew member must carry to do the job. */
   materials: ItemCount[]
   /** Jobs that must be done first. A failed dependency fails this job too. */
-  deps: number[]
+  deps: JobId[]
   /** Higher first. */
   priority: number
   status: JobStatus
@@ -64,7 +66,7 @@ export interface JobSpec<P> {
   pos: Pos
   footprint?: Rect
   materials?: ItemCount[]
-  deps?: number[]
+  deps?: JobId[]
   priority?: number
   payload: P
 }
@@ -116,7 +118,7 @@ function logEvent(board: Board<unknown>, event: ClaimEvent): void {
 }
 
 export function addJob<P>(board: Board<P>, spec: JobSpec<P>, tick: number): Job<P> {
-  const id = board.nextId++
+  const id = jobId(board.nextId++)
   const job: Job<P> = {
     id,
     kind: spec.kind,
@@ -245,7 +247,7 @@ export function failJob(board: Board<unknown>, id: number, reason: string, tick:
   logEvent(board, { tick, job: id, member, event: "fail", reason })
   for (const other of [...board.active]) {
     const o = board.jobs[other]
-    if (o.deps.indexOf(id) >= 0) failJob(board, other, `dep-failed:${id}`, tick, member)
+    if (o.deps.indexOf(jobId(id)) >= 0) failJob(board, other, `dep-failed:${id}`, tick, member)
   }
 }
 

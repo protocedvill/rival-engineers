@@ -1,6 +1,6 @@
 import { labArray, miningOutpost, radarCell, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
-import { moduleId, poleId, poleLineId } from "../src/shared/ids"
+import { moduleId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
 import { commitModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
@@ -139,7 +139,7 @@ test("B43: a consumer whose trunk line was evicted joins through the line still 
   const keep = layout.poles!.filter((p) => p.line === line.id).slice(-2)
   for (const p of layout.poles!) delete layout.occ[tkey(p.x, p.y)]
   layout.poles = keep.map((p, i) => ({ ...p, id: poleId(`poles:old:0.${i}`), line: poleLineId("poles:old:0") }))
-  for (const p of layout.poles) layout.occ[tkey(p.x, p.y)] = "x:poles:old:0"
+  for (const p of layout.poles) layout.occ[tkey(p.x, p.y)] = layoutClaimTag("x:poles:old:0")
   layout.poleLines = [{ id: poleLineId("poles:old:0"), from: "poles:gone", to: moduleId("labs"), poles: layout.poles.map((p) => p.id) }]
   // Every tile in wire reach of the labs' own poles is taken (a mine's growth room in the report).
   for (const e of m.def.entities) {
@@ -147,7 +147,7 @@ test("B43: a consumer whose trunk line was evicted joins through the line still 
     for (let x = math.floor(m.origin.x + e.x) - 8; x <= m.origin.x + e.x + 8; x++) {
       for (let y = math.floor(m.origin.y + e.y) - 8; y <= m.origin.y + e.y + 8; y++) {
         const k = tkey(x, y)
-        if (layout.occ[k] === undefined) layout.reserved[k] = "test"
+        if (layout.occ[k] === undefined) layout.reserved[k] = layoutClaimTag("test")
       }
     }
   }
