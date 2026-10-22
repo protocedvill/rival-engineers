@@ -8,6 +8,7 @@
 
 declare const goalIdBrand: unique symbol
 declare const moduleIdBrand: unique symbol
+declare const connectionIdBrand: unique symbol
 declare const routeIdBrand: unique symbol
 declare const poleLineIdBrand: unique symbol
 declare const jobIdBrand: unique symbol
@@ -17,7 +18,9 @@ declare const claimTagBrand: unique symbol
 export type GoalId = string & { readonly [goalIdBrand]: true }
 /** A module instance id; also a graph node id. */
 export type ModuleId = string & { readonly [moduleIdBrand]: true }
-/** A belt route id (`r1`, …). */
+/** A connection request id (an edge role). */
+export type ConnectionId = string & { readonly [connectionIdBrand]: true }
+/** A belt route id (`route:<conn>`, …). */
 export type RouteId = string & { readonly [routeIdBrand]: true }
 /** A pole line id (`poles:g1:0`, …). */
 export type PoleLineId = string & { readonly [poleLineIdBrand]: true }
@@ -32,6 +35,10 @@ export function goalId(value: string): GoalId {
 
 export function moduleId(value: string): ModuleId {
   return value as ModuleId
+}
+
+export function connectionId(value: string): ConnectionId {
+  return value as ConnectionId
 }
 
 export function routeId(value: string): RouteId {

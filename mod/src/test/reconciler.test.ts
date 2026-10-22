@@ -1,6 +1,6 @@
 import { LuaForce, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
-import { moduleId } from "../shared/ids"
+import { moduleId, connectionId, routeId } from "../shared/ids"
 import type { ModuleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
@@ -131,12 +131,12 @@ function chainLab(): Chain {
   const smelt = placeDef(layout, "smelt", generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 }), { x: ox - 5, y: oy - 8 })
   const gears = placeDef(layout, "gears", generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 2 }), { x: ox + 14, y: oy - 30 })
   const conns = [
-    { id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } },
-    { id: "plates", from: { module: moduleId("smelt"), port: "out" }, to: { module: moduleId("gears"), port: "in-iron-plate" } },
+    { id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } },
+    { id: connectionId("plates"), from: { module: moduleId("smelt"), port: "out" }, to: { module: moduleId("gears"), port: "in-iron-plate" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: ox, y: oy }, region: { x: ox - 48, y: oy - 48, w: 96, h: 96 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
   assert(job.phase === "done", "routed")
-  const r = stampParts(s, faction.force, job.layout, { modules: [moduleId("mine"), moduleId("smelt"), moduleId("gears")], routes: ["route:ore", "route:plates"], poles: [] }, false)
+  const r = stampParts(s, faction.force, job.layout, { modules: [moduleId("mine"), moduleId("smelt"), moduleId("gears")], routes: [routeId("route:ore"), routeId("route:plates")], poles: [] }, false)
   assert(r.failed.length === 0, r.failed.join("; "))
   f.layout = job.layout
   const tick = game.tick
@@ -315,9 +315,9 @@ describe("M5b reconciler", () => {
     const labs = placeDef(layout, "labs", labDef, { x: ox, y: oy - 4 })
     const src = placeDef(layout, "src", srcDef, { x: ox - 12, y: oy })
     const t = scan(lab, faction.force)
-    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "packs", from: { module: moduleId("src"), port: "out" }, to: { module: moduleId("labs"), port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("packs"), from: { module: moduleId("src"), port: "out" }, to: { module: moduleId("labs"), port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
     assert(job.phase === "done", "routed")
-    const built = stampParts(s, faction.force, job.layout, { modules: [moduleId("labs"), moduleId("src")], routes: ["route:packs"], poles: [] }, false)
+    const built = stampParts(s, faction.force, job.layout, { modules: [moduleId("labs"), moduleId("src")], routes: [routeId("route:packs")], poles: [] }, false)
     assert(built.failed.length === 0, built.failed.join("; "))
     power(s, force, findModule(job.layout, moduleId("labs"))!)
     f.layout = job.layout

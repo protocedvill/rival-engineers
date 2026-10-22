@@ -87,7 +87,10 @@ and Lua comparisons keep their old shape. `GoalId` is migrated end to end (`Fact
 adoption record and diagnostic events). `ModuleId` covers placed module instances (`PlacedModule.id`), goal and
 graph node ids, graph edge endpoints and stored claim owners; module *definition* ids (`ModuleDef.id`,
 `LogicalNode.module`) stay unbranded. Planner request and port ids stay strings until the route/connection slice.
-Route, pole-line, job and claim brands are declared for the same incremental migration. Construct at the owner and
+`RouteId` covers route identity (`Route.id`, taps, `routeOrder`, `routeOcc`, build parts) and `ConnectionId`
+route requests (`ConnectionRequest.id`, `Route.conn`); route construction converts at that boundary. `LogicalEdge.physical`
+stays a string list until power lines get their brand, because it mixes both kinds. Pole-line, job and claim brands
+follow the same incremental migration. Construct at the owner and
 read old saves through the constructor; do not cast at use sites.
 Stable outcome codes stay separate from prose: `DiagnosticDecision` types every telemetry decision
 (`adoption-resumed`, `stale-plan-rejected`, …) and `PlanDeltaRejectionCode` names the plan-delta rejections, with the

@@ -3,6 +3,7 @@
 // keeps one unit test green but breaks the hand-off fails here.
 
 import { IDENTITY } from "../src/modules/geometry"
+import { connectionId } from "../src/shared/ids"
 import { moduleId } from "../src/shared/ids"
 import { EAST, ModuleDef, Port } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
@@ -113,7 +114,7 @@ test("sequence: an adopted routed plan is abandoned and replanned on the freed g
   const base = newLayout()
   place(base, source("producer", EAST), 10, 10)
   place(base, sink("consumer", EAST), 20, 10)
-  const conns: ConnectionRequest[] = [{ id: "line", from: { module: moduleId("producer"), port: "out" }, to: { module: moduleId("consumer"), port: "in" } }]
+  const conns: ConnectionRequest[] = [{ id: connectionId("line"), from: { module: moduleId("producer"), port: "out" }, to: { module: moduleId("consumer"), port: "in" } }]
   const job = runJob(routingJob(request([], conns), base), view, F, POLICY)
   eq(job.phase, "done", "the route was planned")
 

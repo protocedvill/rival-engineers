@@ -2268,3 +2268,31 @@ First slice of the remaining brand migrations. Not an acceptance result or a com
 
 - Route/connection slice (`RouteId` + `ConnectionId`), then pole line/pole, claim tags, and job ids.
 - `strategy/factory.ts` shrink and the diagnostic `checkClaimOwners` wiring remain after the id slices.
+
+## M6b.37: RouteId and ConnectionId (working tree, 2026-10-22)
+
+Second brand slice. Not an acceptance result or a commit record.
+
+### Scope
+
+- `Route.id`, `Route.tapOf`, `routeOrder`, `routeOcc` values and `ripRoute`/`reroute` route lists are `RouteId`;
+  `BuildParts.routes` and the prepared `PlanDelta` route evidence follow.
+- `ConnectionRequest.id` and `Route.conn` are `ConnectionId`; the factory converts an edge role at the connection
+  boundary. Route construction (`router.ts`, `externalStub`) and reroute planning are the owners that call
+  `routeId(...)`/`connectionId(...)`.
+- Still strings on purpose: `PortRef.module` and `ModuleRequest.id`/`PlacementRequest.id` (their own later slice), and
+  `LogicalEdge.physical` because it mixes route ids with pole-line ids; the power slice will split it.
+- Old saves are untouched: both brands are erased at runtime, and `ids` still pins constructor identity.
+
+### Validation
+
+- `npm run typecheck`: pass.
+- `npm run build`: pass under the 185-local guard.
+- `npm run test:unit -- --no-build`: **27/27 files passed**.
+- Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 129.5 s wall (945.6 s of
+  test time).
+
+### Next
+
+- Pole line/pole slice, then claim tags, then job ids; after that the `PortRef.module`/request-id close-out and the
+  `factory.ts` shrink.

@@ -24,7 +24,7 @@ import {
   routeClaimConflict,
 } from "../src/planner/claims"
 import { laneTag, portTag } from "../src/planner/claim-tags"
-import { moduleId } from "../src/shared/ids"
+import { moduleId, routeId } from "../src/shared/ids"
 import { tkey } from "../src/planner/grid"
 import { newLayout, Route } from "../src/planner/layout"
 import { eq, ok, run, test } from "./harness"
@@ -34,7 +34,7 @@ test("claims expose every existing index through one typed vocabulary", () => {
   const k = tkey(3, 4)
   state.occ[k] = "x:poles:g1:0"
   state.reserved[k] = "lane:p:m1.in"
-  state.routeOcc[k] = "route:r1"
+  state.routeOcc[k] = routeId("route:r1")
   state.mine = { [k]: moduleId("m1") }
   state.soft = { [k]: moduleId("m1") }
   const claims = claimsAt(state, k)
@@ -57,7 +57,7 @@ test("typed conflict queries preserve route, placement, pole and lane policies",
   ok(placementClaimConflict(state, k)?.code === "reserved", "placement reservation")
 
   delete state.reserved[k]
-  state.routeOcc[k] = "route:r1"
+  state.routeOcc[k] = routeId("route:r1")
   eq(routeClaimConflict(state, k, {}, undefined, "to", true), undefined, "rippable route")
   state.routes["route:r1"] = { fixed: true } as Route
   ok(routeClaimConflict(state, k, {}, undefined, "to", true)?.code === "routed", "fixed route")
@@ -79,9 +79,9 @@ test("module growth policy admits its own ground and refuses every other claim",
   ok(moduleGrowthClaimConflict(state, k, "m1")?.code === "reserved")
   releaseReservation(state, k, portTag("m2", "in"))
 
-  claimRouteTile(state, k, "route:r1")
+  claimRouteTile(state, k, routeId("route:r1"))
   ok(moduleGrowthClaimConflict(state, k, "m1")?.code === "routed", "routes never give way to growth")
-  releaseRouteTile(state, k, "route:r1")
+  releaseRouteTile(state, k, routeId("route:r1"))
 
   claimMineTile(state, k, "m2")
   ok(moduleGrowthClaimConflict(state, k, "m1")?.code === "mine-claimed", "another mine's growth claim")

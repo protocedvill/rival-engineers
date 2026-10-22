@@ -13,6 +13,8 @@
 // No foreign belt can point into a route tile: every belt's successor belongs to its own route, module edge belts
 // and inserters reserve the tiles they touch (`interactionTiles`), and port outside tiles are reserved.
 
+import { connectionId, routeId } from "../shared/ids"
+import type { RouteId } from "../shared/ids"
 import { BeltTier } from "./capacity"
 import { routeClaimConflict } from "./claims"
 import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
@@ -839,14 +841,14 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
     use(b.x, b.y)
   }
   if (selfCross !== undefined) return { victims: [], selfCross }
-  const out: string[] = []
-  for (const [v] of pairs(victims)) if (v !== req.id) out.push(v)
+  const out: RouteId[] = []
+  for (const [v] of pairs(victims)) if ((v as string) !== req.id) out.push(routeId(v as string))
   out.sort()
   return {
     victims: out,
     route: {
-      id: req.id,
-      conn: req.conn,
+      id: routeId(req.id),
+      conn: connectionId(req.conn),
       item: req.item,
       from: req.from,
       to: req.to,
@@ -854,7 +856,7 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
       startDir: req.start?.dir,
       tiles,
       spans,
-      tapOf: tap?.route,
+      tapOf: tap?.route !== undefined ? routeId(tap.route) : undefined,
       belt: req.tier.belt,
       underground: req.tier.underground,
       splitter: req.tier.splitter,

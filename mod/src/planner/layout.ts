@@ -6,7 +6,7 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
-import type { ModuleId } from "../shared/ids"
+import type { ConnectionId, ModuleId, RouteId } from "../shared/ids"
 import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
 import { isPoleTag, moduleTag, poleTag, portTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
@@ -62,9 +62,9 @@ export interface UgSpan {
 }
 
 export interface Route {
-  id: string
+  id: RouteId
   /** Connection id this route serves. */
-  conn: string
+  conn: ConnectionId
   item: string
   from?: PortRef
   to: PortRef
@@ -75,7 +75,7 @@ export interface Route {
   tiles: number[]
   spans: { line: string; span: UgSpan }[]
   /** Splitter tap: the route whose belt the splitter replaces. */
-  tapOf?: string
+  tapOf?: RouteId
   belt: string
   underground: string
   splitter: string
@@ -125,7 +125,7 @@ export interface LayoutState {
   /** Port outside tiles ("p:<module>.<port>"): only the route of that port may use them. */
   reserved: Record<number, string>
   /** Route tiles → route id. */
-  routeOcc: Record<number, string>
+  routeOcc: Record<number, RouteId>
   /** Reserved routing corridors around modules (routes prefer them; other modules stay out of `corridor.min`). */
   corridor: Record<number, boolean>
   /**
@@ -146,7 +146,7 @@ export interface LayoutState {
   /** Underground spans per line ("h<y>" or "v<x>"). */
   spans: Record<string, UgSpan[]>
   routes: Record<string, Route>
-  routeOrder: string[]
+  routeOrder: RouteId[]
   /** Poles between modules (power.ts), occupying `occ` tiles tagged "x:<line>". */
   poles?: PlannedPole[]
   poleLines?: PoleLine[]
@@ -523,10 +523,10 @@ export function commitRoute(state: LayoutState, route: Route): void {
 }
 
 /** Removes a route (and the splitter taps hanging off it). Returns the removed route ids. */
-export function ripRoute(state: LayoutState, id: string): string[] {
+export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   const route = state.routes[id]
   if (route === undefined) return []
-  const removed = [id]
+  const removed: RouteId[] = [id]
   for (const other of [...state.routeOrder]) {
     if (state.routes[other]?.tapOf === id) for (const r of ripRoute(state, other)) removed.push(r)
   }

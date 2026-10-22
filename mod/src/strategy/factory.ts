@@ -874,7 +874,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     const from = roleToId(f, g, e.from)
     const to = roleToId(f, g, e.to)
     if (from === undefined || to === undefined) continue
-    connections.push({ id: e.role, from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt })
+    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt })
   }
   // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
   // with a mine every outpost's radar reach and strip.
@@ -1464,10 +1464,10 @@ function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
   }
   g.repairs = (g.repairs ?? 0) + 1
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} conflict (repair ${g.repairs}): ${what}`)
-  const routes: string[] = []
+  const routes: IDS.RouteId[] = []
   let relocate = false
   for (const c of check.conflicts) {
-    if (c.kind === "route") routes.push(c.id)
+    if (c.kind === "route") routes.push(IDS.routeId(c.id))
     else relocate = true
   }
   if (!relocate && reroute(ctx, g, entry, routes)) return true
@@ -1475,7 +1475,7 @@ function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
   return true
 }
 
-function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): boolean {
+function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[]): boolean {
   const f = ctx.f
   const b = entry.build!
   const t = storage.terrains?.[f.terrain]
@@ -1880,7 +1880,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   const parts: BuildParts = { modules: [], routes: [], poles: [] }
   if (e.kind === "power") {
     for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
-  } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(rid)
+  } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
   const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
   if (e.kind === "power") {
     // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing

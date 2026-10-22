@@ -2,7 +2,7 @@
 // "research logistics first when it saves N tiles" comparisons).
 
 import { smelterColumn } from "../src/modules/generators"
-import { moduleId } from "../src/shared/ids"
+import { connectionId, moduleId } from "../src/shared/ids"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
@@ -39,7 +39,7 @@ function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Tran
   return m
 }
 function conn(id: string, from: string | undefined, to: string): ConnectionRequest {
-  return { id, from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: "in" } }
+  return { id: connectionId(id), from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: "in" } }
 }
 function request(modules: ModuleDef[], connections: ConnectionRequest[], w: number, h: number): PlanRequest {
   return { modules: modules.map((def) => ({ id: def.id, def })), connections, center: { x: math.floor(w / 2), y: math.floor(h / 2) }, region: { x: 0, y: 0, w, h } }

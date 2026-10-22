@@ -1,6 +1,6 @@
 import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
-import { moduleId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
 import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
@@ -62,7 +62,7 @@ function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Tran
 }
 
 function conn(id: string, from: string | undefined, to: string, toPort = "in"): ConnectionRequest {
-  return { id, from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: toPort } }
+  return { id: connectionId(id), from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: toPort } }
 }
 
 function request(modules: ModuleDef[], connections: ConnectionRequest[], w = 60, h = 60): PlanRequest {
@@ -182,8 +182,8 @@ test("plan delta derives logical and claim evidence once, in deterministic order
   mine.minePlan = { full: mine.canonical, claim: [tkey(6, 2), tkey(7, 2)], occupied: [], complete: false }
   // A tap's base route is listed before the tap itself, in routeOrder.
   const route = (id: string, conn: string, tapOf?: string): Route => ({
-    id,
-    conn,
+    id: routeId(id),
+    conn: connectionId(conn),
     item: "iron-plate",
     to: { module: "added", port: "in" },
     steps: [],
@@ -196,13 +196,13 @@ test("plan delta derives logical and claim evidence once, in deterministic order
     undergrounds: 0,
     cost: 0,
     ripped: 0,
-    tapOf,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
   })
   commitRoute(job.layout, route("r1", "a"))
   commitRoute(job.layout, route("r2", "b", "r1"))
   claimPoleTile(job.layout, tkey(8, 2), "poles:g1:0")
   job.layout.poles = [{ id: "p1", name: "small-electric-pole", x: 8, y: 2, line: "poles:g1:0" }]
-  job.layout.poleLines = [{ id: "poles:g1:0", to: moduleId("added"), from: "?", poles: ["p1"] }]
+  job.layout.poleLines = [{ id: connectionId("poles:g1:0"), to: moduleId("added"), from: "?", poles: ["p1"] }]
 
   const input = {
     sourceRevision: job.sourceRevision,
@@ -955,7 +955,7 @@ export function m4Set(): { modules: ModuleDef[]; connections: ConnectionRequest[
   const gears = { ...assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), id: "gears" }
   const red = { ...assemblerRow(F, { recipe: "automation-science-pack", count: 2 }), id: "red" }
   const labs = { ...labArray(F, { labs: 2, packs: ["automation-science-pack"] }), id: "labs" }
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
   return {
     modules: [outpost, smelter, gears, red, labs],
     connections: [
@@ -977,7 +977,7 @@ test("policy D35: near-ore smelting puts the smelter next to its ore outpost; co
   const outpost = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 }), id: "outpost" }
   const smelter = { ...smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), id: "smelter" }
   const gears = { ...assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), id: "gears" }
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
   const req = (): PlanRequest => ({
     modules: [gears, smelter, outpost].map((def) => ({ id: def.id, def })),
     connections: [c("ore", ["outpost", "out"], ["smelter", "in-ore"]), c("plates", ["smelter", "out"], ["gears", "in-iron-plate"]), c("coal", undefined, ["smelter", "in-fuel"])],

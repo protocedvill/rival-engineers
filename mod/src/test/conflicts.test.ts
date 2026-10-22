@@ -1,6 +1,6 @@
 import { LuaEntity } from "factorio:runtime"
 import { clearConfigOverrides, setConfigOverride } from "../config"
-import { moduleId } from "../shared/ids"
+import { moduleId, connectionId, routeId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
@@ -73,11 +73,11 @@ function smeltingLab(lab: Lab, force: string): { layout: LayoutState; ghosts: Lu
   const layout = newLayout()
   place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
   place(layout, "mine", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
-  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
   assert(job.phase === "done", "ore routed")
   const mods = stampParts(s, force, job.layout, { modules: [moduleId("smelt"), moduleId("mine")], routes: [], poles: [] }, false)
   assert(mods.failed.length === 0, mods.failed.join("; "))
-  const route = stampParts(s, force, job.layout, { modules: [], routes: ["route:ore"], poles: [] }, true)
+  const route = stampParts(s, force, job.layout, { modules: [], routes: [routeId("route:ore")], poles: [] }, true)
   assert(route.failed.length === 0, route.failed.join("; "))
   return { layout: job.layout, ghosts: route.entities }
 }
@@ -190,7 +190,7 @@ describe("faction conflicts", () => {
     const t = scan(lab, `conf-route-${seq}`, a.force)
     const ox = math.floor(lab.origin.x)
     const oy = math.floor(lab.origin.y)
-    const plan = planReroute(layout, claimView(a.name, s.name, terrainView(t)), prototypeFacts, selectPolicy("early-compact", {}), beltTiers(prototypeFacts)[0], ["route:ore"], { x: ox - 64, y: oy - 64, w: 128, h: 128 })
+    const plan = planReroute(layout, claimView(a.name, s.name, terrainView(t)), prototypeFacts, selectPolicy("early-compact", {}), beltTiers(prototypeFacts)[0], [routeId("route:ore")], { x: ox - 64, y: oy - 64, w: 128, h: 128 })
     assert(plan.ok, `reroute: ${plan.reason}`)
     const route = plan.layout.routes["route:ore"]
     for (const k of route.tiles) assert(!(keyX(k) === math.floor(bx) && keyY(k) === math.floor(by)), "the new route avoids the blocker")
@@ -212,7 +212,7 @@ describe("faction conflicts", () => {
     assert(checkBuild(s, a.force, plan.layout, allParts(plan.layout)).conflicts.length === 0, "no conflict left")
     // Nothing of the old route is left over: every own belt is part of the new route.
     const want: Record<string, boolean> = {}
-    for (const e of partEntities(plan.layout, { modules: [], routes: ["route:ore"], poles: [] })) want[string.format("%g,%g", e.x, e.y)] = true
+    for (const e of partEntities(plan.layout, { modules: [], routes: [routeId("route:ore")], poles: [] })) want[string.format("%g,%g", e.x, e.y)] = true
     let stray = 0
     for (const e of plan.remove) {
       if (want[string.format("%g,%g", e.x, e.y)]) continue
@@ -230,7 +230,7 @@ describe("faction conflicts", () => {
     const s = lab.surface
     const { layout, ghosts } = smeltingLab(lab, a.force)
     revive(ghosts)
-    const specs = partEntities(layout, { modules: [], routes: ["route:ore"], poles: [] }).filter((e) => e.name === "transport-belt")
+    const specs = partEntities(layout, { modules: [], routes: [routeId("route:ore")], poles: [] }).filter((e) => e.name === "transport-belt")
     assert(specs.length > 10, `${specs.length} belts`)
     // One planned belt replaced by an own underground (another kind), another turned the wrong way (B52's case).
     const kind = specs[5]
@@ -244,7 +244,7 @@ describe("faction conflicts", () => {
     assert(check.stale.length === 1 && check.stale[0].entities[0] === ug, `stale ${serpent.line(check.stale.map((x) => x.spec))}`)
     assert(check.missing.length === 0, `the piece under the stale underground is not plain missing (${check.missing.length})`)
     assert(check.misdirected.length === 1, `misdirected ${check.misdirected.length}`)
-    const under = staleUnderRoutes(s, a.force, layout, ["route:ore"])
+    const under = staleUnderRoutes(s, a.force, layout, [routeId("route:ore")])
     assert(under.length === 2 && under.indexOf(ug) >= 0 && under.indexOf(turned) >= 0, `stale under the route: ${under.length}`)
     // The crew picks them up; then the planned pieces go in and the route connects again.
     for (const e of under) e.destroy()
@@ -316,7 +316,7 @@ describe("faction conflicts", () => {
     const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
     const id = "b19-tap"
     if (getPlannerEntry(id) !== undefined) removePlan(id)
-    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: "ore2", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
+    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: connectionId("ore2"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
     let building = false
     async(60 * 60 * 30)
     on_tick(() => {
@@ -327,7 +327,7 @@ describe("faction conflicts", () => {
         assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
         const r = job.layout.routes["route:ore2"]
         assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
-        const parts = { modules: [moduleId("smelt2")], routes: ["route:ore2"], poles: [] as string[] }
+        const parts = { modules: [moduleId("smelt2")], routes: [routeId("route:ore2")], poles: [] as string[] }
         const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
         assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
         startBuild(e, { parts, priority: 90 })

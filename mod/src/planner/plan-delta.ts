@@ -4,7 +4,7 @@ import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import { checkClaimOwners } from "./claims"
 import { checkLayoutIndexes, layoutRevision } from "./layout"
 import type { LayoutState } from "./layout"
-import type { ModuleId } from "../shared/ids"
+import type { ModuleId, RouteId } from "../shared/ids"
 
 /** The planner fields needed to prepare adoption. Kept narrow so fixtures need not construct a whole running job. */
 export interface PlanDeltaInput {
@@ -21,7 +21,7 @@ export interface PlanDeltaInput {
 /** Logical consequences of the candidate, derived once before the adapter creates any Factorio work. */
 export interface PlanLogicalDelta {
   /** Connection role → its candidate routes in `routeOrder`, a tap's base route first. The adapter's belt edges. */
-  routesByConn: Record<string, string[]>
+  routesByConn: Record<string, RouteId[]>
   /** Candidate pole lines in order, so a power edge need not re-read the layout. */
   poleLines: { id: string; to: string; from: string }[]
 }
@@ -95,7 +95,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
 
   const addModules: ModuleId[] = []
   for (const m of input.layout.modules) if (!input.baseModules[m.id]) addModules.push(m.id)
-  const addRoutes: string[] = []
+  const addRoutes: RouteId[] = []
   for (const id of input.layout.routeOrder) if (!input.baseRoutes[id]) addRoutes.push(id)
 
   const candidatePoles: Record<string, boolean> = {}
@@ -105,7 +105,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
 
   const removeModules: ModuleId[] = []
   for (const m of current.modules) if (input.layout.modules.every((candidate) => candidate.id !== m.id)) removeModules.push(m.id)
-  const removeRoutes: string[] = []
+  const removeRoutes: RouteId[] = []
   for (const id of current.routeOrder) if (input.layout.routes[id] === undefined) removeRoutes.push(id)
   const removePoles: string[] = []
   for (const p of current.poles ?? []) if (!candidatePoles[p.id]) removePoles.push(p.id)
@@ -115,7 +115,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
   for (const id of addModules) addSet[id] = true
 
   // Logical evidence, in candidate order (deterministic across saves). A tap's base route is listed before the tap.
-  const routesByConn: Record<string, string[]> = {}
+  const routesByConn: Record<string, RouteId[]> = {}
   for (const id of input.layout.routeOrder) {
     const route = input.layout.routes[id]
     let list = routesByConn[route.conn]

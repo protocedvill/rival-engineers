@@ -5,6 +5,7 @@
 import { worldEntity } from "./world-entity"
 import { dirValue, tkey } from "./grid"
 import { LayoutState, moduleMargin, moduleTiles } from "./layout"
+import type { RouteId } from "../shared/ids"
 
 export interface EntitySpec {
   name: string
@@ -55,7 +56,7 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
 /** Which parts of a layout to build (a plan on top of an existing base builds only what it added). */
 export interface BuildParts {
   modules: string[]
-  routes: string[]
+  routes: RouteId[]
   /** Planned pole ids (layout.poles). */
   poles: string[]
 }

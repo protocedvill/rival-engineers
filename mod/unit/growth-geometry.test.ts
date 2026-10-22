@@ -5,6 +5,7 @@
 // the patch part they claim at maximum drill coverage. Pure: generated modules, synthetic and captured ore patches.
 
 import { expandModule } from "../src/modules/build"
+import { connectionId } from "../src/shared/ids"
 import { moduleId } from "../src/shared/ids"
 import { assemblerRow, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
 import { transformEntity, transformModule, Transform } from "../src/modules/geometry"
@@ -441,7 +442,7 @@ test("D55: planGrowth moves a worked-out mine to the next part of its patch and 
   const smelt = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
   const sm: PlacedModule = { id: moduleId("smelt"), canonical: smelt, def: smelt, transform: { rot: 0, mirror: false }, origin: { x: 30, y: 10 }, rect: { x: 30, y: 10, w: smelt.footprint.w, h: smelt.footprint.h }, fixed: true }
   commitModule(state, sm, F, 2)
-  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: 40, y: 40 }, region }, beltTiers(F)[0], state), view, F, P2P)
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: 40, y: 40 }, region }, beltTiers(F)[0], state), view, F, P2P)
   eq(job.phase, "done", "routed")
   const done = patchTerrain(region, workedOut(findModule(job.layout, "mine")!, ore))
   const g = planGrowth(job.layout, done, F, P2P, beltTiers(F)[0], "mine", 1, "small-electric-pole", "poles:t:", true)

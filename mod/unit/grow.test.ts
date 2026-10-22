@@ -1,6 +1,6 @@
 import { miningOutpost, smelterColumn } from "../src/modules/generators"
 import { transformModule } from "../src/modules/geometry"
-import { moduleId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
@@ -45,7 +45,7 @@ test("a built 4-furnace smelter grows to 8: 4 furnaces added, the moved end rebu
   const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
   place(l, "smelt", smelter, 40, 20)
   place(l, "mine", ore, 44, 60)
-  const conns: ConnectionRequest[] = [{ id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }]
+  const conns: ConnectionRequest[] = [{ id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 45, y: 45 }, region: { x: 0, y: 0, w: 90, h: 90 } }, TIER, l), view, F, POLICY)
   eq(job.phase, "done", "routed")
   const g = planGrowth(job.layout, view, F, POLICY, TIER, "smelt", 1)
@@ -76,8 +76,8 @@ test("growing a producer with a splitter tap rips and reroutes the tap too (seed
   place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
   place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
   const conns: ConnectionRequest[] = [
-    { id: "ore-a", from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
-    { id: "ore-b", from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+    { id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
   eq(job.phase, "done", "routed")
@@ -113,9 +113,9 @@ test("growing a module fed by a tap of its tap group rips the whole group (M6a.2
   place(l, "c", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
   place(l, "d", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 10, 20)
   const conns: ConnectionRequest[] = [
-    { id: "ore-b", from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
-    { id: "ore-c", from: { module: "mine", port: "out" }, to: { module: "c", port: "in-ore" } },
-    { id: "ore-d", from: { module: "mine", port: "out" }, to: { module: "d", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+    { id: connectionId("ore-c"), from: { module: "mine", port: "out" }, to: { module: "c", port: "in-ore" } },
+    { id: connectionId("ore-d"), from: { module: "mine", port: "out" }, to: { module: "d", port: "in-ore" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
   eq(job.phase, "done", "routed")
@@ -176,8 +176,8 @@ test("the factory's reserved tiles follow its layout: tiles a growth or reroute 
   place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
   place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
   const conns: ConnectionRequest[] = [
-    { id: "ore-a", from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
-    { id: "ore-b", from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+    { id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
   eq(job.phase, "done", "routed")
@@ -191,7 +191,7 @@ test("the factory's reserved tiles follow its layout: tiles a growth or reroute 
   // A route the layout gives up (ripped, with its tap) is no longer reserved outside the module margins.
   const old = [...g.layout.routes["route:ore-a"].tiles]
   for (const rid of g.layout.routeOrder) if (g.layout.routes[rid].tapOf === "route:ore-a") for (const k of g.layout.routes[rid].tiles) old.push(k)
-  ripRoute(g.layout, "route:ore-a")
+  ripRoute(g.layout, routeId("route:ore-a"))
   const now: Record<number, boolean> = {}
   for (const k of factoryReserveTiles(g.layout)) now[k] = true
   const near = (k: number): boolean => {

@@ -7,6 +7,7 @@
 // out/replay-dumps/<replay>/.
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
+import { routeId } from "../src/shared/ids"
 import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
 import { findModule, growthUnitRects, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
@@ -415,7 +416,7 @@ test("replay m6a2-seed222-mall-iron: the shared mine completes over its own pole
   const k2 = tkey(-48, 500)
   fx.base.occ[k1] = "x:poles:9:1"
   fx.base.occ[k2] = "route:iron-ore>iron-plate>x=>x.in-ore"
-  fx.base.routeOcc[k2] = "route:iron-ore>iron-plate>x=>x.in-ore"
+  fx.base.routeOcc[k2] = routeId("route:iron-ore>iron-plate>x=>x.in-ore")
   const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
   const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
   const view = fixtureView(fx)

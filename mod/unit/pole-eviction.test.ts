@@ -1,5 +1,6 @@
 import { labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
+import { connectionId } from "../src/shared/ids"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { CLIFF, FREE, rectContains, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
@@ -104,7 +105,7 @@ test("B37: a route crosses a pole line at the eviction cost; committing it evict
   }
   place(l, "src", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), p0.x - 5, p0.y - 20)
   place(l, "dst", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), p0.x - 5, p0.y + 8)
-  const conns: ConnectionRequest[] = [{ id: "plates", from: { module: "src", port: "out" }, to: { module: "dst", port: "in-ore" } }]
+  const conns: ConnectionRequest[] = [{ id: connectionId("plates"), from: { module: "src", port: "out" }, to: { module: "dst", port: "in-ore" } }]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: p0.x, y: p0.y }, region: { x: 0, y: 0, w: 100, h: 80 } }, TIER, cloneLayout(l)), walled, F, POLICY)
   eq(job.phase, "done", `routed (${tostring(job.failures.plates)})`)
   ok(job.layout.routeOcc[tkey(p0.x, p0.y)] !== undefined, "the route takes the pole's tile")

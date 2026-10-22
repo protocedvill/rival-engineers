@@ -15,7 +15,8 @@ import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
-import { moduleId } from "../shared/ids"
+import { moduleId, routeId } from "../shared/ids"
+import type { ConnectionId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
@@ -29,7 +30,7 @@ export interface ModuleRequest {
 }
 
 export interface ConnectionRequest {
-  id: string
+  id: ConnectionId
   /** Producer (a belt-out port). Absent: the input is fed from outside the layout (a one-tile stub is planned). */
   from?: PortRef
   /** Consumer (a belt-in port). */
@@ -469,7 +470,7 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
   if (tileCost(job.layout, terrain, policy, req, false, o.x, o.y) < 0) return `external input ${req.to.module}.${req.to.port}: outside tile blocked`
   const dir = dirIndex(tp.dir)
   return {
-    id: req.id,
+    id: routeId(req.id),
     conn: c.id,
     item: req.item,
     to: req.to,
@@ -843,7 +844,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     }
   }
   for (const v of res.victims) {
-    for (const removed of ripRoute(job.layout, v)) {
+    for (const removed of ripRoute(job.layout, routeId(v))) {
       const conn = removed.substring("route:".length)
       job.ripCount[conn] = (job.ripCount[conn] ?? 0) + 1
       job.stats.ripups++

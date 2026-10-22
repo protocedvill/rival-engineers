@@ -1,6 +1,6 @@
 import { LuaEntity, LuaForce, LuaSurface, LuaTransportLine } from "factorio:runtime"
 import { curatedModule, generatedModule } from "../modules/library"
-import { moduleId } from "../shared/ids"
+import { connectionId, moduleId } from "../shared/ids"
 import { DX, DY } from "../planner/grid"
 import { checkLayout, findModule, findPort, LayoutState, portTile, Route } from "../planner/layout"
 import { ConnectionRequest, ModuleRequest } from "../planner/plan"
@@ -21,7 +21,7 @@ export function m4Modules(withSteam: boolean): { modules: ModuleRequest[]; conne
     { id: moduleId("red"), def: curatedModule("red-tile-ramqvist") },
     { id: moduleId("labs"), def: generatedModule("lab-array", { labs: 2, packs: ["automation-science-pack"] }) },
   ]
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: moduleId(from[0]), port: from[1] } : undefined, to: { module: moduleId(to[0]), port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: moduleId(from[0]), port: from[1] } : undefined, to: { module: moduleId(to[0]), port: to[1] } })
   const connections = [
     c("ore", ["outpost", "out"], ["smelter", "in-ore"]),
     c("plates", ["smelter", "out"], ["gears", "in-iron-plate"]),

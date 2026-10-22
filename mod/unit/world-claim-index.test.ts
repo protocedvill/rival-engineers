@@ -1,5 +1,5 @@
 import { IDENTITY } from "../src/modules/geometry"
-import { moduleId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { tkey } from "../src/planner/grid"
 import { commitModule, commitRoute, newLayout, PlacedModule, Route } from "../src/planner/layout"
@@ -31,7 +31,7 @@ function module(state: ReturnType<typeof newLayout>, id: string, x: number, y: n
 }
 
 function route(id: string, tiles: number[]): Route {
-  return { id, conn: id, item: "iron-plate", to: { module: "m1", port: "in" }, steps: [], tiles, spans: [], belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: tiles.length, undergrounds: 0, cost: 0, ripped: 0 }
+  return { id: routeId(id), conn: connectionId(id), item: "iron-plate", to: { module: "m1", port: "in" }, steps: [], tiles, spans: [], belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: tiles.length, undergrounds: 0, cost: 0, ripped: 0 }
 }
 
 test("a world reservation and its owner are added and removed together", () => {

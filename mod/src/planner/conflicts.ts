@@ -11,6 +11,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
+import type { RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
 import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
 import { removePoleLines } from "./power"
@@ -110,7 +111,7 @@ function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
  * B56: before a build stamps its routes, the faction's own belt pieces on their tiles that are not the planned piece
  * (another kind, another place, or the same belt facing another way): the ghost could not be created over them.
  */
-export function staleUnderRoutes(surface: LuaSurface, force: string, layout: LayoutState, routes: string[]): LuaEntity[] {
+export function staleUnderRoutes(surface: LuaSurface, force: string, layout: LayoutState, routes: RouteId[]): LuaEntity[] {
   const out: LuaEntity[] = []
   const seen: Record<number, boolean> = {}
   const push = (e: LuaEntity): void => {
@@ -203,7 +204,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * built entities get clear jobs (the crew deconstructs them and keeps the items), and they leave the layout, with the
  * routes to and from removed modules and the pole lines of removed poles. Returns the tiles freed and the clear jobs.
  */
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: number[]; routes: string[] } {
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: number[]; routes: RouteId[] } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
   const routes = [...parts.routes]

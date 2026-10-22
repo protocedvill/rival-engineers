@@ -4,6 +4,7 @@
 // that the new one doesn't reuse) and what it builds. Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
+import type { RouteId } from "../shared/ids"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
@@ -19,7 +20,7 @@ export interface ReroutePlan {
   remove: EntitySpec[]
   add: EntitySpec[]
   /** Route ids of the new layout that replace the ripped ones (build parts). */
-  routes: string[]
+  routes: RouteId[]
 }
 
 function key(e: EntitySpec): string {
@@ -31,7 +32,7 @@ function key(e: EntitySpec): string {
  * faction's view (its built entities and ghosts are OWN, other forces' FOREIGN): the ripped routes' own tiles count as
  * free, so a reroute can reuse every piece not in the way; a foreign entity on them still blocks.
  */
-export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: string[], region: Rect): ReroutePlan {
+export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect): ReroutePlan {
   const layout = cloneLayout(base)
   const before: EntitySpec[] = []
   const conns: ConnectionRequest[] = []
@@ -67,7 +68,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
     for (const [k, v] of pairs(job.failures)) why.push(`${k}: ${v}`)
     return { ok: false, reason: `reroute failed: ${why.join("; ")}`, layout: base, remove: [], add: [], routes: [] }
   }
-  const routes: string[] = []
+  const routes: RouteId[] = []
   const wanted: Record<string, boolean> = {}
   for (const c of conns) wanted[c.id] = true
   for (const rid of job.layout.routeOrder) {

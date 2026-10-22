@@ -3,7 +3,7 @@
 
 import { interactionTag, isLaneReservation, isOwnPortReservation, isPoleTag, moduleTag, poleTag } from "./claim-tags"
 import { moduleId } from "../shared/ids"
-import type { ModuleId } from "../shared/ids"
+import type { ModuleId, RouteId } from "../shared/ids"
 import { keyX, keyY } from "./grid"
 import type { LayoutState } from "./layout"
 
@@ -204,11 +204,11 @@ export function releaseLaneReservation(state: LayoutState, key: number): boolean
 }
 
 /** Adds a route tile claim. The route's own search has already cleared the tile. */
-export function claimRouteTile(state: LayoutState, key: number, id: string): void {
+export function claimRouteTile(state: LayoutState, key: number, id: RouteId): void {
   state.routeOcc[key] = id
 }
 
-export function releaseRouteTile(state: LayoutState, key: number, id: string): boolean {
+export function releaseRouteTile(state: LayoutState, key: number, id: RouteId): boolean {
   if (state.routeOcc[key] !== id) return false
   delete state.routeOcc[key]
   return true

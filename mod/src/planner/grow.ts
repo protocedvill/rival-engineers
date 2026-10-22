@@ -5,6 +5,7 @@
 // they are (same name, position and direction) are neither removed nor rebuilt. Pure: no Factorio globals.
 
 import { expandMoves } from "../modules/build"
+import type { RouteId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier } from "./capacity"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
@@ -36,7 +37,7 @@ function key(e: EntitySpec): string {
  * built): the module's footprint and the tiles of its ripped routes count as free for the growth and the reroute.
  */
 /** A route and, depth first, every splitter tap hanging off it (the route first: a tap is routed onto its root). */
-function tapGroup(layout: LayoutState, rid: string): string[] {
+function tapGroup(layout: LayoutState, rid: RouteId): RouteId[] {
   const out = [rid]
   for (const other of layout.routeOrder) if (layout.routes[other]?.tapOf === rid) for (const t of tapGroup(layout, other)) out.push(t)
   return out
@@ -48,7 +49,7 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   if (m === undefined) return { ok: false, reason: `no module ${id}`, layout: base, remove: [], add: [], rerouted: [] }
   const before = partEntities(layout, { modules: [id], routes: [], poles: [] })
   // Rip every route touching the module: ports may move, and the growth may need the tiles.
-  const ripped: string[] = []
+  const ripped: RouteId[] = []
   const conns: ConnectionRequest[] = []
   let taps = false
   const routeTiles: Record<number, boolean> = {}
@@ -129,7 +130,7 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   }
   const wanted: Record<string, boolean> = {}
   for (const c of conns) wanted[c.id] = true
-  const routes: string[] = []
+  const routes: RouteId[] = []
   for (const rid of job.layout.routeOrder) {
     const rr = job.layout.routes[rid]
     if (wanted[rr.conn] && !rr.fixed) routes.push(rid)
