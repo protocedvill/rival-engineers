@@ -3,6 +3,7 @@ import { rawHoldings, reservedAt, takeable } from "./jobs/supply"
 import { boardDiagnostics, DiagnosticCrew, DiagnosticJob, DiagnosticViolation } from "./diagnostics-core"
 import { detectChurn, DiagnosticEventBuckets, recentDiagnosticBuckets, ChurnFinding } from "./diagnostic-events"
 import { findModule } from "./planner/layout"
+import { checkClaimOwners } from "./planner/claims"
 import { PlanEvidence, PlanStats } from "./planner/plan"
 import { checkWorldClaimOwners, mineClaim, moduleClaim, poleClaim, routeClaim, siteClaim } from "./world/claim-index"
 
@@ -114,6 +115,7 @@ export function factionDiagnostics(name: string, maxJobs = 64): FactionDiagnosti
       for (const id of layout.routeOrder) live[routeClaim(id)] = true
       for (const p of layout.poles ?? []) live[poleClaim(p.id)] = true
       for (const [, owner] of pairs(layout.mine ?? {})) live[mineClaim(owner as string)] = true
+      for (const problem of checkClaimOwners(layout)) diagnosed.invariants.push({ code: "layout-claim", detail: problem })
     }
     for (const problem of checkWorldClaimOwners(brain, live)) diagnosed.invariants.push({ code: "world-claim", detail: problem })
   }
