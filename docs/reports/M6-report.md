@@ -2296,3 +2296,28 @@ Second brand slice. Not an acceptance result or a commit record.
 
 - Pole line/pole slice, then claim tags, then job ids; after that the `PortRef.module`/request-id close-out and the
   `factory.ts` shrink.
+
+## M6b.38: PoleId and PoleLineId (working tree, 2026-10-22)
+
+Third brand slice. Not an acceptance result or a commit record.
+
+### Scope
+
+- `PlannedPole.id` and `BuildParts.poles` are `PoleId`; the pole planner constructs ids at the line it lays.
+- `PlannedPole.line`, `PoleLine.id` and the `poleLines` evidence are `PoleLineId`; `PoleJob.added` is `PoleId[]` and its
+  `pending`/`connected` owners are `ModuleId`.
+- `PoleLine.from` stays a string: it is the owner marker of the powered pole (or `"?"`), not a pole line id. Claim
+  tags such as `x:poles:<line>` stay strings until the claim-tag slice.
+- Brands are erased; old saves are unchanged.
+
+### Validation
+
+- `npm run typecheck`: pass.
+- `npm run build`: pass under the 185-local guard.
+- `npm run test:unit -- --no-build`: **27/27 files passed**.
+- Full T2 (`npm test -- --no-build`, 8 shards): **151 passed, 0 failed, 0 skipped** in 165.3 s wall (1226.4 s of
+  test time).
+
+### Next
+
+- Claim tags (layout and world), then job ids; the request/port-id close-out and `factory.ts` shrink follow.

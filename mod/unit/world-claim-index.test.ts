@@ -1,5 +1,5 @@
 import { IDENTITY } from "../src/modules/geometry"
-import { connectionId, moduleId, routeId } from "../src/shared/ids"
+import { connectionId, moduleId, poleId, poleLineId, routeId } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { tkey } from "../src/planner/grid"
 import { commitModule, commitRoute, newLayout, PlacedModule, Route } from "../src/planner/layout"
@@ -51,7 +51,7 @@ test("sync tags site and factory ground and drops stale reservations", () => {
   const layout = newLayout()
   module(layout, "m1", 2, 2)
   commitRoute(layout, route("r1", [tkey(5, 5)]))
-  layout.poles = [{ id: "p1", name: "small-electric-pole", x: 8, y: 2, line: "poles:g1:0" }]
+  layout.poles = [{ id: poleId("p1"), name: "small-electric-pole", x: 8, y: 2, line: poleLineId("poles:g1:0") }]
   layout.mine = { [tkey(7, 2)]: moduleId("m1") }
   const table: WorldClaimTable = { reserved: {}, reservedBy: {} }
   // A stale reservation with its owner, and a direct delete that left an owner behind.

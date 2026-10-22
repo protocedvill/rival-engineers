@@ -5,7 +5,7 @@
 import { worldEntity } from "./world-entity"
 import { dirValue, tkey } from "./grid"
 import { LayoutState, moduleMargin, moduleTiles } from "./layout"
-import type { RouteId } from "../shared/ids"
+import type { PoleId, RouteId } from "../shared/ids"
 
 export interface EntitySpec {
   name: string
@@ -58,7 +58,7 @@ export interface BuildParts {
   modules: string[]
   routes: RouteId[]
   /** Planned pole ids (layout.poles). */
-  poles: string[]
+  poles: PoleId[]
 }
 
 /** Every part of a layout. */

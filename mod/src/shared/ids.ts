@@ -10,6 +10,7 @@ declare const goalIdBrand: unique symbol
 declare const moduleIdBrand: unique symbol
 declare const connectionIdBrand: unique symbol
 declare const routeIdBrand: unique symbol
+declare const poleIdBrand: unique symbol
 declare const poleLineIdBrand: unique symbol
 declare const jobIdBrand: unique symbol
 declare const claimTagBrand: unique symbol
@@ -22,6 +23,8 @@ export type ModuleId = string & { readonly [moduleIdBrand]: true }
 export type ConnectionId = string & { readonly [connectionIdBrand]: true }
 /** A belt route id (`route:<conn>`, …). */
 export type RouteId = string & { readonly [routeIdBrand]: true }
+/** A planned pole entity id (unique in the layout). */
+export type PoleId = string & { readonly [poleIdBrand]: true }
 /** A pole line id (`poles:g1:0`, …). */
 export type PoleLineId = string & { readonly [poleLineIdBrand]: true }
 /** A Job Board job number. */
@@ -43,6 +46,10 @@ export function connectionId(value: string): ConnectionId {
 
 export function routeId(value: string): RouteId {
   return value as RouteId
+}
+
+export function poleId(value: string): PoleId {
+  return value as PoleId
 }
 
 export function poleLineId(value: string): PoleLineId {

@@ -1,6 +1,6 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { moduleId, connectionId } from "../shared/ids"
+import { moduleId, connectionId, poleId, poleLineId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
@@ -359,14 +359,14 @@ describe("M5a power and growth", () => {
     const x = math.floor(lab.origin.x)
     const y = math.floor(lab.origin.y)
     layout.poles = [
-      { id: "kept", name: "small-electric-pole", x, y, line: "poles:b41:0" },
-      { id: "new", name: "small-electric-pole", x: x + 6, y, line: "poles:b41:0" },
+      { id: poleId("kept"), name: "small-electric-pole", x, y, line: poleLineId("poles:b41:0") },
+      { id: poleId("new"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:b41:0") },
     ]
-    layout.poleLines = [{ id: connectionId("poles:b41:0"), from: "power", to: moduleId("consumer"), poles: ["kept", "new"] }]
+    layout.poleLines = [{ id: poleLineId("poles:b41:0"), from: "power", to: moduleId("consumer"), poles: [poleId("kept"), poleId("new")] }]
     const built = lab.surface.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })
     assert(built !== undefined, "the old line's pole was built")
 
-    const r = stampParts(lab.surface, force.name, layout, { modules: [], routes: [], poles: ["kept", "new"] }, true)
+    const r = stampParts(lab.surface, force.name, layout, { modules: [], routes: [], poles: [poleId("kept"), poleId("new")] }, true)
     assert(r.failed.length === 0, `ghost failures: ${r.failed.join("; ")}`)
     assert(r.entities.length === 1, `only the new pole gets a ghost (${r.entities.length})`)
     assert(r.entities[0].type === "entity-ghost" && r.entities[0].ghost_name === "small-electric-pole", "the new pole is ghosted")
@@ -384,13 +384,13 @@ describe("M5a power and growth", () => {
     const x = math.floor(lab.origin.x)
     const y = math.floor(lab.origin.y)
     layout.poles = [
-      { id: "evicted", name: "small-electric-pole", x, y, line: "poles:b46:0" },
-      { id: "kept", name: "small-electric-pole", x: x + 6, y, line: "poles:b46:0" },
+      { id: poleId("evicted"), name: "small-electric-pole", x, y, line: poleLineId("poles:b46:0") },
+      { id: poleId("kept"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:b46:0") },
     ]
-    layout.poleLines = [{ id: connectionId("poles:b46:0"), from: "power", to: moduleId("consumer"), poles: ["evicted", "kept"] }]
+    layout.poleLines = [{ id: poleLineId("poles:b46:0"), from: "power", to: moduleId("consumer"), poles: [poleId("evicted"), poleId("kept")] }]
     layout.occ[tkey(x, y)] = "x:poles:b46:0"
     layout.occ[tkey(x + 6, y)] = "x:poles:b46:0"
-    const parts = { modules: [], routes: [], poles: ["evicted", "kept"] }
+    const parts = { modules: [], routes: [], poles: [poleId("evicted"), poleId("kept")] }
     // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
     const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
     assert(n === 1, `one pole dropped (${n})`)
@@ -411,11 +411,11 @@ describe("M5a power and growth", () => {
     const x = math.floor(lab.origin.x)
     const y = math.floor(lab.origin.y)
     layout.poles = [
-      { id: "blocked", name: "small-electric-pole", x, y, line: "poles:b42:0" },
-      { id: "built", name: "small-electric-pole", x: x + 4, y, line: "poles:b42:0" },
-      { id: "other", name: "small-electric-pole", x: x + 8, y, line: "poles:b42:0" },
+      { id: poleId("blocked"), name: "small-electric-pole", x, y, line: poleLineId("poles:b42:0") },
+      { id: poleId("built"), name: "small-electric-pole", x: x + 4, y, line: poleLineId("poles:b42:0") },
+      { id: poleId("other"), name: "small-electric-pole", x: x + 8, y, line: poleLineId("poles:b42:0") },
     ]
-    layout.poleLines = [{ id: connectionId("poles:b42:0"), from: "power", to: moduleId("consumer"), poles: ["blocked", "built", "other"] }]
+    layout.poleLines = [{ id: poleLineId("poles:b42:0"), from: "power", to: moduleId("consumer"), poles: [poleId("blocked"), poleId("built"), poleId("other")] }]
     // Report 125521: an obsolete underground belt put back on the tile of a planned pole.
     const belt = s.create_entity({ name: "underground-belt", type: "input", position: { x: x + 0.5, y: y + 0.5 }, direction: defines.direction.south, force })!
     const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })!

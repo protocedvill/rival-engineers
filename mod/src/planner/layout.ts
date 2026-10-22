@@ -6,7 +6,7 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
-import type { ConnectionId, ModuleId, RouteId } from "../shared/ids"
+import type { ConnectionId, ModuleId, PoleId, PoleLineId, RouteId } from "../shared/ids"
 import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
 import { isPoleTag, moduleTag, poleTag, portTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
@@ -95,21 +95,21 @@ export interface Route {
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */
 export interface PlannedPole {
-  id: string
+  id: PoleId
   name: string
   x: number
   y: number
   /** The pole line (network edge) it belongs to. */
-  line: string
+  line: PoleLineId
 }
 
 /** One edge of the pole network: poles from a powered component to a module. */
 export interface PoleLine {
-  id: string
+  id: PoleLineId
   /** The module joined to the network, and the owner of the powered pole it was joined from. */
   to: ModuleId
   from: string
-  poles: string[]
+  poles: PoleId[]
 }
 
 export interface LayoutState {

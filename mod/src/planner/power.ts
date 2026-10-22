@@ -8,8 +8,8 @@
 // is a list of pole lines added to the LayoutState (`layout.poles`), so routes and later plans keep off them, and the
 // build list stamps them. Pure: no Factorio globals.
 
-import { moduleId } from "../shared/ids"
-import type { ModuleId } from "../shared/ids"
+import { moduleId, poleId, poleLineId } from "../shared/ids"
+import type { ModuleId, PoleId, PoleLineId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { claimPoleTile, poleClaimConflict, releasePoleTile } from "./claims"
 import { FREE, ROCK, TerrainView, tkey, TREE } from "./grid"
@@ -35,13 +35,13 @@ export interface PoleJob {
   /** Component root → powered. */
   powered: Record<number, boolean>
   /** Owners (module ids) that still need joining, nearest first when picked. */
-  pending: string[]
+  pending: ModuleId[]
   current?: PoleSearch
-  added: string[]
+  added: PoleId[]
   failures: Record<string, string>
   work: number
   /** Module ids that ended up powered (or were). */
-  connected: string[]
+  connected: ModuleId[]
 }
 
 interface PoleSearch {
@@ -231,9 +231,9 @@ function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolic
 const MARGINS = [16, 48, 112]
 
 /** Picks the pending owner nearest the powered set and starts a search for it. */
-function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boolean {
-  let best: { owner: string; d2: number; src: PoleNode } | undefined
-  const keep: string[] = []
+function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): boolean {
+  let best: { owner: ModuleId; d2: number; src: PoleNode } | undefined
+  const keep: ModuleId[] = []
   for (const owner of retry !== undefined ? [retry.owner] : job.pending) {
     if (ownerPowered(job, owner)) {
       job.connected.push(owner)
@@ -448,14 +448,14 @@ function commitLine(job: PoleJob, layout: LayoutState): void {
   for (const p of layout.evictedPoles ?? []) used[p.line] = true
   let n = layout.poleLines?.length ?? 0
   while (used[`${job.prefix}${n}`]) n++
-  const lineId = `${job.prefix}${n}`
+  const lineId: PoleLineId = poleLineId(`${job.prefix}${n}`)
   layout.poles ??= []
   layout.poleLines ??= []
-  const ids: string[] = []
+  const ids: PoleId[] = []
   for (let i = tiles.length - 1; i >= 0; i--) {
     const x = s.x0 + (tiles[i] % s.w)
     const y = s.y0 + math.floor(tiles[i] / s.w)
-    const id = `${lineId}.${tiles.length - 1 - i}`
+    const id = poleId(`${lineId}.${tiles.length - 1 - i}`)
     layout.poles.push({ id, name: job.pole, x, y, line: lineId })
     claimPoleTile(layout, tkey(x, y), lineId)
     ids.push(id)

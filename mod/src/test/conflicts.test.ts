@@ -327,7 +327,7 @@ describe("faction conflicts", () => {
         assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
         const r = job.layout.routes["route:ore2"]
         assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
-        const parts = { modules: [moduleId("smelt2")], routes: [routeId("route:ore2")], poles: [] as string[] }
+        const parts = { modules: [moduleId("smelt2")], routes: [routeId("route:ore2")], poles: [] }
         const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
         assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
         startBuild(e, { parts, priority: 90 })

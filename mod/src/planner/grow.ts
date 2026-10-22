@@ -5,7 +5,7 @@
 // they are (same name, position and direction) are neither removed nor rebuilt. Pure: no Factorio globals.
 
 import { expandMoves } from "../modules/build"
-import type { RouteId } from "../shared/ids"
+import type { PoleId, RouteId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier } from "./capacity"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
@@ -139,7 +139,7 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   // B37: pole lines the growth or its reroutes took are gone (`evictPoleLines`): pick their poles up and join what
   // they powered again with new lines. A module that was powered and can't be joined again fails the growth.
   const evicted = (job.layout.evictedPoles ?? []).slice(base.evictedPoles?.length ?? 0)
-  let newPoles: string[] = []
+  let newPoles: PoleId[] = []
   if (evicted.length > 0) {
     const was: Record<string, boolean> = {}
     for (const u of unpoweredModules(base, facts)) was[u] = true

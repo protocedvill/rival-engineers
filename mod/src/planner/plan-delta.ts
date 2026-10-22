@@ -4,7 +4,7 @@ import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import { checkClaimOwners } from "./claims"
 import { checkLayoutIndexes, layoutRevision } from "./layout"
 import type { LayoutState } from "./layout"
-import type { ModuleId, RouteId } from "../shared/ids"
+import type { ModuleId, PoleId, RouteId } from "../shared/ids"
 
 /** The planner fields needed to prepare adoption. Kept narrow so fixtures need not construct a whole running job. */
 export interface PlanDeltaInput {
@@ -13,7 +13,7 @@ export interface PlanDeltaInput {
   baseModules: Record<string, boolean>
   baseRoutes: Record<string, boolean>
   /** Pole ids recorded by the pole job as additions. */
-  addedPoles?: string[]
+  addedPoles?: PoleId[]
   /** Request id → placed module id, from the plan's expansion decisions (B23 mine completion). */
   expanded?: Record<string, { module: string; units: number }>
 }
@@ -100,14 +100,14 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
 
   const candidatePoles: Record<string, boolean> = {}
   for (const p of input.layout.poles ?? []) candidatePoles[p.id] = true
-  const addPoles: string[] = []
+  const addPoles: PoleId[] = []
   for (const id of input.addedPoles ?? []) if (candidatePoles[id]) addPoles.push(id)
 
   const removeModules: ModuleId[] = []
   for (const m of current.modules) if (input.layout.modules.every((candidate) => candidate.id !== m.id)) removeModules.push(m.id)
   const removeRoutes: RouteId[] = []
   for (const id of current.routeOrder) if (input.layout.routes[id] === undefined) removeRoutes.push(id)
-  const removePoles: string[] = []
+  const removePoles: PoleId[] = []
   for (const p of current.poles ?? []) if (!candidatePoles[p.id]) removePoles.push(p.id)
 
   const add: BuildParts = { modules: addModules, routes: addRoutes, poles: addPoles }
