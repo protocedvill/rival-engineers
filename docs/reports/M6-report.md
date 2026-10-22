@@ -1809,3 +1809,328 @@ milestones were logged before the save: a harness gap, not fixed):
 | ~146 | g20 (green production, attempt 2) planned with a copper mine on the newly explored ground: `EXPLORE (D62) over` after 2 outposts, 31 game-min. Work 1.37M (typical plans 0.1–0.7M): the long belts are expensive. |
 
 Still running when committed: whether the far mine's build lifts science to the v1 bar.
+
+## M6b.30: architecture hardening — progress and next steps (working tree, 2026-10-21)
+
+This section is the durable checkpoint for the architecture review prompted by repeated fixes in one decision tree
+invalidating another. It records implementation work in the current dirty tree; it is **not** an acceptance result,
+commit record, or user approval of the follow-up proposals below.
+
+### Completed in the current working tree
+
+1. **Typed factory-goal lifecycle.** `strategy/goal-lifecycle.ts` owns the legal status graph:
+   `planning → planning/building/failed`, `building → building/done/failed`, and no transition out of `done` or
+   `failed`. `strategy/factory.ts` has one mutation boundary, `transitionGoal`; the architecture check rejects direct
+   status assignments elsewhere. The pure lifecycle has exhaustive T1 coverage, including terminal states failing
+   closed.
+2. **Optimistic layout revision guard.** `LayoutState.revision` is monotonic and optional for old saves and captures
+   (missing reads as 0). Module, route and pole mutations advance it; layout clones preserve it. A `PlanJob` records
+   `sourceRevision` when it copies its base. Before adoption, the factory compares that revision with its live layout,
+   emits the structured `stale-plan-rejected` diagnostic, removes the stale plan, and retries without charging a
+   failed attempt. Old saved jobs without `sourceRevision` retain their previous behaviour.
+3. **Derived-index invariants.** `checkLayoutIndexes` checks canonical modules, routes, underground spans, poles and
+   pole lines against `occ`, `routeOcc`, `spans` and ordering indexes, reporting the complete mismatch chain. Planner
+   tests call this before the existing terrain/geometry checker. A T1 regression proves revisions survive clones and
+   deliberate occupancy drift is diagnosed.
+4. **Mutation audit and documentation.** Module removal paths go through the revisioned `unmarkModule`; route and pole
+   removal/addition paths go through revisioned helpers. `docs/agent/architecture.md` documents the lifecycle,
+   revision and index-check boundaries. `tools/check-architecture.mjs` treats the lifecycle and plan-delta modules as
+   pure and enforces the single goal-status mutation boundary.
+5. **First `PlanDelta` adoption boundary.** `planner/plan-delta.ts` is pure and serializable. A completed job is prepared
+   once before adoption: its base revision and all derived indexes are validated, and deterministic module/route/pole
+   additions and removals are derived from canonical layout order. `strategy/factory.ts` consumes the prepared delta
+   instead of recomputing build parts. Stale deltas retry without spending an attempt; structurally invalid deltas emit
+   `invalid-plan-delta`, retry under the existing attempt cap, and can no longer enter persistent factory state. The
+   A-plans → B-mutates → A-rejects sequence, add/remove derivation, and index rejection have pure regressions. The
+   actual entity/job side effects remain in the runtime adapter; this is an optimistic transaction boundary, not a
+   claim that Factorio side effects are rollback-safe.
+6. **Typed spatial-claim query boundary.** `planner/claims.ts` gives the raw layout indexes one typed vocabulary for
+   module, interaction, pole-line, port/lane reservation, route, mine-growth and soft-growth claims, with explicit
+   hard/evictable/soft strengths. Router, power and placement now use policy-specific conflict queries rather than
+   independently decoding the tables. `checkClaimOwners` diagnoses orphaned occupancy, reservation, mine and soft
+   claims; `PlanDelta` rejects them as `invalid-layout-claims`, and planner, batch and growth fixtures exercise the
+   invariant. This deliberately does not merge indexes whose lifetime and cost semantics differ.
+
+Validation on the dirty tree:
+
+- `npm run typecheck`: pass (architecture check plus runtime, settings and unit TypeScript projects).
+- Before the claim-boundary additions, `npm run test:unit -- --no-build`: **22/22 files passed**. Relevant totals
+  include planner 39, planner-batch 14, plan-replay 23, growth/growth-geometry 51, power 10, pole-eviction 4, and
+  goal-lifecycle 2. The post-claim full run is the interrupted run called out below.
+- `npm run build`: pass. The first build exposed 190 main-chunk locals in `factory.lua`; consolidating the layout
+  imports behind one namespace brought it back below the project's 185-local guard, and the rebuilt mod passed.
+- `git diff --check`: pass.
+- `npm run doctor`: 0 errors, 4 warnings. T2 and soaks were deliberately not started: the existing D62 seed-46464
+  Factorio process was still running. (`mod/build` was stale at doctor time and was rebuilt successfully afterward.)
+- Claim-boundary follow-up: targeted T1 passed (`claims` 3/3, planner 39/39, planner-batch 14/14, power 10/10,
+  mine-plan 11/11, plan-replay 23/23, grow 6/6 and growth-geometry 45/45). Targeted T2 passed 3/3: routing lab,
+  power-up and B37. Typecheck and build also passed after these changes.
+- No tuning values or magic numbers were introduced.
+
+### Pause handoff (2026-10-21)
+
+Paused at the user's request with an uncommitted working tree and no test process intentionally left running. The
+claim-query phase described in item 6 is implemented. No pre-existing bug of the target class was exposed: the new
+claim-owner checks passed across the broadened planner, batch and growth fixtures. Their value so far is preventing
+future one-sided updates and making policy differences explicit, rather than documenting a newly reproduced defect.
+
+The full `npm run test:unit -- --no-build` was started after the targeted checks and then terminated when the pause
+was requested. Suites observed before termination were passing, but this is **not** a completed full-T1 result and
+must not be reported as one.
+
+Resume in this order:
+
+1. Run `npm run status`, then `npm run doctor`.
+2. Rerun `npm run test:unit -- --no-build` to replace the interrupted full-T1 run with complete evidence.
+3. If preparing to land the slice, run full T2; the focused routing/power/B37 selection is already green 3/3.
+4. Continue the claim phase by migrating remaining direct claim reads and then writes through typed add/remove
+   helpers. Extend prepared `PlanDelta` evidence to logical and claim changes, then address bootstrap/world claims.
+   Do not merge the backing occupancy tables without profiling and an explicit design decision.
+5. Keep old-save defaults, deterministic ordering and the 185-local Lua guard intact. Add a pure regression for each
+   newly migrated mutation path and use T2 only for actual Factorio semantics.
+
+No new tuning values or magic numbers were introduced in this phase.
+
+### Proposed follow-up sequence (not approved SPEC decisions)
+
+1. **Extend the new transaction boundary beyond physical build parts.** The first `PlanDelta` version now carries the
+   validated candidate layout plus module/route/pole additions and removals. Next, move logical-graph changes and typed
+   claim changes into its prepared evidence, validate those together, and make the adapter consume them in explicit
+   deterministic phases. Factorio entity/job effects still cannot be rolled back like plain tables; fail before those
+   effects wherever possible and record enough intent to reconcile an interrupted adapter phase.
+2. **Finish the spatial-claim migration.** The typed owner/kind vocabulary, policy-specific conflict queries and first
+   orphan checks now exist. Migrate the remaining reads and then route mutations through claim add/remove helpers;
+   extend invariants to overlapping and one-sided claims, then cover bootstrap reservations and world ore claims.
+   Only merge storage after profiling shows it is safe.
+3. **Replace stringly identifiers and reasons at subsystem boundaries.** Add branded TypeScript IDs for goals,
+   modules, routes, pole lines, jobs and claims where values cross layers. Give planner/adoption outcomes stable reason
+   codes with separate human detail. Convert incrementally at constructors and serialization boundaries so old saves
+   remain readable; avoid a repository-wide cast-only rewrite.
+4. **Add model-sequence regressions.** Exercise sequences such as plan A starts → layout B mutates → A completes;
+   route rip-up with taps and pole eviction; abandon/replan/adopt; and terminal goal transitions. Assert revision,
+   claims, graph, build parts and diagnostics after every step. Prefer pure T1 models; add T2 only where Factorio ghost,
+   inventory, entity-selection or save behaviour is the subject.
+5. **Shrink the coordinator after the boundaries exist.** Move preparation and validation out of
+   `strategy/factory.ts`; leave it responsible for scheduling and Factorio-facing orchestration. Add architecture
+   checks for mutation entry points only after all legitimate call sites have migrated—premature source-shape rules
+   would merely encourage bypasses.
+6. **Runtime validation and landing.** Doctor, rebuild and targeted conflict T2 now pass; rerun the interrupted full
+   T1 and then full T2. Capture a stale-plan interleaving at T2 if the runtime harness can do so cheaply.
+   Run targeted replay/snapshot validation before any acceptance soak. Update this section with the final commit and
+   evidence; do not call the work accepted based only on the current targeted post-claim evidence.
+
+Suggested review slices: (1) land the lifecycle/revision/invariant foundation above together with the completed
+`PlanDelta` preparation/adoption boundary; (2) claim abstraction; (3) branded IDs/reason codes. Each slice should
+preserve old-save compatibility and finish with a pure regression before expanding the next boundary.
+
+## M6b.31: claim write boundary and remaining policy reads (working tree, 2026-10-21)
+
+Continues M6b.30 after its pause handoff. This records implementation and validation on the dirty tree; it is not an
+acceptance result or a commit record.
+
+### Completed in the current working tree
+
+1. **One spelling for every claim tag.** The new leaf module `planner/claim-tags.ts` owns `m:<id>`, `x:<id>`,
+   `x:<line>`, `p:<module>.<port>` and `lane:<port>`, plus `isPoleTag`, `isModuleTag`, `isOwnPortReservation` and
+   `isLaneReservation`. `layout.ts` and `claims.ts` both import it; `layout.ts` re-exports `isPoleTag`/`portTag` (so
+   existing consumers are unchanged) and `releasePoleTile` (so `strategy/factory.ts`, which already imports `layout` as
+   a namespace, needs no new local).
+2. **Paired add/remove writers.** `claims.ts` now exposes `claimModuleTile`/`releaseModuleTile`,
+   `claimInteractionTile`/`releaseInteractionTile`, `claimPoleTile`/`releasePoleTile`, `reserveTile`/`reserveFreeTile`/
+   `releaseReservation`/`releaseLaneReservation`, `claimRouteTile`/`releaseRouteTile`, and `claimMineTile`/
+   `releaseMineClaims`/`claimSoftTile`/`releaseSoftClaims`. Every removal is conditional on the caller still owning the
+   claim, and the mine/soft writers refuse occupied ground, so a stale cleanup can no longer free another owner's tile.
+3. **Mutation sites migrated.** `layout.ts` (`markModule`, `unmarkModule`, `commitRoute`, `ripRoute`, `evictPoleLines`
+   and `checkLayoutIndexes`), `power.ts` (`commitLine`, `removePoleLines`), `plan.ts` (the B57 lane reservation add and
+   its end-of-plan clear) and `factory.ts` (`dropPlannedPoles`) now go through those helpers.
+4. **Remaining policy reads typed.** `placement.ts`'s `rejectBlocker` hard-tile test and its whole-patch/expansion
+   `taken` views now ask `placementClaimConflict`/`moduleGrowthClaimConflict`; the growth loop keeps its per-index
+   reason strings by mapping the typed conflict code, so `planner-batch`'s "occupied at" assertion is unchanged. The
+   new `moduleGrowthClaimConflict` states the policy once: a module's own footprint/interaction tags, pole lines and own
+   port reservations give way, while another module, any route, another mine and another port's reservation are hard.
+5. **Deliberately still raw.** Reads that are index mechanics or diagnostics rather than claim policy: the router's
+   neighbour/victim scans, `plan.ts`'s lane identity checks, `runtime.ts`'s adapter view, `trace.ts`/`remote.ts`
+   diagnostics, and the mine-completion loop (B25/B55) whose per-index reason strings are part of its evidence. They
+   keep their own comments; they are not a policy fork.
+
+### Validation on the dirty tree
+
+- `npm run typecheck`: pass (architecture check plus runtime, settings and unit TypeScript projects).
+- `npm run build`: pass under the 185-local guard. The first attempt (a new named `claims` import in `factory.ts`)
+  pushed `factory.lua` to 186 main-chunk locals; routing the helper through the already-namespaced `layout` module
+  restored it below the guard.
+- `npm run test:unit -- --no-build`: **23/23 files passed**, including claims 6 (three new pure tests for the writers,
+  the mine/soft pairing and the growth policy), planner 39, planner-batch 14, power 10, pole-eviction 4, plan-replay
+  23 and goal-lifecycle 2. This replaces the interrupted full-T1 run recorded in M6b.30; it is a complete run.
+- Targeted T2: routing lab, `power-up` and B37 all pass on the rebuilt mod (3 tests). Two `npm test` invocations were
+  needed because `-` in a Lua pattern is a quantifier: `"power-up"` selects nothing, `"power%-up"` selects the test.
+- `git diff --check`: pass. `npm run doctor`: 0 errors (the same stale active-run markers, no Factorio process).
+- No tuning values or magic numbers were introduced.
+
+### Learned rules recorded
+
+- `CLAUDE.md`, TSTL gotchas: `import type` is erased and cannot create a Lua `require` cycle, so a module may
+  type-reference a module that value-imports it; only value imports close the cycle.
+- `docs/agent/architecture.md`: a single new named import can push a coordinator's Lua chunk over the 185-local guard;
+  import the module as a namespace, or re-export the helper through an already-imported module, instead of adding a
+  local.
+
+### Next
+
+M6b.30's ordered step 4 still stands: extend prepared `PlanDelta` evidence to logical and claim changes, then address
+bootstrap/world claims. The first part was approved in-session by the user and implemented as M6b.32 below.
+
+## M6b.32: PlanDelta logical and claim evidence (working tree, 2026-10-21)
+
+User decision in-session 2026-10-21: extend the prepared `PlanDelta` evidence to logical and claim changes (the
+handoff's next step). This records implementation and validation on the dirty tree; it is not an acceptance result or
+a commit record.
+
+### Completed in the current working tree
+
+1. **Prepared logical evidence.** `PlanDelta.logical` carries `routesByConn` (connection role → its candidate routes in
+   `routeOrder`, a tap's base route first) and `poleLines` (id, to, from in order). Both are derived once from the
+   validated candidate, so `adoptPlan` no longer re-scans `layout.routeOrder` per belt edge, and `powerEdges` consumes
+   the prepared lines instead of re-reading the layout.
+2. **Prepared claim evidence.** `PlanDelta.claims` carries `takenTiles` (the new parts' tiles plus whole-patch mine
+   claims, deduped in `partTiles` order) and `mineClaims` (added module id → its claim tiles, in `add.modules` order).
+   `adoptPlan`'s B15/B23 `taken` set and `evictSites` call now consume `takenTiles` instead of re-deriving it from
+   `partTiles` plus a separate `minePlan` loop.
+3. **Validation still precedes derivation.** The revision check, `checkLayoutIndexes` and `checkClaimOwners` all run
+   before any evidence is built, so a stale or inconsistent candidate is rejected before the adapter sees a delta. The
+   physical add/remove evidence is unchanged.
+4. **Not yet migrated.** The adapter still creates Factorio entities and jobs directly (they cannot be rolled back like
+   plain tables); the mine-completion path (`job.expanded`) still reads the candidate layout; and `powerEdges` keeps
+   its layout fallback for the growth path (`startGrow`). The follow-up list records the remaining work.
+
+### Validation on the dirty tree
+
+- `npm run typecheck`: pass (architecture check plus the three TypeScript projects).
+- `npm run build`: pass under the 185-local guard (no new import was needed: the evidence arrives through the existing
+  `plan-delta` import).
+- `npm run test:unit -- --no-build`: **23/23 files passed**, planner 40 (one new pure test derives the logical and
+  claim evidence, checks tap ordering, dedup and determinism, and confirms the base module's ground is not taken).
+- Targeted T2 on the rebuilt mod: routing lab, `power-up` and B37 all pass (3/3), covering both plan-adoption paths
+  the change touches.
+- `git diff --check`: pass. `npm run doctor`: 0 errors. No tuning values or magic numbers were introduced.
+
+### Next
+
+Remaining from the approved direction and the follow-up list: make the adapter's Factorio-facing phases explicit and
+reconcilable; and cover bootstrap reservations and world ore claims. The first half was implemented as M6b.33 below.
+
+## M6b.33: completed-mine evidence and explicit adoption phases (working tree, 2026-10-22)
+
+User decision in-session 2026-10-22: continue with the next stage after M6b.32. This records implementation and
+validation on the dirty tree; it is not an acceptance result or a commit record.
+
+### Completed in the current working tree
+
+1. **Completed-mine evidence.** `PlanDeltaInput` gained `expanded` (request id → placed module, from the plan's
+   expansion decisions). `PlanDelta.mineCompletions` now carries, for each built base module whose whole-patch mine
+   the plan completed, the entities the adapter must add — derived once from the validated candidate, in candidate
+   module order (not `pairs` table order). `adoptPlan` consumes it instead of iterating `pairs(job.expanded)`,
+   re-reading the layout and calling `partEntities` per module. The adapter still filters against the surface's
+   existing entities, which is a runtime query; the pure derivation no longer happens there.
+2. **Explicit adoption phases.** `adoptPlan`'s header now documents the fixed phase order and the invariant that no
+   persistent or engine effect happens before the prepared delta is validated: reads → layout swap and logical edges
+   → world evictions → reservations and ore-field claims → build job and completed-mine additions. This is a
+   documentation boundary, not a new mechanism; the reconciler for an interrupted adapter phase remains proposed.
+3. **Still adapter-side.** The world-effect phases (evicting sites and poles, `brain.reserved`, `claimModuleFields`,
+   `startBuild`) remain Factorio-facing and cannot be rolled back like plain tables. Bootstrap reservations and world
+   ore claims are still plain `Record<number, boolean>` tables with no typed owner, so they are not yet covered by an
+   invariant.
+
+### Validation on the dirty tree
+
+- `npm run typecheck`: pass.
+- `npm run build`: pass under the 185-local guard.
+- `npm run test:unit -- --no-build`: **23/23 files passed**, planner 41 (one new pure test: a completed base mine
+  yields its entities; a non-base module and an incomplete mine yield none).
+- Targeted T2 on the rebuilt mod: routing lab, `power-up` and B37 all pass (3/3).
+- Full T2: `npm test -- --no-build` on the same build the soak runs: **150 passed, 0 failed, 0 skipped** (8 shards,
+  1004 s wall / 7042 s of test time). Run concurrently with the acceptance soak, so wall and per-test durations are
+  inflated by CPU contention; pass/fail is unaffected. No test was skipped.
+- `git diff --check`: pass. No tuning values or magic numbers were introduced.
+- **Acceptance soak `m6-final2` is running on this build** (`tools/harness/m6.toml`: seeds 11, 222, 3333, 44444,
+  555555; 8 game-hour cap; fail-fast). Its scorecard is `out/soak/m6-final2/`. An earlier `m6-final` soak was
+  deliberately stopped before it produced results because the build changed; it is not evidence and its partial
+  output was removed.
+
+### Next
+
+Remaining from the approved direction: make the adapter's Factorio-facing phases reconcilable (an intent record that
+survives an interrupted adoption), and give bootstrap reservations and world ore claims a typed boundary. Both stay
+proposed until separately approved.
+
+### Acceptance soak `m6-final2` (interrupted harness, reconstructed result)
+
+The host restarted at 2026-10-22 02:07 while the soak was running, cancelling `soak.py`. Three seeds had already
+finished and were scored; the other two were orphaned `--benchmark` processes, ran to the full 8 game-hour cap on
+their own, and exited cleanly. The harness's `scorecard.md` is therefore **PARTIAL 3/5** and must not be quoted as
+the run's result. Reconstructed from each seed's `factorio-current.log`, `telemetry.json` and `done.json`:
+
+| Seed | Result | Done / end | Evidence |
+|---|---|---|---|
+| 11 | pass | `v1-done` @ 208.3 min | scorecard |
+| 222 | pass | `v1-done` @ 238.2 min | scorecard |
+| 44444 | pass | `v1-done` @ 183.3 min | scorecard |
+| 555555 | pass | `v1-done` @ 232.7 min (tick 837570) | `done.json` + log; harness did not score it |
+| 3333 | **non-pass** | cap @ 480 min; `research-goal-done` @ 273.5 min (tick 984510), no `science-sustained`, no `v1-done` | log + telemetry |
+
+So the tree is 4/5 on the v1 bar, not 3/3. Seed 3333's best 30-minute window was 27.7 red / 23.4 green per minute
+(below the 30 + 30 bar); science production stopped at 319 game-minutes and the factory idled to the cap
+(`waiting: no researchable technology`, 42/42 techs researched). Its log shows the power block's fuel edge failing
+repeatedly: `coal>power=>power.in-fuel: route crosses itself` for goals g22–g45 (4 attempts each, one new goal every
+~180 ticks), plus `g9 mall` failing with 10 stuck pole ghosts and `g50` reporting `no path` fuel edges. This is the
+known B28/B29 shape (feed route never widens / power short), but seed 3333 passed the previous acceptance runs at
+~285 game-minutes, so the change in outcome has **not** been attributed. It must be diagnosed
+(`npm run diagnose -- m6-final2 3333`) against the previous passing run before calling it a regression or a flake.
+
+Consequence for the landing plan below: the soak is not green, so the commit is **not** made yet and no acceptance
+result is claimed. The architecture slice itself still has T1 23/23 and full T2 150/150.
+
+Diagnosis of seed 3333 (`npm run diagnose -- m6-final2 3333`, after copying the orphaned seed's telemetry into
+`out/soak/m6-final2/seed-3333/`): at tick 935580 (~260 min) node n6 (`coal>power`) is
+`growth-rejected (its patch has no better part left (50 ore tiles, its drills reach 82))`. The design then creates a
+replacement power goal g21 (`no feasible position (1 of 1 patches tried)`) and g22–g45, which each fail
+`coal>power=>power.in-fuel: route crosses itself` after four attempts. The coal feed to the power block is therefore
+never rebuilt, and science production stops at 319 min. This is the B28/B29 shape, not a claim-boundary symptom. The
+remaining invariants at the final tick are the expected end-state kind (`node n31/n33/n69 built without layout
+module` after the failed mall relocation; `build-job-missing` for the finished goal's pruned jobs), not new claim
+violations. Filed as **B59** (open) with the artifacts and the bisect next step.
+
+Tooling fix made while diagnosing: `tools/diagnose.mjs` crashed on a completed run because the telemetry encoder
+writes an empty Lua list as `{}`; it now normalises lists with an `Array.isArray` helper. That is an unrelated tool
+bug, not mod behaviour.
+
+### Landing (2026-10-22)
+
+The architecture-hardening work from M6b.30 through M6b.33 is one review slice on `m6-v1`, committed together with
+this report update and B59 (open). It cannot be split cleanly at file granularity: `layout.ts`, `plan.ts` and
+`factory.ts` each carry both the lifecycle/revision/`PlanDelta` foundation and the claim migration, so a split needs
+hunk surgery and would risk a non-building intermediate commit. The commit records the architecture slice and the
+soak's partial result; it does **not** claim acceptance, because seed 3333 is a non-pass (B59). Full T2 passed
+150/150. Message:
+
+```
+M6b: architecture hardening — goal lifecycle, layout revision, plan deltas, typed claims
+
+- strategy/goal-lifecycle.ts: the legal goal status graph; factory.ts changes
+  status only through transitionGoal (enforced by check-architecture).
+- LayoutState.revision: monotonic; plan jobs record their base revision and
+  adoption rejects a stale plan without spending a planning attempt.
+- planner/plan-delta.ts: a completed plan is validated (revision, derived indexes,
+  claim owners) and its physical, logical, claim and completed-mine evidence
+  derived once before the adapter changes state or creates Factorio work.
+- planner/claims.ts + planner/claim-tags.ts: one typed ownership vocabulary over
+  the existing indexes, policy-specific conflict queries, orphan and one-sided
+  checks, and paired add/remove writers whose removals are ownership-checked.
+- Tests: pure goal-lifecycle, claims, layout-revision, index, plan-delta and
+  evidence regressions; index and claim invariants in the batch and growth
+  fixtures. Docs: architecture.md, CLAUDE.md TSTL gotchas, M6 report M6b.30–33.
+```
+
+The full T2 run was started with `--no-build` so it did not rewrite `mod/build` while the soak read it; it passed
+150/150 (see above). The commit leaves B59 as the only open item from this work; the remaining proposals above
+continue from a clean tree.

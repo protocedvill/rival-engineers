@@ -57,6 +57,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - **A named import of an exported `let` is a load-time copy**: `import { x } from "./m"` compiles to `local x = ____m.x`,
   so later reassignments in `m` are never seen (telemetry logged no `[re-profile]` lines). Import the module
   (`import * as m`) and read `m.x`.
+- **`import type` is erased, so it cannot create a Lua `require` cycle**: a module may type-reference a module that
+  value-imports it (e.g. `claims.ts` takes `import type { LayoutState }` while `layout.ts` imports its writers). Only a
+  value import closes the cycle, and `require` cycles fail at mod load. Keep the shared *values* in a leaf module
+  (`claim-tags.ts`) instead.
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.

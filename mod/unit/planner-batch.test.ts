@@ -5,6 +5,7 @@ import { smelterColumn } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
+import { checkClaimOwners } from "../src/planner/claims"
 import { asciiTerrain, keyX, keyY, rectContains, TerrainView, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { placeNow, tryExpand } from "../src/planner/placement"
@@ -51,6 +52,8 @@ function maxUg(this: void, name: string): number {
   return name === "underground-belt" ? 5 : 7
 }
 function noProblems(state: LayoutState, terrain: TerrainView, what: string): void {
+  const claims = checkClaimOwners(state)
+  if (claims.length > 0) error(`${what} claims: ${claims.join("; ")}`, 2)
   const c = checkLayout(state, terrain, maxUg)
   if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
 }

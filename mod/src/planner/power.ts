@@ -9,8 +9,9 @@
 // build list stamps them. Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
+import { claimPoleTile, poleClaimConflict, releasePoleTile } from "./claims"
 import { FREE, ROCK, TerrainView, tkey, TREE } from "./grid"
-import { LayoutState, PlannedPole } from "./layout"
+import { bumpLayout, LayoutState, PlannedPole } from "./layout"
 import { LayoutPolicy } from "./policy"
 
 interface PoleNode {
@@ -208,9 +209,7 @@ function ownerHasPoles(job: PoleJob, owner: string): boolean {
 /** Free for a pole: buildable terrain (trees and rocks at a cost) and not used by the layout. Returns -1 if not. */
 function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): number {
   const k = tkey(x, y)
-  if (layout.occ[k] !== undefined || layout.reserved[k] !== undefined || layout.routeOcc[k] !== undefined) return -1
-  // D52 (3): never on a mining outpost's room to grow.
-  if (layout.mine?.[k] !== undefined) return -1
+  if (poleClaimConflict(layout, k) !== undefined) return -1
   const b = terrain.block(x, y)
   let c = 1
   if (b === TREE) {
@@ -456,12 +455,13 @@ function commitLine(job: PoleJob, layout: LayoutState): void {
     const y = s.y0 + math.floor(tiles[i] / s.w)
     const id = `${lineId}.${tiles.length - 1 - i}`
     layout.poles.push({ id, name: job.pole, x, y, line: lineId })
-    layout.occ[tkey(x, y)] = `x:${lineId}`
+    claimPoleTile(layout, tkey(x, y), lineId)
     ids.push(id)
     job.added.push(id)
     addNode(job, { owner: lineId, x: x + 0.5, y: y + 0.5, reach: job.reach })
   }
   layout.poleLines.push({ id: lineId, to: s.target, from: from ?? "?", poles: ids })
+  bumpLayout(layout)
   job.connected.push(s.target)
 }
 
@@ -524,15 +524,18 @@ export function unpoweredModules(layout: LayoutState, facts: ProtoFacts): string
 export function removePoleLines(layout: LayoutState, lineIds: string[]): void {
   const drop: Record<string, boolean> = {}
   for (const id of lineIds) drop[id] = true
+  let removed = 0
   const kept: PlannedPole[] = []
   for (const p of layout.poles ?? []) {
     if (drop[p.line]) {
-      const k = tkey(p.x, p.y)
-      if (layout.occ[k] === `x:${p.line}`) delete layout.occ[k]
+      removed++
+      releasePoleTile(layout, tkey(p.x, p.y), p.line)
     } else kept.push(p)
   }
+  const oldLines = layout.poleLines?.length ?? 0
   layout.poles = kept
   layout.poleLines = (layout.poleLines ?? []).filter((l) => !drop[l.id])
+  if (removed > 0 || (layout.poleLines?.length ?? 0) !== oldLines) bumpLayout(layout)
 }
 
 export function poleTileKeys(layout: LayoutState): number[] {

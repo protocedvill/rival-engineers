@@ -4,6 +4,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
+/** The telemetry encoder writes an empty Lua table as `{}`, so an empty list can arrive as an object. */
+const list = (value) => (Array.isArray(value) ? value : [])
 const [runArg, seedArg, factionArg] = process.argv.slice(2)
 if (!runArg) {
   console.error("usage: npm run diagnose -- <run-name-or-path> [seed] [faction]")
@@ -50,8 +52,8 @@ if (failure) console.log(`Fatal artifact: ${failureFile} (${failure.reason}; ret
 const factory = data.factory
 if (factory) {
   console.log(`\nFactory stage ${factory.stage}${factory.idle ? " (idle)" : ""}`)
-  for (const waiting of factory.waiting ?? []) console.log(`  waits: ${waiting}`)
-  for (const goal of factory.goals ?? []) {
+  for (const waiting of list(factory.waiting)) console.log(`  waits: ${waiting}`)
+  for (const goal of list(factory.goals)) {
     if (["done", "failed", "deferred"].includes(goal.status)) continue
     console.log(`  ${goal.id} ${goal.kind}: ${goal.status}; attempt ${goal.attempts}, placed ${goal.placed}, rounds ${goal.rounds}${goal.reason ? `; ${goal.reason}` : ""}`)
   }
@@ -60,21 +62,21 @@ if (factory) {
 const diagnostic = data.diagnostics
 if (diagnostic) {
   console.log(`\nInvariants: ${diagnostic.invariants?.length ? `${diagnostic.invariants.length} violation(s)` : "OK"}`)
-  for (const item of diagnostic.invariants ?? []) console.log(`  ${item.code}: ${item.detail}`)
+  for (const item of list(diagnostic.invariants)) console.log(`  ${item.code}: ${item.detail}`)
   console.log("Blocked/ready jobs:")
-  for (const job of diagnostic.jobs ?? []) {
+  for (const job of list(diagnostic.jobs)) {
     const relation = job.relatedJob !== undefined ? ` → job ${job.relatedJob}` : ""
     console.log(`  #${job.id} ${job.kind}: ${job.blocker}${relation}${job.detail ? ` (${job.detail})` : ""}`)
-    for (const material of job.materials ?? []) {
+    for (const material of list(job.materials)) {
       const supply = material.takeable === undefined ? "supply not sampled" : `${material.takeable}/${material.raw} takeable/raw in ${material.sources} source(s)`
       console.log(`      ${material.item}: needs ${material.needed}; ${supply}`)
-      for (const source of material.sourceDetail ?? []) console.log(`        unit ${source.unit}${source.depot ? " depot" : ""}: raw=${source.raw}, reserved=${source.reserved}, takeable=${source.takeable}${source.excluded ? ` (${source.excluded})` : ""}`)
+      for (const source of list(material.sourceDetail)) console.log(`        unit ${source.unit}${source.depot ? " depot" : ""}: raw=${source.raw}, reserved=${source.reserved}, takeable=${source.takeable}${source.excluded ? ` (${source.excluded})` : ""}`)
     }
   }
-  for (const goal of diagnostic.goals ?? []) {
-    console.log(`Goal link ${goal.id}: plan=${goal.plan ?? "none"}, planner=${goal.plannerPhase ?? "none"}, build=${goal.buildPhase ?? "none"}, jobs=${(goal.jobs ?? []).join(",") || "none"}`)
+  for (const goal of list(diagnostic.goals)) {
+    console.log(`Goal link ${goal.id}: plan=${goal.plan ?? "none"}, planner=${goal.plannerPhase ?? "none"}, build=${goal.buildPhase ?? "none"}, jobs=${list(goal.jobs).join(",") || "none"}`)
     for (const [subject, reason] of Object.entries(goal.failures ?? {})) console.log(`    failure ${subject}: ${reason}`)
-    for (const evidence of goal.evidence ?? []) {
+    for (const evidence of list(goal.evidence)) {
       if (evidence.kind === "placement") {
         const rejected = Object.entries(evidence.rejections ?? {}).sort((a, b) => b[1].count - a[1].count).map(([why, item]) => `${why}=${item.count}@${item.sample.x},${item.sample.y}`).join(", ")
         console.log(`    placement ${evidence.subject}: ${evidence.reason}; ${evidence.candidates} candidates; ${rejected || "no candidate samples"}`)
@@ -82,7 +84,7 @@ if (diagnostic) {
     }
   }
   console.log(`Churn: ${diagnostic.churn?.length ? `${diagnostic.churn.length} warning(s)` : "none"}`)
-  for (const finding of diagnostic.churn ?? []) console.log(`  ${finding.code}: ${finding.detail}`)
+  for (const finding of list(diagnostic.churn)) console.log(`  ${finding.code}: ${finding.detail}`)
   console.log("Recent decision events:")
   for (const [kind, events] of Object.entries(diagnostic.events ?? {})) {
     console.log(`  ${kind}:`)
@@ -90,11 +92,11 @@ if (diagnostic) {
   }
 } else {
   console.log("\nStructured diagnostics are absent (legacy telemetry). Open-job sample:")
-  for (const job of data.openJobs ?? []) console.log(`  #${job.id} ${job.kind}: ${job.reason ?? "open"}; deps/materials require in-game inspection`)
+  for (const job of list(data.openJobs)) console.log(`  #${job.id} ${job.kind}: ${job.reason ?? "open"}; deps/materials require in-game inspection`)
 }
 
-console.log(`\nCrew: ${(data.crew ?? []).length}; active job counts: ${JSON.stringify(data.activeJobs ?? {})}`)
-for (const crew of data.crew ?? []) {
+console.log(`\nCrew: ${list(data.crew).length}; active job counts: ${JSON.stringify(data.activeJobs ?? {})}`)
+for (const crew of list(data.crew)) {
   const last = crew.lastAction ? `${crew.lastAction.kind}/${crew.lastAction.status}${crew.lastAction.reason ? `: ${crew.lastAction.reason}` : ""}` : "none"
   console.log(`  #${crew.id}${crew.dead ? " dead" : ""}: last=${last}`)
 }

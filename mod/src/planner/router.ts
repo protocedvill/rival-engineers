@@ -14,6 +14,7 @@
 // and inserters reserve the tiles they touch (`interactionTiles`), and port outside tiles are reserved.
 
 import { BeltTier } from "./capacity"
+import { routeClaimConflict } from "./claims"
 import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
 import { isPoleTag, LayoutState, lineKey, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import { LayoutPolicy } from "./policy"
@@ -200,22 +201,15 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   // B37: a pole line's tile costs `obstacles.poleEvict` (commitRoute evicts the line; the plan's pole step re-poles).
   const o = state.occ[k]
   const pole = isPoleTag(o)
-  if (o !== undefined && !pole) return -1
+  if (routeClaimConflict(state, k, req.own, req.from?.module, req.to.module, rip) !== undefined) return -1
   // B33: a tile the route used twice is blocked on the retry. As an extra cost (`rip`) the retry found the same
   // self-crossing path whenever every detour cost more (seed 222's copper feed with undergrounds, three retries).
   if (req.avoid?.[k]) return -1
   const r = state.reserved[k]
-  if (r !== undefined && !req.own[r]) return -1
-  // D52 (3): a mining outpost's room to grow takes only its own routes.
-  const mo = state.mine?.[k]
-  if (mo !== undefined && mo !== req.to.module && mo !== req.from?.module) return -1
   const w = policy.router
   let extra = pole ? policy.obstacles.poleEvict ?? 0 : 0
   const occupant = state.routeOcc[k]
-  if (occupant !== undefined) {
-    if (!rip || state.routes[occupant]?.fixed) return -1
-    extra += w.rip
-  }
+  if (occupant !== undefined) extra += w.rip // The claim query admitted only a rippable route.
   const b = terrain.block(x, y)
   if (b === TREE) {
     if (policy.obstacles.trees !== "clear") return -1

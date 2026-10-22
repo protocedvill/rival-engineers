@@ -11,6 +11,8 @@ import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modu
 import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
 import { ModuleDef, ModuleEntity } from "../modules/types"
+import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
+import { laneTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
@@ -205,13 +207,10 @@ function buildPatches(s: PlacementSearch, state: LayoutState, terrain: TerrainVi
   if (resource === undefined) return 1
   const treeHard = policy.obstacles.trees !== "clear"
   const rockHard = policy.obstacles.rocks !== "clear"
-  const mine = state.mine ?? {}
   const free = (x: number, y: number, k: number): boolean => {
     const b = terrain.block(x, y)
     if (b >= OWN || b === WATER || (b === TREE && treeHard) || (b === ROCK && rockHard)) return false
-    const o = state.occ[k]
-    if ((o !== undefined && !isPoleTag(o)) || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined) return false
-    return mine[k] === undefined || mine[k] === s.req.id
+    return placementClaimConflict(state, k, s.req.id) === undefined
   }
   const keys: number[] = []
   if (terrain.oreTiles !== undefined) {
@@ -489,14 +488,13 @@ export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) 
  * port's reservation; trees and rocks pass), and what its undergrounds may go under (anything but a module).
  */
 export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
+  const protectedLane = laneTag(tag)
   const free = (x: number, y: number): boolean => {
     const k = tkey(x, y)
-    const o = state.occ[k]
-    if ((o !== undefined && !isPoleTag(o)) || state.routeOcc[k] !== undefined || state.mine?.[k] !== undefined) return false
+    if (laneClaimConflict(state, k, tag, protectedLane) !== undefined) return false
     const r = state.reserved[k]
-    if (r !== undefined && r !== tag && r !== laneTag(tag)) return false
     const b = terrain.block(x, y)
-    return r === tag || r === laneTag(tag) || b === FREE || b === TREE || b === ROCK
+    return r === tag || r === protectedLane || b === FREE || b === TREE || b === ROCK
   }
   const under = (x: number, y: number): boolean => {
     const o = state.occ[tkey(x, y)]
@@ -506,9 +504,7 @@ export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: 
 }
 
 /** B57: the reservation tag of a protected lane's way out (a plan keeps it clear; see plan.ts `guardLanes`). */
-export function laneTag(port: string): string {
-  return `lane:${port}`
-}
+export { laneTag }
 
 /**
  * B51: the belt inputs of module `id` not in `fed` whose lane (from the approach tile) no longer leads `need` steps out
@@ -1085,8 +1081,7 @@ function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainV
   const hard = (x: number, y: number): boolean => {
     const k = tkey(x, y)
     const b = terrain.block(x, y)
-    const mo = state.mine?.[k]
-    return b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || (state.occ[k] !== undefined && !isPoleTag(state.occ[k])) || state.reserved[k] !== undefined || state.routeOcc[k] !== undefined || (mo !== undefined && mo !== s.req.id)
+    return b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || placementClaimConflict(state, k, s.req.id) !== undefined
   }
   const isMod = (x: number, y: number): boolean => {
     const o = state.occ[tkey(x, y)]
@@ -1214,14 +1209,7 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
   // Ground the layout already gives to someone else reads as own structures: no planned drill, belt or pole there.
   const taken = (x: number, y: number): boolean => {
     if (state === undefined) return false
-    const k = tkey(x, y)
-    const o = state.occ[k]
-    if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o)) return true
-    if (state.routeOcc[k] !== undefined) return true
-    const mo = state.mine?.[k]
-    if (mo !== undefined && mo !== m.id) return true
-    const r = state.reserved[k]
-    return r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`
+    return moduleGrowthClaimConflict(state, tkey(x, y), m.id) !== undefined
   }
   const view: TerrainView = {
     block: (x, y) => (taken(x, y) ? OWN : terrain.block(x, y)),
@@ -1430,10 +1418,7 @@ function reclaimWholePatch(state: LayoutState, terrain: TerrainView, facts: Prot
   }
   const taken = (x: number, y: number): boolean => {
     const k = tkey(x, y)
-    const o = state.occ[k]
-    if (o !== undefined && !isPoleTag(o)) return true
-    if (state.routeOcc[k] !== undefined || state.reserved[k] !== undefined) return true
-    return state.mine?.[k] !== undefined
+    return placementClaimConflict(state, k) !== undefined
   }
   const view: TerrainView = { block: (x, y) => (taken(x, y) ? FOREIGN : terrain.block(x, y)), ore: (x, y) => terrain.ore(x, y) }
   const cap = drillCount(m.minePlan.full, facts)
@@ -1561,14 +1546,12 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       const kk = tkey(x, y)
       const b = terrain.block(x, y)
       if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return { ok: false, reason: `blocked at ${x},${y}`, movedPorts: [], moved: [] }
-      const o = state.occ[kk]
+      const c = moduleGrowthClaimConflict(state, kk, m.id)
       // B37: a pole line on the new ground gives way (markModule evicts it; the growth re-poles).
-      if (o !== undefined && !ownTags[o] && !isPoleTag(o)) return { ok: false, reason: `occupied at ${x},${y}`, movedPorts: [], moved: [] }
-      if (state.routeOcc[kk] !== undefined) return { ok: false, reason: `route at ${x},${y}`, movedPorts: [], moved: [] }
-      const mo = state.mine?.[kk]
-      if (mo !== undefined && mo !== m.id) return { ok: false, reason: `mine claim of ${mo} at ${x},${y}`, movedPorts: [], moved: [] }
-      const r = state.reserved[kk]
-      if (r !== undefined && string.sub(r, 1, 3 + string.len(m.id)) !== `p:${m.id}.`) return { ok: false, reason: `reserved at ${x},${y}`, movedPorts: [], moved: [] }
+      if (c !== undefined) {
+        const why = c.code === "occupied" ? "occupied" : c.code === "routed" ? "route" : c.code === "mine-claimed" ? `mine claim of ${c.claim.owner}` : "reserved"
+        return { ok: false, reason: `${why} at ${x},${y}`, movedPorts: [], moved: [] }
+      }
       if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }
     }
   }

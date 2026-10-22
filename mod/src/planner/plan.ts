@@ -6,8 +6,9 @@
 
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
+import { releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
@@ -122,6 +123,8 @@ export type PlanEvidence =
     }
 
 export interface PlanJob {
+  /** Revision of the base layout this plan copied. Old saved jobs omit it and retain legacy adoption behaviour. */
+  sourceRevision?: number
   request: PlanRequest
   tier: BeltTier
   /** Tiers by belt name for per-connection tiers. */
@@ -265,6 +268,7 @@ export function cloneLayout(l: LayoutState): LayoutState {
   const routes: Record<string, Route> = {}
   for (const [k, r] of pairs(l.routes)) routes[k as string] = { ...(r as Route) }
   const out: LayoutState = {
+    revision: l.revision,
     modules: l.modules.map((m) => ({ ...m, minePlan: m.minePlan !== undefined ? { ...m.minePlan, claim: [...m.minePlan.claim], occupied: [...m.minePlan.occupied] } : undefined })),
     occ: copy(l.occ),
     reserved: copy(l.reserved),
@@ -304,6 +308,7 @@ export function newPlanJob(request: PlanRequest, tier: BeltTier, base?: LayoutSt
     baseRoutes[id] = true
   }
   return {
+    sourceRevision: base !== undefined ? layoutRevision(base) : 0,
     request,
     tier,
     tiers,
@@ -696,9 +701,7 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   for (const lane of sealed) {
     for (const t of lane.path) {
       const k = tkey(t.x, t.y)
-      if (fresh.layout.reserved[k] !== undefined) continue
-      fresh.layout.reserved[k] = laneTag(lane.tag)
-      keep.push(k)
+      if (reserveFreeTile(fresh.layout, k, laneTag(lane.tag))) keep.push(k)
     }
   }
   if (planTrace.sink !== undefined) traceEvent(`B57: the plan walls in ${sealed.map((l) => l.tag).join(", ")}: planned again with ${keep.length} lane tiles kept clear`)
@@ -1135,7 +1138,7 @@ export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
   const finished = job.phase === "done" || job.phase === "failed"
   if (finished && job.laneBase !== undefined) {
     // B57: the lane reservations only bind this plan; the base copy is no longer needed.
-    for (const k of job.laneKeep ?? []) if (string.sub(job.layout.reserved[k] ?? "", 1, 5) === "lane:") delete job.layout.reserved[k]
+    for (const k of job.laneKeep ?? []) releaseLaneReservation(job.layout, k)
     job.laneBase = undefined
   }
   return finished

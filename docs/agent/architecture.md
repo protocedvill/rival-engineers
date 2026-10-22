@@ -49,7 +49,27 @@ after release; append one version step and add a pure regression. A save from a 
 `strategy/factory.ts`, `strategy/bootstrap.ts` and `jobs/crew.ts` currently coordinate several responsibilities.
 Before adding another branch to them, ask whether the decision can be a pure helper in a focused module. Avoid a
 reverse import into a coordinator: Lua `require` cycles fail at load time, and TSTL creates one main-chunk local per
-top-level declaration/import. `tools/build-mod.mjs` guards at 185 because Lua fails at 200.
+top-level declaration/import. `tools/build-mod.mjs` guards at 185 because Lua fails at 200. A single new named import
+can push a coordinator over the guard: import the module as a namespace, or re-export the helper through a module the
+coordinator already imports, instead of adding a local.
+
+Factory goal lifecycle rules live in the pure `strategy/goal-lifecycle.ts` boundary. Existing goals change status
+only through `transitionGoal` in `strategy/factory.ts`; terminal goals cannot be reopened accidentally. Planner work
+captures the base layout's monotonic revision and must be rejected at adoption if that revision has changed. Structural
+layout mutations advance the revision, while `checkLayoutIndexes` verifies that canonical modules, routes and pole
+lines still agree with their derived occupancy indexes. Old saves and captures without a revision read as revision 0.
+`planner/plan-delta.ts` is the pure boundary for a completed plan: it checks the revision and indexes and derives the
+ordered physical additions/removals plus the plan's logical evidence (routes per connection, pole lines), claim
+evidence (the ground the plan takes, new whole-patch mine claims) and completed-mine evidence (the entities a built
+mine the plan completed adds) before `strategy/factory.ts` changes persistent state or creates Factorio work. The
+adapter consumes that prepared evidence instead of re-deriving it from the layout; its phase order is documented on
+`adoptPlan`, and every persistent or engine effect happens after validation.
+`planner/claims.ts` is the typed read/check/write boundary for spatial ownership. Router, power and placement policy
+ask it for conflicts instead of interpreting the raw occupancy tables independently, while `checkClaimOwners` rejects
+orphaned occupancy, reservation, mine and soft-growth claims before a plan is adopted. Its paired add/remove helpers
+own the tag spelling (from the leaf `planner/claim-tags.ts`) and make every removal conditional on the caller still
+owning the claim, so a stale cleanup cannot free another owner's tile. The underlying indexes remain separate because
+they have different persistence and cost semantics.
 
 ## Completion checklist for architectural changes
 

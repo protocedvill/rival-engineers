@@ -1,6 +1,7 @@
 import { miningOutpost, smelterColumn } from "../src/modules/generators"
 import { transformModule } from "../src/modules/geometry"
 import { beltTiers } from "../src/planner/capacity"
+import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { planGrowth } from "../src/planner/grow"
@@ -32,6 +33,10 @@ function place(l: LayoutState, id: string, def: ModuleDef, x: number, y: number)
   return m
 }
 
+function claimProblems(layout: LayoutState): string[] {
+  return checkClaimOwners(layout)
+}
+
 test("a built 4-furnace smelter grows to 8: 4 furnaces added, the moved end rebuilt, its routes rerouted and valid", () => {
   const view = free(90, 90)
   const l = newLayout()
@@ -57,6 +62,8 @@ test("a built 4-furnace smelter grows to 8: 4 furnaces added, the moved end rebu
   eq(g.rerouted.join(","), "ore", "the ore route rerouted")
   const problems = checkLayout(g.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
+  const claims = claimProblems(g.layout)
+  eq(claims.length, 0, claims.join("; "))
 })
 
 test("growing a producer with a splitter tap rips and reroutes the tap too (seed 11: tap belts left under the new drills)", () => {
@@ -91,6 +98,8 @@ test("growing a producer with a splitter tap rips and reroutes the tap too (seed
   for (const e of partEntities(job.layout, { modules: [], routes: tapIds, poles: [] })) ok(accounted[k(e)] === true, `old tap piece ${k(e)} picked up or kept`)
   const problems = checkLayout(g.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
+  const claims = claimProblems(g.layout)
+  eq(claims.length, 0, claims.join("; "))
 })
 
 test("growing a module fed by a tap of its tap group rips the whole group (M6a.2, seed 222: route at 41,367)", () => {
@@ -121,6 +130,8 @@ test("growing a module fed by a tap of its tap group rips the whole group (M6a.2
   eq([...g.rerouted].sort().join(","), "ore-b,ore-c,ore-d", "the whole tap group rerouted")
   const problems = checkLayout(g.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
+  const claims = claimProblems(g.layout)
+  eq(claims.length, 0, claims.join("; "))
 })
 
 test("a mining outpost doesn't grow onto worked-out ground: every new drill needs its ore in reach (M6a.2, seed 222)", () => {

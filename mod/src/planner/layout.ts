@@ -6,7 +6,13 @@ import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
 import { rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
+import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
+import { isPoleTag, moduleTag, poleTag, portTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, UNKNOWN, Vec, WATER } from "./grid"
+
+export { isPoleTag, portTag }
+/** Re-exported for the strategy layer, which already imports this module as a namespace. */
+export { releasePoleTile }
 
 export interface PlacedModule {
   /** Instance id (unique in the layout). */
@@ -106,6 +112,12 @@ export interface PoleLine {
 }
 
 export interface LayoutState {
+  /**
+   * Monotonic logical-layout revision. Old saves/captures have no revision and read as 0 through `layoutRevision`.
+   * Planner copies preserve it; every mutation through this module advances it. Runtime owners can therefore detect
+   * that an intent was planned against an older layout instead of silently executing a stale copy.
+   */
+  revision?: number
   modules: PlacedModule[]
   /** Module footprints ("m:<id>") and tiles module entities interact with outside their footprint ("x:<id>"). */
   occ: Record<number, string>
@@ -144,11 +156,6 @@ export interface LayoutState {
   evictedPoles?: PlannedPole[]
 }
 
-/** B37: an `occ` tag of a pole line's pole ("x:<line id>", line ids start with "poles:"). Poles give way like trees. */
-export function isPoleTag(o: string | undefined): boolean {
-  return o !== undefined && string.sub(o, 1, 8) === "x:poles:"
-}
-
 /**
  * B37: removes every pole line with a pole on one of `keys` (the whole line: a line with a gap joins nothing). Its poles
  * go to `evictedPoles`. Returns the removed line ids.
@@ -174,16 +181,28 @@ export function evictPoleLines(state: LayoutState, keys: number[]): string[] {
       continue
     }
     const k = tkey(p.x, p.y)
-    if (state.occ[k] === `x:${p.line}`) delete state.occ[k]
+    releasePoleTile(state, k, p.line)
     state.evictedPoles.push(p)
   }
   state.poles = kept
   state.poleLines = (state.poleLines ?? []).filter((l) => !drop[l.id])
+  if (lines.length > 0) bumpLayout(state)
   return lines
 }
 
 export function newLayout(): LayoutState {
-  return { modules: [], occ: {}, reserved: {}, routeOcc: {}, corridor: {}, spans: {}, routes: {}, routeOrder: [] }
+  return { revision: 0, modules: [], occ: {}, reserved: {}, routeOcc: {}, corridor: {}, spans: {}, routes: {}, routeOrder: [] }
+}
+
+/** Compatible revision read for layouts stored before revisions existed. */
+export function layoutRevision(state: LayoutState): number {
+  return state.revision ?? 0
+}
+
+/** Records one completed logical-layout mutation. */
+export function bumpLayout(state: LayoutState): number {
+  state.revision = layoutRevision(state) + 1
+  return state.revision
 }
 
 export function findModule(state: LayoutState, id: string): PlacedModule | undefined {
@@ -194,10 +213,6 @@ export function findModule(state: LayoutState, id: string): PlacedModule | undef
 export function findPort(m: PlacedModule, id: string): Port | undefined {
   for (const p of m.def.ports) if (p.id === id) return p
   return undefined
-}
-
-export function portTag(module: string, port: string): string {
-  return `p:${module}.${port}`
 }
 
 /** World tile (integer, top-left) of a port's own tile and of its outside tile. */
@@ -317,7 +332,6 @@ export function commitModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
 }
 
 export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {
-  const tag = `m:${m.id}`
   // B37: pole lines on the module's ground (footprint, interaction tiles, port lanes, a mine's claim) give way.
   if ((state.poles?.length ?? 0) > 0) {
     const keys = [...moduleTiles(m)]
@@ -334,55 +348,40 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     evictPoleLines(state, keys)
   }
   for (const k of moduleTiles(m)) {
-    state.occ[k] = tag
+    claimModuleTile(state, k, m.id)
     delete state.corridor[k]
   }
   for (const t of interactionTiles(m.def, facts)) {
-    const k = tkey(m.origin.x + t.x, m.origin.y + t.y)
-    if (state.occ[k] === undefined) state.occ[k] = `x:${m.id}`
+    claimInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(m, p)
-    state.reserved[tkey(o.x, o.y)] = portTag(m.id, p.id)
+    reserveTile(state, tkey(o.x, o.y), portTag(m.id, p.id))
     // The approach tile beyond it too (P5 lane): later routes must not box in a port, built or not yet connected.
     const a = portApproach(m, p)
     const ka = tkey(a.x, a.y)
-    if (state.occ[ka] === undefined && state.reserved[ka] === undefined) state.reserved[ka] = portTag(m.id, p.id)
+    if (state.occ[ka] === undefined) reserveFreeTile(state, ka, portTag(m.id, p.id))
   }
   // B9: the area it can still grow into (soft claim); D52 (3): hard for a mining outpost.
   const g = growthArea(m)
   if (m.minePlan !== undefined) {
-    state.mine ??= {}
-    state.soft ??= {}
     for (const k of m.minePlan.claim) {
-      if (state.mine[k] === undefined && state.occ[k] === undefined) state.mine[k] = m.id
-      if (state.soft[k] === undefined && state.occ[k] === undefined) state.soft[k] = m.id
+      claimMineTile(state, k, m.id)
+      claimSoftTile(state, k, m.id, 0)
     }
   } else if (g !== undefined && m.canonical.anchor?.resource !== undefined) {
-    state.mine ??= {}
     for (let x = g.x; x < g.x + g.w; x++) {
-      for (let y = g.y; y < g.y + g.h; y++) {
-        const k = tkey(x, y)
-        if (state.mine[k] === undefined && state.occ[k] === undefined) state.mine[k] = m.id
-      }
+      for (let y = g.y; y < g.y + g.h; y++) claimMineTile(state, tkey(x, y), m.id)
     }
   }
   if (g !== undefined) {
-    state.soft ??= {}
-    state.softUnit ??= {}
     // Unit by unit outwards (their rects tile `g`), so each tile knows how far out it is (B52).
     const units = growthUnitRects(m)
     for (let i = 0; i < units.length; i++) {
       const u = units[i]
       for (let x = u.x; x < u.x + u.w; x++) {
-        for (let y = u.y; y < u.y + u.h; y++) {
-          const k = tkey(x, y)
-          if (state.soft[k] === undefined && state.occ[k] === undefined) {
-            state.soft[k] = m.id
-            state.softUnit[k] = i
-          }
-        }
+        for (let y = u.y; y < u.y + u.h; y++) claimSoftTile(state, tkey(x, y), m.id, i)
       }
     }
   }
@@ -393,6 +392,7 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
       if (!rectContains(r, x, y) && state.occ[k] === undefined) state.corridor[k] = true
     }
   }
+  bumpLayout(state)
 }
 
 /**
@@ -484,30 +484,20 @@ export function fillSoftUnits(state: LayoutState): void {
 
 /** Removes a module's tiles (before re-marking it grown). Routes are untouched. */
 export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts): void {
-  const tag = `m:${m.id}`
-  const xtag = `x:${m.id}`
-  if (state.soft !== undefined) {
-    for (const [k, owner] of pairs(state.soft)) {
-      if (owner !== m.id) continue
-      delete state.soft[k as number]
-      if (state.softUnit !== undefined) delete state.softUnit[k as number]
-    }
-  }
-  if (state.mine !== undefined) for (const [k, owner] of pairs(state.mine)) if (owner === m.id) delete state.mine[k as number]
-  for (const k of moduleTiles(m)) if (state.occ[k] === tag) delete state.occ[k]
+  releaseSoftClaims(state, m.id)
+  releaseMineClaims(state, m.id)
+  for (const k of moduleTiles(m)) releaseModuleTile(state, k, m.id)
   for (const t of interactionTiles(m.def, facts)) {
-    const k = tkey(m.origin.x + t.x, m.origin.y + t.y)
-    if (state.occ[k] === xtag) delete state.occ[k]
+    releaseInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(m, p)
-    const k = tkey(o.x, o.y)
-    if (state.reserved[k] === portTag(m.id, p.id)) delete state.reserved[k]
+    releaseReservation(state, tkey(o.x, o.y), portTag(m.id, p.id))
     const a = portApproach(m, p)
-    const ka = tkey(a.x, a.y)
-    if (state.reserved[ka] === portTag(m.id, p.id)) delete state.reserved[ka]
+    releaseReservation(state, tkey(a.x, a.y), portTag(m.id, p.id))
   }
+  bumpLayout(state)
 }
 
 export function lineKey(x: number, y: number, dir: number): string {
@@ -519,7 +509,7 @@ export function commitRoute(state: LayoutState, route: Route): void {
   evictPoleLines(state, route.tiles)
   state.routes[route.id] = route
   state.routeOrder.push(route.id)
-  for (const k of route.tiles) state.routeOcc[k] = route.id
+  for (const k of route.tiles) claimRouteTile(state, k, route.id)
   for (const s of route.spans) {
     let list = state.spans[s.line]
     if (list === undefined) {
@@ -528,6 +518,7 @@ export function commitRoute(state: LayoutState, route: Route): void {
     }
     list.push(s.span)
   }
+  bumpLayout(state)
 }
 
 /** Removes a route (and the splitter taps hanging off it). Returns the removed route ids. */
@@ -538,7 +529,7 @@ export function ripRoute(state: LayoutState, id: string): string[] {
   for (const other of [...state.routeOrder]) {
     if (state.routes[other]?.tapOf === id) for (const r of ripRoute(state, other)) removed.push(r)
   }
-  for (const k of route.tiles) if (state.routeOcc[k] === id) delete state.routeOcc[k]
+  for (const k of route.tiles) releaseRouteTile(state, k, id)
   for (const s of route.spans) {
     const list = state.spans[s.line]
     if (list === undefined) continue
@@ -549,7 +540,80 @@ export function ripRoute(state: LayoutState, id: string): string[] {
   delete state.routes[id]
   const i = state.routeOrder.indexOf(id)
   if (i >= 0) state.routeOrder.splice(i, 1)
+  bumpLayout(state)
   return removed
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Derived-index checker. This checks the layout's internal bookkeeping only; `checkLayout` below checks geometry and
+// terrain. Keeping the two separate makes this useful after pure mutations and on replay fixtures without a surface.
+
+export interface LayoutIndexCheck {
+  problems: string[]
+}
+
+/**
+ * Checks that the canonical module/route/pole collections agree with their derived lookup indexes. This deliberately
+ * reports every mismatch instead of throwing at the first one, so a failed replay explains the whole stale-state
+ * chain. It accepts compatible old layouts: optional indexes that are absent are treated as empty.
+ */
+export function checkLayoutIndexes(state: LayoutState): LayoutIndexCheck {
+  const problems: string[] = []
+  const moduleIds: Record<string, boolean> = {}
+  for (const m of state.modules) {
+    if (moduleIds[m.id]) problems.push(`duplicate module ${m.id}`)
+    moduleIds[m.id] = true
+    for (const k of moduleTiles(m)) if (state.occ[k] !== moduleTag(m.id)) problems.push(`module ${m.id} tile ${keyX(k)},${keyY(k)} indexed as ${state.occ[k] ?? "free"}`)
+  }
+
+  const order: Record<string, boolean> = {}
+  for (const id of state.routeOrder) {
+    if (order[id]) problems.push(`route ${id} occurs twice in routeOrder`)
+    order[id] = true
+    const route = state.routes[id]
+    if (route === undefined) {
+      problems.push(`routeOrder contains missing route ${id}`)
+      continue
+    }
+    for (const k of route.tiles) if (state.routeOcc[k] !== id) problems.push(`route ${id} tile ${keyX(k)},${keyY(k)} indexed as ${state.routeOcc[k] ?? "free"}`)
+    for (const s of route.spans) {
+      const found = state.spans[s.line]?.some((x) => x.route === id && x.a === s.span.a && x.b === s.span.b) ?? false
+      if (!found) problems.push(`route ${id} span ${s.line}:${s.span.a}..${s.span.b} is not indexed`)
+    }
+  }
+  for (const [id] of pairs(state.routes)) if (!order[id as string]) problems.push(`route ${id as string} missing from routeOrder`)
+  for (const [k, id] of pairs(state.routeOcc)) {
+    const route = state.routes[id as string]
+    if (route === undefined) problems.push(`routeOcc ${keyX(k as number)},${keyY(k as number)} names missing route ${id as string}`)
+    else if (route.tiles.indexOf(k as number) < 0) problems.push(`routeOcc ${keyX(k as number)},${keyY(k as number)} is not a tile of ${id as string}`)
+  }
+  for (const [line, spans] of pairs(state.spans)) {
+    for (const span of spans as UgSpan[]) {
+      const route = state.routes[span.route]
+      if (route === undefined) problems.push(`span ${line as string}:${span.a}..${span.b} names missing route ${span.route}`)
+      else if (!route.spans.some((s) => s.line === line && s.span.a === span.a && s.span.b === span.b)) problems.push(`span ${line as string}:${span.a}..${span.b} is not owned by route ${span.route}`)
+    }
+  }
+
+  const listedPoleIds: Record<string, boolean> = {}
+  const lineIds: Record<string, boolean> = {}
+  for (const line of state.poleLines ?? []) {
+    if (lineIds[line.id]) problems.push(`duplicate pole line ${line.id}`)
+    lineIds[line.id] = true
+    for (const id of line.poles) listedPoleIds[id] = true
+  }
+  const actualPoleIds: Record<string, boolean> = {}
+  for (const pole of state.poles ?? []) {
+    actualPoleIds[pole.id] = true
+    if (!lineIds[pole.line]) problems.push(`pole ${pole.id} names missing line ${pole.line}`)
+    if (!listedPoleIds[pole.id]) problems.push(`pole ${pole.id} is missing from line ${pole.line}`)
+    const k = tkey(pole.x, pole.y)
+    if (state.occ[k] !== poleTag(pole.line)) problems.push(`pole ${pole.id} tile ${pole.x},${pole.y} indexed as ${state.occ[k] ?? "free"}`)
+  }
+  for (const line of state.poleLines ?? []) {
+    for (const id of line.poles) if (!actualPoleIds[id]) problems.push(`pole line ${line.id} names missing pole ${id}`)
+  }
+  return { problems }
 }
 
 /** Whether a span overlaps any on its line (other than `except`'s); returns the owners it overlaps. */

@@ -2,12 +2,14 @@ import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
+import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
-import { ConnectionRequest, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
+import { preparePlanDelta } from "../src/planner/plan-delta"
+import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
@@ -46,6 +48,11 @@ function sink(id: string, dir: number, item = "iron-plate", side?: "left" | "rig
   return box(id, 1, 1, [{ id: "in", kind: "belt-in", pos: { x: 0.5, y: 0.5 }, dir: dir as 0, item, side }])
 }
 
+/** A 1×1 module holding one entity, so a prepared build list has something to place. */
+function machine(id: string, name = "burner-mining-drill"): ModuleDef {
+  return { ...box(id, 1, 1, []), entities: [{ name, x: 0.5, y: 0.5 }] }
+}
+
 function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
   const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
@@ -66,9 +73,201 @@ function maxUg(this: void, name: string): number {
 }
 
 function noProblems(state: LayoutState, terrain: TerrainView, what: string): void {
+  const claims = checkClaimOwners(state)
+  if (claims.length > 0) error(`${what} claims: ${claims.join("; ")}`, 2)
+  const indexes = checkLayoutIndexes(state)
+  if (indexes.problems.length > 0) error(`${what} indexes: ${indexes.problems.join("; ")}`, 2)
   const c = checkLayout(state, terrain, maxUg)
   if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
 }
+
+test("layout revisions survive clones and structural index drift is reported", () => {
+  const state = newLayout()
+  eq(layoutRevision(state), 0)
+  place(state, source("source", EAST), 2, 2)
+  eq(layoutRevision(state), 1)
+  const copy = cloneLayout(state)
+  eq(layoutRevision(copy), 1)
+  eq(checkLayoutIndexes(copy).problems.length, 0)
+
+  const tile = tkey(2, 2)
+  copy.occ[tile] = "m:some-other-module"
+  const problems = checkLayoutIndexes(copy).problems
+  ok(problems.some((p) => p.indexOf("module source tile 2,2 indexed as m:some-other-module") >= 0), problems.join("; "))
+})
+
+test("plan delta is prepared once from a current base and rejects a stale interleaving", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  place(job.layout, source("added", EAST), 4, 2)
+
+  const ready = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(ready.status, "ready")
+  if (ready.status === "ready") {
+    eq(ready.delta.baseRevision, 1)
+    eq(ready.delta.candidateRevision, 2)
+    eq(ready.delta.add.modules.join(","), "added")
+    eq(ready.delta.remove.modules.length, 0)
+  }
+
+  const removal = newPlanJob(request([], []), YELLOW, base)
+  const removed = findModule(removal.layout, "base")!
+  unmarkModule(removal.layout, removed, F)
+  removal.layout.modules = []
+  const removedDelta = preparePlanDelta({
+    sourceRevision: removal.sourceRevision,
+    layout: removal.layout,
+    baseModules: removal.baseModules,
+    baseRoutes: removal.baseRoutes,
+  }, base)
+  eq(removedDelta.status, "ready")
+  if (removedDelta.status === "ready") eq(removedDelta.delta.remove.modules.join(","), "base")
+
+  // Model the interleaving: plan A copied revision 1, then another logical change B committed before A adopted.
+  bumpLayout(base)
+  const stale = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(stale.status, "rejected")
+  if (stale.status === "rejected") eq(stale.code, "stale-base-revision")
+})
+
+test("plan delta refuses a candidate whose derived indexes drifted", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  job.layout.occ[tkey(2, 2)] = "m:wrong"
+  const result = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(result.status, "rejected")
+  if (result.status === "rejected") {
+    eq(result.code, "invalid-layout-indexes")
+    ok(result.detail.indexOf("module base tile 2,2 indexed as m:wrong") >= 0, result.detail)
+  }
+
+  const orphaned = newPlanJob(request([], []), YELLOW, base)
+  orphaned.layout.occ[tkey(8, 8)] = "m:missing"
+  const orphanResult = preparePlanDelta({
+    sourceRevision: orphaned.sourceRevision,
+    layout: orphaned.layout,
+    baseModules: orphaned.baseModules,
+    baseRoutes: orphaned.baseRoutes,
+  }, base)
+  eq(orphanResult.status, "rejected")
+  if (orphanResult.status === "rejected") eq(orphanResult.code, "invalid-layout-claims")
+})
+
+test("plan delta derives logical and claim evidence once, in deterministic order", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  place(job.layout, source("added", EAST), 4, 2)
+  const mine = place(job.layout, source("mine", EAST), 10, 2)
+  // A whole-patch mine's claim is part of the ground the adapter must reserve (B23 / D52). Its unbuilt plan has an
+  // empty `occupied`, so its own footprint contributes nothing until it completes; the claim covers the ground.
+  mine.minePlan = { full: mine.canonical, claim: [tkey(6, 2), tkey(7, 2)], occupied: [], complete: false }
+  // A tap's base route is listed before the tap itself, in routeOrder.
+  const route = (id: string, conn: string, tapOf?: string): Route => ({
+    id,
+    conn,
+    item: "iron-plate",
+    to: { module: "added", port: "in" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf,
+  })
+  commitRoute(job.layout, route("r1", "a"))
+  commitRoute(job.layout, route("r2", "b", "r1"))
+  claimPoleTile(job.layout, tkey(8, 2), "poles:g1:0")
+  job.layout.poles = [{ id: "p1", name: "small-electric-pole", x: 8, y: 2, line: "poles:g1:0" }]
+  job.layout.poleLines = [{ id: "poles:g1:0", to: "added", from: "?", poles: ["p1"] }]
+
+  const input = {
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+    addedPoles: ["p1"],
+  }
+  const result = preparePlanDelta(input, base)
+  eq(result.status, "ready")
+  if (result.status !== "ready") return
+  eq(result.delta.add.modules.join(","), "added,mine")
+  eq((result.delta.logical.routesByConn["a"] ?? []).join(","), "r1")
+  eq((result.delta.logical.routesByConn["b"] ?? []).join(","), "r1,r2", "a tap's base route comes first")
+  eq(result.delta.logical.poleLines.map((l) => `${l.id}->${l.to}`).join(","), "poles:g1:0->added")
+  eq(result.delta.claims.mineClaims.length, 1)
+  eq(result.delta.claims.mineClaims[0].module, "mine")
+  eq(result.delta.claims.mineClaims[0].tiles.join(","), `${tkey(6, 2)},${tkey(7, 2)}`)
+  const taken = result.delta.claims.takenTiles
+  ok(taken.indexOf(tkey(4, 2)) >= 0, "the new module's footprint")
+  ok(taken.indexOf(tkey(8, 2)) >= 0, "the new pole's tile")
+  ok(taken.indexOf(tkey(6, 2)) >= 0 && taken.indexOf(tkey(7, 2)) >= 0, "the mine's claim")
+  ok(taken.indexOf(tkey(2, 2)) < 0, "not the base module's ground")
+  const seen: Record<number, boolean> = {}
+  let dupes = 0
+  for (const k of taken) {
+    if (seen[k]) dupes++
+    seen[k] = true
+  }
+  eq(dupes, 0, "deduped")
+
+  const again = preparePlanDelta(input, base)
+  eq(again.status, "ready")
+  if (again.status === "ready") eq(again.delta.claims.takenTiles.join(","), taken.join(","), "deterministic")
+})
+
+test("plan delta prepares the entities a completed base mine adds (B23)", () => {
+  const base = newLayout()
+  const n6 = place(base, machine("n6"), 2, 2)
+  // The mine was planned earlier; this plan completes it. `occupied` is the mine's built footprint (moduleTiles).
+  n6.minePlan = { full: n6.canonical, claim: [tkey(2, 2)], occupied: [tkey(2, 2)], complete: true }
+  const job = newPlanJob(request([], []), YELLOW, base)
+  const input = {
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+    // req2 names a module that is not in the base: it must not produce a completion.
+    expanded: { req1: { module: "n6", units: 1 }, req2: { module: "nope", units: 1 } },
+  }
+  const result = preparePlanDelta(input, base)
+  eq(result.status, "ready")
+  if (result.status !== "ready") return
+  eq(result.delta.mineCompletions.length, 1, "only the built mine")
+  eq(result.delta.mineCompletions[0].module, "n6")
+  eq(result.delta.mineCompletions[0].entities.length, 1)
+  eq(result.delta.mineCompletions[0].entities[0].name, "burner-mining-drill")
+  near(result.delta.mineCompletions[0].entities[0].x, 2.5)
+  near(result.delta.mineCompletions[0].entities[0].y, 2.5)
+
+  const candidate = findModule(job.layout, "n6")!
+  candidate.minePlan!.complete = false
+  const incomplete = preparePlanDelta(input, base)
+  eq(incomplete.status, "ready")
+  if (incomplete.status === "ready") eq(incomplete.delta.mineCompletions.length, 0, "an incomplete mine adds nothing")
+})
 
 // --- Router primitives --------------------------------------------------------------------------------------
 

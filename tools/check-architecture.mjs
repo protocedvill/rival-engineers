@@ -32,12 +32,24 @@ compare("setting names vs Config", configKeys, nameKeys)
 compare("setting definitions vs Config", configKeys, definitionKeys)
 
 // These modules promise replayable pure logic. Factorio globals here make T1 fixtures misleading even when TS builds.
-for (const path of ["mod/src/diagnostic-events.ts", "mod/src/diagnostics-core.ts", "mod/src/storage-schema.ts", "mod/src/strategy/goal-selection.ts"]) {
+for (const path of ["mod/src/diagnostic-events.ts", "mod/src/diagnostics-core.ts", "mod/src/planner/claim-tags.ts", "mod/src/planner/claims.ts", "mod/src/planner/plan-delta.ts", "mod/src/storage-schema.ts", "mod/src/strategy/goal-lifecycle.ts", "mod/src/strategy/goal-selection.ts"]) {
   const source = read(path)
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
   for (const token of ["storage", "game", "prototypes", "settings", "remote", "script", "defines"]) {
     if (new RegExp(`\\b${token}\\s*[.[]`).test(code)) fail(`${path}: pure boundary references Factorio global '${token}'`)
   }
+}
+
+// Goal status is a state-machine boundary. Constructors may set an initial literal, but an existing goal must move
+// through transitionGoal so illegal terminal-state transitions fail in one place instead of leaving optional fields
+// in a contradictory combination.
+const factory = read("mod/src/strategy/factory.ts")
+const directGoalStatus = [...factory.matchAll(/\bg\.status\s*=(?!=)\s*/g)]
+const transitionStart = factory.indexOf("function transitionGoal")
+const transitionEnd = factory.indexOf("\n}", transitionStart)
+const assignmentAt = directGoalStatus[0]?.index ?? -1
+if (directGoalStatus.length !== 1 || assignmentAt < transitionStart || assignmentAt > transitionEnd) {
+  fail(`mod/src/strategy/factory.ts: existing goal status may only be assigned inside transitionGoal (found ${directGoalStatus.length} assignments)`)
 }
 
 if (failures.length > 0) {
