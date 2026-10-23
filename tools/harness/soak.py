@@ -256,8 +256,10 @@ def setup_dir(cfg, seed):
                   '  game.server_save(string.format("min-%04d", math.floor(e.tick / 3600)))',
                   "end)"]
     (helper / "control.lua").write_text("\n".join(lines) + "\n")
+    # Space Age smoke runs enable the DLC mods on Nauvis; normal acceptance runs keep them off (SPEC D12/D38).
+    dlc = bool(cfg["run"].get("space_age", False))
     mod_list = {"mods": [{"name": n, "enabled": e} for n, e in [
-        ("base", True), ("elevated-rails", False), ("quality", False), ("space-age", False),
+        ("base", True), ("elevated-rails", dlc), ("quality", dlc), ("space-age", dlc),
         ("rival-engineers", True), ("rival-engineers-harness", True)]]}
     (mods / "mod-list.json").write_text(json.dumps(mod_list, indent=1))
     return run_dir

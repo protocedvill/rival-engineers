@@ -11,6 +11,7 @@ import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-in
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
 import { moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
+import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
@@ -1074,15 +1075,16 @@ function produce(ctx: Ctx, item: string, short: number): void {
   const before = short
   short = feedTempCells(ctx, item, short)
   if (short <= 0) return note(`temp cells cover ${before}`)
-  // 2. Hand-craft.
+  // 2. Hand-craft. A locked recipe is only a fallback: Space Age's scrap-recycling also produces raw items such as
+  // coal, but a coal patch the crew can mine is a better source than an unresearched recipe.
+  let lockedRecipe: string | undefined
   const hr = handRecipe(ctx.force, item)
   if (hr) {
-    if (!hr.enabled) {
-      ctx.waiting.push(`recipe ${hr.recipe.name} locked`)
-      return note("recipe locked")
+    if (hr.enabled) {
+      craft(ctx, item, hr.recipe.name, short)
+      return note(`hand-craft ${short}`)
     }
-    craft(ctx, item, hr.recipe.name, short)
-    return note(`hand-craft ${short}`)
+    lockedRecipe = hr.recipe.name
   }
   // 3. Smelt: plates come from furnaces; hand-mine ore into them if what is on its way is not enough.
   const catalog = ctx.brain.catalog
@@ -1100,7 +1102,11 @@ function produce(ctx: Ctx, item: string, short: number): void {
     gather(ctx, ore, need, into)
     return note(`smelt: hand-mine ${need} ${ore} (${inbound} on its way)`)
   }
-  // 4. Hand-mine a resource or cut trees.
+  // 4. Hand-mine a resource or cut trees. If there is no raw source, a locked hand recipe is the only known way.
+  if (lockedRecipe !== undefined && !canGather(ctx, item)) {
+    ctx.waiting.push(`recipe ${lockedRecipe} locked`)
+    return note("recipe locked")
+  }
   gather(ctx, item, short, ctx.depot)
   note(`gather ${short}`)
 }
@@ -1324,6 +1330,12 @@ function gatherPriority(ctx: Ctx, item: string): number {
   return ctx.powerItems[item] ? math.max(PRIORITY.gather, ctx.config.factoryPowerBuildPriority) : PRIORITY.gather
 }
 
+/** Whether the bootstrap has a raw source for `item`: an ore patch product or a tree product. */
+function canGather(ctx: Ctx, item: string): boolean {
+  for (const p of ctx.brain.patches) if (p.product === item) return true
+  return treeProduct() === item
+}
+
 function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefined): void {
   const cap = ctx.faction.crew.length
   // Which resource gives this item?
@@ -1381,17 +1393,23 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
 let woodItem: string | undefined
 function treeProduct(): string | undefined {
   if (woodItem === undefined) {
+    // Space Age trees have several products; the alphabetically first tree can yield carbon first and wood second,
+    // so pick `wood` by name across every tree (tree-products.ts).
     const trees = prototypes.get_entity_filtered([{ filter: "type", type: "tree" }])
     const names: string[] = []
     for (const [name] of pairs(trees)) names.push(name as string)
     names.sort()
+    let fallback: string | undefined
     for (const name of names) {
-      const p = trees[name].mineable_properties.products?.[0]
-      if (p && p.type === "item") {
-        woodItem = p.name
+      const item = pickTreeItem(trees[name].mineable_properties.products)
+      if (item === undefined) continue
+      if (item === "wood") {
+        woodItem = item
         break
       }
+      if (fallback === undefined) fallback = item
     }
+    if (woodItem === undefined) woodItem = fallback
   }
   return woodItem
 }

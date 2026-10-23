@@ -1,0 +1,27 @@
+# M6 acceptance: two factions on one map, each with the default crew, through the v1 bar (SPEC §3, §8 M6).
+# The run ends when both factions reach `v1-done` (science-sustained + research-goal-done).
+# Scorecard: python3 tools/harness/m6_scorecard.py out/soak/m6-two-factions
+
+[run]
+name = "m6-two-factions"
+seeds = [11, 222, 3333]
+game_hours = 8.0
+stop_when_done = true
+
+[run.fail_fast]
+stalls = 2
+# A faction that has reached v1-done keeps its factory running while the other faction finishes. Its post-done plan
+# failures are not a seed failure; stalls still catch a faction that is genuinely stuck.
+consecutive_plan_failures = 0
+ghost_rounds = 20
+exploring_minutes = 60
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 2
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 36000
+frameDumpRadius = 160
+soakDoneMilestone = "v1-done"

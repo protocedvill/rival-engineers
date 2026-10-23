@@ -1,0 +1,25 @@
+# M6 Space Age smoke test (SPEC §3, §8 M6): enable the DLC mods on Nauvis and check that the mod loads and an AI
+# crew reaches first electricity. This is not a full Space Age run; the v1 game still plays Nauvis/vanilla only.
+# The generic soak scorecard (out/soak/m6-space-age/scorecard.md) is the evidence; `first-power` is the done milestone.
+
+[run]
+name = "m6-space-age"
+seeds = [11]
+game_hours = 2.0
+stop_when_done = true
+space_age = true
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 7200
+frameDumpRadius = 120
+soakDoneMilestone = "first-power"
