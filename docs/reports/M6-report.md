@@ -2387,7 +2387,7 @@ repeat the unroutable feed. A sealed failure now avoids `replacementAvoid(old re
 congestion keeps the tight rectangle because padding every replacement broke the `seed3333-production-ok` comparison.
 T1 adds `replacementAvoid`; the affected replay plans again. Review and options: `docs/analysis/B28-review.md`.
 
-## M6b.43: B58 tap/trunk protection and the B28 behavior regression (working tree, 2026-10-23)
+## M6b.43: B58 tap/trunk protection and the B28 behavior regression (5d55fc2, 8bd2a29, 2026-10-23)
 
 ### B58: the tap ripped its own trunk
 
