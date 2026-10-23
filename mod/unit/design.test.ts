@@ -140,6 +140,21 @@ test("B60 provider groups: a short parallel provider gets its own next role with
   ok(byRole(d.nodes, "coal>power#3") !== undefined, `third provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
 })
 
+test("B61 provider groups: a shared provider that cannot reach all consumers gets one parallel provider per consumer", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>test", [`coal@${SMELT_CU}`]: "coal*>test" }
+  const c = ctx({
+    enabled: ELECTRIC,
+    sharing: { keep, spare: { coal: { "coal*>test": 100 } }, split: { "coal*>test": true } },
+  })
+  const d = design(c, { item: RED, perSecond: 1 })
+  const split = d.nodes.filter((n) => n.role === "coal*>test#2" || n.role === "coal*>test#3")
+  eq(split.length, 2, `two parallel providers: ${d.nodes.map((n) => n.role).join(",")}`)
+  let coalEdges = 0
+  for (const e of d.edges) if (e.from === "coal*>test#2" || e.from === "coal*>test#3") coalEdges++
+  eq(coalEdges, 2, "one consumer feed per parallel provider")
+  ok(byRole(d.nodes, "coal*>test") === undefined, "the infeasible shared group itself is not planned")
+})
+
 test("power roles: the steam block and its fuel supply", () => {
   ok(isPowerRole("power") && isPowerRole("power#2") && isPowerRole("coal>power") && isPowerRole("coal>power#3"), "power roles")
   ok(!isPowerRole("power-armor>labs") && !isPowerRole("coal>iron-plate>labs"), "not power roles")

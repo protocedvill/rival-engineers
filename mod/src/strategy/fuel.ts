@@ -174,6 +174,7 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
     if (f.growFails !== undefined) delete f.growFails[d.role]
     if (f.noTap !== undefined) delete f.noTap[d.role]
     if (f.providerShort !== undefined) delete f.providerShort[d.role]
+    if (f.providerSplit !== undefined) delete f.providerSplit[d.role]
     if (f.cluster1Caps !== undefined) delete f.cluster1Caps[d.role]
   }
   f.fuelRelocations = (f.fuelRelocations ?? 0) + 1

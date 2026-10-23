@@ -54,7 +54,7 @@ export function labUnitTime(config: Config, stage: number): number {
  * shared (design.ts `DesignContext.sharing`): consumers already fed keep their producer; a producer's spare capacity
  * (planned output minus what its edges carry) is offered to new consumers of its item.
  */
-export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]> } | undefined {
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
   const keep: Record<string, string> = {}
@@ -79,7 +79,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room
     }
   }
-  return { keep, spare, fallback: fallbackProducers(f) }
+  return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit }
 }
 
 /**

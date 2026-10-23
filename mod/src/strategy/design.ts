@@ -84,7 +84,7 @@ export interface DesignContext {
    * `fallback` (P36 (b), proposed): item → built producer roles, nearest first, that new consumers tap when a new producer
    * of the item could not be placed (the first one takes them all and grows).
    */
-  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]> }
+  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean> }
   /**
    * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
    * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
@@ -525,14 +525,26 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     fresh.splice(i, 1)
   }
   for (const p of producers) {
+    // A shared provider planned for several consumers can be route-infeasible: no one site reaches all of them.
+    // After such a plan failure the factory marks the role; give each consumer its own parallel provider instead.
+    if (shared.split?.[p] === true) {
+      for (const d of byProducer[p]) addProducer(w, item, d.rate, [d], true, parallelRole(w, p))
+      continue
+    }
     let total = 0
     for (const d of byProducer[p]) total += d.rate
     addProducer(w, item, total, byProducer[p], true, p)
   }
   if (fresh.length >= 2) {
-    let total = 0
-    for (const d of fresh) total += d.rate
-    addProducer(w, item, total, fresh, true, `${item}*>${fresh[0].to}`)
+    const role = `${item}*>${fresh[0].to}`
+    if (shared.split?.[role] === true) {
+      // The previous plan could not reach every consumer from one site. One parallel provider per consumer.
+      for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role))
+    } else {
+      let total = 0
+      for (const d of fresh) total += d.rate
+      addProducer(w, item, total, fresh, true, role)
+    }
   } else for (const d of fresh) alone.push(d)
   for (const d of alone) addProducer(w, item, d.rate, [d])
 }

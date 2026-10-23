@@ -191,6 +191,11 @@ export interface FactoryState {
    * capacity and assigns the residual to a parallel role; it never relocates them.
    */
   providerShort?: Record<string, boolean>
+  /**
+   * B61/B60: a shared provider role whose planned site could not reach every consumer. The next design gives each
+   * consumer its own parallel provider instead of sharing one infeasible route group.
+   */
+  providerSplit?: Record<string, boolean>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -439,7 +444,9 @@ function designNow(ctx: Ctx): Design | undefined {
   let short = ""
   const caps = ST.providerCaps(f)
   for (const [role] of pairs(f.providerShort ?? {})) short += `${role as string}:${string.format("%.6g", caps[role as string] ?? 0)};`
-  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let split = ""
+  for (const [role] of pairs(f.providerSplit ?? {})) split += `${role as string};`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -615,6 +622,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       f.stage++
       f.growFails = undefined
       f.providerShort = undefined
+      f.providerSplit = undefined
       f.cluster1Caps = undefined
       mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
@@ -1034,11 +1042,31 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
     let newNoTap = false
+    let newSplit = false
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
       const m = string.match(k as string, "^module:(.*)$")[0]
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
+      // B60/B61: a new shared provider whose one site cannot reach several consumers. Do not retry the same
+      // infeasible route group: mark the role so the next design gives each consumer its own parallel provider.
+      for (const e of g.edges) {
+        if (e.role !== k) continue
+        let outgoing = 0
+        for (const other of g.edges) if (other.from === e.from) outgoing++
+        if (outgoing < 2) continue
+        let provider: string | undefined
+        for (const n of g.nodes) if (n.role === e.from) provider = n.id
+        if (provider === undefined) continue
+        const built = nodeByRoleIn(f, e.from)
+        if (built !== undefined && built.lifecycle === "built") continue
+        f.providerSplit ??= {}
+        if (f.providerSplit[e.from] !== true) {
+          f.providerSplit[e.from] = true
+          newSplit = true
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${e.from} cannot reach every consumer from one site; planning parallel providers per consumer`)
+        }
+      }
       // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
       for (const n of g.nodes) {
         if (n.id !== m || n.item !== ctx.faction.brain!.catalog.fuel || !ctx.config.factoryFuelFallback || g.attempts < FUEL_FALLBACK_ATTEMPTS || f.fallback?.[n.item]) continue
@@ -1060,12 +1088,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
-    if (newNoTap) {
-      // Planned again at once without that tap (the design gives those consumers their own producer).
+    if (newNoTap || newSplit) {
+      // Planned again at once without that tap / with one provider per consumer.
       RT.removePlan(entry.id)
       transitionGoal(g, "failed")
       g.deferred = true
-      g.reason = `replan without taps on ${g.reason}`
+      g.reason = `${newSplit ? "replan with parallel providers" : "replan without taps"} for ${g.reason}`
       return
     }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
