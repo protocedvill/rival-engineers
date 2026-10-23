@@ -1808,6 +1808,29 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
     relocate(ctx, n, `B57 ${n.role}`, `has its ${ev.sealed.port.port} lane walled in (goal ${g.id}: ${ev.subject})`)
     return n.role
   }
+  // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
+  // evidence may name the start, so the B57 loop above never sees the real walled-in consumer. Inspect the goal module of
+  // every failed route, and relocate that consumer when its own input lane cannot lead out.
+  for (const ev of evidence) {
+    if (ev.kind !== "route") continue
+    const [role] = string.match(ev.subject, "=>([^%.]+)%.")
+    if (role === undefined) continue
+    let n: LogicalNode | undefined
+    for (const x of g.nodes) if (x.role === role) n = f.graph.nodes[x.id]
+    if (n === undefined || LO.findModule(f.layout, n.id) === undefined) continue
+    if (sealedInputs(f.layout, view, n.id, {}, escape).length === 0) continue
+    let busy: string | undefined
+    for (const o of f.goals) {
+      if (o === g || (o.status !== "building" && o.status !== "planning")) continue
+      for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
+    }
+    if (busy !== undefined) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B61 ${n.role} (${n.id}) has a sealed input lane; relocation waits for goal ${busy}`)
+      continue
+    }
+    relocate(ctx, n, `B61 ${n.role}`, `has a sealed input lane (goal ${g.id}: ${ev.subject})`)
+    return n.role
+  }
   return undefined
 }
 
