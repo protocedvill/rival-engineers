@@ -548,6 +548,7 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
         units: spec.growth.units,
         power: DS.isPowerRole(spec.growth.role),
         failed: f.growFails?.[spec.growth.role] ?? 0,
+        replace: spec.growth.replace,
       },
     })),
     state: {
@@ -666,6 +667,12 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   const f = ctx.f
   const gr = spec.growth!
   const node = f.graph.nodes[gr.node]
+  if (gr.replace === true && node !== undefined && node.lifecycle === "built") {
+    // B60: an unexpandable provider cannot satisfy the shortfall by waiting. Give it up and let the design plan a
+    // fresh provider (the same general replacement path used by D55/B59).
+    relocate(ctx, node, `B60 ${gr.role}`, `cannot grow (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}) and has no expandable unit`)
+    return false
+  }
   if (gr.units < 1 || node === undefined || node.lifecycle !== "built") {
     ctx.waiting.push(`${gr.role} short (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}): cannot expand`)
     return false

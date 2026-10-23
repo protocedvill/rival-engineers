@@ -55,6 +55,12 @@ test("blocked growth is reported but does not hold another goal", () => {
   eq(result.decisions[0].action, "start")
 })
 
+test("B60: an unexpandable provider is replaced instead of waiting forever", () => {
+  const grow = spec("grow", { growth: { role: "coal>power", have: 1, need: 3.47, units: -1, power: true, failed: 0, replace: true } })
+  const result = selectGoals([grow], state())
+  eq(result.decisions[0].action, "start")
+})
+
 test("B29: power growth is not held up by an active production build", () => {
   const grow = spec("grow", { growth: { role: "coal>power", have: 1, need: 3.47, units: 2, power: true, failed: 0 } })
   const result = selectGoals([grow], state({ active: { production: true } }))

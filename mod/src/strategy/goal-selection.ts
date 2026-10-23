@@ -9,7 +9,7 @@ export interface GoalSelectionSpec {
   kind: GoalKind
   cluster?: number
   techs: string[]
-  growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number }
+  growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number; replace?: boolean }
 }
 
 export interface GoalSelectionState {
@@ -43,7 +43,7 @@ export interface GoalSelection {
 
 function growthBlocked(spec: GoalSelectionSpec, maxFails: number): boolean {
   const g = spec.growth
-  return spec.kind === "grow" && g !== undefined && (g.units < 1 || g.failed >= maxFails)
+  return spec.kind === "grow" && g !== undefined && g.replace !== true && (g.units < 1 || g.failed >= maxFails)
 }
 
 function shortGrowth(g: NonNullable<GoalSelectionSpec["growth"]>): string {

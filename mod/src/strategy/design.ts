@@ -779,6 +779,8 @@ export interface Growth {
   have: number
   /** D55: a worked-out whole-patch mine moves to the next free part of its patch instead of growing. */
   reclaim?: boolean
+  /** The provider has no expansion unit: replace it with a fresh provider instead of waiting forever. */
+  replace?: boolean
 }
 
 export interface DesignDiff {
@@ -845,7 +847,10 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
     const cap = rateIn(have.capacity.outputs, n.item)
     if (cap + 1e-6 >= n.need) continue
     const units = def !== undefined ? unitsFor(def, n.item, n.need - cap) : undefined
-    grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap })
+    // A provider with no expandable unit cannot wait its way out of a capacity shortfall. Mark it for replacement
+    // (the factory relocates it and the design plans a fresh provider); this is the generic fallback behind B60.
+    const replace = units === undefined && n.kind === "outpost" ? true : undefined
+    grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap, replace })
   }
   const missingEdges: DesignEdge[] = []
   for (const e of d.edges) if (edgeByRole(g, e.role) === undefined) missingEdges.push(e)
