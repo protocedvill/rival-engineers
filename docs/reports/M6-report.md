@@ -2376,9 +2376,55 @@ logical edge still looked connected and the repair said "nothing missing".
 
 T1 `planner` B58 ×2; full T2 151/151. Seed 1212121 `b58-fix2`: **v1-done 212.7 game-min**, 0 stalls.
 
+**Superseded by M6b.43:** the broad tap/span check fixed seed 1212121 but changed seed 3333's cluster geometry and
+made it fail. The g16 replay showed the tap search itself ripping its trunk; the tap was then committed with a
+dangling `tapOf` and the re-routed trunk covered its input. `commitRoute` rip-up cannot catch that ordering.
+
 ## M6b.42: B28 sealed replacement leaves the pocket (working tree, 2026-10-22)
 
 Part 2 of B28: `tryReplace` excluded only the old footprint, so it could choose an adjacent site in the same pocket and
 repeat the unroutable feed. A sealed failure now avoids `replacementAvoid(old rect, router.margin)`; ordinary
 congestion keeps the tight rectangle because padding every replacement broke the `seed3333-production-ok` comparison.
 T1 adds `replacementAvoid`; the affected replay plans again. Review and options: `docs/analysis/B28-review.md`.
+
+## M6b.43: B58 tap/trunk protection and the B28 behavior regression (working tree, 2026-10-23)
+
+### B58: the tap ripped its own trunk
+
+The real g16 plan (`out/soak/b58-riponly2/seed-1212121/plans/1/g16-a2-t336600.input.lua`, copied to
+`mod/unit/fixtures/b58-g16.lua`) reproduces the stale `n39 -> n37` coal tap deterministically. Instrumenting
+`commitRoute` showed the order:
+
+1. the `n39 -> n35` trunk was committed;
+2. the `n39 -> n37` tap search used a tile of that trunk, so the trunk was a victim;
+3. `routeStep` ripped the trunk, committed the tap with `tapOf` pointing at the now-absent trunk, and re-queued the
+   trunk;
+4. the trunk re-routed (its new path had an underground span at 452..457 on y=36) and `commitRoute` saw no existing
+   route of that id, so it did not rip the orphan tap. The splitter at (453,36) stood above the span with no belt
+   feeding it.
+
+The trunk cannot be replaced by the old broad `spanConflicts` tap check: that check also blocked unrelated spans and
+changed seed 3333's cluster geometry, failing the acceptance seed. The fix is local to tap routing:
+
+- `tileCost` refuses a tile of any route in `req.taps` even in rip mode. A tap may not rip a route it could tap.
+- An underground span may not overlap any route in `req.taps` for the same reason.
+- A retry guard still refuses to commit a tap whose result lists its trunk as a victim.
+- `commitRoute` keeps ripping a same-id route and its taps for ordinary in-place replacement.
+
+T1 replay: `B58: a splitter tap never sits on the span of the route it taps`; it fails without the protection.
+
+### B28: sealed replacement behavior regression
+
+The existing `replacementAvoid` test only checked rectangle arithmetic. The new `planner` test builds a sealed room,
+routes a feed into it, and lets `tryReplace` move the consumer. With `replacementAvoid(old rect, router.margin)` the
+module leaves the margin; with `pad = 0` it lands at (8,29), inside the band the failed route had to cross. It pins
+the behavior that B28 part 2 fixed, not just the helper.
+
+### Validation
+
+- T1: **28/28 files**.
+- Full T2: **151 passed, 0 failed, 0 skipped** (8 shards, 386.1 s wall).
+- B58 seeds: 1212121 **v1-done 213.7 game-min**; 3333 **267.1**; both 0 stalls, 0 replans.
+- Full 5-seed acceptance `m6-final6` (same build, 5 parallel): **5/5**; 11 207.3, 222 240.2, 3333 267.1, 44444 190.3,
+  555555 171.7 game-min; 0 stalls, 0 replans. AI ms/tick from this run is not a performance measurement (five
+  Factorio instances shared the laptop).

@@ -587,5 +587,40 @@ test("B57: the red-science plan leaves the labs' unfed green input a way out", (
   ok(left === 0, `no lane reservation left in the adopted layout (${left})`)
 })
 
+
+
+// B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
+// used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under
+// the splitter's input, so the branch stood with no belt to take from. A tap may not rip a route it could tap.
+test("B58: a splitter tap never sits on the span of the route it taps", () => {
+  const fx = load("b58-g16")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  runJob(job, view, F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const overlaps: string[] = []
+  for (const id of job.layout.routeOrder) {
+    const r = job.layout.routes[id]
+    if (r.tapOf === undefined) continue
+    const parent = job.layout.routes[r.tapOf]
+    if (parent === undefined) continue
+    for (const s of r.steps) {
+      if (s.kind !== "splitter") continue
+      for (const sp of parent.spans) {
+        const horiz = string.sub(sp.line, 1, 1) === "h"
+        const coord = tonumber(string.sub(sp.line, 2))
+        if (coord === undefined) continue
+        const along = horiz ? s.x : s.y
+        const across = horiz ? s.y : s.x
+        if (across === coord && sp.span.a <= along && along <= sp.span.b) {
+          overlaps.push(`${id} splitter ${s.x},${s.y} on ${r.tapOf} ${sp.line} ${sp.span.a}..${sp.span.b}`)
+        }
+      }
+    }
+  }
+  ok(overlaps.length === 0, `tap splitter on its trunk's span: ${overlaps.join("; ")}`)
+})
+
 run("plan-replay")
 

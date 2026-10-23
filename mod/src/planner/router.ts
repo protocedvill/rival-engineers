@@ -211,6 +211,9 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   const w = policy.router
   let extra = pole ? policy.obstacles.poleEvict ?? 0 : 0
   const occupant = state.routeOcc[k]
+  // B58: a splitter tap may not rip up a route it could tap. Its trunk is the branch's only feed; if the search
+  // crosses it here, it is ripped, the tap is committed alone and the re-routed trunk can cover the splitter.
+  if (occupant !== undefined && rip && req.taps !== undefined && req.taps.indexOf(occupant) >= 0) return -1
   if (occupant !== undefined) extra += w.rip // The claim query admitted only a rippable route.
   const b = terrain.block(x, y)
   if (b === TREE) {
@@ -751,7 +754,11 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
       if (conflicts.length > 0) {
         if (!s.rip) continue
         let fixed = false
-        for (const r of conflicts) if (state.routes[r]?.fixed) fixed = true
+        for (const r of conflicts) {
+          if (state.routes[r]?.fixed) fixed = true
+          // B58: never run a branch's span through the trunk it taps for the same reason as `tileCost`.
+          if (req.taps !== undefined && req.taps.indexOf(r) >= 0) fixed = true
+        }
         if (fixed) continue
         extra = w.rip
       }

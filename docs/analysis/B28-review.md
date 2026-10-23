@@ -1,6 +1,8 @@
 # B28 review: route window, replacement, and feed reachability
 
-Status: **part 1 fixed** (`fc99a90`); **part 2 open**. This is a review of the remaining failure, not a new fix.
+Status: **part 1 fixed** (`fc99a90`); **part 2 fixed** (M6b.42/M6b.43). The behavioral regression is in
+`mod/unit/planner.test.ts`: the sealed re-placement leaves the old footprint's route margin; with the padding removed
+it lands at (8,29), inside that margin.
 
 ## What the current code does
 
@@ -60,5 +62,5 @@ have not shown the same feed class.
 ## Related but separate
 
 B58 (`seed 1212121`) is not B28: the coal feed's splitter tap stood on an underground span (the root route passed
-under the tap's input tile), so the tap had no surface belt to take from. That is a tap/span invariant
-(`spanConflicts` now treats a tap's splitter tile as a span conflict), not a route-window failure.
+under the tap's input tile), so the tap had no surface belt to take from. The tap search ripped its own trunk while
+choosing the branch; the fix protects `req.taps` from rip-up (M6b.43), not a route-window change.

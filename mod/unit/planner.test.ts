@@ -7,7 +7,7 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, lineKey, newLayout, PlacedModule, Route, spanConflicts, unmarkModule } from "../src/planner/layout"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
@@ -1122,38 +1122,6 @@ test("B57: on open ground the lane test walks about `need` tiles, not the whole 
 })
 
 
-test("B58: an underground span may not run under a splitter tap's input tile", () => {
-  const layout = newLayout()
-  const route = (id: string, conn: string, tapOf?: string): Route => ({
-    id: routeId(id),
-    conn: connectionId(conn),
-    item: "coal",
-    to: { module: "n37", port: "in-fuel" },
-    steps: [],
-    tiles: [],
-    spans: [],
-    belt: "transport-belt",
-    underground: "underground-belt",
-    splitter: "splitter",
-    length: 0,
-    undergrounds: 0,
-    cost: 0,
-    ripped: 0,
-    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
-  })
-  const root = route("root", "coal-root")
-  root.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }]
-  root.tiles = [tkey(5, 5)]
-  commitRoute(layout, root)
-  const tap = route("tap", "coal-tap", "root")
-  tap.steps = [{ kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 }]
-  tap.tiles = [tkey(5, 5), tkey(5, 6)]
-  commitRoute(layout, tap)
-  ok(spanConflicts(layout, lineKey(5, 5, 1), 4, 6).indexOf("tap") >= 0, "the span covers the tap")
-  ok(spanConflicts(layout, lineKey(5, 0, 1), 4, 6).indexOf("tap") < 0, "another line is free")
-})
-
-
 test("B58: replacing a route rips its splitter taps", () => {
   const layout = newLayout()
   const route = (id: string, conn: string, tapOf?: string): Route => ({
@@ -1188,7 +1156,6 @@ test("B58: replacing a route rips its splitter taps", () => {
   commitRoute(layout, replacement)
   ok(layout.routes["tap"] === undefined, "the stale tap is ripped with the replaced route")
 })
-
 
 test("B28: a re-placed module leaves its old footprint plus the route margin", () => {
   const old = { x: 10, y: 20, w: 5, h: 4 }

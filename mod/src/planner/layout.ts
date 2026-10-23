@@ -626,21 +626,6 @@ export function spanConflicts(state: LayoutState, line: string, a: number, b: nu
   const out: string[] = []
   const list = state.spans[line]
   if (list !== undefined) for (const s of list) if (s.a <= b && a <= s.b) out.push(s.route)
-  // B58: a splitter tap's input is the tapped route's surface belt. An underground span under that tile leaves the
-  // splitter standing with nothing feeding it (seed 1212121: coal piled up at n39 but 0/s reached n37). Treat the tap
-  // as a conflict so the router blocks the span, or rips and re-plans the tap in rip mode.
-  const horizontal = string.sub(line, 1, 1) === "h"
-  const lineCoord = tonumber(string.sub(line, 2))
-  if (lineCoord !== undefined) {
-    for (const id of state.routeOrder) {
-      const r = state.routes[id]
-      const st = r.steps[0]
-      if (r.tapOf === undefined || st === undefined || st.kind !== "splitter") continue
-      const along = horizontal ? st.x : st.y
-      const across = horizontal ? st.y : st.x
-      if (across === lineCoord && a <= along && along <= b) out.push(id)
-    }
-  }
   return out
 }
 

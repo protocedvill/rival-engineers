@@ -841,6 +841,24 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     return used
   }
   const route = res.route!
+  // B58: a splitter tap that would rip up its own trunk is not a valid branch. The tap search saw the old trunk,
+  // chose a splitter on it and then used a tile of that trunk, so the trunk was ripped; the tap is committed, the
+  // trunk re-routes (without ripping the not-yet-existing tap), and its new underground span can cover the splitter's
+  // input. Retry with the old trunk and this tap path avoided; another tap spot on the same trunk is safe.
+  const trunk = route.tapOf
+  if (trunk !== undefined && res.victims.indexOf(trunk) >= 0) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, "splitter tap would rip its own route")
+    if (cur.retries < 3) {
+      cur.retries++
+      for (const k of route.tiles) cur.avoid[k] = true
+      restart(cur.rip)
+    } else {
+      job.failures[cur.conn] = "splitter tap would rip its own route"
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+      job.current = undefined
+    }
+    return used
+  }
   for (const v of res.victims) {
     const vr = job.layout.routes[v]
     if (vr === undefined) continue
