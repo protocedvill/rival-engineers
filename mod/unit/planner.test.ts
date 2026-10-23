@@ -1157,6 +1157,39 @@ test("B58: replacing a route rips its splitter taps", () => {
   ok(layout.routes["tap"] === undefined, "the stale tap is ripped with the replaced route")
 })
 
+// B28 part 2: a sealed replacement must leave the old footprint's route margin. Without the padding the search
+// re-places the module a few tiles away (8,29 in this scenario), still inside the band the failed route had to cross.
+test("B28: a sealed replacement leaves the route margin around the old footprint", () => {
+  const rows = field(60, 60)
+  // A one-tile UNKNOWN wall: surface routes cannot enter and undergrounds cannot pass it.
+  for (let x = 24; x <= 36; x++) {
+    rows[24] = rows[24].substring(0, x) + "?" + rows[24].substring(x + 1)
+    rows[36] = rows[36].substring(0, x) + "?" + rows[36].substring(x + 1)
+  }
+  for (let y = 25; y < 36; y++) {
+    rows[y] = rows[y].substring(0, 24) + "?" + rows[y].substring(25)
+    rows[y] = rows[y].substring(0, 36) + "?" + rows[y].substring(37)
+  }
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 5, 30)
+  place(state, b, 30, 30)
+  const job = newRoutingJob(request([a, b], [conn("c", "a", "b")], 60, 60), YELLOW, state)
+  job.replaced = {} // planned by this job: allowed to move
+  runJob(job, terrain, F, policy())
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  eq(job.stats.replacements, 1, "one re-placement")
+  const moved = findModule(state, "b")!
+  const away = replacementAvoid({ x: 30, y: 30, w: 1, h: 1 }, policy().router.margin)
+  ok(
+    moved.rect.x < away.x || moved.rect.x >= away.x + away.w || moved.rect.y < away.y || moved.rect.y >= away.y + away.h,
+    `b left the padded old pocket (${moved.rect.x},${moved.rect.y})`,
+  )
+  noProblems(state, terrain, "sealed re-placement")
+})
+
 test("B28: a re-placed module leaves its old footprint plus the route margin", () => {
   const old = { x: 10, y: 20, w: 5, h: 4 }
   const away = replacementAvoid(old, 24)
