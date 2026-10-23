@@ -132,6 +132,24 @@ function addNode(job: PoleJob, n: PoleNode): number {
   return i
 }
 
+/** Factorio electric poles have five copper-wire connections. The API exposes wire reach but not this count. */
+const MAX_WIRE_CONNECTIONS = 5
+
+/** Existing copper wires a pole can still take (geometric neighbour count, conservative). */
+function wireDegree(job: PoleJob, i: number): number {
+  let n = 0
+  const a = job.nodes[i]
+  for (let j = 0; j < job.nodes.length; j++) {
+    if (j === i) continue
+    const b = job.nodes[j]
+    const dx = a.x - b.x
+    const dy = a.y - b.y
+    const r = math.min(a.reach, b.reach)
+    if (dx * dx + dy * dy <= r * r + 1e-9) n++
+  }
+  return n
+}
+
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
 function layoutPoles(layout: LayoutState, facts: ProtoFacts): PoleNode[] {
   const out: PoleNode[] = []
@@ -248,7 +266,7 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
       const a = job.nodes[i]
       if (a.owner !== owner) continue
       for (let j = 0; j < job.nodes.length; j++) {
-        if (!job.powered[find(job, j)]) continue
+        if (!job.powered[find(job, j)] || wireDegree(job, j) >= MAX_WIRE_CONNECTIONS) continue
         const b = job.nodes[j]
         const d2 = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)
         if (best === undefined || d2 < best.d2 || (d2 === best.d2 && owner < best.owner)) best = { owner, d2, src: b }
@@ -269,12 +287,17 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
   let gy2 = -math.huge
   for (let i = 0; i < job.nodes.length; i++) {
     const n = job.nodes[i]
-    if (!roots[find(job, i)]) continue
+    // A saturated pole cannot accept the new wire; choose another pole in the target component.
+    if (!roots[find(job, i)] || wireDegree(job, i) >= MAX_WIRE_CONNECTIONS) continue
     goals.push(n)
     gx1 = math.min(gx1, n.x)
     gy1 = math.min(gy1, n.y)
     gx2 = math.max(gx2, n.x)
     gy2 = math.max(gy2, n.y)
+  }
+  if (goals.length === 0) {
+    job.failures[best.owner] = "every pole has all wire connections in use"
+    return false
   }
   const margin = retry?.margin ?? MARGINS[0]
   const x0 = math.floor(math.min(gx1, best.src.x) - margin)

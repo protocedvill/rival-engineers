@@ -98,7 +98,12 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
       // B52: a growth reroutes the routes around its module; a goal still building (the mall's included) would keep
       // placing its old copy of a rerouted route. A growth waits for every other active goal.
       const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : spec.kind === "grow" ? ["power", "labs", "production", "mall", "repair", "temp", "radar"] : ["power", "labs", "production"]
-      for (const kind of before) if (state.active[kind]) blocked.push(kind)
+      for (const kind of before) {
+        // B29: a power/fuel growth is the critical path out of a power-short production stall. An active production
+        // building must not block it; `startGrow` still waits if its reroute would touch that production's route (B52).
+        if (spec.kind === "grow" && spec.growth?.power === true && kind === "production") continue
+        if (state.active[kind]) blocked.push(kind)
+      }
       if (spec.kind !== "grow" && (powerGrow || state.growingPower)) blocked.push("the steam block's growth")
       if (blocked.length > 0) {
         decisions.push({ index, action: "skip", waiting: `${spec.kind} waits for ${blocked.join(", ")}` })
