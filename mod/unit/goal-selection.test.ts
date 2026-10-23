@@ -55,10 +55,18 @@ test("blocked growth is reported but does not hold another goal", () => {
   eq(result.decisions[0].action, "start")
 })
 
-test("B60: an unexpandable provider is replaced instead of waiting forever", () => {
-  const grow = spec("grow", { growth: { role: "coal>power", have: 1, need: 3.47, units: -1, power: true, failed: 0, replace: true } })
+test("B60: an unexpandable provider is not grown; the design plans a parallel provider", () => {
+  const grow = spec("grow", { growth: { role: "coal>power", have: 1, need: 3.47, units: -1, power: true, failed: 0 } })
   const result = selectGoals([grow], state())
-  eq(result.decisions[0].action, "start")
+  eq(result.decisions.length, 0)
+  eq(result.pending, 0)
+  eq(result.waiting[0], "coal>power short (1/3.47): cannot grow")
+})
+
+test("B60: a parallel power provider waits for the steam block's growth to finish", () => {
+  const result = selectGoals([spec("power")], state({ active: { grow: true }, growingPower: true }))
+  eq(result.decisions[0].action, "skip")
+  eq(result.decisions[0].waiting, "power waits for the steam block's growth")
 })
 
 test("B29: power growth is not held up by an active production build", () => {

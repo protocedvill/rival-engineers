@@ -36,6 +36,14 @@ export interface DesignContext {
   make: MakeModule
   /** Technologies researched and recipes enabled for the faction's force. */
   researched: Record<string, boolean>
+  /**
+   * Existing provider roles whose output cannot be expanded (B60). The design still uses their whole capacity for
+   * the consumers they already serve, then plans a parallel provider for the residual; it never grows such a role to
+   * an impossible rate or replaces it.
+   */
+  providerShort?: Record<string, boolean>
+  /** Actual output capacity of built provider roles by role (used only for a short provider). */
+  providerCaps?: Record<string, number>
   enabled: Record<string, boolean>
   /** Technologies the faction can research now or later (the research goal): designs may use what they unlock. */
   plannable?: Record<string, boolean>
@@ -139,6 +147,8 @@ export interface DesignEdge {
   headroomRate: number
   belt: string
   decision: OverflowDecision
+  /** B60: this edge feeds a consumer already fed by another provider; the router side-loads it into that route. */
+  merge?: boolean
 }
 
 export interface Design {
@@ -354,7 +364,52 @@ interface Walk {
   short: boolean
 }
 
-function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string): void {
+/**
+ * Splits a provider's consumers into the part its existing capacity keeps and the residual that needs a parallel
+ * provider. A consumer that straddles the capacity is split into two demands on the same port; the residual edge is
+ * marked `merge`, so the router side-loads it into the existing route instead of competing for the input port.
+ */
+function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; rest: Demand[] } {
+  const keep: Demand[] = []
+  const rest: Demand[] = []
+  let room = math.max(0, capacity)
+  for (const c of consumers) {
+    if (room <= EPS) {
+      rest.push(c)
+      continue
+    }
+    if (c.rate <= room + EPS) {
+      keep.push(c)
+      room -= c.rate
+      continue
+    }
+    keep.push({ ...c, rate: room })
+    rest.push({ ...c, rate: c.rate - room })
+    room = 0
+  }
+  return { keep, rest }
+}
+
+/** The next free provider role for a parallel provider (`coal>power`, `coal>power#2`, ...). */
+function parallelRole(w: Walk, role: string): string {
+  // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
+  const m = string.match(role ?? "", "^(.*)#%d+$")
+  const base = m[0] !== undefined ? m[0] : (role ?? "provider")
+  let n = 2
+  for (;;) {
+    const candidate = `${base}#${n}`
+    let used = false
+    for (const node of w.nodes) if (node.role === candidate) used = true
+    if (!used) return candidate
+    n++
+  }
+}
+
+/**
+ * Add one provider node. `fixedCapacity` is set when the node is the existing, unexpandable half of a provider group:
+ * its design capacity is the real capacity, so the diff does not ask this provider to grow again.
+ */
+function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string, fixedCapacity?: number, mergePorts?: Record<string, boolean>): void {
   const ctx = w.ctx
   const gen = producerFor(ctx, item)
   if (gen === undefined) {
@@ -362,14 +417,26 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     return
   }
   // D54: a steam block only asks for coal once electric drills are enabled, so no producer here needs burner drills.
+  let role = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
+  if (role === undefined || role === "") role = `${item}${w.suffix}`
+  const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
+  // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a
+  // distinct parallel role, rather than one oversized node that can never be satisfied.
+  if (fixedCapacity === undefined && capacity !== undefined && capacity > EPS && ctx.providerShort?.[role] === true && rate > capacity + EPS) {
+    const split = splitDemand(consumers, capacity)
+    const mergePorts: Record<string, boolean> = {}
+    for (const c of split.keep) mergePorts[`${c.to}.${c.toPort}`] = true
+    addProducer(w, item, capacity, split.keep, shared, role, capacity)
+    if (split.rest.length > 0) addProducer(w, item, rate - capacity, split.rest, shared, parallelRole(w, role), undefined, mergePorts)
+    return
+  }
   const s = sizeModule(ctx, gen, item, rate)
   if (s === undefined) {
     w.errors.push(`${gen} for ${item}: no valid size`)
     return
   }
   if (s.short) w.short = true
-  const role = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
-  const util = s.capacity > EPS ? math.min(1, rate / s.capacity) : 1
+  const util = (fixedCapacity ?? s.capacity) > EPS ? math.min(1, rate / (fixedCapacity ?? s.capacity)) : 1
   const node: DesignNode = {
     role,
     kind: kindOf(gen),
@@ -378,18 +445,18 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     def: s.def,
     item,
     need: rate,
-    capacity: s.capacity,
+    capacity: fixedCapacity ?? s.capacity,
     inputs: inputPorts(s.def, util),
     powerW: powerOf(s.def.rates.inputs),
     cluster: w.cluster,
   }
   w.nodes.push(node)
   const from = outPort(s.def, item)
-  for (const c of consumers) w.edges.push(edge(w, node.role, from, c))
+  for (const c of consumers) w.edges.push(edge(w, node.role, from, c, mergePorts?.[`${c.to}.${c.toPort}`] === true))
   for (const p of node.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
 }
 
-function edge(w: Walk, from: string, fromPort: string, c: Demand): DesignEdge {
+function edge(w: Walk, from: string, fromPort: string, c: Demand, merge = false): DesignEdge {
   return {
     role: `${from}=>${c.to}.${c.toPort}`,
     item: c.item,
@@ -401,6 +468,7 @@ function edge(w: Walk, from: string, fromPort: string, c: Demand): DesignEdge {
     headroomRate: c.rate * w.ctx.policy.headroom,
     belt: w.ctx.tiers[0]?.belt ?? "transport-belt",
     decision: { action: "none" },
+    merge: merge || undefined,
   }
 }
 
@@ -779,8 +847,6 @@ export interface Growth {
   have: number
   /** D55: a worked-out whole-patch mine moves to the next free part of its patch instead of growing. */
   reclaim?: boolean
-  /** The provider has no expansion unit: replace it with a fresh provider instead of waiting forever. */
-  replace?: boolean
 }
 
 export interface DesignDiff {
@@ -847,10 +913,9 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
     const cap = rateIn(have.capacity.outputs, n.item)
     if (cap + 1e-6 >= n.need) continue
     const units = def !== undefined ? unitsFor(def, n.item, n.need - cap) : undefined
-    // A provider with no expandable unit cannot wait its way out of a capacity shortfall. Mark it for replacement
-    // (the factory relocates it and the design plans a fresh provider); this is the generic fallback behind B60.
-    const replace = units === undefined && n.kind === "outpost" ? true : undefined
-    grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap, replace })
+    // `units = -1` means this provider has no expansion unit. The caller records it as a fixed-capacity group member
+    // and the design plans a parallel provider for the residual (B60); this provider is never deconstructed for it.
+    grow.push({ role: n.role, node: have.id, units: units ?? -1, need: n.need, have: cap })
   }
   const missingEdges: DesignEdge[] = []
   for (const e of d.edges) if (edgeByRole(g, e.role) === undefined) missingEdges.push(e)

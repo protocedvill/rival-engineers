@@ -54,6 +54,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   every argument. Declare callback types as `(this: void, ...) => ...`.
 - **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
   spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
+- **`string.match` returns a 0-based TS array of captures**: TSTL compiles `const m = string.match(s, "(.*)#%d+$")` to
+  `local m = {string.match(...)}`, so the first capture is `m[0]` (`m[1]` is the second capture; a Lua-style `m[1]`
+  reads the next return or stays nil). Do not index the Lua multi-return directly.
 - **A named import of an exported `let` is a load-time copy**: `import { x } from "./m"` compiles to `local x = ____m.x`,
   so later reassignments in `m` are never seen (telemetry logged no `[re-profile]` lines). Import the module
   (`import * as m`) and read `m.x`.

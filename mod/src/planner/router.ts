@@ -31,6 +31,10 @@ export interface RouteRequest {
   start?: { x: number; y: number; dir: number }
   /** The input port's own tile and direction (index); `side` for side-loading. */
   goal: { x: number; y: number; dir: number; side?: "left" | "right" }
+  /** B60: the goal is a belt on another route: side-load into it, without placing a blocker belt behind it. */
+  merge?: boolean
+  /** B60: other merge points to try when this one is not reachable (nearest the new producer first). */
+  mergeGoals?: { x: number; y: number; dir: number; side: "left" | "right" }[]
   /** Routes of the same producer port this one may tap with a splitter (splitter-tap topology). */
   taps?: string[]
   tier: BeltTier
@@ -426,7 +430,7 @@ function sealPass(s: Search, seal: Seal, state: LayoutState, terrain: TerrainVie
   const cached = seal.pass[t]
   if (cached !== undefined) return cached
   let ok = true
-  if (s.req.goal.side !== undefined) {
+  if (s.req.goal.side !== undefined && s.req.merge !== true) {
     const b = blockerTile(s.req.goal)
     if (b.x === x && b.y === y) ok = false
   }
@@ -676,9 +680,10 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
     used += stepCoarse(s, state, terrain, policy, budget - used)
     if (s.coarse !== undefined) return used
   }
-  // The blocker tile behind a side-loaded port stays free.
+  // The blocker tile behind a side-loaded port stays free. A merge side-loads into an existing belt: its own target
+  // tile must keep that belt, so there is no blocker.
   const blocked: Record<number, boolean> = {}
-  if (req.goal.side !== undefined) {
+  if (req.goal.side !== undefined && req.merge !== true) {
     const b = blockerTile(req.goal)
     blocked[tkey(b.x, b.y)] = true
   }
@@ -842,7 +847,7 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
     }
   }
   let blocker: RouteStep | undefined
-  if (req.goal.side !== undefined) {
+  if (req.goal.side !== undefined && req.merge !== true) {
     const b = blockerTile(req.goal)
     blocker = { kind: "belt", x: b.x, y: b.y, dir: req.goal.dir }
     use(b.x, b.y)
@@ -871,6 +876,7 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
       undergrounds: ugs,
       cost: s.g[s.found],
       blocker,
+      merge: req.merge === true && req.goal.side !== undefined ? { x: req.goal.x, y: req.goal.y, dir: req.goal.dir, side: req.goal.side } : undefined,
       ripped: 0,
     },
   }

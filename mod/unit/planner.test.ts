@@ -482,6 +482,32 @@ test("router: never enters a module footprint, goes around (or under, when allow
   eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
 })
 
+test("router: B60 merge side-loads a second provider into an existing route without a blocker", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, a, 2, 5)
+  place(state, b, 20, 5)
+  eq(routeOne(state, terrain, policy(), conn("primary", "a", "b"), [a, b]).phase, "done", "primary route")
+  place(state, c, 2, 15)
+  const primary = state.routes["route:primary"]
+  const primaryTiles = [...primary.tiles]
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  const job = routeOne(state, terrain, policy(), merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `merge route (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.merge !== undefined, "the route records its merge target")
+  eq(r.blocker, undefined, "a merge has no blocker belt")
+  eq(state.routes["route:primary"].tiles.join(","), primaryTiles.join(","), "the existing route is preserved")
+  eq(state.routeOcc[tkey(r.merge!.x, r.merge!.y)], "route:primary", "the merge ends on the existing route")
+  noProblems(state, terrain, "merge")
+})
+
 test("router: side constraint: arrives from the required side over an unfed blocker belt", () => {
   const terrain = asciiTerrain(field(30, 20))
   for (const side of ["left", "right"] as const) {

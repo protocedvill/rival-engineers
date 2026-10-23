@@ -87,6 +87,8 @@ export interface Route {
   external?: boolean
   /** Side-loading: the unfed belt behind the port tile that makes the arrival a side-load, not a curve. */
   blocker?: RouteStep
+  /** B60 provider-group merge: the existing belt this route side-loads into, instead of the consumer port. */
+  merge?: { x: number; y: number; dir: number; side: "left" | "right" }
   /** Times ripped up. */
   ripped: number
   /** Built already (part of the faction's base): never ripped up. */
@@ -721,9 +723,19 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       heading = s.dir
     }
     if (r.blocker) claim(r, r.blocker.x, r.blocker.y, "side-load blocker")
-    // Arrival: into the port tile with the port's direction, or from the required side.
-    const want = toPort.side === undefined ? portDir : toPort.side === "left" ? (portDir + 1) % 4 : (portDir + 3) % 4
-    if (expect === undefined || expect.x !== target.x || expect.y !== target.y) problems.push(`${id}: does not end at ${to.id}.${toPort.id} (${target.x},${target.y})`)
+    // Arrival: into the port tile with the port's direction, or from the required side. A provider-group merge ends
+    // on another belt of the same consumer: that belt (and its route) carries the joined flow into the port.
+    const end = r.merge ?? target
+    let want = toPort.side === undefined ? portDir : toPort.side === "left" ? (portDir + 1) % 4 : (portDir + 3) % 4
+    if (r.merge !== undefined) {
+      want = r.merge.side === "left" ? (r.merge.dir + 1) % 4 : (r.merge.dir + 3) % 4
+      const owner = state.routeOcc[tkey(r.merge.x, r.merge.y)]
+      const other = owner !== undefined ? state.routes[owner] : undefined
+      if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+        problems.push(`${id}: merge target ${r.merge.x},${r.merge.y} is not a route to ${r.to.module}.${r.to.port}`)
+      }
+    }
+    if (expect === undefined || expect.x !== end.x || expect.y !== end.y) problems.push(`${id}: does not end at ${to.id}.${toPort.id} (${target.x},${target.y})`)
     else if (heading !== want) problems.push(`${id}: arrives at ${to.id}.${toPort.id} heading ${heading}, needs ${want}`)
   }
   return { problems }

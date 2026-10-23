@@ -7,7 +7,7 @@
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { releaseLaneReservation, reserveFreeTile } from "./claims"
-import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { ccw, cw, dirIndex, DX, DY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -39,6 +39,11 @@ export interface ConnectionRequest {
   rate?: number
   /** Belt tier for this connection (D24 upgrade-tier); default: the job's tier. */
   belt?: string
+  /**
+   * B60 provider groups: another provider already feeds this consumer. Join that route with a side-load instead of
+   * routing a second belt into the input port.
+   */
+  merge?: boolean
 }
 
 export interface PlanRequest {
@@ -149,7 +154,7 @@ export interface PlanJob {
   deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: RouteRequest["goal"][]; mergeTry?: number }
   failures: Record<string, string>
   /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
   evidence?: PlanEvidence[]
@@ -423,6 +428,36 @@ function sameSource(job: PlanJob, from: PortRef): string[] {
   return out
 }
 
+/** Free sides of existing routes to the same consumer, usable for a provider-group merge side-load. */
+function mergeGoals(job: PlanJob, to: ConnectionRequest["to"], from: ConnectionRequest["from"]): { x: number; y: number; dir: number; side: "left" | "right" }[] {
+  const fm = from !== undefined ? findModule(job.layout, from.module) : undefined
+  const fx = fm !== undefined ? fm.rect.x + fm.rect.w / 2 : 0
+  const fy = fm !== undefined ? fm.rect.y + fm.rect.h / 2 : 0
+  const found: { goal: { x: number; y: number; dir: number; side: "left" | "right" }; cost: number }[] = []
+  for (const id of job.layout.routeOrder) {
+    const r = job.layout.routes[id]
+    if (r === undefined || r.to.module !== to.module || r.to.port !== to.port) continue
+    for (const st of r.steps) {
+      if (st.kind !== "belt") continue
+      for (const side of ["left", "right"] as ("left" | "right")[]) {
+        const heading = side === "left" ? cw(st.dir) : ccw(st.dir)
+        const x = st.x - DX[heading]
+        const y = st.y - DY[heading]
+        const k = tkey(x, y)
+        if (job.layout.occ[k] !== undefined || job.layout.routeOcc[k] !== undefined || job.layout.reserved[k] !== undefined) continue
+        // Prefer the side nearest the new producer: the far end of the old route may sit inside the built factory,
+        // where a new outside route cannot reach it (B60 seed 8646103: `no path` into the power input).
+        found.push({ goal: { x: st.x, y: st.y, dir: st.dir, side }, cost: manhattan({ x, y }, { x: fx, y: fy }) })
+      }
+    }
+  }
+  found.sort((a, b) => (a.cost !== b.cost ? a.cost - b.cost : a.goal.x !== b.goal.x ? a.goal.x - b.goal.x : a.goal.y !== b.goal.y ? a.goal.y - b.goal.y : a.goal.dir - b.goal.dir))
+  const out: { x: number; y: number; dir: number; side: "left" | "right" }[] = []
+  // Each candidate costs a full search; try the nearest few, then let the ordinary rip/re-place retries take over.
+  for (let i = 0; i < found.length && i < 12; i++) out.push(found[i].goal)
+  return out
+}
+
 function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
@@ -458,6 +493,13 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
       const o = portOutside(fm, fp)
       req.start = { x: o.x, y: o.y, dir: dirIndex(fp.dir) }
     }
+  }
+  if (c.merge === true) {
+    const goals = mergeGoals(job, to, c.from)
+    if (goals.length === 0) return `no merge target for ${to.module}.${to.port}`
+    req.merge = true
+    req.mergeGoals = goals
+    req.goal = goals[0]
   }
   return req
 }
@@ -775,7 +817,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       } else commitRoute(job.layout, stub)
       return 1
     }
-    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0 }
+    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
     job.stats.searches++
   }
   const cur = job.current
@@ -799,6 +841,19 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   }
   if (st === "failed") {
     routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
+    // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
+    // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
+    if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
+      cur.mergeTry = (cur.mergeTry ?? 0) + 1
+      const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
+      if (typeof req !== "string" && req.mergeGoals !== undefined) {
+        req.goal = cur.mergeGoals[cur.mergeTry]
+        cur.rip = false
+        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+        job.stats.searches++
+        return used
+      }
+    }
     // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
     // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
     // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never

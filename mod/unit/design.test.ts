@@ -104,6 +104,42 @@ test("D54: once electric drills are researched the steam block's coal comes from
   eq(goals[0].edges.length, 1, "and its belt")
 })
 
+test("B60 provider groups: an unexpandable fuel provider keeps its capacity and a parallel provider merges the residual", () => {
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    providerShort: { "coal>power": true },
+    providerCaps: { "coal>power": 0.05 },
+  }), { item: RED, perSecond: 1 })
+  const old = byRole(d.nodes, "coal>power")!
+  const parallel = byRole(d.nodes, "coal>power#2")!
+  ok(old !== undefined && parallel !== undefined, `the old provider and a parallel provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
+  near(old.capacity, 0.05, 1e-9, "the old provider keeps exactly its real capacity")
+  ok(old.need <= 0.05 + 1e-9, "the old provider is not asked to grow")
+  ok(parallel.need > 0, "the parallel provider carries the residual")
+  let merged = 0
+  for (const e of d.edges) {
+    if (e.from !== "coal>power#2" || e.to !== "power") continue
+    eq(e.merge, true, "the residual merges into the existing power input")
+    merged++
+  }
+  eq(merged, 1, "one merge edge")
+  const g = graphWith(d, ["power", "labs", "coal>power"], { "coal>power": 0.05 })
+  const diff = diffDesign(d, g, () => undefined)
+  for (const gr of diff.grow) ok(gr.role !== "coal>power", "the unexpandable provider is never asked to grow")
+  ok(diff.missing.some((n) => n.role === "coal>power#2"), "the parallel provider is missing and can be scheduled")
+})
+
+test("B60 provider groups: a short parallel provider gets its own next role without crashing", () => {
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    providerShort: { "coal>power": true, "coal>power#2": true },
+    providerCaps: { "coal>power": 0.001, "coal>power#2": 0.001 },
+  }), { item: RED, perSecond: 1 })
+  ok(byRole(d.nodes, "coal>power") !== undefined, "first provider")
+  ok(byRole(d.nodes, "coal>power#2") !== undefined, "second provider")
+  ok(byRole(d.nodes, "coal>power#3") !== undefined, `third provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
+})
+
 test("power roles: the steam block and its fuel supply", () => {
   ok(isPowerRole("power") && isPowerRole("power#2") && isPowerRole("coal>power") && isPowerRole("coal>power#3"), "power roles")
   ok(!isPowerRole("power-armor>labs") && !isPowerRole("coal>iron-plate>labs"), "not power roles")

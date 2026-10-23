@@ -186,6 +186,11 @@ export interface FactoryState {
   cluster1Caps?: Record<string, number>
   /** M6: failed expansions per role this stage (a grow that keeps failing no longer holds the stage). */
   growFails?: Record<string, number>
+  /**
+   * B60 provider groups: built providers that cannot expand. The design keeps serving their consumers at the real
+   * capacity and assigns the residual to a parallel role; it never relocates them.
+   */
+  providerShort?: Record<string, boolean>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -397,6 +402,8 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     taps: getFactory(ctx.faction.name)?.taps,
     curated: ST.curatedProducers(),
     sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
+    providerShort: ST.providerShort(getFactory(ctx.faction.name)),
+    providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
     powerCap: ST.powerCap(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
   }
@@ -429,7 +436,10 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role, n] of pairs(f.growFails ?? {})) if ((n as number) >= ST.GROW_MAX_FAILS) blocked += `${role as string};`
   let noTap = 0
   for (const [,] of pairs(f.noTap ?? {})) noTap++
-  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let short = ""
+  const caps = ST.providerCaps(f)
+  for (const [role] of pairs(f.providerShort ?? {})) short += `${role as string}:${string.format("%.6g", caps[role as string] ?? 0)};`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -438,6 +448,18 @@ function designNow(ctx: Ctx): Design | undefined {
   const dctx = designContext(ctx, stageIndex)
   const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
+  // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
+  // residual as a parallel provider; it never relocates this one.
+  for (const gr of diff.grow) {
+    if (gr.units >= 1 || gr.node === undefined) continue
+    const node = f.graph.nodes[gr.node]
+    if (node === undefined || (node.kind !== "module" && node.kind !== "outpost")) continue
+    f.providerShort ??= {}
+    if (f.providerShort[gr.role] !== true) {
+      f.providerShort[gr.role] = true
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} is an unexpandable provider (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}); keeping it and planning a parallel provider`)
+    }
+  }
   f.design = {
     stage: f.stage,
     nodes: d.nodes.length,
@@ -548,7 +570,6 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
         units: spec.growth.units,
         power: DS.isPowerRole(spec.growth.role),
         failed: f.growFails?.[spec.growth.role] ?? 0,
-        replace: spec.growth.replace,
       },
     })),
     state: {
@@ -593,6 +614,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     if (allBuilt && f.stage + 1 < stages.length) {
       f.stage++
       f.growFails = undefined
+      f.providerShort = undefined
       f.cluster1Caps = undefined
       mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
@@ -667,15 +689,6 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   const f = ctx.f
   const gr = spec.growth!
   const node = f.graph.nodes[gr.node]
-  if (gr.replace === true && node !== undefined && node.lifecycle === "built") {
-    // B60 provider group: keep this provider feeding what it can. Do not deconstruct it. Record the unexpandable
-    // shortfall; after GROW_MAX_FAILS a power provider triggers the parallel power-block fallback, while any other
-    // provider stays in service and is reported as short (the design can add a parallel provider when one is available).
-    f.growFails ??= {}
-    f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
-    log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}) and has no expandable unit; keeping the existing provider and requesting a parallel supply`)
-    return false
-  }
   if (gr.units < 1 || node === undefined || node.lifecycle !== "built") {
     ctx.waiting.push(`${gr.role} short (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}): cannot expand`)
     return false
@@ -704,6 +717,15 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     if (gr.reclaim === true) return false
     f.growFails ??= {}
     f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
+    // B60: after its growth attempts are spent, this provider is a fixed-capacity member of its group. The design
+    // keeps it and adds a parallel provider for the residual; it is never deconstructed.
+    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS) {
+      f.providerShort ??= {}
+      if (f.providerShort[gr.role] !== true) {
+        f.providerShort[gr.role] = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} stays at its current capacity; planning a parallel provider`)
+      }
+    }
     // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
     if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS && !DS.isPowerRole(gr.role) && string.find(gr.role, "#", 1, true)[0] === undefined && gr.need > 0) {
       f.cluster1Caps ??= {}
@@ -898,7 +920,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     const from = roleToId(f, g, e.from)
     const to = roleToId(f, g, e.to)
     if (from === undefined || to === undefined) continue
-    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt })
+    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt, merge: e.merge === true })
   }
   // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
   // with a mine every outpost's radar reach and strip.

@@ -9,7 +9,7 @@ export interface GoalSelectionSpec {
   kind: GoalKind
   cluster?: number
   techs: string[]
-  growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number; replace?: boolean }
+  growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number }
 }
 
 export interface GoalSelectionState {
@@ -43,7 +43,7 @@ export interface GoalSelection {
 
 function growthBlocked(spec: GoalSelectionSpec, maxFails: number): boolean {
   const g = spec.growth
-  return spec.kind === "grow" && g !== undefined && g.replace !== true && (g.units < 1 || g.failed >= maxFails)
+  return spec.kind === "grow" && g !== undefined && (g.units < 1 || g.failed >= maxFails)
 }
 
 function shortGrowth(g: NonNullable<GoalSelectionSpec["growth"]>): string {
@@ -92,6 +92,12 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
         decisions.push({ index, action: "skip", waiting: `${spec.kind} #${cluster} waits for ${blocked.join(", ")}` })
         continue
       }
+    }
+    // B60: a parallel provider for a power port must not plan while the steam block's growth is rerouting that same
+    // port. Its merge target is the old route; planning into a half-rerouted layout fails with a misleading `no path`.
+    if (spec.kind === "power" && (state.active.grow || state.growingPower)) {
+      decisions.push({ index, action: "skip", waiting: "power waits for the steam block's growth" })
+      continue
     }
     if (spec.kind === "production" || spec.kind === "grow" || spec.kind === "mall") {
       const blocked: string[] = []

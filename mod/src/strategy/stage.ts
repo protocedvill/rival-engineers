@@ -7,7 +7,6 @@ import { nodeByRole, rateIn } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
-import { isPowerRole } from "./design"
 import type { FactoryState } from "./factory"
 
 // M6 stage helpers (split out of factory.ts, whose main chunk hit Lua's 200-local limit): stage targets, lab sizing per
@@ -73,7 +72,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
-      if (p.item === undefined || f.noTap?.[p.role]) continue
+      if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role]) continue
       const room = rateIn(p.capacity.outputs, p.item) - (used as number)
       if (room <= 0) continue
       spare[p.item] ??= {}
@@ -95,7 +94,7 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
     const list: { role: string; key: number }[] = []
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
-      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role]) continue
+      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role]) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x
@@ -124,13 +123,35 @@ export function cluster1Max(f: FactoryState | undefined): number | undefined {
 
 export function powerCap(f: FactoryState | undefined): number | undefined {
   if (f === undefined) return undefined
-  // B60: a power fuel producer (coal>power) can be as unexpandable as the steam block itself. When any power-role
-  // provider has exhausted its growth attempts, keep the existing provider and add a parallel power block instead.
+  // M6/B29: this is only for a steam block whose own growth keeps failing. A short fuel producer is a provider-group
+  // shortfall (B60): it keeps feeding the existing block and the design adds a parallel coal provider, not a second
+  // power block with its own mine.
   let failed = false
-  for (const [role, n] of pairs(f.growFails ?? {})) if (isPowerRole(role as string) && (n as number) >= GROW_MAX_FAILS) failed = true
+  for (const [role, n] of pairs(f.growFails ?? {})) {
+    const r = role as string
+    if ((string.match(r, "^power#?%d*$")[0] !== undefined) && (n as number) >= GROW_MAX_FAILS) failed = true
+  }
   if (!failed) return undefined
   const n = nodeByRole(f.graph, "power")
   return n !== undefined ? rateIn(n.capacity.outputs, "electricity") : undefined
+}
+
+/** Actual output capacity of built provider roles, for the B60 provider-group split. */
+export function providerCaps(f: FactoryState | undefined): Record<string, number> {
+  const out: Record<string, number> = {}
+  if (f === undefined) return out
+  for (const id of f.graph.nodeOrder) {
+    const n = f.graph.nodes[id]
+    if (n.lifecycle !== "built" || n.item === undefined) continue
+    const cap = rateIn(n.capacity.outputs, n.item)
+    if (cap > 0) out[n.role] = math.max(out[n.role] ?? 0, cap)
+  }
+  return out
+}
+
+/** B60: roles the design must not grow or tap for new consumers. */
+export function providerShort(f: FactoryState | undefined): Record<string, boolean> | undefined {
+  return f?.providerShort
 }
 
 function splittersEnabled(force: LuaForce): boolean {

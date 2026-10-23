@@ -166,13 +166,13 @@ Implemented separately:
 
 ## Implementation order
 
-1. Pure `providers.ts` with assignment/splitting tests.
-2. Remove the current special-case `replace` relocation; represent provider shortfalls as group actions.
-3. Add parallel-provider design/diff actions for multi-consumer groups.
-4. Add merge/side-load route support and tests.
-5. Integrate provider goals, handover, and route-aware placement.
-6. Reconcile group remedies.
-7. Rerun targeted B60/B61 seeds, then the full fixed/random core.
+1. [done] Pure `providers.ts` with assignment/splitting tests.
+2. [done] Remove `Growth.replace`; a short provider is fixed at its real capacity and stays in service.
+3. [done, first slice] Add the parallel-provider design/diff action when `providerShort` is set.
+4. [done, first slice] Merge side-load route support with candidate retry and T1 geometry coverage.
+5. [in progress] Integrate provider goals/handover and route-aware placement.
+6. [pending] Reconcile group remedies for every shared trunk, not just the power/fuel path.
+7. [pending] Rerun targeted B60/B61 seeds, then the full fixed/random core.
 
 ## Required tests
 
@@ -186,13 +186,23 @@ Implemented separately:
 - Targeted seeds: `8646103`, `2229258`.
 - Throughput soak with `m6-throughput.toml`; verify 42 v1 techs and continuous packs.
 
-## Current state / known partial code
+## Current state / implementation
 
 - `eaa451f`: power growth scheduling and pole-saturation fixes.
-- `a63dc00`: B60 unexpandable-provider replacement (now superseded in intent; current code keeps provider and
-  records a shortfall / triggers powerCap).
+- `a63dc00`: B60 unexpandable-provider replacement (rejected; replaced by the provider-group split below).
 - `5dd8b34`: B61 sealed-consumer fallback.
 - `cd4ed2f`: debug infinite research + parallel power fallback.
-- Current B60 status: open; current B61 status: open.
-- The full provider-group refactor is **not complete**. The current `powerCap` path is only a power-specific parallel
-  stream.
+- Current B60/B61 status: open; targeted acceptance is still being rerun.
+- Implemented provider-group slice:
+  - `FactoryState.providerShort` records built providers with no expansion unit.
+  - `design.ts` keeps the old provider at its real capacity (`providerCaps`) and gives the residual to a stable
+    parallel role (`#2`, `#3`, ...).
+  - The residual edge carries `merge` when it shares a consumer port. `planner/plan.ts` chooses a free side of the
+    existing route, preferring the one nearest the new producer, and retries the other candidates before giving up.
+  - `planner/router.ts` side-loads into the existing belt without a blocker; `checkLayout` validates that the merge
+    target is another route to the same consumer.
+  - `goal-selection.ts` holds a parallel power provider while the steam-block growth is rerouting the same port.
+  - `Growth.replace` was removed: an unexpandable provider is no longer represented as a replacement.
+  - T1: `design` provider split, router merge, goal-selection power wait, and the existing provider-model tests.
+- Still open: general provider-group actions for every shared trunk, handover of depleted providers, and full
+  merge/split route variants. The current slice already keeps the existing provider and adds a parallel one.
