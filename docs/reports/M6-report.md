@@ -2428,3 +2428,23 @@ the behavior that B28 part 2 fixed, not just the helper.
 - Full 5-seed acceptance `m6-final6` (same build, 5 parallel): **5/5**; 11 207.3, 222 240.2, 3333 267.1, 44444 190.3,
   555555 171.7 game-min; 0 stalls, 0 replans. AI ms/tick from this run is not a performance measurement (five
   Factorio instances shared the laptop).
+
+## M6b.44: provider-group slice and the M7 hand-off (2026-10-23)
+
+The B60/B61 diagnosis converged on a provider-group model: a shared provider is not a singleton role. The M6 slice
+implements the safe part:
+
+- `FactoryState.providerShort` records a built provider with no expansion unit.
+- The design keeps that provider at its real capacity and assigns residual demand to stable parallel roles (`#2`,
+  `#3`, ...).
+- A residual edge to a consumer port already fed by the old provider is marked as a merge; the router side-loads into
+  a free side of the existing route, retrying other candidates when the nearest is unreachable.
+- Parallel power goals wait while the steam block's growth is rerouting the same port.
+- `Growth.replace` was removed; the old provider is not deconstructed for being unexpandable.
+
+This is **not** the full refactor. The user deferred the remaining general work to **M7** (SPEC D64): all shared
+producer/supplier roles and topologies, splitter/tap/trunk augmentation, verified handover, and reconciler group
+remedies. M6 acceptance remains based on the targeted B60/B61 runs and the final fixed/random sweep on the tested
+slice, not on a claim that every provider type is covered.
+
+Validation for the slice: typecheck/build pass; T1 **31/31**; targeted B60/B61 seed runs are the remaining gate.

@@ -1,7 +1,9 @@
 # Provider groups and parallel supply refactor
 
-Status: implementation in progress. This document is the handoff/goalpost record for the refactor; it is not an
-approved SPEC decision.
+Status: **M6 implementation slice complete; the remaining general refactor is deferred to M7** (user decision
+2026-10-23, SPEC D64). This document is the handoff/goalpost record for that M7 work. The M6 slice is not a claim that
+every provider/supplier type is covered; it covers built design providers with a known fixed capacity and side-load
+merges where the existing route offers a free side.
 
 ## Why
 
@@ -170,9 +172,9 @@ Implemented separately:
 2. [done] Remove `Growth.replace`; a short provider is fixed at its real capacity and stays in service.
 3. [done, first slice] Add the parallel-provider design/diff action when `providerShort` is set.
 4. [done, first slice] Merge side-load route support with candidate retry and T1 geometry coverage.
-5. [in progress] Integrate provider goals/handover and route-aware placement.
-6. [pending] Reconcile group remedies for every shared trunk, not just the power/fuel path.
-7. [pending] Rerun targeted B60/B61 seeds, then the full fixed/random core.
+5. [deferred to M7] Integrate verified handover and full route-aware placement for every shared trunk.
+6. [deferred to M7] Reconcile group remedies for every shared trunk, not just the power/fuel path.
+7. [M6 continuation] Rerun targeted B60/B61 seeds, then the full fixed/random core on the M6 slice.
 
 ## Required tests
 
@@ -204,5 +206,7 @@ Implemented separately:
   - `goal-selection.ts` holds a parallel power provider while the steam-block growth is rerouting the same port.
   - `Growth.replace` was removed: an unexpandable provider is no longer represented as a replacement.
   - T1: `design` provider split, router merge, goal-selection power wait, and the existing provider-model tests.
-- Still open: general provider-group actions for every shared trunk, handover of depleted providers, and full
-  merge/split route variants. The current slice already keeps the existing provider and adds a parallel one.
+- **Deferred to M7 (SPEC D64):** general provider-group actions for every shared trunk and topology, splitter/tap/trunk
+  augmentation, transactional handover of depleted providers, full merge/split route variants, and reconciler group
+  remedies. The M6 slice keeps the existing provider and adds a parallel one where the current side-load path works.
+- M6 acceptance must be judged only on the tested slice and the seed sweeps; do not describe the M7 scope as complete.
