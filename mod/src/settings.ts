@@ -80,6 +80,13 @@ data.extend([
     order: "z-c",
   },
   {
+    type: "bool-setting",
+    name: Settings.debugInfiniteResearch,
+    setting_type: "runtime-global",
+    default_value: false,
+    order: "z-d",
+  },
+  {
     type: "int-setting",
     name: Settings.jobMaxAttempts,
     setting_type: "runtime-global",

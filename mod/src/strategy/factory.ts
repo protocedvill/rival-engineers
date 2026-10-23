@@ -668,9 +668,12 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   const gr = spec.growth!
   const node = f.graph.nodes[gr.node]
   if (gr.replace === true && node !== undefined && node.lifecycle === "built") {
-    // B60: an unexpandable provider cannot satisfy the shortfall by waiting. Give it up and let the design plan a
-    // fresh provider (the same general replacement path used by D55/B59).
-    relocate(ctx, node, `B60 ${gr.role}`, `cannot grow (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}) and has no expandable unit`)
+    // B60 provider group: keep this provider feeding what it can. Do not deconstruct it. Record the unexpandable
+    // shortfall; after GROW_MAX_FAILS a power provider triggers the parallel power-block fallback, while any other
+    // provider stays in service and is reported as short (the design can add a parallel provider when one is available).
+    f.growFails ??= {}
+    f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
+    log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}) and has no expandable unit; keeping the existing provider and requesting a parallel supply`)
     return false
   }
   if (gr.units < 1 || node === undefined || node.lifecycle !== "built") {
@@ -2029,7 +2032,7 @@ function research(ctx: Ctx, d: Design | undefined): void {
   if (cur !== undefined) return
   if (labsBuilt(f).length === 0) return
   const wanted = d?.techs ?? []
-  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx), packsAutomated(f))
+  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx), packsAutomated(f), ctx.config.debugInfiniteResearch)
   if (pick !== undefined) {
     f.research.current = pick.tech
     f.research.reason = pick.reason

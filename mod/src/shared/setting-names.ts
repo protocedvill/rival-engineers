@@ -9,6 +9,7 @@ export const Settings = {
   debugTeleportWhenStuck: "rival-engineers-debug-teleport-when-stuck",
   debugInstantCraft: "rival-engineers-debug-instant-craft",
   debugReachMultiplier: "rival-engineers-debug-reach-multiplier",
+  debugInfiniteResearch: "rival-engineers-debug-infinite-research",
   jobMaxAttempts: "rival-engineers-job-max-attempts",
   jobRetryTicks: "rival-engineers-job-retry-ticks",
   batchMaxJobs: "rival-engineers-batch-max-jobs",

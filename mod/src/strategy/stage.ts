@@ -7,6 +7,7 @@ import { nodeByRole, rateIn } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
+import { isPowerRole } from "./design"
 import type { FactoryState } from "./factory"
 
 // M6 stage helpers (split out of factory.ts, whose main chunk hit Lua's 200-local limit): stage targets, lab sizing per
@@ -122,7 +123,12 @@ export function cluster1Max(f: FactoryState | undefined): number | undefined {
 }
 
 export function powerCap(f: FactoryState | undefined): number | undefined {
-  if (f === undefined || (f.growFails?.["power"] ?? 0) < GROW_MAX_FAILS) return undefined
+  if (f === undefined) return undefined
+  // B60: a power fuel producer (coal>power) can be as unexpandable as the steam block itself. When any power-role
+  // provider has exhausted its growth attempts, keep the existing provider and add a parallel power block instead.
+  let failed = false
+  for (const [role, n] of pairs(f.growFails ?? {})) if (isPowerRole(role as string) && (n as number) >= GROW_MAX_FAILS) failed = true
+  if (!failed) return undefined
   const n = nodeByRole(f.graph, "power")
   return n !== undefined ? rateIn(n.capacity.outputs, "electricity") : undefined
 }

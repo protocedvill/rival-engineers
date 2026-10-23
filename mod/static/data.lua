@@ -38,3 +38,26 @@ data:extend({
   review_input("rival-engineers-report", "CONTROL + SHIFT + R", "c"),
   review_shortcut("rival-engineers-report", "z[rival-engineers]-c", "__core__/graphics/icons/tip.png", false),
 })
+
+-- Debug/soak only: after the v1 research goal, this hidden infinite technology gives the labs a repeatable pack sink
+-- for sustained-throughput tests. It is selected only when `debug-infinite-research` is enabled, and never counts
+-- toward the v1 research goal.
+data:extend({
+  {
+    type = "technology",
+    name = "rival-engineers-throughput-test",
+    icon = "__base__/graphics/technology/automation-science-pack.png",
+    icon_size = 256,
+    hidden = true,
+    max_level = "infinite",
+    unit = {
+      count_formula = "30",
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1},
+      },
+      time = 60,
+    },
+    effects = {},
+  },
+})

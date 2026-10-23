@@ -19,6 +19,8 @@ export interface Config {
   debugInstantCraft: boolean
   /** Debug only: multiplies build, reach and resource reach. 1 = player parity. */
   debugReachMultiplier: number
+  /** Debug/soak only: after the normal research goal, repeat a hidden infinite technology to keep labs consuming packs. */
+  debugInfiniteResearch: boolean
   /** Attempts before a failing job is marked failed (Job Board). */
   jobMaxAttempts: number
   /** Back-off before a released job may be claimed again; doubles with each failed attempt. */
