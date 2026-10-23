@@ -681,7 +681,9 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     }
   }
   const policy = policyFor(ctx.config)
-  const tier = RT.tiers()[0]
+  // B58 follow-up / 7718665: growth must obey the same underground cap as a normal plan. Before `logistics` that is 1
+  // (no undergrounds); otherwise a growth can ghost underground belts with no craftable recipe and deadlock research.
+  const tier = GROW.limitUnderground(RT.tiers()[0], maxUndergroundNow(ctx))
   const plan = GROW.planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`, gr.reclaim === true)
   if (!plan.ok) {
     f.growthDiagnostics ??= {}
@@ -1053,7 +1055,13 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     // D62: no free patch of an ore anywhere the faction knows: explore past the home zone with a radar outpost (on
     // the last attempt, or at once while a search is on: the region already holds everything explored).
-    const [ore] = contest === undefined && g.site === undefined ? string.match(g.reason ?? "", "no free (%S+) patch in the region") : [undefined]
+    let [ore] = contest === undefined && g.site === undefined ? string.match(g.reason ?? "", "no free (%S+) patch in the region") : [undefined]
+    // A mine can also fail with "no feasible position (N of N patches tried)" when every known patch exists but has no
+    // room. That is the same need for farther ground; without this, the factory retries the same patches to fail-fast.
+    if (ore === undefined && contest === undefined && g.site === undefined) {
+      const failed = EX.failedMineOre(g.reason)
+      if (failed !== undefined && prototypes.entity[failed]?.type === "resource") ore = failed
+    }
     if (ore !== undefined && (g.attempts >= MAX_PLAN_ATTEMPTS || f.explore !== undefined)) {
       transitionGoal(g, "failed")
       EX.exploreFor(ctx, g, ore)

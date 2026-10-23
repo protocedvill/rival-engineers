@@ -5,7 +5,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
-import { planGrowth } from "../src/planner/grow"
+import { limitUnderground, planGrowth } from "../src/planner/grow"
 import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
@@ -206,6 +206,13 @@ test("the factory's reserved tiles follow its layout: tiles a growth or reroute 
     released++
   }
   ok(released > 10, `route tiles released (${released})`)
+})
+
+test("growth tier: undergrounds are capped to 1 until logistics is researched", () => {
+  const capped = limitUnderground(TIER, 1)
+  eq(capped.maxUnderground, 1)
+  eq(capped.belt, TIER.belt)
+  eq(limitUnderground(TIER, undefined), TIER)
 })
 
 run("grow")

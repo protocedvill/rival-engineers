@@ -33,6 +33,16 @@ export interface ExploreHooks {
   startRadar: (this: void, role: string, site?: FactoryGoal["site"]) => string
 }
 
+/** A mine plan that failed because every known ore patch had no room ("no feasible position (N of N patches tried)").
+ * D62 uses this exactly like "no free <ore> patch in the region"; without it the factory retries the same patches. */
+export function failedMineOre(reason: string | undefined): string | undefined {
+  if (reason === undefined || string.find(reason, "no feasible position", 1, true)[0] === undefined) return undefined
+  let [ore] = string.match(reason, "%(([%w%-]+)>[^)]*%): no feasible position")
+  // Shared producers carry a `*` marker in the role (`coal*>...`), not part of the resource name.
+  if (ore === undefined) [ore] = string.match(reason, "%(([%w%-]+)%*>[^)]*%): no feasible position")
+  return ore
+}
+
 /** D62: the home zone's radius (tiles): bootstrap exploration (H7) and plan regions stop there. */
 export function homeRadius(ctx: ExploreCtx): number {
   return ctx.config.scanRadius * Arms.HOME_SCANS

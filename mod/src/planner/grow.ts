@@ -16,6 +16,12 @@ import { HEAD_GROWTH_OPENS_BELT, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { polesNow, unpoweredModules } from "./power"
 
+/** Cap a growth tier's underground reach before `logistics` (1 = no undergrounds). */
+export function limitUnderground(tier: BeltTier, max: number | undefined): BeltTier {
+  if (max === undefined) return tier
+  return { ...tier, maxUnderground: math.min(tier.maxUnderground, max) }
+}
+
 export interface GrowthPlan {
   ok: boolean
   reason?: string
