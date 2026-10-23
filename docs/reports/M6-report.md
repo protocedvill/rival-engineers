@@ -2429,7 +2429,7 @@ the behavior that B28 part 2 fixed, not just the helper.
   555555 171.7 game-min; 0 stalls, 0 replans. AI ms/tick from this run is not a performance measurement (five
   Factorio instances shared the laptop).
 
-## M6b.44: provider-group slice and the M7 hand-off (2026-10-23)
+## M6b.44: provider-group slice and shared-provider remedies (2026-10-23)
 
 The B60/B61 diagnosis converged on a provider-group model: a shared provider is not a singleton role. The M6 slice
 implements the safe part:
@@ -2442,9 +2442,15 @@ implements the safe part:
 - Parallel power goals wait while the steam block's growth is rerouting the same port.
 - `Growth.replace` was removed; the old provider is not deconstructed for being unexpandable.
 
-This is **not** the full refactor. The user deferred the remaining general work to **M7** (SPEC D64): all shared
+This is **not** the full refactor yet. The user explicitly kept the remaining general work in scope: all shared
 producer/supplier roles and topologies, splitter/tap/trunk augmentation, verified handover, and reconciler group
-remedies. M6 acceptance remains based on the targeted B60/B61 runs and the final fixed/random sweep on the tested
-slice, not on a claim that every provider type is covered.
+remedies. The latest slice adds a group remedy for a new shared provider that cannot reach every consumer from one
+site: the design gives each consumer its own parallel provider after the failed plan.
 
-Validation for the slice: typecheck/build pass; T1 **31/31**; targeted B60/B61 seed runs are the remaining gate.
+Validation for the slice: typecheck/build pass; T1 **31/31**. Targeted `m6-b60g-provider` (2 seeds, clean build):
+seed **2229258 passes** at **185.2 game-min** (0 stalls; the B61 mall/shared-coal route failure is gone). Seed
+**8646103 still fails** at 128 game-min in that run: the power-provider splits worked, but a later shared provider
+(`coal*>iron-plate*>logistic-science-pack>labs#3`) could not route its two consumer feeds from one site. The next
+slice records that failed shared group (`providerSplit`) and exact failed feeds (`providerNoTap`), so the design
+gives the consumers their own parallel providers instead of retrying the same infeasible site. Validation of that
+slice is the current targeted rerun; it is not deferred.

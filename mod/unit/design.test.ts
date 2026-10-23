@@ -155,6 +155,45 @@ test("B61 provider groups: a shared provider that cannot reach all consumers get
   ok(byRole(d.nodes, "coal*>test") === undefined, "the infeasible shared group itself is not planned")
 })
 
+test("B61 provider groups: a fresh shared group marked split also gets one provider per consumer", () => {
+  const role = `coal*>${SMELT_FE}`
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    sharing: { keep: {}, spare: {}, split: { [role]: true } },
+  }), { item: RED, perSecond: 1 })
+  const split = d.nodes.filter((n) => n.role === `${role}#2` || n.role === `${role}#3`)
+  eq(split.length, 2, `two parallel fresh providers: ${d.nodes.map((n) => n.role).join(",")}`)
+  ok(byRole(d.nodes, role) === undefined, "the fresh shared group is not planned as one node")
+})
+
+test("B61 provider groups: an exact failed feed is not kept; another consumer gets its own provider", () => {
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    sharing: {
+      keep: { [`coal@${SMELT_FE}@in-fuel`]: "coal>old" },
+      spare: {},
+    },
+  }), { item: RED, perSecond: 1 })
+  ok(byRole(d.nodes, "coal>old") !== undefined, "the exact kept feed")
+  ok(byRole(d.nodes, `coal>${SMELT_CU}`) !== undefined, "the unkept consumer gets its own provider")
+})
+
+test("B61 provider groups: splitting a cluster-suffixed role does not reuse that role", () => {
+  const role = "coal*>test#3"
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    sharing: {
+      keep: { [`coal@${SMELT_FE}@in-fuel`]: role, [`coal@${SMELT_CU}@in-fuel`]: role },
+      spare: {},
+      split: { [role]: true },
+    },
+  }), { item: RED, perSecond: 1 })
+  ok(byRole(d.nodes, role) === undefined, `the infeasible role is not reused: ${d.nodes.map((n) => n.role).join(",")}`)
+  let split = 0
+  for (const n of d.nodes) if (n.role !== role && string.find(n.role, "coal*>test#", 1, true)[0] === 1) split++
+  eq(split, 2, `two fresh parallel roles: ${d.nodes.map((n) => n.role).join(",")}`)
+})
+
 test("power roles: the steam block and its fuel supply", () => {
   ok(isPowerRole("power") && isPowerRole("power#2") && isPowerRole("coal>power") && isPowerRole("coal>power#3"), "power roles")
   ok(!isPowerRole("power-armor>labs") && !isPowerRole("coal>iron-plate>labs"), "not power roles")

@@ -67,7 +67,11 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       const p = f.graph.nodes[e.from]
       const c = f.graph.nodes[e.to]
       if (p === undefined || c === undefined) continue
-      keep[`${e.item}@${c.role}`] = p.role
+      const key = `${e.item}@${c.role}@${e.toPort}`
+      keep[key] = p.role
+      // B61: a failed exact feed is not kept for that consumer; the design finds it another provider. The role-level
+      // key remains for older callers, but not for the failed feed.
+      if (f.providerNoTap?.[`${p.role}=>${c.role}.${e.toPort}`] !== true) keep[`${e.item}@${c.role}`] = p.role
       out[p.id] = (out[p.id] ?? 0) + e.plannedRate
     }
     for (const [id, used] of pairs(out)) {

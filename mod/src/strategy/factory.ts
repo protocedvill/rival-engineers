@@ -196,6 +196,8 @@ export interface FactoryState {
    * consumer its own parallel provider instead of sharing one infeasible route group.
    */
   providerSplit?: Record<string, boolean>
+  /** B61: exact provider→consumer feeds whose route failed; the design reassigns just that consumer. */
+  providerNoTap?: Record<string, boolean>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -446,7 +448,9 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role] of pairs(f.providerShort ?? {})) short += `${role as string}:${string.format("%.6g", caps[role as string] ?? 0)};`
   let split = ""
   for (const [role] of pairs(f.providerSplit ?? {})) split += `${role as string};`
-  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let providerNoTap = ""
+  for (const [key] of pairs(f.providerNoTap ?? {})) providerNoTap += `${key as string};`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -454,6 +458,11 @@ function designNow(ctx: Ctx): Design | undefined {
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
   const dctx = designContext(ctx, stageIndex)
   const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
+  if (split !== "") {
+    const roles: string[] = []
+    for (const n of d.nodes) if (string.find(n.role, "coal*>", 1, true)[0] === 1) roles.push(`${n.role}:${string.format("%.3g", n.need)}`)
+    log(`[rival-engineers] faction ${ctx.faction.name}: design split ${split} -> ${roles.join(", ")}`)
+  }
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
   // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
   // residual as a parallel provider; it never relocates this one.
@@ -623,6 +632,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
       f.growFails = undefined
       f.providerShort = undefined
       f.providerSplit = undefined
+      f.providerNoTap = undefined
       f.cluster1Caps = undefined
       mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
@@ -1066,6 +1076,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
           newSplit = true
           log(`[rival-engineers] faction ${ctx.faction.name}: ${e.from} cannot reach every consumer from one site; planning parallel providers per consumer`)
         }
+      }
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
+        f.providerNoTap ??= {}
+        f.providerNoTap[`${e.from}=>${e.to}.${e.toPort}`] = true
+        newNoTap = true
       }
       // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
       for (const n of g.nodes) {

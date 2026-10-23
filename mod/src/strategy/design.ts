@@ -398,7 +398,7 @@ function parallelRole(w: Walk, role: string): string {
   let n = 2
   for (;;) {
     const candidate = `${base}#${n}`
-    let used = false
+    let used = candidate === role
     for (const node of w.nodes) if (node.role === candidate) used = true
     if (!used) return candidate
     n++
@@ -483,7 +483,7 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const fresh: Demand[] = []
   const alone: Demand[] = []
   for (const d of mine) {
-    const p = shared.keep[`${item}@${d.to}`]
+    const p = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
     if (p !== undefined) {
       if (byProducer[p] === undefined) {
         byProducer[p] = []
