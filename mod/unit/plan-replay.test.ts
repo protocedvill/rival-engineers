@@ -96,6 +96,10 @@ interface ReplayOptions {
   free?: [number, number, number, number][]
   /** Expected outcome (default done). */
   expect?: "done" | "failed"
+  /** Text required in a failed replay's certificate. */
+  failureIncludes?: string
+  /** Requests that represent route-reassignment providers and must use an independent mine site. */
+  newSites?: string[]
 }
 
 /** REPLAY_DUMP=1: each module's placement, mine plan (B33) or ore-clipped strip, and belt ports. */
@@ -110,6 +114,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
     const fx = load(name)
     if (opts.undergrounds) fx.tiers = beltTiers(F)
+    for (const m of fx.request.modules) if (opts.newSites !== undefined && opts.newSites.indexOf(m.id) >= 0) m.newSite = true
     const ug = tonumber(os.getenv("REPLAY_UNDERGROUND") ?? "")
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
@@ -131,6 +136,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     if (os.getenv("REPLAY_DUMP") !== undefined) for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h} rot ${m.transform.rot}${m.transform.mirror ? " mirror" : ""}`)
     finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === (opts.expect ?? "done"))
     ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
+    if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
   })
 }
 
@@ -621,6 +627,10 @@ test("B58: a splitter tap never sits on the span of the route it taps", () => {
   }
   ok(overlaps.length === 0, `tap splitter on its trunk's span: ${overlaps.join("; ")}`)
 })
+
+// B60 (m6-b60n-provider, seed 8646103 g19): after a route-infeasible shared coal provider is split per consumer,
+// each fresh provider must be placed where its one assigned consumer can actually be reached.
+replay("m6-b60-provider-single-route", { newSites: ["n51", "n52"], expect: "failed", failureIncludes: "no free coal patch in the region" })
 
 run("plan-replay")
 

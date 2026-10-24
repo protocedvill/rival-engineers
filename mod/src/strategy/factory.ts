@@ -81,6 +81,8 @@ export interface GoalNode {
   capacity: number
   inputs: DesignNode["inputs"]
   powerW: number
+  /** Route-reassignment provider: the planner must choose an independent site. */
+  newSite?: boolean
 }
 
 export interface FactoryGoal {
@@ -458,11 +460,6 @@ function designNow(ctx: Ctx): Design | undefined {
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
   const dctx = designContext(ctx, stageIndex)
   const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
-  if (split !== "") {
-    const roles: string[] = []
-    for (const n of d.nodes) if (string.find(n.role, "coal*>", 1, true)[0] === 1) roles.push(`${n.role}:${string.format("%.3g", n.need)}`)
-    log(`[rival-engineers] faction ${ctx.faction.name}: design split ${split} -> ${roles.join(", ")}`)
-  }
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
   // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
   // residual as a parallel provider; it never relocates this one.
@@ -540,7 +537,7 @@ function lastOf(f: FactoryState, kind: GoalKind): FactoryGoal | undefined {
 function goalNodes(g: GoalSpec, f: FactoryState): GoalNode[] {
   const out: GoalNode[] = []
   for (const n of g.nodes) {
-    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW })
+    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW, newSite: n.newSite })
   }
   return out
 }
@@ -932,7 +929,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
   g.attempts++
   const modules: ModuleRequest[] = []
-  for (const n of g.nodes) modules.push({ id: n.id, def: makeModule(n.generator, n.params) })
+  for (const n of g.nodes) modules.push({ id: n.id, def: makeModule(n.generator, n.params), newSite: n.newSite })
   const connections: ConnectionRequest[] = []
   for (const e of g.edges) {
     const from = roleToId(f, g, e.from)
@@ -1080,12 +1077,17 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       for (const e of g.edges) {
         if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
         f.providerNoTap ??= {}
-        f.providerNoTap[`${e.from}=>${e.to}.${e.toPort}`] = true
-        newNoTap = true
+        const feed = `${e.from}=>${e.to}.${e.toPort}`
+        if (f.providerNoTap[feed] !== true) {
+          f.providerNoTap[feed] = true
+          newNoTap = true
+        }
       }
       // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
       for (const n of g.nodes) {
-        if (n.id !== m || n.item !== ctx.faction.brain!.catalog.fuel || !ctx.config.factoryFuelFallback || g.attempts < FUEL_FALLBACK_ATTEMPTS || f.fallback?.[n.item]) continue
+        // A route-infeasible provider was explicitly split to escape its old site. Retapping an old provider defeats
+        // that remedy and can fail-fast before D62 explores for a genuinely independent patch.
+        if (n.id !== m || n.newSite === true || n.item !== ctx.faction.brain!.catalog.fuel || !ctx.config.factoryFuelFallback || g.attempts < FUEL_FALLBACK_ATTEMPTS || f.fallback?.[n.item]) continue
         f.fallback ??= {}
         f.fallback[n.item] = true
         newNoTap = true

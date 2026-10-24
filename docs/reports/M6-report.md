@@ -2454,3 +2454,91 @@ seed **2229258 passes** at **185.2 game-min** (0 stalls; the B61 mall/shared-coa
 slice records that failed shared group (`providerSplit`) and exact failed feeds (`providerNoTap`), so the design
 gives the consumers their own parallel providers instead of retrying the same infeasible site. Validation of that
 slice is the current targeted rerun; it is not deferred.
+
+## M6b.45: B60 gate green — both targeted seeds reach `v1-done` (working tree, 2026-10-24)
+
+`m6-b60s-provider` (fresh runs, `fail_fast` left **on**, clean build of the current tree):
+
+| Seed | Result | Done at | Stalls | AI ms/tick avg / p99 | Work flags |
+|---|---|---|---|---|---|
+| 8646103 | ✅ `v1-done` | 233.5 min | 0 | 1.13 / 8.83 | 0 |
+| 2229258 | ✅ `v1-done` | 185.2 min | 0 | 1.18 / 15.76 | 0 |
+
+This is the first time both B60/B61 seeds pass in one run with the harness fail-fast rules enabled. The chain that
+gets `8646103` through:
+
+1. `g18` fails on the shared provider `coal*>iron-plate*>logistic-science-pack>labs#3` and marks `providerSplit`.
+2. Split providers carry `newSite = true`, so neither the old shared whole-patch mine is completed nor the `P36(b)`
+   fuel fallback retaps an existing producer before D62 has searched the outer region.
+3. `g19` and `g20` find no free coal patch at 112/168/252 and place the eight split modules at radius 378;
+   `g20` attempt 4 plans in 991 ticks (`8 modules, 10 routes, 49 poles`).
+4. `g20` builds by 201.2 min, `science-sustained` lands at 222.5 min (33.7/min red and green), and `v1-done` at 233.5.
+
+### The defect this exposed: a re-walked radius ladder (investigated, then **reverted** — see M6b.46)
+
+`g19` and `g20` are the *same design*, planned twice: `g19` used up `MAX_PLAN_ATTEMPTS = 4` and was replaced by `g20`,
+which reset `g.radius` to the configured 112 and re-discovered the identical "no free coal patch" failures at 112, 168
+and 252 before succeeding at 378. That is **seven consecutive plan failures** against the harness
+`consecutive_plan_failures = 8` — one attempt from a spurious kill, which would have read as a regression.
+
+The attempt to remove that redundancy is recorded in **M6b.46** below and was **rejected on measurement**: remembering
+the empty radius per ore and starting a replacement goal past it turned this seed from a 233.5 min pass into a 448 min
+double stall. The radius ladder's repeated attempts are not pure waste — they are part of how the good layout is found.
+
+### Validation
+
+- `npm run typecheck` — pass (`103 settings aligned; pure boundaries clean`).
+- `npm run test:unit` — **31/31 files**.
+- `npm run build` — pass.
+- `m6-b60s-provider` is the acceptance for the B60/B61 slice.
+
+## M6b.46: per-ore region-radius memory — rejected on measurement (working tree, 2026-10-24)
+
+The seven-failure streak in M6b.45 looked like wasted work: `g19` and then `g20` both failed at 112/168/252 before a
+patch appeared at 378. "No free `<ore>` patch in the region" is a property of the map, so a replacement goal was made to
+start past the radius that had already come up empty, via `FactoryState.oreRadius`, `EX.noteEmptyOreRadius` and
+`EX.startRadius`, applied in `planGoal` when `g.attempts === 1`. It was T1-covered (4 tests) and typecheck/T1/build
+clean.
+
+**It made the seed much worse.**
+
+| Run | Seed 8646103 | Seed 2229258 |
+|---|---|---|
+| `m6-b60s-provider` (ladder re-walked) | ✅ `v1-done` 233.5 min, 0 stalls | ✅ `v1-done` 185.2 min |
+| `m6-b60t-radius` (radius memory) | ❌ **448.0 min, 2 stalls**, fail-fast stop | ✅ `v1-done` 185.2 min (unchanged) |
+
+The failing run never reached `v1-done`. It stalled on power it could not grow: `power short (9e+06/1.43e+07): cannot
+grow (3 failed expansions)`, `coal>power#2 short (2/3.34): cannot grow`, `power#2 short (3.6e+06/5.35e+06): cannot grow
+(3 failed expansions)`, `no researchable technology`. The final site census differs from the passing run
+(`depot` 11 vs 5, `smelt:iron-ore` 5 vs 4): the split provider group was placed at radius 378 on attempt 1 instead of
+attempt 4, and the resulting factory could not be grown or powered.
+
+### The learned rule
+
+**A plan-region radius step is not redundant just because the previous goal failed at that radius.** The replacement
+goal re-plans the *whole cluster*, and which region succeeds depends on the pairing of radius and cluster offset
+(`planGoal`'s `tries`), not on the radius alone. `8646103` only succeeds at radius 378 **with** the offset that attempt
+4 happened to use (tries 7, `[24,-24]`); attempt 1 at the same radius uses a different offset (tries 4, `[0,-24]`) and
+the resulting layout starves power 200 game-min later. So the ladder is part of the search, and shrinking it changes
+the answer, not just the cost.
+
+A goal that replaces one out of plan attempts is therefore left to walk the ladder from the configured radius. If the
+fail-fast margin needs widening, that is a harness policy decision (`consecutive_plan_failures`), not a planner change.
+
+Reverted: `explore.ts` and `failed-mine.test.ts` restored; the three `factory.ts` hunks removed. Re-validated by
+`m6-b60u-revert`: **2/2 seeds back to `v1-done`** at `233.5` (seed 8646103, 0 stalls) and `185.2` game-min (seed
+2229258, 0 stalls), 0 work-count flags, with the same site census and milestone times as `m6-b60s-provider`. The
+reverted tree reproduces the baseline exactly, which also re-confirms the run is deterministic.
+
+`m6-b60s-provider` is therefore the acceptance run for the B60/B61 slice; `m6-b60t-radius` is kept only as the
+counter-example.
+
+### Still open
+
+`2229258`'s own streak is a different shape and is **not** addressed by the radius memory: `g20` failed once, the
+`P36` fuel fallback deferred it, and `g21` then failed four times with `no feasible position (1 of 1 patches tried)` at
+112/168/252/378 — the count of known coal patches never grew with the radius, so the only cure was the D62 radar
+outpost. That is five consecutive failures, safely under the limit, but a 20-seed sweep may still trip the counter
+spuriously on a seed with one more retry. Separately, `2229258` still logs `D55 coal>power#4 (n27) is worked out …
+the design plans a new one`, i.e. a provider is deconstructed before its replacement is connected (goalpost 1 of the
+provider refactor).

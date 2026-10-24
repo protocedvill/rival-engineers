@@ -137,7 +137,50 @@ head -40 out/soak/m6-b60l-provider/scorecard.md
 
 ## Current gate
 
-- **B60: open.** Needs seed 8646103 to reach v1-done.
-- **B61: fixed** on `m6-b60g/h` (seed 2229258 v1-done 185.2), pending final rerun.
+- **B60: passing.** `m6-b60s-provider` (fresh, `fail_fast` on) took **8646103 to v1-done at 233.5 game-min** and
+  **2229258 to v1-done at 185.2 game-min**, 0 stalls, 0 work-count flags. First green two-seed gate for B60/B61.
+- **B61: fixed**, confirmed again in the same run.
 - **Full refactor: not complete.** The current slice is providerShort capacity splitting, merge side-loads,
-  providerSplit per consumer, and providerNoTap exact feed reassignment.
+  providerSplit per consumer, and providerNoTap exact feed reassignment. (A per-ore region-radius memory was tried on
+  top and reverted — see below.)
+
+## Latest slice: per-ore region-radius memory — investigated and **reverted** (2026-10-24)
+
+`m6-b60s-provider` exposed what looked like waste: `g19` and `g20` plan the same eight split modules, `g19` used up
+`MAX_PLAN_ATTEMPTS = 4`, and `g20` reset `g.radius` to the configured 112 and failed at 112/168/252 exactly as `g19`
+had before succeeding at 378 — seven consecutive plan failures against `consecutive_plan_failures = 8`.
+
+The fix tried was per-ore radius memory (`FactoryState.oreRadius`, `EX.noteEmptyOreRadius`, `EX.startRadius`, applied in
+`planGoal` when `g.attempts === 1`). It was typecheck/T1/build clean with 4 new T1 tests, but **`m6-b60t-radius` turned
+seed 8646103 from a 233.5 min pass into a 448 min double stall that never reached `v1-done`** (power could not grow:
+`power short (9e+06/1.43e+07): cannot grow (3 failed expansions)`, `no researchable technology`). Seed 2229258 was
+unchanged at 185.2.
+
+**Learned rule: a radius step is not redundant just because a previous goal failed at that radius.** The replacement
+re-plans the whole cluster, and success depends on the *pairing* of radius and cluster offset (`planGoal`'s `tries`),
+not the radius alone. `8646103` only succeeds at radius 378 with the offset attempt 4 used (`[24,-24]`); attempt 1 at 378
+uses `[0,-24]` and yields a layout that starves power 200 game-min later. The ladder is part of the search.
+
+Reverted: `explore.ts` and `failed-mine.test.ts` restored, the `factory.ts` hunks removed. Re-validated by
+`m6-b60u-revert`: **2/2 back to `v1-done`** at 233.5 / 185.2 game-min, 0 stalls, matching `m6-b60s-provider` exactly.
+**Do not reintroduce this.** If the fail-fast margin needs widening, that is a harness policy number
+(`consecutive_plan_failures`) for the user to set, not a planner change.
+
+### Known gap that remains
+
+`2229258`'s streak is a different shape. `g20` failed once, the `P36` fuel fallback deferred it, and `g21` then failed
+four times with `no feasible position (1 of 1 patches tried)` at 112/168/252/378 — the number of *known* coal patches
+never grew with the radius, so only the D62 radar outpost helped. Five consecutive failures: safe here, but a 20-seed
+sweep may still trip the counter on a seed with one more retry.
+
+## What remains after B60 passes
+
+1. Full T2 on the final tree (T1 is green: 31/31 files).
+2. The rest of the provider-group scope:
+   - **verified handover before deconstruct** — `2229258` still logs `D55 coal>power#4 (n27) is worked out … the design
+     plans a new one`, so goalpost 1 is not met yet;
+   - splitter/tap/trunk augmentation beyond side-load merge;
+   - provider-group reconciler remedies for every shared trunk;
+   - route-aware placement/reassignment for existing providers, not only new groups.
+3. Full M6 acceptance: fixed 10 + random 20, two factions, Space Age smoke, determinism, timelapses, exact-commit
+   validation, then report/PR. Do not claim acceptance from the targeted runs.

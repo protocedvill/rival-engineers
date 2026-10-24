@@ -22,6 +22,8 @@ export interface ModuleRequest {
   id: string
   /** Canonical module. */
   def: ModuleDef
+  /** Route-reassignment provider: place an independent module instead of completing another logical provider's mine. */
+  newSite?: boolean
   /**
    * With an expand-first policy: satisfy this request by growing a compatible placed module (same generator, recipe
    * and resource) by this many units, if there is room, instead of placing a new one.
@@ -626,7 +628,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     // yet counts too; the plan's adoption builds its completion.
     // B33: only a splitter-tap plan can share the mine's one output; a point-to-point request places its own mine on
     // the part of the field no other mine claims.
-    const whole = policy.topology === "splitter-tap" ? wholePatchCandidate(job.layout, mreq.def) : undefined
+    const whole = policy.topology === "splitter-tap" && mreq.newSite !== true ? wholePatchCandidate(job.layout, mreq.def) : undefined
     if (whole !== undefined) {
       const r = tryExpand(job.layout, terrain, facts, policy, whole.id, 1)
       if (r.ok) {

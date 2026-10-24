@@ -178,10 +178,32 @@ test("B61 provider groups: an exact failed feed is not kept; another consumer ge
   ok(byRole(d.nodes, `coal>${SMELT_CU}`) !== undefined, "the unkept consumer gets its own provider")
 })
 
-test("B61 provider groups: splitting a cluster-suffixed role does not reuse that role", () => {
-  const role = "coal*>test#3"
+test("B61 provider groups: a blocked exact feed overrides exact and legacy kept assignments", () => {
+  const role = "coal>old"
   const d = design(ctx({
     enabled: ELECTRIC,
+    sharing: {
+      keep: {
+        [`coal@${SMELT_FE}@in-fuel`]: role,
+        [`coal@${SMELT_FE}`]: role,
+        [`coal@${SMELT_CU}@in-fuel`]: role,
+        [`coal@${SMELT_CU}`]: role,
+      },
+      spare: {},
+      blocked: { [`${role}=>${SMELT_CU}.in-fuel`]: true },
+    },
+  }), { item: RED, perSecond: 1 })
+  ok(byRole(d.nodes, role) !== undefined, "the provider keeps its feasible consumer")
+  ok(byRole(d.nodes, `coal>${SMELT_CU}`) !== undefined, "the blocked consumer gets a separate provider")
+  for (const e of d.edges) ok(!(e.from === role && e.to === SMELT_CU), "the blocked feed is absent")
+})
+
+test("B61 provider groups: splitting a cluster-suffixed role does not reuse that role", () => {
+  const role = "coal*>test#3"
+  const oldParallel = "coal*>test#2"
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    providerCaps: { [oldParallel]: 1, [role]: 1 },
     sharing: {
       keep: { [`coal@${SMELT_FE}@in-fuel`]: role, [`coal@${SMELT_CU}@in-fuel`]: role },
       spare: {},
@@ -189,9 +211,11 @@ test("B61 provider groups: splitting a cluster-suffixed role does not reuse that
     },
   }), { item: RED, perSecond: 1 })
   ok(byRole(d.nodes, role) === undefined, `the infeasible role is not reused: ${d.nodes.map((n) => n.role).join(",")}`)
+  ok(byRole(d.nodes, oldParallel) === undefined, `another built parallel role is not reused: ${d.nodes.map((n) => n.role).join(",")}`)
   let split = 0
   for (const n of d.nodes) if (n.role !== role && string.find(n.role, "coal*>test#", 1, true)[0] === 1) split++
   eq(split, 2, `two fresh parallel roles: ${d.nodes.map((n) => n.role).join(",")}`)
+  ok(byRole(d.nodes, "coal*>test#4") !== undefined && byRole(d.nodes, "coal*>test#5") !== undefined, "the next two fresh suffixes")
 })
 
 test("power roles: the steam block and its fuel supply", () => {

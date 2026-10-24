@@ -82,9 +82,10 @@ export interface DesignContext {
    * (`spare`: item → producer role → planned output minus what its edges carry), else share one new producer per cluster
    * (`item*>first consumer`). Absent: point-to-point.
    * `fallback` (P36 (b), proposed): item → built producer roles, nearest first, that new consumers tap when a new producer
-   * of the item could not be placed (the first one takes them all and grows).
+   * of the item could not be placed (the first one takes them all and grows). `blocked` is an exact
+   * `provider=>consumer.port` deny-list: the historical assignment stays visible, but the design must not preserve it.
    */
-  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean> }
+  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> }
   /**
    * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
    * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
@@ -133,6 +134,8 @@ export interface DesignNode {
   powerW: number
   /** Production cluster (1-based) when the target is split. */
   cluster: number
+  /** A route-infeasible provider split must use an independent site, not complete the old provider's mine. */
+  newSite?: boolean
 }
 
 export interface DesignEdge {
@@ -391,14 +394,16 @@ function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; r
 }
 
 /** The next free provider role for a parallel provider (`coal>power`, `coal>power#2`, ...). */
-function parallelRole(w: Walk, role: string): string {
+function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
   // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
   const m = string.match(role ?? "", "^(.*)#%d+$")
   const base = m[0] !== undefined ? m[0] : (role ?? "provider")
   let n = 2
   for (;;) {
     const candidate = `${base}#${n}`
-    let used = candidate === role
+    // A built provider may not have been emitted into this design yet (or its exact feed may have just been denied).
+    // Its role is still occupied: reusing it makes diffDesign bind the replacement to the old graph node.
+    let used = candidate === role || (avoidBuilt && w.ctx.providerCaps?.[candidate] !== undefined)
     for (const node of w.nodes) if (node.role === candidate) used = true
     if (!used) return candidate
     n++
@@ -409,7 +414,7 @@ function parallelRole(w: Walk, role: string): string {
  * Add one provider node. `fixedCapacity` is set when the node is the existing, unexpandable half of a provider group:
  * its design capacity is the real capacity, so the diff does not ask this provider to grow again.
  */
-function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string, fixedCapacity?: number, mergePorts?: Record<string, boolean>): void {
+function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string, fixedCapacity?: number, mergePorts?: Record<string, boolean>, newSite = false): void {
   const ctx = w.ctx
   const gen = producerFor(ctx, item)
   if (gen === undefined) {
@@ -449,6 +454,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     inputs: inputPorts(s.def, util),
     powerW: powerOf(s.def.rates.inputs),
     cluster: w.cluster,
+    newSite: newSite || undefined,
   }
   w.nodes.push(node)
   const from = outPort(s.def, item)
@@ -483,7 +489,8 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const fresh: Demand[] = []
   const alone: Demand[] = []
   for (const d of mine) {
-    const p = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
+    let p: string | undefined = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
+    if (p !== undefined && shared.blocked?.[`${p}=>${d.to}.${d.toPort}`] === true) p = undefined
     if (p !== undefined) {
       if (byProducer[p] === undefined) {
         byProducer[p] = []
@@ -528,7 +535,7 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     // A shared provider planned for several consumers can be route-infeasible: no one site reaches all of them.
     // After such a plan failure the factory marks the role; give each consumer its own parallel provider instead.
     if (shared.split?.[p] === true) {
-      for (const d of byProducer[p]) addProducer(w, item, d.rate, [d], true, parallelRole(w, p))
+      for (const d of byProducer[p]) addProducer(w, item, d.rate, [d], true, parallelRole(w, p, true), undefined, undefined, true)
       continue
     }
     let total = 0
@@ -539,7 +546,7 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     const role = `${item}*>${fresh[0].to}`
     if (shared.split?.[role] === true) {
       // The previous plan could not reach every consumer from one site. One parallel provider per consumer.
-      for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role))
+      for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role, true), undefined, undefined, true)
     } else {
       let total = 0
       for (const d of fresh) total += d.rate

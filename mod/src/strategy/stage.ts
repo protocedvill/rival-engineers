@@ -54,7 +54,7 @@ export function labUnitTime(config: Config, stage: number): number {
  * shared (design.ts `DesignContext.sharing`): consumers already fed keep their producer; a producer's spare capacity
  * (planned output minus what its edges carry) is offered to new consumers of its item.
  */
-export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean> } | undefined {
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
   const keep: Record<string, string> = {}
@@ -69,9 +69,9 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       if (p === undefined || c === undefined) continue
       const key = `${e.item}@${c.role}@${e.toPort}`
       keep[key] = p.role
-      // B61: a failed exact feed is not kept for that consumer; the design finds it another provider. The role-level
-      // key remains for older callers, but not for the failed feed.
-      if (f.providerNoTap?.[`${p.role}=>${c.role}.${e.toPort}`] !== true) keep[`${e.item}@${c.role}`] = p.role
+      // Keep the older role-level key for callers that do not distinguish ports. `blocked` below is authoritative:
+      // expandShared checks the exact provider→consumer feed after either exact or legacy lookup.
+      keep[`${e.item}@${c.role}`] = p.role
       out[p.id] = (out[p.id] ?? 0) + e.plannedRate
     }
     for (const [id, used] of pairs(out)) {
@@ -83,7 +83,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room
     }
   }
-  return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit }
+  return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit, blocked: f?.providerNoTap }
 }
 
 /**
