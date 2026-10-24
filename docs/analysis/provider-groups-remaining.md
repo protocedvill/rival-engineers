@@ -146,3 +146,41 @@ Route adoption was approved and implemented in M6b.47 (`docs/reports/M6-report.m
 **Not yet proven:** `m6-b60v-handover` exercised only the "port already covered" branch (seed 2229258, completed in
 75 ms) and the "no placeable replacement" stall (seed 8646103, `no feasible position (1 of 1 patches tried)`). Adopt a
 survivor route in a targeted T2 before claiming goalpost 1 met.
+
+## Item 2: the mechanism already exists (found 2026-10-24)
+
+Reading `planner/build-list.ts:31-54` changes the estimate for the merge splitter: **a splitter step already replaces the
+belt tile it sits on.**
+
+```ts
+// build-list.ts:39-44
+if (s.kind === "splitter") {
+  splitters.push({ name: r.splitter, x: (s.x + s.x2!) / 2 + 0.5, y: (s.y + s.y2!) / 2 + 0.5, dir: dirValue(s.dir), owner: id })
+  replaced[tkey(s.x, s.y)] = true          // every belt spec on that tile is dropped
+  continue
+}
+```
+
+So the trunk's belt is dropped and the splitter emitted once *any* route declares a splitter step there, whichever route
+declares it. A splitter step also carries a second tile (`RouteStep.x2`/`y2`), so a two-tile splitter is already
+supported, and `checkLayout` already validates splitter entry (`layout.ts:715`, "not entered straight").
+
+That means a merge splitter is mostly a **router arrival mode**, not new entity machinery:
+
+1. `mergeGoals` (`plan.ts:434`) additionally returns candidates flagged `splitter: true` for trunk tiles that are a
+   straight belt rather than a curve/underground/splitter, keeping the existing free-tile test for the incoming belt.
+2. `RouteRequest` / `Route` gain `mergeSplitter?: boolean`; `routeRequest` (`plan.ts:499`) sets it.
+3. Router (`router.ts:433`, `683`, `850`): for a splitter merge the final step is a splitter on the trunk tile oriented
+   along the trunk, with the incoming belt entering from the requested side, instead of a side-load arrival.
+4. `checkLayout` (`layout.ts:744-751`): the merge-target rule asks `routeOcc[t]` for another route to the same consumer.
+   A splitter owned by the merging route changes that occupancy, so the check has to accept "a splitter step on a route
+   to the same consumer" as well.
+5. T2 on a real surface: two producers, one consumer port, fed through one splitter; assert both belts deliver.
+
+### What it does and does not buy
+
+- It **does** allow a merge where the trunk tile is curved, underground or already a splitter (side-loading is refused
+  there), and it merges at full belt rate with input priority.
+- It **does not** create space: the incoming belt still needs its perpendicular tile free, exactly as
+  `mergeGoals` requires today. It therefore would **not** have unblocked the `no merge target` failure on seed 8646103.
+  That failure needs ground, and only D62 exploration finds more.
