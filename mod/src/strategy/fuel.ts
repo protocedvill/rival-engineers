@@ -2,14 +2,14 @@ import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
+import { planAdoption } from "../planner/adoption"
 import { adoptRoute, findModule } from "../planner/layout"
-import type { PortRef } from "../planner/layout"
 import * as LG from "../planner/logical"
-import type { LogicalEdge, LogicalGraph, LogicalNode } from "../planner/logical"
+import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import { sealedInputs } from "../planner/placement"
 import * as RT from "../planner/runtime"
 import { markDirty, terrainView } from "../planner/terrain"
-import { connectionId, RouteId } from "../shared/ids"
+import { connectionId } from "../shared/ids"
 import { findEntities } from "../work"
 import { resyncReserved } from "./evict"
 import type { FactoryState } from "./factory"
@@ -203,36 +203,14 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   // Provider handover (goalpost 1): a consumer already fed by this provider keeps its belt. The replacement side-loads
   // into that route (`Route.merge`), so the route is adopted by the replacement connection instead of ripped with the
   // module, and the consumer never loses its feed while the crew deconstructs the old one.
-  const adopt: { rid: RouteId; heir: LogicalEdge }[] = []
-  for (const eid of f.graph.edgeOrder) {
-    const e = f.graph.edges[eid]
-    if (e.kind !== "belt" || e.from !== n.id || e.to === undefined || e.toPort === undefined) continue
-    // The heir is the built edge that now feeds the same consumer port (a merge side-load into this route).
-    let heir: LogicalEdge | undefined
-    for (const oid of f.graph.edgeOrder) {
-      const o = f.graph.edges[oid]
-      if (o === e || o.kind !== "belt" || o.from === undefined || o.from === n.id) continue
-      if (o.to !== e.to || o.toPort !== e.toPort) continue
-      const src = f.graph.nodes[o.from]
-      if (src === undefined) continue
-      const heirBuilt = heir !== undefined && heir.from !== undefined ? f.graph.nodes[heir.from]?.lifecycle === "built" : false
-      if (heir === undefined || (src.lifecycle === "built" && !heirBuilt)) heir = o
-    }
-    if (heir === undefined || heir.from === undefined) continue
-    for (const rid of e.physical ?? []) {
-      const route = f.layout.routes[rid]
-      if (route === undefined || route.conn !== e.role || route.to.module !== e.to || route.to.port !== e.toPort) continue
-      adopt.push({ rid: rid as RouteId, heir })
-    }
-  }
+  const adopt = planAdoption(f.graph, f.layout, n.id)
   const adoptIds = adopt.map((a) => a.rid)
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority, adoptIds)
   // Re-home the adopted routes to the replacement connection and keep them in its flow.
   for (const a of adopt) {
-    if (a.heir.from === undefined) continue
-    const from: PortRef = { module: a.heir.from, port: a.heir.fromPort ?? "" }
-    if (!adoptRoute(f.layout, a.rid, connectionId(a.heir.role), from)) continue
-    a.heir.physical = [...(a.heir.physical ?? []), a.rid]
+    if (!adoptRoute(f.layout, a.rid, connectionId(a.conn), a.from)) continue
+    const heir = f.graph.edges[a.heir]
+    if (heir !== undefined) heir.physical = [...(heir.physical ?? []), a.rid]
   }
   // D55/P36: the replacement goal waits for these clear jobs; until then the old footprint is still `OWN` on the map.
   if (r.clearJobs.length > 0) {
