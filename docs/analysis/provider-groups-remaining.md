@@ -184,3 +184,24 @@ That means a merge splitter is mostly a **router arrival mode**, not new entity 
 - It **does not** create space: the incoming belt still needs its perpendicular tile free, exactly as
   `mergeGoals` requires today. It therefore would **not** have unblocked the `no merge target` failure on seed 8646103.
   That failure needs ground, and only D62 exploration finds more.
+
+## The `no feasible position (1 of 1 patches tried)` shape — root cause found (2026-10-24)
+
+Three sightings pointed here: seed 2229258's five consecutive plan failures, seed 8646103's handover stall, and the
+`no merge target` failure. It looked like the *patch count* refused to grow with the region radius. It is not a
+planner defect.
+
+`buildPatches` (`planner/placement.ts:204-271`) only counts **free** ore: `free()` rejects a tile that is `OWN` in the
+terrain view or that conflicts with a placement claim (`placementClaimConflict`), and a patch is skipped when its free
+tile count is below what the template's drill areas need at `minOreCoverage` (line 226, 263). So
+
+- "1 of 1 patches tried" means exactly one patch in the region still has enough **unclaimed** ore — the rest are already
+  taken by built mines;
+- growing the region finds more *ground*, not more *free patches*, which is why 112/168/252/378 all reported the same
+  count. My earlier reading of that as a radius problem was wrong.
+
+The correct cure is therefore the one already implemented: **D62 exploration** (a radar outpost finds a fresh field) or
+eviction — not a radius or placement change. Treat `no feasible position` as a legitimate "the world is full" signal.
+
+Consequence for acceptance: the 20-seed sweep's outcome depends on whether D62 exploration keeps up with consumption,
+not on anything in the provider-group slices.
