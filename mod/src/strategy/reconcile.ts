@@ -42,7 +42,7 @@ export interface ReconcileParams {
   cooldownTicks: number
 }
 
-export type RemedyKind = "grow" | "repair" | "upkeep"
+export type RemedyKind = "grow" | "repair" | "upkeep" | "parallel"
 
 export interface Remedy {
   /** Root-cause key: one remedy history per key. */
@@ -218,6 +218,15 @@ function label(n: LogicalNode): string {
   return `${n.id} (${n.role})`
 }
 
+/** Whether any belt from `prod` carrying `item` is already at capacity (the group remedy owns that case). */
+function anyFull(g: LogicalGraph, prod: LogicalNode, item: string, tick: number, p: ReconcileParams): boolean {
+  for (const o of edgesFrom(g, prod.id)) {
+    if (o.kind !== "belt" || o.item !== item || o.from === undefined) continue
+    if (edgeVerdict(o, tick, p) === "full") return true
+  }
+  return false
+}
+
 /** A starved (or unfuelled) node: which of its inputs is short, and why. */
 function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number): RootCause {
   const p = t.input.params
@@ -231,7 +240,17 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       if (prod.lifecycle !== "built") return { kind: "building", id: prod.id, what: "under construction", why: `${item} comes from ${label(prod)}, still being built` }
       const v = edgeVerdict(e, t.input.tick, p)
       if (v === "stale") return wantProbe(t, e)
-      if (v === "full") return { kind: "edge", id: e.id, what: "at-capacity", why: `${e.role} carries ${fmt(e.measuredRate)}/s, its belt's capacity (${fmt(e.capacityRate)}/s): undersized for ${fmt(e.plannedRate)}/s planned` }
+      if (v === "full") {
+        const why = `${e.role} carries ${fmt(e.measuredRate)}/s, its belt's capacity (${fmt(e.capacityRate)}/s): undersized for ${fmt(e.plannedRate)}/s planned`
+        // B60 group remedy: a shared trunk is undersized as a group. Growing one producer would not widen the belt it
+        // shares, so the group gets a parallel provider instead (the design keeps this one at its real capacity and
+        // assigns the residual consumers to a parallel role with merge side-loads). A point-to-point belt is a
+        // single-route sizing decision, which the planner's overflow choice owns; the reconciler stays out of it.
+        let shared = 0
+        for (const o of edgesFrom(t.g, prod.id)) if (o.kind === "belt" && o.item === item) shared++
+        if (shared > 1) remedy(t, { key: `parallel:${prod.id}`, kind: "parallel", node: prod.id, why })
+        return { kind: "edge", id: e.id, what: "at-capacity", why }
+      }
       if (v === "intake") return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
       if (v === "broken" || prod.status === "backed-up") {
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
@@ -245,7 +264,9 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item} but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
       }
       if (shares(prod).working >= p.busyShare) {
-        remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
+        // Unless one of this producer's belts is already full: then the group remedy below covers it, and growing the
+        // producer would not widen a belt that is at capacity.
+        if (!anyFull(t.g, prod, item, t.input.tick, p)) remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
         return { kind: "node", id: prod.id, what: "undersized", why: `${label(prod)} runs flat out and ${label(n)} still lacks ${item}` }
       }
       return { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }

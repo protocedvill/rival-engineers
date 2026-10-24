@@ -2665,3 +2665,57 @@ cycles here; the fix is `.sort((a, b) => cmp(a, b))`.
   `no merge target` failure on seed 8646103 — that one needs ground, and only D62 exploration finds more.
 - No acceptance seed is known to need a splitter merge: `mergeGoals` reaches for one only after all side-load
   candidates fail. It is capability and robustness, not a proven bottleneck fix.
+
+## M6b.49: reconciler group remedy for a saturated shared trunk (working tree, 2026-10-24)
+
+Item 3 of the provider-group refactor: "reconciler group remedies for every shared trunk, not just the power/fuel
+path". The item was blocked by a hole rather than by missing machinery.
+
+### The hole
+
+`strategy/reconcile.ts` traced a starved node to the right cause, then acted on it for every verdict **except** one:
+
+```ts
+if (v === "full") return { kind: "edge", id: e.id, what: "at-capacity", why: ... }   // no remedy
+```
+
+`broken` → `repair`, `running flat out` → `grow`, `deplete` → `grow`, unpowered/unfuelled → repair/grow. A shared trunk
+at capacity was correctly diagnosed and then **ignored for the rest of the game**. That is precisely the "not just the
+power/fuel path" gap: remedies existed for starvation, fuel, power, depletion and broken belts, and nothing where a
+shared trunk saturates.
+
+### The remedy
+
+New `RemedyKind` `"parallel"`, emitted when the saturated belt's producer feeds **more than one** belt of that item:
+
+- `applyRemedy` sets `f.providerShort[role]` (and says so in the reconciler log).
+- The design then caps that provider at its real capacity and assigns the residual consumers to a `parallelRole` with
+  merge side-loads — the mechanism B60 already passes on.
+
+Semantics: a shared trunk is undersized **as a group**. Growing one producer does not widen a belt it shares, so the
+group is split instead. A guard was also added so the `running flat out` branch no longer emits `grow` for a producer
+that has a full belt; the group remedy owns that case. The first version emitted both — the test caught it, not review.
+
+### Deliberately not changed
+
+A **point-to-point** saturated belt still emits no remedy. `grow` was tried there and rejected: growing a producer does
+not widen the belt in front of it, and that sizing decision belongs to the planner's `decideOverflow`, not the
+reconciler. The pre-existing test `an undersized belt into labs … no remedy` still passes unchanged and now documents a
+deliberate scope boundary rather than a hole.
+
+### Validation
+
+- T1 `reconcile`: a shared trunk at capacity yields exactly one `parallel` remedy on the producer, and no `grow`
+  (16 tests in the file). T1 **35/35 files**, T2 **152/152**, typecheck and build clean.
+- No soak yet exercises it: the two targeted seeds never saturated a shared trunk at runtime. It is capability, and the
+  20-seed sweep is the first run that could trigger it.
+
+### Coverage of the four group remedies
+
+| Remedy | Mechanism | State |
+|---|---|---|
+| provider short → grow / add / merge / parallel | `grow`; `providerShort` → `parallelRole` + merge | works |
+| shared trunk at capacity | `parallel` remedy → `providerShort` | new (M6b.49) |
+| consumer input sealed → relocate the consumer | `relocateSealed` (B57/B61), independent of capacity | works |
+| provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
+| replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |

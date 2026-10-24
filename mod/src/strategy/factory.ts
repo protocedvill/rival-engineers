@@ -1940,6 +1940,24 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     say("upkeep pass")
     return
   }
+  // B60 group remedy: a shared trunk at capacity. The provider keeps every consumer it serves; the design caps it at
+  // its real capacity and gives the residual demand a parallel role (with merge side-loads), instead of asking this
+  // one to grow into a belt that is already full.
+  if (r.kind === "parallel") {
+    const n = f.graph.nodes[r.node!]
+    if (n === undefined) {
+      say("cannot split: the node left the graph")
+      return
+    }
+    f.providerShort ??= {}
+    if (f.providerShort[n.role] === true) {
+      say("group remedy: already split")
+      return
+    }
+    f.providerShort[n.role] = true
+    say(`group remedy: ${n.role} keeps its consumers and the rest go to a parallel provider`)
+    return
+  }
   if (r.kind === "grow") {
     // A plan in flight works on a copy of the layout and replaces it when adopted: normally grow after it. But a
     // depletion (key `deplete:`) must expand now — the worked-out outpost is starving the line — so it is only blocked

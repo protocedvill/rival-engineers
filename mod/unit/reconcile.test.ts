@@ -349,4 +349,23 @@ test("a stale edge asks for a probe instead of acting", () => {
   eq(r.remedies.length, 0, "no remedy yet")
 })
 
+
+test("B60 group remedy: a shared trunk at capacity asks for a parallel provider, not for one producer to grow", () => {
+  const g = newGraph()
+  const busy = st({ working: 1 })
+  node(g, "p", "module", "iron-plate", 10, busy, 10)
+  // Two consumers of the same provider; the first one's belt is at capacity.
+  for (const c of ["a", "b"]) {
+    node(g, c, "module", "gears", 2, st({ starved: 1 }), 0, {
+      measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "gears", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { "iron-plate": 1 } },
+    })
+  }
+  belt(g, "pa", "p", "a", "iron-plate", 10, { rate: 14, from: 0, to: 0.1, cap: 15 })
+  belt(g, "pb", "p", "b", "iron-plate", 10, { rate: 10, from: 0, to: 0.1, cap: 15 })
+  const { r } = settle(g, 3)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].kind, "parallel", "a shared trunk gets a parallel provider")
+  eq(r.remedies[0].node, "p", "the shared provider")
+})
+
 run("reconcile")
