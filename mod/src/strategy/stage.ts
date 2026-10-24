@@ -76,7 +76,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
-      if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role]) continue
+      if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role] || f.handover?.[p.role] !== undefined) continue
       const room = rateIn(p.capacity.outputs, p.item) - (used as number)
       if (room <= 0) continue
       spare[p.item] ??= {}
@@ -98,7 +98,7 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
     const list: { role: string; key: number }[] = []
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
-      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role]) continue
+      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x
@@ -156,6 +156,19 @@ export function providerCaps(f: FactoryState | undefined): Record<string, number
 /** B60: roles the design must not grow or tap for new consumers. */
 export function providerShort(f: FactoryState | undefined): Record<string, boolean> | undefined {
   return f?.providerShort
+}
+
+/**
+ * Goalpost 1: provider roles being handed over. Their consumers need a replacement planned under a distinct parallel
+ * role, and their spare capacity must not be offered to new consumers (the provider is going away).
+ */
+export function handoverRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
+  let out: Record<string, boolean> | undefined
+  for (const [role] of pairs(f?.handover ?? {})) {
+    out ??= {}
+    out[role as string] = true
+  }
+  return out
 }
 
 function splittersEnabled(force: LuaForce): boolean {

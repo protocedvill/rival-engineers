@@ -203,12 +203,19 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * Gives up some parts of a layout (a module location something foreign took): their own ghosts are removed, their
  * built entities get clear jobs (the crew deconstructs them and keeps the items), and they leave the layout, with the
  * routes to and from removed modules and the pole lines of removed poles. Returns the tiles freed and the clear jobs.
+ *
+ * `adopt` lists routes that survive their module: a provider handover keeps the retiring provider's belt to a consumer
+ * because its replacement side-loads into it and adopts it (see `adoptRoute`). Those routes keep their tiles, their
+ * entities and their claims; the caller re-homes them to the replacement connection.
  */
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[] } {
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[] } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
+  const kept: Record<string, boolean> = {}
+  for (const rid of adopt ?? []) kept[rid] = true
   const routes = [...parts.routes]
   for (const rid of layout.routeOrder) {
+    if (kept[rid] === true) continue
     const r = layout.routes[rid]
     if ((mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) && routes.indexOf(rid) < 0) routes.push(rid)
   }

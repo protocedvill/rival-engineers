@@ -551,10 +551,24 @@ export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   return removed
 }
 
+/**
+ * Provider handover (goalpost 1): a route outlives the connection that planned it. The retiring provider's belt to a
+ * consumer is kept when its replacement side-loads into it (`Route.merge`), so the consumer never loses its feed while
+ * the old module is deconstructed: the replacement connection adopts the route. Its `conn` becomes the replacement's
+ * and `from` the replacement's port, while the laid tiles stay exactly where they are.
+ */
+export function adoptRoute(state: LayoutState, id: RouteId, conn: ConnectionId, from: PortRef | undefined): boolean {
+  const route = state.routes[id]
+  if (route === undefined) return false
+  route.conn = conn
+  route.from = from
+  bumpLayout(state)
+  return true
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Derived-index checker. This checks the layout's internal bookkeeping only; `checkLayout` below checks geometry and
 // terrain. Keeping the two separate makes this useful after pure mutations and on replay fixtures without a surface.
-
 export interface LayoutIndexCheck {
   problems: string[]
 }

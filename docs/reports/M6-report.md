@@ -2542,3 +2542,76 @@ outpost. That is five consecutive failures, safely under the limit, but a 20-see
 spuriously on a seed with one more retry. Separately, `2229258` still logs `D55 coal>power#4 (n27) is worked out …
 the design plans a new one`, i.e. a provider is deconstructed before its replacement is connected (goalpost 1 of the
 provider refactor).
+
+## M6b.47: verified provider handover with route adoption (working tree, 2026-10-24)
+
+Goalpost 1 of the provider refactor — *a provider is never deconstructed before a replacement can serve its
+obligations* — was the only goalpost still knowingly violated: seed 2229258 logged `D55 coal>power#4 (n27) is worked
+out … the design plans a new one`, i.e. deconstruct-then-plan.
+
+The user chose **route adoption** over re-routing: let `Route` outlive the connection that created it. That is what the
+provider-group model needs, because a replacement cannot route into a consumer port that is already fed — its edge is a
+`merge` that side-loads into the **retiring provider's own belt**. Ripping that belt with the module is what starved the
+consumer.
+
+### What changed
+
+- `planner/layout.ts` `adoptRoute(state, id, conn, from)` re-homes a route to the connection that now feeds it. Tiles,
+  steps, spans, occupancy and claims are untouched, so the consumer's belt never disappears.
+- `planner/conflicts.ts` `abandonParts(..., adopt?)`: routes on the adopt list survive their module instead of being
+  swept up by the `mods[r.to.module] || mods[r.from.module]` rule.
+- `strategy/fuel.ts` `relocate` finds an **heir** for each belt edge before tearing anything down — the built edge that
+  feeds the same consumer port — and adopts that edge's routes to the heir's connection and out-port, appending them to
+  the heir edge's `physical` so flow, measurement and reconciler repair see one continuous feed. The retiring edge is
+  still removed (`e.from === n.id` is now "lost"), because its producer is gone.
+- `strategy/handover.ts` (pure, T1) is the gate: `handoverVerdict` returns `complete` only when every consumer port the
+  retiring role fed is fed by another **built** provider.
+- `strategy/fuel.ts` `beginHandover` + `serviceHandovers`: the three retirement sites (`P36(a)` fuel running low,
+  `D54` burner-drill outpost, `D55` worked-out mine) now mark the role instead of deconstructing it. `serviceHandovers`
+  runs every think and retires when `complete`, waits while `waiting`, and retires anyway when `stalled`.
+- `strategy/stage.ts` `handoverRoles` keeps those roles out of `spare`/`fallback`; `strategy/design.ts` plans their
+  replacement under a `parallelRole` with `merge` edges, because the old role is still in the graph and reusing it would
+  make `diffDesign` think the replacement already exists. The design cache key includes the handover set.
+
+### Validation
+
+- `npm run typecheck`, `npm run test:unit` **33/33 files** (`handover` 7 tests, `handover-route` 2 tests), build clean.
+- The build's Lua main-chunk guard caught a real trap: the new imports pushed `factory.lua` to **186 locals** (guard
+  185). Fixed with `import * as FU` plus `import type` for the record, as `docs/agent/architecture.md` prescribes.
+- T2 caught that the old `P36 (a)` test encoded the *previous* contract ("deconstructed, out of the layout and graph").
+  It was rewritten, not deleted: it now asserts the handover is started with **nothing** torn down and no clear jobs,
+  that a handover under way is not started twice, and that `serviceHandovers` retires the outpost only once a built
+  replacement feeds the same consumer port — including the run count, the clear jobs and the released reservations.
+- `m6-b60v-handover` (2 seeds, `fail_fast` on): **2/2 `v1-done`**, 0 stalls, 0 work-count flags. Seed 8646103 **232.5**
+  game-min (one better than 233.5), seed 2229258 185.2.
+
+### What the soak actually showed — read this before trusting the slice
+
+The gate ran, but **neither handover took the adopt branch**:
+
+- Seed **2229258**, `coal>power#4` (n27): handover began at 621.466 and reported `replacement connected` at 621.541 —
+  75 ms later. The port was *already* fed by another built provider, so the verdict was `complete` at once and the
+  module was deconstructed safely (the goalpost was honoured, but by an existing alternate feed, not by a new one).
+  It logged `2 routes dropped` and no adoption.
+- Seed **8646103**, `iron-ore>iron-plate*>logistic-science-pack>labs#2` (n33): the design did plan a replacement
+  (`g23`, role `…#4`, so `parallelRole` worked) but every attempt failed `no feasible position (1 of 1 patches tried)`,
+  so the handover **stalled** at the 10 game-min valve and fell back to deconstruct-then-plan.
+
+So the integration of `heir` selection + `abandonParts(adopt)` is **not yet observed end to end**. `adoptRoute` is
+pinned by T1 in isolation, and the T2 `P36 (a)` test was updated to the new contract (handover started, nothing
+deconstructed, no clear jobs, then retirement once a built replacement feeds the same port — including the run-count
+and reservation release). **The survivor-route path itself still needs a targeted test**: two providers merging into one
+consumer port, relocate the retiring one, assert the consumer's route is still present and re-homed to the heir
+connection.
+
+### Magic numbers for the user (M6b.47)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Handover wait limit | `strategy/fuel.ts` `HANDOVER_MAX_MINUTES` | 10 game-min | A retiring provider waits this long for a built replacement, then is deconstructed anyway. Chosen so the observed `D55` replacement (planned but unplaceable, `no feasible position (1 of 1 patches tried)`) does not block deconstruction for long; seed 8646103 stalled exactly here and still finished 1 min earlier than without handover. **Agent guess, please confirm.** | no |
+
+### Still open from M6b.46
+
+The `no feasible position (1 of 1 patches tried)` shape is the same one that produced 2229258's five-failure streak:
+the count of *known* patches does not grow with the region radius, so only a D62 radar outpost helps. It now also
+causes the handover stall above. Worth a dedicated look before the 20-seed sweep.

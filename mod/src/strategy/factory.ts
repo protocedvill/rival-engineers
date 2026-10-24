@@ -30,7 +30,8 @@ import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { registerBuffer } from "../modules/buffers"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
-import { checkPowerFuel, relocate, replaceBurnerOutposts } from "./fuel"
+import * as FU from "./fuel"
+import type { HandoverRecord } from "./handover"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import * as RT from "../planner/runtime"
@@ -200,6 +201,11 @@ export interface FactoryState {
   providerSplit?: Record<string, boolean>
   /** B61: exact provider→consumer feeds whose route failed; the design reassigns just that consumer. */
   providerNoTap?: Record<string, boolean>
+  /**
+   * Goalpost 1 (provider handover): providers being retired. Their consumers get a replacement (a parallel role) and
+   * the old provider is deconstructed only once that replacement feeds every port it served.
+   */
+  handover?: Record<string, HandoverRecord>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -337,7 +343,8 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
-  if (checkPowerFuel(ctx, planning(f) !== undefined) === undefined) replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
+  FU.serviceHandovers({ faction, f, config, surface: factionSurface(faction), tick: game.tick })
+  if (FU.checkPowerFuel(ctx, planning(f) !== undefined) === undefined) FU.replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
@@ -411,6 +418,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     taps: getFactory(ctx.faction.name)?.taps,
     curated: ST.curatedProducers(),
     sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
+    handover: ST.handoverRoles(getFactory(ctx.faction.name)),
     providerShort: ST.providerShort(getFactory(ctx.faction.name)),
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
     powerCap: ST.powerCap(getFactory(ctx.faction.name)),
@@ -452,7 +460,9 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role] of pairs(f.providerSplit ?? {})) split += `${role as string};`
   let providerNoTap = ""
   for (const [key] of pairs(f.providerNoTap ?? {})) providerNoTap += `${key as string};`
-  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let handover = ""
+  for (const [role] of pairs(f.handover ?? {})) handover += `${role as string};`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -1876,7 +1886,7 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
       log(`[rival-engineers] faction ${ctx.faction.name}: B57 ${n.role} (${id}) has its ${ev.sealed.port.port} lane walled in; relocation waits for goal ${busy}`)
       continue
     }
-    relocate(ctx, n, `B57 ${n.role}`, `has its ${ev.sealed.port.port} lane walled in (goal ${g.id}: ${ev.subject})`)
+    FU.relocate(ctx, n, `B57 ${n.role}`, `has its ${ev.sealed.port.port} lane walled in (goal ${g.id}: ${ev.subject})`)
     return n.role
   }
   // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
@@ -1899,7 +1909,7 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
       log(`[rival-engineers] faction ${ctx.faction.name}: B61 ${n.role} (${n.id}) has a sealed input lane; relocation waits for goal ${busy}`)
       continue
     }
-    relocate(ctx, n, `B61 ${n.role}`, `has a sealed input lane (goal ${g.id}: ${ev.subject})`)
+    FU.relocate(ctx, n, `B61 ${n.role}`, `has a sealed input lane (goal ${g.id}: ${ev.subject})`)
     return n.role
   }
   return undefined
@@ -1910,21 +1920,10 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
  * producer again on fresh ore. Not while a plan works on a copy of the layout, nor while a goal builds a connection from it.
  */
 function relocateDepleted(ctx: Ctx, n: LogicalNode, why: string, say: (this: void, result: string) => void): void {
-  const f = ctx.f
-  if (planning(f) !== undefined) {
-    say(`relocation waits for the plan in flight (${why})`)
-    return
-  }
-  for (const g of f.goals) {
-    if (g.status !== "building" && g.status !== "planning") continue
-    for (const e of g.edges) {
-      if (e.from !== n.role) continue
-      say(`relocation waits for goal ${g.id} (${why})`)
-      return
-    }
-  }
-  relocate(ctx, n, `D55 ${n.role}`, `is worked out (${why})`)
-  say("relocated (D55): the design plans it again on fresh ore")
+  // Goalpost 1: nothing is deconstructed here. The provider is marked as retiring and the design plans a replacement
+  // for its consumers; `serviceHandovers` retires it once that replacement is built and feeds every port.
+  FU.beginHandover(ctx, n, `D55 ${n.role}`, `is worked out (${why})`)
+  say("handing over: the replacement is connected before deconstruction (D55)")
 }
 
 function applyRemedy(ctx: Ctx, r: Remedy): void {

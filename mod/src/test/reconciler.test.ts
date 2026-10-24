@@ -16,7 +16,7 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
-import { checkPowerFuel, powerFuelled } from "../strategy/fuel"
+import { checkPowerFuel, powerFuelled, serviceHandovers } from "../strategy/fuel"
 import { FactoryGoal, FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
@@ -384,7 +384,7 @@ describe("M5b reconciler", () => {
     })
   })
 
-  test("P36 (a): a steam block's coal outpost with little ore left is given up (deconstructed, out of the layout and graph); one with plenty is kept", () => {
+  test("P36 (a): a steam block's coal outpost with little ore left hands over (nothing deconstructed until the replacement feeds its port); one with plenty is kept", () => {
     const lab = createLab(48)
     const { faction, f } = testFaction(lab, 30, 30)
     const s = lab.surface
@@ -411,12 +411,28 @@ describe("M5b reconciler", () => {
     const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
     assert(checkPowerFuel(ctx, true) === undefined, "not while a plan works on a copy of the layout")
     assert(checkPowerFuel({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
+    // Goalpost 1: the poor outpost is marked as retiring, not deconstructed.
     const gone = checkPowerFuel(ctx, false)
-    assert(gone === "poor", `the poor outpost is given up (${gone})`)
+    assert(gone === "poor", `the poor outpost starts handing over (${gone})`)
+    assert(f.handover?.["poor"] !== undefined, "it is recorded as handing over")
+    assert(f.graph.nodes["poor"] !== undefined && f.graph.edges["coal>power=>power.in-fuel"] !== undefined, "its node and edge stay in the graph while the replacement is planned")
+    assert(findModule(f.layout, moduleId("poor")) !== undefined, "the module stays in the layout")
+    assert(f.fuelRelocations === undefined || f.fuelRelocations === 0, "nothing deconstructed yet")
+    let clears = 0
+    for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
+    assert(clears === 0, `no clear jobs before the replacement is connected (${clears})`)
+    assert(checkPowerFuel(ctx, false) === undefined, "a handover already under way is not started twice")
+    // A built replacement feeds the same consumer port: the gate opens and the old outpost is retired.
+    node(f.graph, rich, "module", "coal", 1, tick)
+    addNode(f.graph, { id: moduleId("poor2"), role: "coal>power#3", kind: "module", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, powerW: 0, lifecycle: "built", status: "ok", createdTick: tick, builtTick: tick })
+    edge(f.graph, "coal>power#3=>power.in-fuel", moduleId("poor2"), "out", moduleId("pw"), "in-fuel", "coal", 1)
+    serviceHandovers(ctx)
+    assert(f.handover?.["poor"] === undefined, "the handover is finished")
     assert(f.graph.nodes["poor"] === undefined && f.graph.edges["coal>power=>power.in-fuel"] === undefined, "its node and edge leave the graph")
     assert(findModule(f.layout, moduleId("poor")) === undefined && findModule(f.layout, moduleId("rich")) !== undefined, "it leaves the layout, the rich one stays")
-    assert(!powerFuelled(f.graph, f.graph.nodes["pw"]) && powerFuelled(f.graph, f.graph.nodes["pw2"]), "the first steam block has no fuel supply now (the crew fuels its boilers)")
-    let clears = 0
+    assert(powerFuelled(f.graph, f.graph.nodes["pw"]), "the replacement feeds the first steam block")
+    assert(powerFuelled(f.graph, f.graph.nodes["pw2"]), "the rich outpost is untouched")
+    clears = 0
     for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
     assert(clears > 0, `its entities get clear jobs (${clears})`)
     assert(faction.brain!.reserved[tkey(poor.rect.x + 1, poor.rect.y + 1)] === undefined, "its tiles are no longer reserved")

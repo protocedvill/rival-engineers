@@ -42,6 +42,11 @@ export interface DesignContext {
    * an impossible rate or replaces it.
    */
   providerShort?: Record<string, boolean>
+  /**
+   * Goalpost 1 (provider handover): roles being retired. Their consumers get a replacement under a distinct parallel
+   * role whose edge merges into the belt the retiring provider still feeds, so nothing is ripped before it is replaced.
+   */
+  handover?: Record<string, boolean>
   /** Actual output capacity of built provider roles by role (used only for a short provider). */
   providerCaps?: Record<string, number>
   enabled: Record<string, boolean>
@@ -424,6 +429,15 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   // D54: a steam block only asks for coal once electric drills are enabled, so no producer here needs burner drills.
   let role = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
   if (role === undefined || role === "") role = `${item}${w.suffix}`
+  // Goalpost 1 (provider handover): the retiring provider's role is still in the graph, so reusing it would make the
+  // diff think its replacement already exists. Plan the replacement under a fresh parallel role, merging into the belt
+  // the old provider still feeds (its route is adopted when the old provider is finally deconstructed).
+  if (sharedRole === undefined && ctx.handover !== undefined && ctx.handover[role] === true) {
+    const ports: Record<string, boolean> = {}
+    for (const c of consumers) ports[`${c.to}.${c.toPort}`] = true
+    mergePorts = mergePorts ?? ports
+    role = parallelRole(w, role, true)
+  }
   const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
   // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a
   // distinct parallel role, rather than one oversized node that can never be satisfied.
@@ -488,9 +502,17 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const producers: string[] = []
   const fresh: Demand[] = []
   const alone: Demand[] = []
+  // Consumer ports whose existing belt a handover replacement must side-load into (goalpost 1).
+  const mergePorts: Record<string, boolean> = {}
   for (const d of mine) {
     let p: string | undefined = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
     if (p !== undefined && shared.blocked?.[`${p}=>${d.to}.${d.toPort}`] === true) p = undefined
+    // Goalpost 1: the provider is retiring. Its consumer needs a replacement that side-loads into the belt it still
+    // feeds; that route is adopted when the old provider is finally deconstructed.
+    if (p !== undefined && w.ctx.handover?.[p] === true) {
+      mergePorts[`${d.to}.${d.toPort}`] = true
+      p = undefined
+    }
     if (p !== undefined) {
       if (byProducer[p] === undefined) {
         byProducer[p] = []
@@ -550,10 +572,10 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     } else {
       let total = 0
       for (const d of fresh) total += d.rate
-      addProducer(w, item, total, fresh, true, role)
+      addProducer(w, item, total, fresh, true, role, undefined, mergePorts)
     }
   } else for (const d of fresh) alone.push(d)
-  for (const d of alone) addProducer(w, item, d.rate, [d])
+  for (const d of alone) addProducer(w, item, d.rate, [d], false, undefined, undefined, mergePorts)
 }
 
 /** Expands every pending demand for `item` (point-to-point: one producer each; splitter-tap: one for all). */
