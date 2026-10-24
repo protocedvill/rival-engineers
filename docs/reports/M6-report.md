@@ -2615,3 +2615,53 @@ connection.
 The `no feasible position (1 of 1 patches tried)` shape is the same one that produced 2229258's five-failure streak:
 the count of *known* patches does not grow with the region radius, so only a D62 radar outpost helps. It now also
 causes the handover stall above. Worth a dedicated look before the 20-seed sweep.
+
+## M6b.48: merge splitter on the trunk (working tree, 2026-10-24)
+
+Item 2 of the provider-group refactor — "splitter/tap/trunk augmentation beyond side-load merge". The merge form that
+existed could only side-load into a free perpendicular tile of the trunk; a trunk tile that is a curve, an underground
+or already a splitter could not take a second feed at all.
+
+### The construct
+
+A splitter spans two **adjacent** tiles across the flow. Put one on the trunk tile `T` and the free tile `A` beside it,
+both belts running the same direction: inputs arrive at `T - d` and `A - d`, outputs leave at `T + d` and `A + d`. The
+second output lane `A + d` is deliberately left empty, so it backs up and **every** item goes down the trunk. That is
+what makes it a merger rather than a two-lane split.
+
+### What changed
+
+- `planner/merge.ts` (new, pure): `mergeGoals` returns side-load candidates **first**, then splitter candidates. A
+  splitter needs the trunk belt to run straight through (it is entered and left straight) and `A + d` to hold no belt,
+  or merged items would leak into it.
+- `planner/router.ts`: `RouteRequest.mergeSplitter`; the splitter is appended as the route's last step, and recorded on
+  `Route.mergeSplitter`.
+- `planner/layout.ts`: `Route.mergeSplitter`, plus a terminal-splitter case in `checkLayout` — the route ends beside the
+  trunk and that trunk tile must belong to another route to the same consumer (reusing the side-load merge rule).
+- `planner/plan.ts`: `applyMergeGoal` points a request at either form; the merge-retry ladder calls it too, so a
+  splitter candidate is retried exactly like a side-load.
+
+Ordering matters for safety: side-loads are tried first, so existing layouts and the acceptance seeds are unchanged
+unless every side-load candidate fails.
+
+### Validation
+
+- T1 `merge` (5 tests) — both forms offered on a free trunk; an occupied side offers nothing; no splitter when its far
+  lane holds a belt; another consumer's route is not a target; a curve still side-loads but cannot host a splitter.
+- T2 `merge splitter` — hand-built trunk and splitter merge on a real surface: the splitter **replaced** the trunk's belt
+  on that tile (no belt remains under it), and two 6/s feeds deliver **>8/s** to the consumer, where one unmerged feed
+  would give about 6/s. That is the engine premise, which only a real surface can show.
+- T1 **35/35 files**.
+
+### Learned rule (added to CLAUDE.md)
+
+A named function passed to `Array.prototype.sort` gets a **shifted** comparator: TSTL calls `compareFn(nil, a, b)` and
+only an *inline arrow* receives the injected `self`, so a named `function cmp(a, b)` indexes `nil`. Cost two debugging
+cycles here; the fix is `.sort((a, b) => cmp(a, b))`.
+
+### Honest limits
+
+- It does **not** create space. The incoming belt still needs a free tile, so it would not have unblocked the
+  `no merge target` failure on seed 8646103 — that one needs ground, and only D62 exploration finds more.
+- No acceptance seed is known to need a splitter merge: `mergeGoals` reaches for one only after all side-load
+  candidates fail. It is capability and robustness, not a proven bottleneck fix.

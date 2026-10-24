@@ -147,7 +147,7 @@ Route adoption was approved and implemented in M6b.47 (`docs/reports/M6-report.m
 75 ms) and the "no placeable replacement" stall (seed 8646103, `no feasible position (1 of 1 patches tried)`). Adopt a
 survivor route in a targeted T2 before claiming goalpost 1 met.
 
-## Item 2: the mechanism already exists (found 2026-10-24)
+## Item 2: merge splitter — implemented 2026-10-24
 
 Reading `planner/build-list.ts:31-54` changes the estimate for the merge splitter: **a splitter step already replaces the
 belt tile it sits on.**
@@ -177,13 +177,31 @@ That means a merge splitter is mostly a **router arrival mode**, not new entity 
    to the same consumer" as well.
 5. T2 on a real surface: two producers, one consumer port, fed through one splitter; assert both belts deliver.
 
+### What shipped
+
+- `planner/merge.ts` (pure, T1): `mergeGoals` returns side-load candidates first, then splitter candidates. A splitter
+  needs the trunk to run straight through (it enters and leaves the splitter straight) and the splitter's far output
+  lane to stay empty, so that lane backs up and every item goes into the trunk.
+- `planner/router.ts`: `RouteRequest.mergeSplitter`; the splitter is appended as the route's last step and recorded on
+  `Route.mergeSplitter`.
+- `planner/layout.ts`: `Route.mergeSplitter` and a terminal-splitter case in `checkLayout` — the route ends beside the
+  trunk tile and that tile must belong to another route to the same consumer.
+- Ordering is deliberate: side-loads are tried first, so existing layouts are unchanged unless every side-load fails.
+
 ### What it does and does not buy
 
 - It **does** allow a merge where the trunk tile is curved, underground or already a splitter (side-loading is refused
-  there), and it merges at full belt rate with input priority.
-- It **does not** create space: the incoming belt still needs its perpendicular tile free, exactly as
-  `mergeGoals` requires today. It therefore would **not** have unblocked the `no merge target` failure on seed 8646103.
-  That failure needs ground, and only D62 exploration finds more.
+  there), and it is a valid merger because the splitter's second output lane backs up.
+- It **does not** create space: the incoming belt still needs its tile free. It therefore would **not** have unblocked
+  the `no merge target` failure on seed 8646103. That failure needs ground, and only D62 exploration finds more.
+- Cost: a splitter is one extra entity on the trunk, and the approach must run parallel to the trunk for one tile.
+
+### Verification
+
+- T1 `merge` (5 tests): both forms offered, occupied side offers nothing, no splitter when its far lane holds a belt,
+  another consumer's route is not a target, a curve still side-loads but cannot host a splitter.
+- T2 `merge splitter`: a hand-built trunk plus a splitter merge on a real surface. Asserts the splitter replaced the
+  trunk's belt on that tile, and that two 6/s feeds deliver more than 8/s together — one unmerged feed alone gives ~6/s.
 
 ## The `no feasible position (1 of 1 patches tried)` shape — root cause found (2026-10-24)
 

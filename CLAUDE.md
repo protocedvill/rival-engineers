@@ -54,6 +54,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   every argument. Declare callback types as `(this: void, ...) => ...`.
 - **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
   spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
+- **A named function passed to `Array.prototype.sort` receives a shifted comparator**: TSTL compiles `arr.sort(cmp)`
+  to `__TS__ArraySort(arr, cmp)`, and the bundled helper calls `compareFn(nil, a, b)`. Only an *inline arrow* gets the
+  injected `self` parameter, so a named `function cmp(a, b)` sees `a = nil` ("attempt to index a nil value"). Pass
+  `.sort((a, b) => cmp(a, b))`, not `.sort(cmp)`. Pinned by `mod/unit/merge.test.ts` (planner/merge.ts `byCost`).
 - **`string.match` returns a 0-based TS array of captures**: TSTL compiles `const m = string.match(s, "(.*)#%d+$")` to
   `local m = {string.match(...)}`, so the first capture is `m[0]` (`m[1]` is the second capture; a Lua-style `m[1]`
   reads the next return or stays nil). Do not index the Lua multi-return directly.

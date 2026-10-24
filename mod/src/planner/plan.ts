@@ -7,7 +7,9 @@
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { releaseLaneReservation, reserveFreeTile } from "./claims"
-import { ccw, cw, dirIndex, DX, DY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { mergeGoals } from "./merge"
+import type { MergeGoal } from "./merge"
 import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -156,7 +158,7 @@ export interface PlanJob {
   deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: RouteRequest["goal"][]; mergeTry?: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
   failures: Record<string, string>
   /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
   evidence?: PlanEvidence[]
@@ -430,36 +432,6 @@ function sameSource(job: PlanJob, from: PortRef): string[] {
   return out
 }
 
-/** Free sides of existing routes to the same consumer, usable for a provider-group merge side-load. */
-function mergeGoals(job: PlanJob, to: ConnectionRequest["to"], from: ConnectionRequest["from"]): { x: number; y: number; dir: number; side: "left" | "right" }[] {
-  const fm = from !== undefined ? findModule(job.layout, from.module) : undefined
-  const fx = fm !== undefined ? fm.rect.x + fm.rect.w / 2 : 0
-  const fy = fm !== undefined ? fm.rect.y + fm.rect.h / 2 : 0
-  const found: { goal: { x: number; y: number; dir: number; side: "left" | "right" }; cost: number }[] = []
-  for (const id of job.layout.routeOrder) {
-    const r = job.layout.routes[id]
-    if (r === undefined || r.to.module !== to.module || r.to.port !== to.port) continue
-    for (const st of r.steps) {
-      if (st.kind !== "belt") continue
-      for (const side of ["left", "right"] as ("left" | "right")[]) {
-        const heading = side === "left" ? cw(st.dir) : ccw(st.dir)
-        const x = st.x - DX[heading]
-        const y = st.y - DY[heading]
-        const k = tkey(x, y)
-        if (job.layout.occ[k] !== undefined || job.layout.routeOcc[k] !== undefined || job.layout.reserved[k] !== undefined) continue
-        // Prefer the side nearest the new producer: the far end of the old route may sit inside the built factory,
-        // where a new outside route cannot reach it (B60 seed 8646103: `no path` into the power input).
-        found.push({ goal: { x: st.x, y: st.y, dir: st.dir, side }, cost: manhattan({ x, y }, { x: fx, y: fy }) })
-      }
-    }
-  }
-  found.sort((a, b) => (a.cost !== b.cost ? a.cost - b.cost : a.goal.x !== b.goal.x ? a.goal.x - b.goal.x : a.goal.y !== b.goal.y ? a.goal.y - b.goal.y : a.goal.dir - b.goal.dir))
-  const out: { x: number; y: number; dir: number; side: "left" | "right" }[] = []
-  // Each candidate costs a full search; try the nearest few, then let the ordinary rip/re-place retries take over.
-  for (let i = 0; i < found.length && i < 12; i++) out.push(found[i].goal)
-  return out
-}
-
 function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
@@ -497,13 +469,28 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     }
   }
   if (c.merge === true) {
-    const goals = mergeGoals(job, to, c.from)
+    const goals = mergeGoals(job.layout, to, c.from)
     if (goals.length === 0) return `no merge target for ${to.module}.${to.port}`
-    req.merge = true
     req.mergeGoals = goals
-    req.goal = goals[0]
+    applyMergeGoal(req, goals[0])
   }
   return req
+}
+
+/**
+ * Points the request at merge goal `g`: a side-load ends on the trunk belt from the requested side, a splitter merge
+ * ends on the tile beside the trunk, parallel to it, and appends the splitter.
+ */
+function applyMergeGoal(req: RouteRequest, g: MergeGoal): void {
+  if (g.x2 !== undefined && g.y2 !== undefined) {
+    req.merge = false
+    req.mergeSplitter = { x: g.x, y: g.y, dir: g.dir, x2: g.x2, y2: g.y2 }
+    req.goal = { x: g.x2, y: g.y2, dir: g.dir }
+    return
+  }
+  req.merge = true
+  req.mergeSplitter = undefined
+  req.goal = { x: g.x, y: g.y, dir: g.dir, side: g.side ?? "left" }
 }
 
 /** An external input: a one-tile belt stub on the port's outside tile, fed from outside the layout. */
@@ -849,7 +836,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       cur.mergeTry = (cur.mergeTry ?? 0) + 1
       const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
       if (typeof req !== "string" && req.mergeGoals !== undefined) {
-        req.goal = cur.mergeGoals[cur.mergeTry]
+        applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
         cur.rip = false
         cur.search = newSearch(job.layout, terrain, policy, req, false, true)
         job.stats.searches++

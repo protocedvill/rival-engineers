@@ -129,7 +129,7 @@ head -40 out/soak/m6-b60l-provider/scorecard.md
 3. B61 already passes 2229258, but rerun it in the final two-seed gate.
 4. The rest of the provider-group scope:
    - verify/replace handover for depleted providers (D55/P36 still deconstructs before a replacement is connected);
-   - splitter/tap/trunk augmentation beyond side-load merge;
+   - ~~splitter/tap/trunk augmentation beyond side-load merge~~ — **done** (M6b.48: merge splitter on the trunk);
    - provider-group reconciler remedies for every shared trunk;
    - route-aware placement/reassignment for existing providers, not only new groups.
 5. Full M6 acceptance: fixed 10 + random 20, two factions, Space Age smoke, determinism, timelapses, exact-commit
@@ -179,7 +179,7 @@ sweep may still trip the counter on a seed with one more retry.
 2. The rest of the provider-group scope:
    - **verified handover before deconstruct** — `2229258` still logs `D55 coal>power#4 (n27) is worked out … the design
      plans a new one`, so goalpost 1 is not met yet;
-   - splitter/tap/trunk augmentation beyond side-load merge;
+   - ~~splitter/tap/trunk augmentation beyond side-load merge~~ — **done** (M6b.48: merge splitter on the trunk);
    - provider-group reconciler remedies for every shared trunk;
    - route-aware placement/reassignment for existing providers, not only new groups.
 3. Full M6 acceptance: fixed 10 + random 20, two factions, Space Age smoke, determinism, timelapses, exact-commit

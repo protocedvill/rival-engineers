@@ -89,6 +89,13 @@ export interface Route {
   blocker?: RouteStep
   /** B60 provider-group merge: the existing belt this route side-loads into, instead of the consumer port. */
   merge?: { x: number; y: number; dir: number; side: "left" | "right" }
+  /**
+   * Provider-group merge through a splitter: the trunk tile it replaces (`x`,`y`, owned by the other route) and its
+   * second tile (`x2`,`y2`, owned by this route). Used where a side-load is impossible: the trunk tile is a curve, an
+   * underground or already a splitter. The trunk's second output lane is left unconnected, so it backs up and the
+   * splitter feeds everything into the trunk.
+   */
+  mergeSplitter?: { x: number; y: number; dir: number; x2: number; y2: number }
   /** Times ripped up. */
   ripped: number
   /** Built already (part of the faction's base): never ripped up. */
@@ -693,6 +700,7 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
     // The first tile: a belt-out's outside tile (or a splitter tap / an external stub).
     let expect: Vec | undefined
     let heading = -1
+    let merged = false
     if (r.from !== undefined && r.tapOf === undefined) {
       const fm = findModule(state, r.from.module)
       const fp = fm ? findPort(fm, r.from.port) : undefined
@@ -704,6 +712,19 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
     }
     for (let i = 0; i < r.steps.length; i++) {
       const s = r.steps[i]
+      // A provider-group splitter merge ends the route: the branch arrives beside the trunk and the splitter replaces
+      // both tiles, so the route stops here and joins the trunk's route to the same consumer.
+      if (s.kind === "splitter" && i === r.steps.length - 1 && s.x2 !== undefined && s.y2 !== undefined && expect !== undefined && s.x2 === expect.x && s.y2 === expect.y) {
+        claim(r, s.x2, s.y2, "splitter")
+        const owner = state.routeOcc[tkey(s.x, s.y)]
+        const other = owner !== undefined ? state.routes[owner] : undefined
+        if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+          problems.push(`${id}: merge splitter ${s.x},${s.y} is not a route to ${r.to.module}.${r.to.port}`)
+        }
+        expect = undefined
+        merged = true
+        break
+      }
       if (expect !== undefined && (s.x !== expect.x || s.y !== expect.y)) problems.push(`${id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${expect.x},${expect.y}`)
       if (s.kind === "splitter") {
         claim(r, s.x2!, s.y2!, "splitter")
@@ -749,6 +770,7 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
         problems.push(`${id}: merge target ${r.merge.x},${r.merge.y} is not a route to ${r.to.module}.${r.to.port}`)
       }
     }
+    if (merged) continue
     if (expect === undefined || expect.x !== end.x || expect.y !== end.y) problems.push(`${id}: does not end at ${to.id}.${toPort.id} (${target.x},${target.y})`)
     else if (heading !== want) problems.push(`${id}: arrives at ${to.id}.${toPort.id} heading ${heading}, needs ${want}`)
   }

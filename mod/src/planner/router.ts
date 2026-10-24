@@ -33,8 +33,14 @@ export interface RouteRequest {
   goal: { x: number; y: number; dir: number; side?: "left" | "right" }
   /** B60: the goal is a belt on another route: side-load into it, without placing a blocker belt behind it. */
   merge?: boolean
-  /** B60: other merge points to try when this one is not reachable (nearest the new producer first). */
-  mergeGoals?: { x: number; y: number; dir: number; side: "left" | "right" }[]
+  /** B60: other merge points to try when this one is not reachable (nearest the new producer first). A goal with
+   * `x2`/`y2` is a splitter merge, the others are side-loads. */
+  mergeGoals?: { x: number; y: number; dir: number; side?: "left" | "right"; x2?: number; y2?: number }[]
+  /**
+   * Provider-group merge through a splitter: appended as the route's last step. `x`,`y` is the trunk tile it replaces
+   * (owned by the other route) and `x2`,`y2` the tile this route occupies beside it.
+   */
+  mergeSplitter?: { x: number; y: number; dir: number; x2: number; y2: number }
   /** Routes of the same producer port this one may tap with a splitter (splitter-tap topology). */
   taps?: string[]
   tier: BeltTier
@@ -813,6 +819,9 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
   const steps: RouteStep[] = []
   if (tap) steps.push({ kind: "splitter", x: tap.x, y: tap.y, x2: tap.x2, y2: tap.y2, dir: tap.dir })
   for (let i = rev.length - 1; i >= 0; i--) steps.push(rev[i])
+  // Provider-group splitter merge: the branch ends beside the trunk, and the splitter replaces both tiles.
+  const ms = req.mergeSplitter
+  if (ms !== undefined) steps.push({ kind: "splitter", x: ms.x, y: ms.y, x2: ms.x2, y2: ms.y2, dir: ms.dir })
   const tiles: number[] = []
   const seen: Record<number, boolean> = {}
   let selfCross: number | undefined
@@ -877,6 +886,7 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
       cost: s.g[s.found],
       blocker,
       merge: req.merge === true && req.goal.side !== undefined ? { x: req.goal.x, y: req.goal.y, dir: req.goal.dir, side: req.goal.side } : undefined,
+      mergeSplitter: ms,
       ripped: 0,
     },
   }
