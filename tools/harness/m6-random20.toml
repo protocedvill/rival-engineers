@@ -30,3 +30,7 @@ telemetryIntervalTicks = 3600
 frameDumpIntervalTicks = 36000
 frameDumpRadius = 160
 soakDoneMilestone = "v1-done"
+# Keep labs consuming red+green after the v1 research goal (hidden tech; the setting stays false in game). Without it
+# science-sustained becomes unreachable the moment research-goal-done fires, since it is measured from labs consuming
+# packs: seed 3891760 finished research at 372 min and then idled its labs for the last 108 game-min.
+debugInfiniteResearch = true

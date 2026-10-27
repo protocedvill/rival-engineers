@@ -151,16 +151,22 @@ function wireDegree(job: PoleJob, i: number): number {
 }
 
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
-function layoutPoles(layout: LayoutState, facts: ProtoFacts): PoleNode[] {
+function layoutPoles(layout: LayoutState, facts: ProtoFacts, dropped?: Record<number, boolean>): PoleNode[] {
   const out: PoleNode[] = []
   for (const m of layout.modules) {
     for (const e of m.def.entities) {
       const f = facts.entity(e.name)
       if (f?.type !== "electric-pole") continue
-      out.push({ owner: m.id, x: m.origin.x + e.x, y: m.origin.y + e.y, reach: f.wireReach ?? 7.5 })
+      const x = m.origin.x + e.x
+      const y = m.origin.y + e.y
+      if (dropped !== undefined && dropped[tkey(math.floor(x), math.floor(y))] === true) continue
+      out.push({ owner: m.id, x, y, reach: f.wireReach ?? 7.5 })
     }
   }
-  for (const p of layout.poles ?? []) out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+  for (const p of layout.poles ?? []) {
+    if (dropped !== undefined && dropped[tkey(p.x, p.y)] === true) continue
+    out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+  }
   return out
 }
 
@@ -196,9 +202,9 @@ export function newPoleJob(prefix: string, pole: string, facts: ProtoFacts): Pol
   }
 }
 
-function init(job: PoleJob, layout: LayoutState, facts: ProtoFacts): number {
+function init(job: PoleJob, layout: LayoutState, facts: ProtoFacts, dropped?: Record<number, boolean>): number {
   const roles = powerRoles(layout, facts)
-  const poles = layoutPoles(layout, facts)
+  const poles = layoutPoles(layout, facts, dropped)
   // B39: one network. Only the first generator module (the first power plant) is powered; later ones join it like
   // consumers do, or a second plant stays an island that powers nothing.
   const main = roles.sources[0]
@@ -536,13 +542,118 @@ export function polesNow(layout: LayoutState, terrain: TerrainView, facts: Proto
  * modules not on the first generator module's network: consumers, and (B39) later generator modules.
  */
 export function unpoweredModules(layout: LayoutState, facts: ProtoFacts): string[] {
+  return unpoweredWith(layout, facts, undefined)
+}
+
+/** `unpoweredModules` as it would be if the poles on the listed tiles were gone (B63: simulate a removal). */
+export function unpoweredWith(layout: LayoutState, facts: ProtoFacts, dropped: Record<number, boolean> | undefined): string[] {
   const job = newPoleJob("check:", "small-electric-pole", facts)
-  init(job, layout, facts)
+  init(job, layout, facts, dropped)
   const out: string[] = []
   const roles = powerRoles(layout, facts)
   // B39: a generator module off the first plant's network counts too (an island powers nothing).
   for (const owner of [...roles.sources.slice(1), ...roles.consumers]) if (!ownerPowered(job, owner)) out.push(owner)
   return out
+}
+
+/** A pole that must survive a removal because it is the only path from a generator to something (B63). */
+export interface KeptPole {
+  /** Tile key of the pole. */
+  key: number
+  name: string
+  /** Layout tile (integers, like LayoutState.poles). */
+  x: number
+  y: number
+  /** The kept line it belongs to, when it is a line pole (a module's own pole has none and is re-homed). */
+  line?: string
+  /** A module this pole is the only power path for: the line it is re-homed into serves it. */
+  forModule: string
+}
+
+/**
+ * B63 (bridge rule): a pole is a bridge when removing it disconnects a module that was powered. `abandonParts` takes a
+ * module's own poles and its lines' poles with it, and a line that merely *passes through* the abandoned ground can be
+ * the only link for everything behind it (seed 3891760: 91 modules went dark on a 17-tile gap).
+ * Returns the lines that may still be removed, and the poles that must be kept with the module each protects.
+ */
+export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: string[], dropModules: string[]): { dropLines: string[]; keepPoles: KeptPole[] } {
+  const none = { dropLines, keepPoles: [] as KeptPole[] }
+  const lineDrop: Record<string, boolean> = {}
+  for (const id of dropLines) lineDrop[id] = true
+  const modDrop: Record<string, boolean> = {}
+  for (const id of dropModules) modDrop[id] = true
+  const roles = powerRoles(layout, facts)
+  const isSource: Record<string, boolean> = {}
+  for (const id of roles.sources) isSource[id as string] = true
+  for (const id of dropModules) if (isSource[id] === true) return none
+  // Only modules that stay matter: the ones being abandoned are meant to go dark.
+  const orphans = (dropped: Record<number, boolean> | undefined): string[] => {
+    const out: string[] = []
+    for (const id of unpoweredWith(layout, facts, dropped)) if (modDrop[id] !== true) out.push(id)
+    return out
+  }
+  if (orphans(undefined).length > 0) return none
+  const cands: { key: number; name: string; x: number; y: number; line: string | undefined }[] = []
+  for (const m of layout.modules) {
+    if (modDrop[m.id] !== true) continue
+    for (const e of m.def.entities) {
+      if (facts.entity(e.name)?.type !== "electric-pole") continue
+      const x = math.floor(m.origin.x + e.x)
+      const y = math.floor(m.origin.y + e.y)
+      cands.push({ key: tkey(x, y), name: e.name, x, y, line: undefined })
+    }
+  }
+  for (const p of layout.poles ?? []) if (lineDrop[p.line] === true) cands.push({ key: tkey(p.x, p.y), name: p.name, x: p.x, y: p.y, line: p.line })
+  if (cands.length === 0) return none
+  const all: Record<number, boolean> = {}
+  for (const c of cands) all[c.key] = true
+  if (orphans(all).length === 0) return none
+  const keep: KeptPole[] = []
+  for (const c of cands) {
+    const without: Record<number, boolean> = {}
+    for (const k in all) without[k as unknown as number] = true
+    delete without[c.key]
+    const lost = orphans(without)
+    if (lost.length === 0) continue
+    keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: lost[0] })
+  }
+  const finalDrop: Record<number, boolean> = {}
+  for (const k in all) finalDrop[k as unknown as number] = true
+  for (const k of keep) delete finalDrop[k.key]
+  // Two bridges that only work together: rather than risk a cut, keep every candidate.
+  if (orphans(finalDrop).length > 0) {
+    keep.length = 0
+    for (const c of cands) keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: roles.consumers[0] ?? roles.sources[0] })
+  }
+  const keptLines: Record<string, boolean> = {}
+  for (const c of cands) if (c.line !== undefined && keep.some((k) => k.key === c.key)) keptLines[c.line] = true
+  const out: string[] = []
+  for (const id of dropLines) if (keptLines[id] !== true) out.push(id)
+  return { dropLines: out, keepPoles: keep }
+}
+
+/**
+ * B63: a kept pole that belonged to an abandoned module is put back into the layout as its own one-pole line, re-homed
+ * to the module it protects, so the graph still shows the path that survived.
+ */
+export function rehomeKeptPoles(layout: LayoutState, keep: KeptPole[]): void {
+  let any = false
+  for (const k of keep) {
+    if (k.line !== undefined) continue
+    // The id must keep the `poles:` prefix: `poleTag` marks a pole's `occ` as `x:<line>` in the same space as an
+    // interaction claim (`x:<module>`), and `isPoleTag` tells them apart by the prefix. A line id without it decodes as
+    // an interaction claim owned by a module that does not exist, so every later plan is rejected as
+    // `invalid-layout-claims` (measured: a 4-tile leak looping the goal forever).
+    const line = poleLineId(`poles:kept:${k.key}`)
+    const id = poleId(`${line}.0`)
+    layout.poles ??= []
+    layout.poleLines ??= []
+    layout.poles.push({ id, name: k.name, x: k.x, y: k.y, line })
+    claimPoleTile(layout, tkey(k.x, k.y), line)
+    layout.poleLines.push({ id: line, to: moduleId(k.forModule), from: "?", poles: [id] })
+    any = true
+  }
+  if (any) bumpLayout(layout)
 }
 
 /** Removes the pole lines whose ids are listed (a plan rolled back), from the layout. */

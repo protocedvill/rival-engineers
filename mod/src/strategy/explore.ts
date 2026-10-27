@@ -10,6 +10,10 @@ import * as LG from "../planner/logical"
 import * as Arms from "./arms"
 import type { FactoryGoal, FactoryState } from "./factory"
 
+// The knowledge-failure classifier lives in `shared/` (pure, T1-tested); re-exported here so the factory keeps using
+// one namespace and its Lua main chunk does not gain a local (it is close to the 200 limit).
+export { exhausted } from "../shared/exhausted"
+
 /** D56: radar goals that may fail before the faction stops trying. */
 const RADAR_MAX_FAILED = 2
 /** D56: the base radar module's graph role (outposts: "radar:N1", ...). */
@@ -31,16 +35,6 @@ export interface ExploreHooks {
   busy: (this: void) => string | undefined
   /** Starts a radar goal (graph role, outpost site or none for the base radar); returns its goal id. */
   startRadar: (this: void, role: string, site?: FactoryGoal["site"]) => string
-}
-
-/** A mine plan that failed because every known ore patch had no room ("no feasible position (N of N patches tried)").
- * D62 uses this exactly like "no free <ore> patch in the region"; without it the factory retries the same patches. */
-export function failedMineOre(reason: string | undefined): string | undefined {
-  if (reason === undefined || string.find(reason, "no feasible position", 1, true)[0] === undefined) return undefined
-  let [ore] = string.match(reason, "%(([%w%-]+)>[^)]*%): no feasible position")
-  // Shared producers carry a `*` marker in the role (`coal*>...`), not part of the resource name.
-  if (ore === undefined) [ore] = string.match(reason, "%(([%w%-]+)%*>[^)]*%): no feasible position")
-  return ore
 }
 
 /** D62: the home zone's radius (tiles): bootstrap exploration (H7) and plan regions stop there. */

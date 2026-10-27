@@ -54,6 +54,20 @@ export function labUnitTime(config: Config, stage: number): number {
  * shared (design.ts `DesignContext.sharing`): consumers already fed keep their producer; a producer's spare capacity
  * (planned output minus what its edges carry) is offered to new consumers of its item.
  */
+/**
+ * B65: how much output `node` can add by growing in place: its remaining expansion units at their per-unit rate.
+ * Zero when the module has no expansion unit (a fork is then the only way). The chain's own feed is not consulted here;
+ * `supplyPass` raises it and `diffDesign` grows or forks it in turn.
+ */
+function growableInPlace(f: FactoryState, id: string, item: string): number {
+  const m = findModule(f.layout, id as never)
+  const e = m?.canonical?.expand
+  if (e === undefined || e.maxUnits <= 0) return 0
+  let per = 0
+  for (const r of e.perUnit.rates.outputs) if (r.item === item) per += r.perSecond
+  return per * e.maxUnits
+}
+
 export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
@@ -77,10 +91,18 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
       if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role] || f.handover?.[p.role] !== undefined) continue
-      const room = rateIn(p.capacity.outputs, p.item) - (used as number)
-      if (room <= 0) continue
+      // B65: spare is what the plan sized this provider to deliver (`planned`), not its nameplate capacity. A 4-wide
+      // smelter running on a 0.183/s ore feed looks like it has 1.07/s spare by capacity; tapping that spare starves
+      // the new consumer, because the plan never grew the feed (see `supplyGaps`).
+      const room = rateIn(p.planned.outputs, p.item) - (used as number)
+      // B65: when the plan has no freed capacity, the provider can still take the consumer if it can GROW IN PLACE:
+      // the consumer joins its role, the design node's `need` rises to the total, and `diffDesign` asks the built
+      // module for expansion units (and, through `supplyPass`, its feed chain for the ore). Forking a whole new chain
+      // (mine + smelter + routes) is the fallback for a provider at its expansion ceiling, not the first answer.
+      const grow = room > 0 ? 0 : growableInPlace(f, id as string, p.item)
+      if (room + grow <= 0) continue
       spare[p.item] ??= {}
-      spare[p.item][p.role] = room
+      spare[p.item][p.role] = room + grow
     }
   }
   return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit, blocked: f?.providerNoTap }

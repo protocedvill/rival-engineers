@@ -22,6 +22,7 @@ import { GeneratorName } from "../modules/generators"
 import { ModuleDef, Rate } from "../modules/types"
 import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../planner/capacity"
 import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../planner/logical"
+import { requiredRates, SupplyEdge, SupplyNode } from "./growth-plan"
 import { LayoutPolicy } from "../planner/policy"
 import { solveNow, SolveResult } from "./solver"
 
@@ -665,6 +666,41 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   return w
 }
 
+/**
+ * B65 (phase 2, prototype): re-size every producer from the demand its final edges actually carry.
+ *
+ * The walk sizes a producer when it creates it, from the consumers known at that moment, and attaches later consumers to
+ * its *nameplate* spare. The provider's own inputs are never re-sized, so a node can end up carrying more edges than
+ * its feed supplies (seed 3891760: a copper smelter planned 0.183/s carrying 0.827/s for 270 game-min). `requiredRates`
+ * propagates the edges' demand up the input ratios to a fixpoint; raising each node's `need` to that value makes the
+ * plan and the diff see the truth, so `diffDesign` asks a short provider to grow (or it stays within its module's
+ * capacity and simply runs at the rate its consumers asked for).
+ *
+ * Growth by expansion units and forking a new module are still decided by `diffDesign`; this pass only removes the
+ * stale sizing that kept those decisions from being made at all.
+ */
+function supplyPass(all: DesignNode[], allEdges: DesignEdge[]): void {
+  const nodes: SupplyNode[] = []
+  const edges: SupplyEdge[] = []
+  for (const n of all) {
+    if (n.kind === "sink") continue
+    const out = rateIn(n.def.rates.outputs, n.item)
+    const inputs: { item: string; perOutput: number }[] = []
+    if (out > EPS) for (const r of n.def.rates.inputs) if (r.item !== "electricity" && r.perSecond > EPS) inputs.push({ item: r.item, perOutput: r.perSecond / out })
+    nodes.push({ role: n.role, item: n.item, planned: n.need, capacity: out, unitRate: 0, maxUnits: 0, inputs })
+  }
+  if (nodes.length === 0) return
+  for (const e of allEdges) edges.push({ from: e.from, to: e.to, item: e.item, rate: e.rate })
+  const req = requiredRates(nodes, edges)
+  for (const n of all) {
+    if (n.kind === "sink") continue
+    const want = req[n.role] ?? 0
+    if (want <= n.need + EPS) continue
+    n.need = want
+    n.inputs = inputPorts(n.def, n.capacity > EPS ? math.min(1, want / n.capacity) : 1)
+  }
+}
+
 /** Whether a role is the power node or a fuel supply of it ("power", "power#2", "coal>power", ...). */
 export function isPowerRole(role: string): boolean {
   return string.match(role, "^power#?%d*$")[0] !== undefined || string.match(role, ">power#?%d*$")[0] !== undefined
@@ -870,6 +906,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     for (const x of w.errors) errors.push(x)
   }
   mergeShared(nodes)
+  supplyPass(nodes, edges)
   const techs: string[] = []
   for (const n of nodes) for (const t of n.def.requiresTech) if (!ctx.researched[t] && techs.indexOf(t) < 0) techs.push(t)
   techs.sort()

@@ -238,11 +238,21 @@ def setup_dir(cfg, seed):
         "author": "harness", "factorio_version": "2.0", "dependencies": ["rival-engineers"],
     }))
     # Config overrides go through the mod's remote interface at map init, before the first tick spawns factions.
-    lines = ["script.on_init(function()"]
+    lines = ["local function apply_overrides()"]
     for key, value in sorted(cfg["mod"].items()):
         lua = json.dumps(value) if not isinstance(value, bool) else ("true" if value else "false")
         lines.append(f'  remote.call("rival-engineers", "set_config_override", "{key}", {lua})')
-    lines.append("end)")
+    lines += [
+        "end",
+        "script.on_init(apply_overrides)",
+        "script.on_configuration_changed(apply_overrides)",
+        # A resumed save (--from-save) is already past on_init, so the overrides never reached it: the run silently used
+        # the save's old settings (debugInfiniteResearch stayed false, which is exactly the flag being validated).
+        "script.on_nth_tick(1, function()",
+        "  apply_overrides()",
+        "  script.on_nth_tick(1, nil)",
+        "end)",
+    ]
     if cfg["run"].get("helper_lua"):
         # Debug probes (--helper-lua): extra Lua in the helper mod, e.g. an on_nth_tick that logs entity states.
         lines.append(Path(cfg["run"]["helper_lua"]).read_text())
@@ -280,10 +290,12 @@ def map_gen_settings(cfg):
 class FailFast:
     """Watches a run's log as it grows and says why the run should stop early (None while it looks healthy)."""
 
-    def __init__(self, rules, log_file):
+    def __init__(self, rules, log_file, resumed=False):
         self.rules = {k: int(v) for k, v in rules.items() if k in FAIL_FAST_KEYS and v}
         # deadlines: milestone -> game hours by which it must have happened (M6: long runs that can't make the bar).
-        self.deadlines = {k: float(v) * TICKS_PER_HOUR for k, v in (rules.get("deadlines") or {}).items()}
+        # A resumed run does not replay the milestones the save already reached, so these absolute-time limits would
+        # fire on its first tick (a min-0240 resume reads "no automated-red-science by 1.5 game hours" instantly).
+        self.deadlines = {} if resumed else {k: float(v) * TICKS_PER_HOUR for k, v in (rules.get("deadlines") or {}).items()}
         self.milestones = set()
         self.log_file = log_file
         self.pos = 0
@@ -326,7 +338,10 @@ class FailFast:
                 self.stalls += 1
                 if self.rules.get("stalls") and self.stalls >= self.rules["stalls"]:
                     reason = reason or f"{self.stalls} stalls: {STALL_LINE.search(line).group(2)}"
-            if PLAN_OK.search(line):
+            # A knowledge failure ("no free <ore> patch in the region", "no feasible position") is not the design
+            # failing: the mod is exploring for ground (D62), and its own exploring_minutes deadline bounds that.
+            # Counting these killed seed 1376111 one attempt before its first exploration started.
+            if PLAN_OK.search(line) or self.exploring_since is not None:
                 self.plan_failures = 0
             elif PLAN_FAILED.search(line):
                 self.plan_failures += 1
@@ -369,7 +384,7 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
     else:
         cmd = [str(FACTORIO), "-c", conf, "--benchmark", str(save), "--benchmark-ticks", str(ticks)]
     log_path = out_dir / "factorio-stdout.log"
-    watch = FailFast(run.get("fail_fast") or {}, data / "factorio-current.log")
+    watch = FailFast(run.get("fail_fast") or {}, data / "factorio-current.log", from_save is not None)
     started = time.time()
     stopped_early = False
     failed_fast = None

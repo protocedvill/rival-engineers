@@ -13,8 +13,8 @@ import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
-import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
-import { removePoleLines } from "./power"
+import { findModule, LayoutState, removeModule, ripRoute } from "./layout"
+import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
 
@@ -208,7 +208,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * because its replacement side-loads into it and adopts it (see `adoptRoute`). Those routes keep their tiles, their
  * entities and their claims; the caller re-homes them to the replacement connection.
  */
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[] } {
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
   const kept: Record<string, boolean> = {}
@@ -221,16 +221,19 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   }
   const lineIds: string[] = []
   for (const p of layout.poles ?? []) if (parts.poles.indexOf(p.id) >= 0 && lineIds.indexOf(p.line) < 0) lineIds.push(p.line)
-  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => lineIds.indexOf(p.line) >= 0).map((p) => p.id) }
+  // B63 (bridge rule): a pole that is the only path from a generator to a module that stays is not removed with the
+  // abandoned ground. A line passing through it can carry everything behind it (3891760: 91 modules on a 17-tile gap).
+  const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules)
+  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => bridge.dropLines.indexOf(p.line) >= 0).map((p) => p.id) }
+  const keepTiles: Record<number, boolean> = {}
+  for (const k of bridge.keepPoles) keepTiles[k.key] = true
+  const going: EntitySpec[] = []
+  for (const e of partEntities(layout, all)) if (keepTiles[tkey(math.floor(e.x), math.floor(e.y))] !== true) going.push(e)
   const tiles = partTiles(layout, all)
-  const { clearJobs } = applyDiff(surface, faction, partEntities(layout, all), [], { priority })
+  const { clearJobs } = applyDiff(surface, faction, going, [], { priority })
   for (const rid of routes) ripRoute(layout, rid)
-  for (const id of parts.modules) {
-    const m = findModule(layout, id)
-    if (m === undefined) continue
-    unmarkModule(layout, m, prototypeFacts)
-    layout.modules = layout.modules.filter((x) => x.id !== id)
-  }
-  removePoleLines(layout, lineIds)
-  return { tiles, clearJobs, routes }
+  for (const id of parts.modules) removeModule(layout, id, prototypeFacts)
+  removePoleLines(layout, bridge.dropLines)
+  rehomeKeptPoles(layout, bridge.keepPoles)
+  return { tiles, clearJobs, routes, keptPoles: bridge.keepPoles.length }
 }

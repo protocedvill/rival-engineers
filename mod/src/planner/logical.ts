@@ -213,6 +213,44 @@ export function rateIn(list: Rate[], item: string): number {
 }
 
 /** Total power supply (generators) and planned demand (consumers) of the graph's nodes, in W, by lifecycle filter. */
+/**
+ * B65 (supply): a node whose consumers ask it for more than the plan sized it to deliver. `planned` is the rate its
+ * input chain was built for (it is set from the design's need when the node is committed), while the edges are what
+ * later consumers attached; when the second exceeds the first the extra is fictional — the provider cannot feed it,
+ * which shows up as a starved consumer much later (seed 3891760: a copper smelter planned 0.183/s carrying 0.827/s of
+ * edges for 270 game-min, half the science rate).
+ *
+ * Cheap: one pass over the nodes and their outgoing edges, no allocation per healthy node. `minRate` drops the noise
+ * from float dust and rounding on tiny feeds.
+ */
+export interface SupplyGap {
+  id: string
+  role: string
+  item: string
+  /** What the plan sized this node to deliver. */
+  planned: number
+  /** What its consumers' edges ask for. */
+  committed: number
+}
+
+export function supplyGaps(g: LogicalGraph, minRate = 0.01): SupplyGap[] {
+  const out: SupplyGap[] = []
+  for (const id of g.nodeOrder) {
+    const n = g.nodes[id]
+    if (n.item === undefined) continue
+    const planned = rateIn(n.planned.outputs, n.item)
+    if (planned <= 0) continue
+    let committed = 0
+    for (const eid of g.edgeOrder) {
+      const e = g.edges[eid]
+      if (e.from !== id || e.item !== n.item) continue
+      committed += e.plannedRate
+    }
+    if (committed - planned > minRate) out.push({ id, role: n.role, item: n.item, planned, committed })
+  }
+  return out
+}
+
 export function powerBalance(g: LogicalGraph, built?: boolean): { supplyW: number; demandW: number } {
   let supplyW = 0
   let demandW = 0

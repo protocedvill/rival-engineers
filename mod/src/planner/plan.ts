@@ -68,6 +68,8 @@ export interface PlanRequest {
   avoid?: Rect[]
   /** D57 (c): ore patches a mine found no room on before (`patchKey` → terrain stamp); skipped while unchanged. */
   deadPatches?: Record<string, string>
+  /** B63: multiply every route window's margin (1 = policy default; 3 for a plan feeding a boxed-in consumer). */
+  windowScale?: number
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -129,8 +131,11 @@ export type PlanEvidence =
       rip: boolean
       windowScale: number
       expansions: number
-      /** B57: the seal check proved this end walled in (inside the window): its port, resolved. */
-      sealed?: { side: "start" | "goal"; port: PortRef }
+      /**
+       * B57/B63: the seal check ran out at this end: its port, resolved. `edge` says the window boundary cut the flood,
+       * i.e. the proof is only "no path *inside this window*".
+       */
+      sealed?: { side: "start" | "goal"; port: PortRef; edge?: boolean }
     }
 
 export interface PlanJob {
@@ -354,11 +359,11 @@ function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): v
 function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
   job.evidence ??= []
   const sl = search.sealed
-  let sealed: { side: "start" | "goal"; port: PortRef } | undefined
-  if (sl !== undefined && !sl.edge) {
+  let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
+  if (sl !== undefined) {
     const c = connection(job, conn)
     const ref = sl.side === "goal" ? c.to : c.from
-    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref) }
+    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref), edge: sl.edge }
   }
   job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
 }

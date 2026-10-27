@@ -337,8 +337,35 @@ export function modulesOnTiles(state: LayoutState, tiles: Record<number, boolean
 
 /** Adds a placed module's tiles to the layout: footprint, interaction tiles, port reservations, corridor ring. */
 export function commitModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {
+  // B63: never two entries per id. `findModule` returns the first, while a removal filters every entry with the id, so
+  // a duplicate silently orphaned the second entry's `occ`/`reserved` claims (`checkClaimOwners`: "names missing
+  // interaction owner"), which discarded every later plan and stalled the factory.
+  for (let i = 0; i < state.modules.length; i++) {
+    const old = state.modules[i]
+    if (old.id !== m.id) continue
+    unmarkModule(state, old, facts)
+    state.modules[i] = m
+    markModule(state, m, facts, corridor)
+    return
+  }
   state.modules.push(m)
   markModule(state, m, facts, corridor)
+}
+
+/**
+ * B63: removes a module id and releases **every** entry's claims for it (a layout saved before the duplicate guard may
+ * hold two). Returns how many entries went. Callers that removed the module ad hoc leaked the second entry's claims.
+ */
+export function removeModule(state: LayoutState, id: string, facts: ProtoFacts): number {
+  let n = 0
+  // Unmark every entry *before* filtering: filtering first would drop the duplicates this exists to release.
+  for (const m of state.modules) {
+    if (m.id !== id) continue
+    unmarkModule(state, m, facts)
+    n++
+  }
+  if (n > 0) state.modules = state.modules.filter((x) => x.id !== id)
+  return n
 }
 
 export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {

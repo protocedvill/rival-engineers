@@ -3,7 +3,7 @@ import { getConfig } from "../config"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { Vec } from "../planner/grid"
 import { findModule } from "../planner/layout"
-import { nodesOf, rateIn } from "../planner/logical"
+import { nodesOf, rateIn, supplyGaps } from "../planner/logical"
 import { entryPolicy, tiers } from "../planner/runtime"
 import { statusCounts } from "./reconcile"
 import { isTempRole } from "./stage"
@@ -163,9 +163,22 @@ export function factoryReport(name: string) {
     reconciler: reconcilerReport(f),
     logistics: { undergrounds: f.needUndergrounds, splitters: f.needSplitters, taps: f.taps, compares: f.compares },
     science: f.science,
+    // B65: providers whose consumers asked for more than their plan delivers (fictional capacity). The number the
+    // over-subscription bug hid for 270 game-min; a non-zero list is the first thing to read in a slow seed.
+    supply: supplyReport(f),
     idle: f.idle,
     growFails: f.growFails,
   }
+}
+
+/** B65: the worst over-subscribed providers (top 5), with the gap in the item's unit per second. */
+function supplyReport(f: FactoryState) {
+  const gaps = supplyGaps(f.graph)
+  if (gaps.length === 0) return undefined
+  gaps.sort((a, b) => (b.committed - b.planned) - (a.committed - a.planned))
+  const top: Record<string, { planned: number; committed: number }> = {}
+  for (const g of gaps.slice(0, 5)) top[g.role] = { planned: g.planned, committed: g.committed }
+  return { count: gaps.length, worst: top }
 }
 
 /** M5b telemetry: statuses, root causes of nodes that are not ok, remedies so far, probes. */

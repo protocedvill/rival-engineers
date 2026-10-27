@@ -8,7 +8,7 @@ import { evictableTiles } from "../strategy/evict"
 import type { JobId } from "../shared/ids"
 import { staleUnderRoutes } from "./conflicts"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
-import { getConfig } from "../config"
+import { Config, getConfig } from "../config"
 import { getJob } from "../jobs/board"
 import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
@@ -85,6 +85,13 @@ export function getPlannerEntry(id: string): PlannerEntry | undefined {
 
 export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
   const c = getConfig()
+  const p = basePolicy(entry, c)
+  const k = entry.request.windowScale ?? 1
+  if (k !== 1) p.router = { ...p.router, margin: math.floor(p.router.margin * k) }
+  return p
+}
+
+function basePolicy(entry: PlannerEntry, c: Config): LayoutPolicy {
   return selectPolicy(entry.policy ?? c.layoutPolicy, { modules: entry.request.modules.length }, {
     corridorMin: c.layoutCorridorMin,
     corridorPreferred: c.layoutCorridorPreferred,

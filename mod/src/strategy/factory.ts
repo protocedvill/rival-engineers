@@ -202,6 +202,16 @@ export interface FactoryState {
   /** B61: exact provider→consumer feeds whose route failed; the design reassigns just that consumer. */
   providerNoTap?: Record<string, boolean>
   /**
+   * B63: consumers whose own input port the seal check proved boxed in (`role.port`). Plans that feed them run with a
+   * wider route window: seed 1376111 routes at margin 72 for 265k work after failing at margin 24 for 50k, while
+   * widening only the failing connection rescues nothing (the blockage is built by the plan's other routes).
+   */
+  wideJoin?: Record<string, boolean>
+  /** B63 diagnostics: orphan claim tiles seen (`orphanEvents` = plans rejected for them), and the last log tick. */
+  orphanClaims?: number
+  orphanEvents?: number
+  orphanLogTick?: number
+  /**
    * Goalpost 1 (provider handover): providers being retired. Their consumers get a replacement (a parallel role) and
    * the old provider is deconstructed only once that replacement feeds every port it served.
    */
@@ -633,7 +643,9 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
     let allBuilt = true
     for (const n of LG.nodesOf(f.graph)) if (n.lifecycle !== "built") allBuilt = false
     const stages = ST.parseStages(ctx.config.factoryTargets)
-    if (allBuilt && f.stage + 1 >= stages.length && activeGoal(f, "grow") === undefined && activeGoal(f, "repair") === undefined) f.idle = ST.researchDone(ctx.force)
+    // B64: with the debug/soak infinite sink on, research is never finished: the labs still want packs, so the
+    // factory must keep growing and repairing to sustain them (otherwise it idles and the sink only drains stockpiles).
+    if (allBuilt && f.stage + 1 >= stages.length && activeGoal(f, "grow") === undefined && activeGoal(f, "repair") === undefined) f.idle = ST.researchDone(ctx.force) && !ctx.config.debugInfiniteResearch
     if (allBuilt && f.stage + 1 < stages.length) {
       f.stage++
       f.growFails = undefined
@@ -949,7 +961,11 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   }
   // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
   // with a mine every outpost's radar reach and strip.
-  const r = math.min(g.radius, EX.homeRadius(ctx))
+  // A mine's candidate patches are cheap to enumerate (no placement scan), so a mine goal always searches all known
+  // ground: the radius ladder only exists to bound the expensive scan, and spending attempts to widen it three times
+  // before looking at a patch that was already known just costs plans (1376111: "1 of 1 patches tried", four times).
+  const mine = modules.some((m) => m.def.site === "resource-patch")
+  const r = mine ? EX.homeRadius(ctx) : math.min(g.radius, EX.homeRadius(ctx))
   const region = EX.planRegion(ctx, g, r)
   // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
   // retry is not the same plan again: the hub, then 24 tiles off it in turn (deterministic).
@@ -959,6 +975,8 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
   const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // B63: a consumer whose input port boxed a plan in gets a wider window for this whole plan (see wideJoin).
+  for (const e of g.edges) if (f.wideJoin?.[`${e.to}.${e.toPort}`] === true) request.windowScale = 3
   // D57 (c): patches earlier plans' mines found no room on.
   if (f.deadPatches !== undefined) request.deadPatches = { ...f.deadPatches }
   // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
@@ -1133,6 +1151,29 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       RT.exportPlanInput(entry, `${name}.input.lua`)
     }
     RT.removePlan(entry.id)
+    // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route
+    // window first: the blockage was built by the plan's other routes under the narrow window, so widening a single
+    // connection rescues nothing while the wider plan routes (seed 1376111: 265k work, vs 50k spent failing).
+    if (contest === undefined) {
+      let widened = false
+      for (const ev of entry.job?.evidence ?? []) {
+        if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
+        const n = f.graph.nodes[ev.sealed.port.module]
+        if (n === undefined) continue
+        const key = `${n.role}.${ev.sealed.port.port}`
+        f.wideJoin ??= {}
+        if (f.wideJoin[key] === true) continue
+        f.wideJoin[key] = true
+        widened = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${ev.sealed.port.port} port boxed in (goal ${g.id}); its plans will use a wider route window`)
+      }
+      if (widened) {
+        transitionGoal(g, "failed")
+        g.deferred = true
+        g.reason = `replan with a wider route window: ${g.reason}`
+        return
+      }
+    }
     // B57: a built module's open input proved walled in: no plan can feed it, so it moves and the goal plans again.
     const moved = contest === undefined ? relocateSealed(ctx, g, entry.job?.evidence ?? []) : undefined
     if (moved !== undefined) {
@@ -1141,18 +1182,28 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       g.reason = `replan after relocating ${moved}: ${g.reason}`
       return
     }
-    // D62: no free patch of an ore anywhere the faction knows: explore past the home zone with a radar outpost (on
-    // the last attempt, or at once while a search is on: the region already holds everything explored).
-    let [ore] = contest === undefined && g.site === undefined ? string.match(g.reason ?? "", "no free (%S+) patch in the region") : [undefined]
-    // A mine can also fail with "no feasible position (N of N patches tried)" when every known patch exists but has no
-    // room. That is the same need for farther ground; without this, the factory retries the same patches to fail-fast.
-    if (ore === undefined && contest === undefined && g.site === undefined) {
-      const failed = EX.failedMineOre(g.reason)
-      if (failed !== undefined && prototypes.entity[failed]?.type === "resource") ore = failed
-    }
-    if (ore !== undefined && (g.attempts >= MAX_PLAN_ATTEMPTS || f.explore !== undefined)) {
+    // A plan can prove that the faction's *known* ground is exhausted (no free ore patch in the region, every known
+    // patch full, no site for this kind). Retrying cannot help; only more world or a different place can. That is a
+    // knowledge failure, not a design failure, so it acts on the FIRST attempt rather than burning MAX_PLAN_ATTEMPTS
+    // plans on the search-radius ladder (seed 1376111 died one attempt short of its first exploration), it keeps the
+    // goal (`deferred`, attempts intact) instead of replacing it with a freshly minted id, and it pauses its kind (or
+    // the ore search) so one exhausted site cannot become a run of failures on new goals.
+    const gone = contest === undefined && g.site === undefined ? EX.exhausted(g.reason) : undefined
+    if (gone !== undefined) {
       transitionGoal(g, "failed")
-      EX.exploreFor(ctx, g, ore)
+      g.deferred = true
+      if (gone.kind === "site") {
+        // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while.
+        if (ctx.config.factorySiteRetryMinutes > 0) {
+          f.siteRetry ??= {}
+          f.siteRetry[g.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+          log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53): ${g.kind} goal ${g.id} found no ${gone.what} site (${g.reason}); no ${g.kind} goal plans for ${ctx.config.factorySiteRetryMinutes} game-min, until tick ${f.siteRetry[g.kind]} (setting factory-site-retry-minutes)`)
+        }
+        g.reason = `paused: ${g.reason}`
+        return
+      }
+      g.reason = `exploring for ${gone.what}: ${g.reason}`
+      EX.exploreFor(ctx, g, gone.what)
       return
     }
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
@@ -1189,6 +1240,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   if (prepared.status === "rejected") {
     const decision = prepared.code === "stale-base-revision" ? "stale-plan-rejected" : "invalid-plan-delta"
     recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", goal: g.id, plan: entry.id, decision, reason: prepared.detail })
+    if (prepared.code === "invalid-layout-claims") reportOrphanClaims(ctx, g, prepared.problems)
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} discards plan ${entry.id} (${prepared.code}): ${prepared.detail}`)
     RT.removePlan(entry.id)
     g.plan = undefined
@@ -1681,7 +1733,45 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
   transitionGoal(g, "failed")
   g.reason = `relocating: ${what}`
   RT.removePlan(entry.id)
-  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) gives up its location: ${r.clearJobs.length} built entities to deconstruct, ${r.routes.length} routes dropped; the design plans it again elsewhere`)
+  const kept = r.keptPoles > 0 ? `, ${r.keptPoles} pole(s) kept as a power bridge` : ""
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) gives up its location: ${r.clearJobs.length} built entities to deconstruct, ${r.routes.length} routes dropped${kept}; the design plans it again elsewhere`)
+}
+
+/**
+ * B63 diagnostics: a plan was discarded because the layout carries claims whose owner module is gone. Counting is O(1)
+ * per event; the summary (kinds, the owner ids that leaked and their counts) is built and logged at most once a game
+ * minute per faction, so a claim loop cannot flood the log or cost anything on the hot path.
+ */
+const ORPHAN_LOG_TICKS = 3600
+
+function reportOrphanClaims(ctx: Ctx, g: FactoryGoal, problems: string[]): void {
+  const f = ctx.f
+  f.orphanClaims = (f.orphanClaims ?? 0) + problems.length
+  f.orphanEvents = (f.orphanEvents ?? 0) + 1
+  if (ctx.tick - (f.orphanLogTick ?? -ORPHAN_LOG_TICKS) < ORPHAN_LOG_TICKS) return
+  f.orphanLogTick = ctx.tick
+  const kinds: Record<string, number> = {}
+  const owners: Record<string, number> = {}
+  const order: string[] = []
+  for (const p of problems) {
+    const [kind] = string.match(p, "names missing (%S+)")
+    if (kind !== undefined) kinds[kind] = (kinds[kind] ?? 0) + 1
+    const [owner] = string.match(p, "names missing %S+ (%S+)$")
+    if (owner === undefined) continue
+    if (owners[owner] === undefined) order.push(owner)
+    owners[owner] = (owners[owner] ?? 0) + 1
+  }
+  let kk = ""
+  for (const k in kinds) kk += `${k}:${kinds[k]} `
+  let oo = ""
+  let n = 0
+  for (const o of order) {
+    if (n++ >= 4) break
+    oo += `${o}x${owners[o]} `
+  }
+  const detail = `${problems.length} tile(s), kinds ${kk.trim()}, owners ${oo.trim()}`
+  log(`[rival-engineers] faction ${ctx.faction.name}: ORPHAN CLAIMS in plan ${g.id}: ${detail} (running total ${f.orphanClaims} tiles in ${f.orphanEvents} plan(s); first ${problems[0] ?? ""})`)
+  recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", goal: g.id, decision: "orphan-claims", reason: detail })
 }
 
 /**
@@ -1869,14 +1959,17 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
   const t = storage.terrains?.[f.terrain]
   if (t === undefined) return undefined
   const escape = policyFor(ctx.config).placement.portEscape ?? 0
-  if (escape <= 0) return undefined
   const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
+  // B63: trust the router's proof. It names the *consumer's own input port* in every measured join failure
+  // (3891760 n1.in-fuel, 1376111 n8.in-ore, 6752307 n23.in-iron-plate). The old second opinion here (`sealedInputs`,
+  // a 32-tile lane-escape check) disagreed in all three and vetoed the only cheap remedy. A flood that hit the window
+  // edge (`edge`) is not enclosure: the wider-window replan above answers that first.
   for (const ev of evidence) {
     if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
+    if (ev.sealed.edge === true) continue
     const id = ev.sealed.port.module
     const n = f.graph.nodes[id]
     if (n === undefined || LO.findModule(f.layout, id) === undefined) continue
-    if (sealedInputs(f.layout, view, id, {}, escape).indexOf(ev.sealed.port.port) < 0) continue
     let busy: string | undefined
     for (const o of f.goals) {
       if (o === g || (o.status !== "building" && o.status !== "planning")) continue
@@ -1892,8 +1985,9 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
   // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
   // evidence may name the start, so the B57 loop above never sees the real walled-in consumer. Inspect the goal module of
   // every failed route, and relocate that consumer when its own input lane cannot lead out.
+  if (escape <= 0) return undefined
   for (const ev of evidence) {
-    if (ev.kind !== "route") continue
+    if (ev.kind !== "route" || ev.sealed?.edge === true) continue
     const [role] = string.match(ev.subject, "=>([^%.]+)%.")
     if (role === undefined) continue
     let n: LogicalNode | undefined
