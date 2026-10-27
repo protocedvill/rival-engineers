@@ -400,14 +400,18 @@ function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; r
   return { keep, rest }
 }
 
-/** The next free provider role for a parallel provider (`coal>power`, `coal>power#2`, ...). */
+/**
+ * The next free provider role for a parallel provider (`coal>power`, `coal>power~2`, ...). B68: `~N`, not `#N`: `#N` is
+ * also a consumer's suffix (`power#2`, `labs#2`), so `coal>power#2` was both the second coal provider of `power` and the
+ * coal supply of `power#2`, and the design merged the two into one node.
+ */
 function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
   // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
-  const m = string.match(role ?? "", "^(.*)#%d+$")
+  const m = string.match(role ?? "", "^(.*)~%d+$")
   const base = m[0] !== undefined ? m[0] : (role ?? "provider")
   let n = 2
   for (;;) {
-    const candidate = `${base}#${n}`
+    const candidate = `${base}~${n}`
     // A built provider may not have been emitted into this design yet (or its exact feed may have just been denied).
     // Its role is still occupied: reusing it makes diffDesign bind the replacement to the old graph node.
     let used = candidate === role || (avoidBuilt && w.ctx.providerCaps?.[candidate] !== undefined)
@@ -702,9 +706,16 @@ function supplyPass(all: DesignNode[], allEdges: DesignEdge[]): void {
   }
 }
 
-/** Whether a role is the power node or a fuel supply of it ("power", "power#2", "coal>power", ...). */
+/** Whether a role is the power node or a fuel supply of it ("power", "power#2", "coal>power", "coal>power~2", ...). */
 export function isPowerRole(role: string): boolean {
-  return string.match(role, "^power#?%d*$")[0] !== undefined || string.match(role, ">power#?%d*$")[0] !== undefined
+  const [base] = string.match(role, "^(.-)~%d+$")
+  const r = base ?? role
+  return string.match(r, "^power#?%d*$")[0] !== undefined || string.match(r, ">power#?%d*$")[0] !== undefined
+}
+
+/** B68: whether a role is a parallel provider (`<role>~N`, `parallelRole`). */
+export function isParallelRole(role: string): boolean {
+  return string.match(role, "~%d+$")[0] !== undefined
 }
 
 /**

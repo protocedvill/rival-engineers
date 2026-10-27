@@ -764,7 +764,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
       }
     }
     // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
-    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS && !DS.isPowerRole(gr.role) && string.find(gr.role, "#", 1, true)[0] === undefined && gr.need > 0) {
+    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS && !DS.isPowerRole(gr.role) && string.find(gr.role, "#", 1, true)[0] === undefined && !DS.isParallelRole(gr.role) && gr.need > 0) {
       f.cluster1Caps ??= {}
       f.cluster1Caps[gr.role] = math.max(0.05, math.min(1, gr.have / gr.need)) * (f.design?.cluster1Share ?? 1)
       log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} can't grow: production cluster 1 takes at most ${string.format("%.3f", f.cluster1Caps[gr.role])} of the target`)

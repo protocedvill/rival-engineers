@@ -111,14 +111,14 @@ test("B60 provider groups: an unexpandable fuel provider keeps its capacity and 
     providerCaps: { "coal>power": 0.05 },
   }), { item: RED, perSecond: 1 })
   const old = byRole(d.nodes, "coal>power")!
-  const parallel = byRole(d.nodes, "coal>power#2")!
+  const parallel = byRole(d.nodes, "coal>power~2")!
   ok(old !== undefined && parallel !== undefined, `the old provider and a parallel provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
   near(old.capacity, 0.05, 1e-9, "the old provider keeps exactly its real capacity")
   ok(old.need <= 0.05 + 1e-9, "the old provider is not asked to grow")
   ok(parallel.need > 0, "the parallel provider carries the residual")
   let merged = 0
   for (const e of d.edges) {
-    if (e.from !== "coal>power#2" || e.to !== "power") continue
+    if (e.from !== "coal>power~2" || e.to !== "power") continue
     eq(e.merge, true, "the residual merges into the existing power input")
     merged++
   }
@@ -126,18 +126,18 @@ test("B60 provider groups: an unexpandable fuel provider keeps its capacity and 
   const g = graphWith(d, ["power", "labs", "coal>power"], { "coal>power": 0.05 })
   const diff = diffDesign(d, g, () => undefined)
   for (const gr of diff.grow) ok(gr.role !== "coal>power", "the unexpandable provider is never asked to grow")
-  ok(diff.missing.some((n) => n.role === "coal>power#2"), "the parallel provider is missing and can be scheduled")
+  ok(diff.missing.some((n) => n.role === "coal>power~2"), "the parallel provider is missing and can be scheduled")
 })
 
 test("B60 provider groups: a short parallel provider gets its own next role without crashing", () => {
   const d = design(ctx({
     enabled: ELECTRIC,
-    providerShort: { "coal>power": true, "coal>power#2": true },
-    providerCaps: { "coal>power": 0.001, "coal>power#2": 0.001 },
+    providerShort: { "coal>power": true, "coal>power~2": true },
+    providerCaps: { "coal>power": 0.001, "coal>power~2": 0.001 },
   }), { item: RED, perSecond: 1 })
   ok(byRole(d.nodes, "coal>power") !== undefined, "first provider")
-  ok(byRole(d.nodes, "coal>power#2") !== undefined, "second provider")
-  ok(byRole(d.nodes, "coal>power#3") !== undefined, `third provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
+  ok(byRole(d.nodes, "coal>power~2") !== undefined, "second provider")
+  ok(byRole(d.nodes, "coal>power~3") !== undefined, `third provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
 })
 
 test("B66: steam blocks that cannot grow keep their capacity and the excess goes to the next steam block", () => {
@@ -163,10 +163,10 @@ test("B61 provider groups: a shared provider that cannot reach all consumers get
     sharing: { keep, spare: { coal: { "coal*>test": 100 } }, split: { "coal*>test": true } },
   })
   const d = design(c, { item: RED, perSecond: 1 })
-  const split = d.nodes.filter((n) => n.role === "coal*>test#2" || n.role === "coal*>test#3")
+  const split = d.nodes.filter((n) => n.role === "coal*>test~2" || n.role === "coal*>test~3")
   eq(split.length, 2, `two parallel providers: ${d.nodes.map((n) => n.role).join(",")}`)
   let coalEdges = 0
-  for (const e of d.edges) if (e.from === "coal*>test#2" || e.from === "coal*>test#3") coalEdges++
+  for (const e of d.edges) if (e.from === "coal*>test~2" || e.from === "coal*>test~3") coalEdges++
   eq(coalEdges, 2, "one consumer feed per parallel provider")
   ok(byRole(d.nodes, "coal*>test") === undefined, "the infeasible shared group itself is not planned")
 })
@@ -177,7 +177,7 @@ test("B61 provider groups: a fresh shared group marked split also gets one provi
     enabled: ELECTRIC,
     sharing: { keep: {}, spare: {}, split: { [role]: true } },
   }), { item: RED, perSecond: 1 })
-  const split = d.nodes.filter((n) => n.role === `${role}#2` || n.role === `${role}#3`)
+  const split = d.nodes.filter((n) => n.role === `${role}~2` || n.role === `${role}~3`)
   eq(split.length, 2, `two parallel fresh providers: ${d.nodes.map((n) => n.role).join(",")}`)
   ok(byRole(d.nodes, role) === undefined, "the fresh shared group is not planned as one node")
 })
@@ -229,9 +229,9 @@ test("B61 provider groups: splitting a cluster-suffixed role does not reuse that
   ok(byRole(d.nodes, role) === undefined, `the infeasible role is not reused: ${d.nodes.map((n) => n.role).join(",")}`)
   ok(byRole(d.nodes, oldParallel) === undefined, `another built parallel role is not reused: ${d.nodes.map((n) => n.role).join(",")}`)
   let split = 0
-  for (const n of d.nodes) if (n.role !== role && string.find(n.role, "coal*>test#", 1, true)[0] === 1) split++
+  for (const n of d.nodes) if (string.find(n.role, `${role}~`, 1, true)[0] === 1) split++
   eq(split, 2, `two fresh parallel roles: ${d.nodes.map((n) => n.role).join(",")}`)
-  ok(byRole(d.nodes, "coal*>test#4") !== undefined && byRole(d.nodes, "coal*>test#5") !== undefined, "the next two fresh suffixes")
+  ok(byRole(d.nodes, `${role}~2`) !== undefined && byRole(d.nodes, `${role}~3`) !== undefined, "the next two fresh suffixes (B68: ~N, never a #N cluster suffix)")
 })
 
 test("power roles: the steam block and its fuel supply", () => {
@@ -531,6 +531,32 @@ test("M6: a steam block that can't grow gets a second one (power#2) for the exce
   ok(p2!.capacity + 1e-6 >= byRole(d.nodes, "power")!.need - cap, `covers the excess (${p2!.capacity} W)`)
   ok(byRole(d.nodes, "coal>power#2") !== undefined, "its own coal")
   ok(isPowerRole("power#2") && isPowerRole("coal>power#2"), "power roles")
+})
+
+test("B68: a parallel fuel provider of power never shares a role with the coal supply of power#2", () => {
+  // Seeds 5387208/8646103/7718665: parallelRole("coal>power") was "coal>power#2", the point-to-point role of power#2's
+  // coal. The design merged the two into one node feeding both blocks, so the built parallel mine (which feeds power)
+  // read as power#2's coal: "coal>power#2 short (2/3.33): cannot grow", and power#2 never got a coal belt of its own.
+  const d = design(greenCtx({ powerCaps: [{ role: "power", capacity: 1.8e6 }], providerShort: { "coal>power": true }, providerCaps: { "coal>power": 0.05 } }), STAGE2)
+  eq(d.errors.length, 0, d.errors.join("; "))
+  ok(byRole(d.nodes, "power#2") !== undefined, "second steam block")
+  const into: Record<string, string[]> = {}
+  for (const e of d.edges) if (e.item === "coal" && isPowerRole(e.to) && string.match(e.to, "^power")[0] !== undefined) {
+    into[e.from] ??= []
+    into[e.from].push(e.to)
+  }
+  for (const [from, tos] of pairs(into)) ok((tos as string[]).length === 1, `${from as string} feeds one steam block: ${(tos as string[]).join(",")}`)
+  ok(into["coal>power"] !== undefined, "the old provider feeds power")
+  let parallel = 0
+  let second = 0
+  for (const [from, tos] of pairs(into)) {
+    if (from === "coal>power") continue
+    if ((tos as string[])[0] === "power") parallel++
+    if ((tos as string[])[0] === "power#2") second++
+  }
+  ok(parallel >= 1, "a parallel provider feeds power")
+  ok(second >= 1, "power#2 has its own coal")
+  ok(isPowerRole("coal>power~2") && isPowerRole("coal>power#2~3"), "parallel fuel providers are power roles")
 })
 
 test("M6: a cluster-1 module that can't grow caps cluster 1's share; the other clusters make the rest", () => {
