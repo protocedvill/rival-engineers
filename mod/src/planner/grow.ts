@@ -146,9 +146,14 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   // they powered again with new lines. A module that was powered and can't be joined again fails the growth.
   const evicted = (job.layout.evictedPoles ?? []).slice(base.evictedPoles?.length ?? 0)
   let newPoles: PoleId[] = []
-  if (evicted.length > 0) {
-    const was: Record<string, boolean> = {}
-    for (const u of unpoweredModules(base, facts)) was[u] = true
+  // B67 (8646103): a growth also moves the module's own poles, most of all a D55 reclaim that moves a whole-patch mine
+  // to the next part of its patch. The pole line that reached the old poles can end out of wire reach: the mine and
+  // everything powered through it went dark, and the reconciler's repair found "nothing missing". Join them again too.
+  const was: Record<string, boolean> = {}
+  for (const u of unpoweredModules(base, facts)) was[u] = true
+  let cut = evicted.length > 0
+  if (!cut) for (const u of unpoweredModules(job.layout, facts)) if (!was[u]) cut = true
+  if (cut) {
     const pj = polesNow(job.layout, view, facts, policy, polePrefix, pole)
     for (const u of unpoweredModules(job.layout, facts)) {
       if (!was[u]) return { ok: false, reason: `re-pole failed: ${u} ${pj.failures[u] ?? "stays unpowered"}`, layout: base, remove: [], add: [], rerouted: [], job }

@@ -7,7 +7,7 @@ import { CLIFF, FREE, rectContains, TerrainView, tkey, UNKNOWN } from "../src/pl
 import { planGrowth } from "../src/planner/grow"
 import { commitModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
-import { placeNow } from "../src/planner/placement"
+import { placeNow, prepareWholePatchPlacement } from "../src/planner/placement"
 import { polesNow, unpoweredModules } from "../src/planner/power"
 import { selectPolicy } from "../src/planner/policy"
 import { RouteRequest, tileCost } from "../src/planner/router"
@@ -148,6 +148,34 @@ test("B37: the placement search may put a module on a pole line (old: hard), and
   const s2 = placeNow({ id: "smelt", def, targets: {}, center: { x: p0.x, y: p0.y }, region }, l, free(100, 80), POLICY)
   eq(s2.phase, "done", "placed")
   for (const p of l.poles!) ok(!rectContains(s2.result!.rect, p.x, p.y), `pole ${p.id} not under the module when free ground is as good`)
+})
+
+test("B67: a D55 reclaim moves a whole-patch mine off its pole line's reach; the growth joins it again", () => {
+  // Seed 8646103 (p6-rand): two reclaims moved the power block's coal mine n6 within its patch. The line that reached
+  // its old poles ended 9.2 tiles from the new ones, out of wire reach; n6 and the two iron outposts powered through it
+  // went dark for the rest of the run, and the reconciler's repair found "nothing missing".
+  const tap: typeof POLICY = { ...POLICY, topology: "splitter-tap" }
+  const region = { x: 0, y: 0, w: 140, h: 140 }
+  const oreAt = (x: number, y: number): boolean => x >= 40 && x < 80 && y >= 40 && y < 60
+  const view: TerrainView = { block: free(140, 140).block, ore: (x, y) => (oreAt(x, y) ? "iron-ore" : undefined) }
+  const l = newLayout()
+  place(l, "steam", steamBlock(F, { boilers: 1 }), 2, 2)
+  const s = placeNow({ id: "mine", def: miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), targets: {}, center: { x: 44, y: 44 }, region }, l, view, tap)
+  eq(s.phase, "done", `mine placed (${s.reason})`)
+  const m = s.result!
+  prepareWholePatchPlacement(m, view, F, region, tap, l)
+  commitModule(l, m, F, tap.corridor.preferred)
+  polesNow(l, view, F, tap, "poles:a:")
+  eq(unpoweredModules(l, F).length, 0, "the mine is powered")
+  // The ore under (and next to) its drills is worked out: the reclaim moves it to the next part of the patch.
+  const r = { ...m.rect }
+  const worked: TerrainView = { block: view.block, ore: (x, y) => (oreAt(x, y) && !(x >= r.x - 1 && x < r.x + r.w + 1 && y >= r.y - 1 && y < r.y + r.h + 1) ? "iron-ore" : undefined) }
+  const g = planGrowth(l, worked, F, tap, TIER, "mine", 1, "small-electric-pole", "poles:grow:", true)
+  ok(g.ok, `reclaimed (${g.reason})`)
+  const moved = g.layout.modules.filter((x) => x.id === "mine")[0]
+  ok(moved.rect.x !== r.x || moved.rect.y !== r.y, `the mine moved: ${r.x},${r.y} -> ${moved.rect.x},${moved.rect.y}`)
+  eq(unpoweredModules(g.layout, F).join(","), "", "still powered after the move")
+  ok(g.add.some((e) => e.name === "small-electric-pole" && string.sub(e.owner, 1, 11) === "poles:grow:"), "a new line pole is built")
 })
 
 run("pole-eviction")

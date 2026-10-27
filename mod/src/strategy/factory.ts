@@ -21,7 +21,7 @@ import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest } from "../planner/plan"
 import { sealedInputs } from "../planner/placement"
-import { powerRoles } from "../planner/power"
+import * as PW from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { researchGoal, startResearch } from "./research-queue"
@@ -1527,7 +1527,7 @@ function claimModuleFields(ctx: Ctx, m: PlacedModule): void {
 function powerEdges(f: FactoryState, poleLines?: { id: string; to: string; from: string }[]): void {
   const power = LG.nodesOf(f.graph, "power")[0]
   if (power === undefined) return
-  const roles = powerRoles(f.layout, prototypeFacts)
+  const roles = PW.powerRoles(f.layout, prototypeFacts)
   for (const id of roles.consumers) {
     const n = f.graph.nodes[id]
     if (n === undefined) continue
@@ -2145,7 +2145,10 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     for (const s of own.missing) check.missing.push(s)
   }
   if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0) {
-    say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
+    // B67: with every planned pole standing, say whether the plan itself leaves the consumer off the network (a layout
+    // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
+    const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0
+    say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
     return
   }
   // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
