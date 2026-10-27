@@ -140,6 +140,22 @@ test("B60 provider groups: a short parallel provider gets its own next role with
   ok(byRole(d.nodes, "coal>power#3") !== undefined, `third provider: ${d.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
 })
 
+test("B66: steam blocks that cannot grow keep their capacity and the excess goes to the next steam block", () => {
+  const one = design(ctx({ enabled: ELECTRIC, powerCaps: [{ role: "power", capacity: 1e5 }] }), { item: RED, perSecond: 1 })
+  const second = byRole(one.nodes, "power#2")!
+  ok(second !== undefined && second.need > 0, `power#2 takes the excess: ${one.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
+  eq(byRole(one.nodes, "power#3"), undefined, "no third block while power#2 can still grow")
+
+  const two = design(ctx({ enabled: ELECTRIC, powerCaps: [{ role: "power", capacity: 1e5 }, { role: "power#2", capacity: 1e5 }] }), { item: RED, perSecond: 1 })
+  const capped = byRole(two.nodes, "power#2")!
+  const third = byRole(two.nodes, "power#3")!
+  ok(third !== undefined, `power#3 once power#2 cannot grow either: ${two.nodes.map((n) => `${n.role}=${n.need}`).join(",")}`)
+  near(capped.capacity, 1e5, 1e-6, "power#2 keeps exactly its real capacity")
+  ok(capped.need <= 1e5 + 1e-6, "power#2 is not asked to grow")
+  near(1e5 + capped.need + third.need, second.need + 1e5, 1, "the blocks together carry the same excess")
+  ok(two.edges.some((e) => e.to === "power#3" && e.item === "coal"), "the third block gets coal")
+})
+
 test("B61 provider groups: a shared provider that cannot reach all consumers gets one parallel provider per consumer", () => {
   const keep = { [`coal@${SMELT_FE}`]: "coal*>test", [`coal@${SMELT_CU}`]: "coal*>test" }
   const c = ctx({
@@ -508,7 +524,7 @@ test("M6: a steam block that can't grow gets a second one (power#2) for the exce
   const d0 = design(greenCtx(), STAGE2)
   const cap = 1.8e6
   ok(byRole(d0.nodes, "power")!.need > cap, "the design needs more than one boiler")
-  const d = design(greenCtx({ powerCap: cap }), STAGE2)
+  const d = design(greenCtx({ powerCaps: [{ role: "power", capacity: cap }] }), STAGE2)
   eq(d.errors.length, 0, d.errors.join("; "))
   const p2 = byRole(d.nodes, "power#2")
   ok(p2 !== undefined, "second steam block")

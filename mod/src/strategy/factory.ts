@@ -431,7 +431,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     handover: ST.handoverRoles(getFactory(ctx.faction.name)),
     providerShort: ST.providerShort(getFactory(ctx.faction.name)),
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
-    powerCap: ST.powerCap(getFactory(ctx.faction.name)),
+    powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
   }
 }
@@ -1479,10 +1479,15 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     // B25: the completion's new entities replace the faction's own earlier structures on their tiles (pole lines
     // and routes placed before the mine's claim): pick them up first, then ghost. The reconcile layer turns the
     // broken edge into a repair goal.
+    // B66 (5387208): the entity's whole footprint, not its centre tile: a completed drill's outer rows kept a later
+    // route's belts and its ghost could never be placed.
     for (const s of add) {
-      const px = math.floor(s.x)
-      const py = math.floor(s.y)
-      for (const e of findEntities(ctx.surface, { type: ["electric-pole", "transport-belt", "underground-belt"], force: ctx.faction.force, area: { left_top: { x: px + 0.05, y: py + 0.05 }, right_bottom: { x: px + 0.95, y: py + 0.95 } }, limit: 4 })) {
+      const p = prototypes.entity[s.name]
+      const side = s.dir === defines.direction.east || s.dir === defines.direction.west
+      const w = p !== undefined ? (side ? p.tile_height : p.tile_width) : 1
+      const h = p !== undefined ? (side ? p.tile_width : p.tile_height) : 1
+      const r = { x: math.floor(s.x - w / 2 + 0.01), y: math.floor(s.y - h / 2 + 0.01), w, h }
+      for (const e of findEntities(ctx.surface, { type: ["electric-pole", "transport-belt", "underground-belt"], force: ctx.faction.force, area: { left_top: { x: r.x + 0.05, y: r.y + 0.05 }, right_bottom: { x: r.x + r.w - 0.05, y: r.y + r.h - 0.05 } } })) {
         // B37: an evicted pole is already queued.
         if (e.unit_number !== undefined && queued[e.unit_number]) continue
         if (e.unit_number !== undefined) queued[e.unit_number] = true

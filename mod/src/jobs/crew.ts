@@ -513,6 +513,19 @@ function jobFailed(
     failJob(board, job.id, "ghost-removed", tick, member.id)
     return
   }
+  // B66 (5387208): Factorio accepts a ghost on top of the same live entity, and that ghost can never be revived. The
+  // entity it asks for already stands, so the job is done: drop the ghost instead of retrying it forever.
+  if (payload.kind === "place" && action?.reason === "cannot-place") {
+    const g = payload.ghost
+    const twin = findEntities(factionSurface(faction), { name: g.ghost_name, position: g.position, force: faction.force, limit: 1 })[0]
+    if (twin !== undefined && twin.direction === g.direction) {
+      g.destroy()
+      delete faction.ghostJobs[payload.ghostKey]
+      payload.built = twin
+      complete(board, job.id, member.id, tick)
+      return
+    }
+  }
   // A character standing on the spot is temporary: retry soon, without spending an attempt.
   const blocked = payload.kind === "place" && action?.reason === "cannot-place" && charactersIn(faction, job.footprint)
   const penalize = !blocked || (job.deferrals ?? 0) >= MAX_DEFERRALS

@@ -480,7 +480,15 @@ export function stepBuild(entry: PlannerEntry): void {
     const stamped: LuaEntity[] = [...r.entities]
     // B23: a completed shared mine's new entities (a base module not in `parts`) join the same build.
     if (b.extraAdd !== undefined) {
+      // B66 (5387208): the plan's own pole lines can put a pole on a completion pole's spot, and a pole can be built
+      // there between planning and this stamp. Factorio accepts the second ghost (on the first ghost, or on the live
+      // pole) but it can never be revived: its place job fails `cannot-place` forever and the goal stalls.
+      const have: Record<string, boolean> = {}
+      for (const g of stamped) if (g.valid) have[`${g.ghost_name}@${g.position.x},${g.position.y}`] = true
       for (const s of b.extraAdd) {
+        if (have[`${s.name}@${s.x},${s.y}`]) continue
+        if (findEntities(surface, { name: s.name, position: { x: s.x, y: s.y }, force: entry.force, limit: 1 }).length > 0) continue
+        have[`${s.name}@${s.x},${s.y}`] = true
         const e = createSpec(surface, entry.force, s, true)
         if (e === undefined) b.failed.push(`ghost ${s.owner}: ${s.name}@${s.x},${s.y}`)
         else stamped.push(e)

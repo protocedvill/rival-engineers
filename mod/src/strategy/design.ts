@@ -93,10 +93,11 @@ export interface DesignContext {
    */
   sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> }
   /**
-   * M6: the most the built steam block can supply when it can't grow any more (its expansion keeps failing, e.g. the
-   * shore is taken): the excess gets a second steam block (`power#2`). Absent: the steam block grows.
+   * M6/B66: built steam blocks that can't grow any more (their expansion keeps failing, e.g. the shore is taken), in
+   * role order from `power` (`power`, `power#2`, ...), with what each can supply. Each keeps that capacity and the
+   * excess goes to the next steam block, a new one after the last. Absent: the steam block grows.
    */
-  powerCap?: number
+  powerCaps?: { role: string; capacity: number }[]
   /**
    * M6: the largest share of the stage target production cluster 1 may take (0..1): some of its modules (the previous
    * stage's) can't grow far enough, so the other clusters make the rest. Absent: equal shares.
@@ -759,16 +760,32 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
   return estimate
 }
 
-/** M6: a second steam block (role `power#2`) for what the first can't supply, with its own fuel supply. */
-function secondSteam(ctx: DesignContext, w: Walk, extraW: number): void {
+/**
+ * M6/B66: the steam blocks after `power` for what it can't supply. Each capped block (`powerCaps`) carries at most its
+ * real capacity, so the diff never asks it to grow; the rest goes to the next role, a new block after the last capped
+ * one. Before B66 the excess always went to `power#2`, so once it could not grow either nothing planned a third.
+ */
+function extraSteam(ctx: DesignContext, w: Walk, electric: number, caps: { role: string; capacity: number }[]): void {
+  let rest = electric - caps[0].capacity
+  for (let i = 1; rest > EPS; i++) {
+    const cap = caps[i]
+    const take = cap !== undefined ? math.min(rest, cap.capacity) : rest
+    addSteam(ctx, w, cap?.role ?? `power#${i + 1}`, take, cap?.capacity)
+    rest -= take
+    if (cap === undefined) return
+  }
+}
+
+/** One steam block after the first, with its own fuel supply; `fixedCapacity` for a built block that can't grow. */
+function addSteam(ctx: DesignContext, w: Walk, role: string, extraW: number, fixedCapacity?: number): void {
   const s = sizeModule(ctx, "steam-block", "electricity", extraW)
   if (s === undefined) {
-    w.errors.push("second steam-block: no valid size")
+    w.errors.push(`${role} steam-block: no valid size`)
     return
   }
   const util = s.capacity > EPS ? math.min(1, extraW / s.capacity) : 1
-  const role = "power#2"
-  w.nodes.push({ role, kind: "power", generator: "steam-block", params: s.params, def: s.def, item: "electricity", need: extraW, capacity: s.capacity, inputs: inputPorts(s.def, util), powerW: s.capacity, cluster: w.cluster })
+  const capacity = fixedCapacity ?? s.capacity
+  w.nodes.push({ role, kind: "power", generator: "steam-block", params: s.params, def: s.def, item: "electricity", need: extraW, capacity, inputs: inputPorts(s.def, util), powerW: capacity, cluster: w.cluster })
   if (electricDrillsNow(ctx)) for (const p of inputPorts(s.def, util)) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
   expandItem(w, ctx.fuel)
 }
@@ -876,7 +893,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     }
     const probe = { short: false }
     electric = designPower(ctx, walks[0], others, clusters > 1 ? probe : undefined)
-    if (ctx.powerCap !== undefined && electric > ctx.powerCap + EPS) secondSteam(ctx, walks[0], electric - ctx.powerCap)
+    if (ctx.powerCaps !== undefined && electric > ctx.powerCaps[0].capacity + EPS) extraSteam(ctx, walks[0], electric, ctx.powerCaps)
     let shared = clusters > 1
     if (probe.short) {
       shared = false

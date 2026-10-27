@@ -136,7 +136,6 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
   return out
 }
 
-/** M6: the built steam block's capacity once its growth keeps failing (the design then adds a second one). */
 /**
  * M6: the largest share of the stage target cluster 1 may take, from its modules that can't grow (`cluster1Caps`: role →
  * the share it could still serve when its growth failed for good). Undefined: no cap.
@@ -147,19 +146,23 @@ export function cluster1Max(f: FactoryState | undefined): number | undefined {
   return out
 }
 
-export function powerCap(f: FactoryState | undefined): number | undefined {
+/**
+ * M6/B66: the built steam blocks whose own growth keeps failing, `power` first and then `power#2`, `power#3`... while
+ * each of them is capped too, with their capacity (the design's `powerCaps`). Undefined while `power` can still grow.
+ */
+export function powerCaps(f: FactoryState | undefined): { role: string; capacity: number }[] | undefined {
   if (f === undefined) return undefined
   // M6/B29: this is only for a steam block whose own growth keeps failing. A short fuel producer is a provider-group
   // shortfall (B60): it keeps feeding the existing block and the design adds a parallel coal provider, not a second
   // power block with its own mine.
-  let failed = false
-  for (const [role, n] of pairs(f.growFails ?? {})) {
-    const r = role as string
-    if ((string.match(r, "^power#?%d*$")[0] !== undefined) && (n as number) >= GROW_MAX_FAILS) failed = true
+  const out: { role: string; capacity: number }[] = []
+  for (let i = 1; ; i++) {
+    const role = i === 1 ? "power" : `power#${i}`
+    const n = nodeByRole(f.graph, role)
+    if (n === undefined || (f.growFails?.[role] ?? 0) < GROW_MAX_FAILS) break
+    out.push({ role, capacity: rateIn(n.capacity.outputs, "electricity") })
   }
-  if (!failed) return undefined
-  const n = nodeByRole(f.graph, "power")
-  return n !== undefined ? rateIn(n.capacity.outputs, "electricity") : undefined
+  return out.length > 0 ? out : undefined
 }
 
 /** Actual output capacity of built provider roles, for the B60 provider-group split. */

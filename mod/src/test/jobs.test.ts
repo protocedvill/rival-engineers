@@ -273,6 +273,25 @@ describe("job board", () => {
     })
   })
 
+  test("B66: a ghost on top of its own live twin is done, not retried forever", () => {
+    // Seed 5387208 (grow-ab): a completed mine's pole ghosts landed on poles the same build had just placed. Factorio
+    // accepts such a ghost, but it can never be revived: the place job failed cannot-place on every round.
+    const lab = createLab(24)
+    const faction = createFaction(newFactionName("twin"), { position: at(lab, 0, 6), crew: 1 })
+    const pos = at(lab, 2.5, 0.5)
+    const live = lab.surface.create_entity({ name: "small-electric-pole", position: pos, force: faction.force })!
+    const twin = lab.surface.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: pos, force: faction.force })
+    assert(twin !== undefined && twin.valid, "the engine accepts a ghost on its live twin (B41/B66 engine fact)")
+    stockpile(lab, faction, 0.5, 8.5, { "small-electric-pole": 1 })
+    const id = addPlaceJob(faction, twin!, {})!
+    awaitBoard(faction, 3600, () => {
+      const job = faction.board.jobs[id]
+      assert(job.status === "done", describeBoard(faction))
+      assert(!twin!.valid, "the impossible ghost is gone")
+      assert(live.valid, "the live pole stays")
+    })
+  })
+
   test("a crew member's death releases its claims and the other finishes the build", () => {
     const lab = createLab(32)
     const faction = createFaction(newFactionName("death"), { position: at(lab, 0, 12), crew: 2 })
