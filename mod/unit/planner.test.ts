@@ -496,7 +496,11 @@ test("router: B60 merge side-loads a second provider into an existing route with
   const primaryTiles = [...primary.tiles]
   const merge = conn("merge", "c", "b")
   merge.merge = true
-  const job = routeOne(state, terrain, policy(), merge, [c])
+  // The side-load mechanism itself: the pre-P44 order (side-loads first, no lane check).
+  const sideFirst = policy()
+  sideFirst.router = { ...sideFirst.router }
+  sideFirst.router.sideLoadLaneShare = undefined
+  const job = routeOne(state, terrain, sideFirst, merge, [c])
   let why = ""
   for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
   eq(job.phase, "done", `merge route (${why})`)
@@ -506,6 +510,27 @@ test("router: B60 merge side-loads a second provider into an existing route with
   eq(state.routes["route:primary"].tiles.join(","), primaryTiles.join(","), "the existing route is preserved")
   eq(state.routeOcc[tkey(r.merge!.x, r.merge!.y)], "route:primary", "the merge ends on the existing route")
   noProblems(state, terrain, "merge")
+})
+
+test("router: P44 a second provider joins an existing route with a splitter by default (user: avoid side-loading)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, a, 2, 5)
+  place(state, b, 20, 5)
+  eq(routeOne(state, terrain, policy(), conn("primary", "a", "b"), [a, b]).phase, "done", "primary route")
+  place(state, c, 2, 15)
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  const job = routeOne(state, terrain, policy(), merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `merge route (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.mergeSplitter !== undefined && r.merge === undefined, "a splitter merge, not a side-load")
+  noProblems(state, terrain, "splitter merge")
 })
 
 test("router: side constraint: arrives from the required side over an unfed blocker belt", () => {

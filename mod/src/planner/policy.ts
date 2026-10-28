@@ -61,6 +61,13 @@ export interface RouterWeights {
   /** Seal check cap on a retry after "no path" (rip pass, wider windows): 0 runs it to the end. */
   sealRetry?: number
   /**
+   * P44 (user, 2026-10-28: avoid side-loading, it puts everything on one lane): a provider-group merge side-loads only
+   * when the consumer port takes at most this share of one lane (everything it gets then fits one lane, whatever lanes
+   * the trunk uses); otherwise it joins with a splitter only. Splitter merges are tried first either way. Absent: the
+   * old order (side-loads first, no rate check).
+   */
+  sideLoadLaneShare?: number
+  /**
    * Two-level routing (user, 2026-10-20): a connection whose ends are at least this far apart (Manhattan tiles) is
    * routed over `coarseCell`-tile cells first, then tile by tile inside a corridor of those cells. 0: off.
    */
@@ -277,6 +284,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     softClaimDecay: 0.5,
     sealCheck: 2000,
     sealRetry: 0,
+    sideLoadLaneShare: 0.8,
     longRoute: 128,
     coarseCell: 8,
     corridorCells: 1,

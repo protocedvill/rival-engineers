@@ -2851,6 +2851,7 @@ nodes, for B70). Each B-test was checked to fail without its fix.
 | Throughput tech | `mod/static/data.lua` `rival-engineers-throughput-test` | 30 units × 60 s, red + green | Soak-only hidden repeatable tech (B64, `debug-infinite-research`) that keeps labs consuming after the research goal. Its unit time bounds the lab consumption the sustain check can see; 60 s did not cap any seed here (labs reached 30/min). **Agent guess.** | no |
 | Orphan claim log interval | `strategy/factory.ts` `ORPHAN_LOG_TICKS` | 3600 ticks | B63 diagnostics: how often orphan claim tiles are logged. Log cadence only. **Agent guess.** | no |
 
+| Side-load lane share | `planner/policy.ts` `router.sideLoadLaneShare` | 0.8 | P44 (a): a provider-group merge side-loads only when the consumer port takes at most this share of one lane (6/s on yellow belt), so everything it gets fits one lane whatever lanes the trunk already uses; above it, splitter merges only. Splitter merges are tried first either way. Leaves a margin for uneven delivery. **Agent guess, please confirm.** | no |
 | Failed-key cooldown | `jobs/keys.ts` `FAILED_KEY_COOLDOWN_TICKS` | 10 game-min | B82: how long a target whose job failed as unreachable stays skipped before the brain or factory queues it again. Long enough that one unreachable tree stops occupying a crew member, short enough that a target that becomes reachable (cleared ground) is retried. **Agent guess, please confirm.** | no |
 
 D65, D66, B66–B71 add no tuning numbers. D68 removed one: P36 (b)'s `FUEL_FALLBACK_ATTEMPTS` (2).

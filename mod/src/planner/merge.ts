@@ -1,12 +1,13 @@
 // Provider-group merge candidates (B60): where a second producer can join an existing route to the same consumer.
 //
-// Two forms, in this order: a **side-load** into the trunk belt (the original behaviour), and a **splitter merge** for a
-// trunk tile a side-load cannot use (a curve, an underground, or already a splitter).
+// Two forms: a **splitter merge** beside a straight trunk tile, and a **side-load** into the trunk belt. P44 (user,
+// 2026-10-28): a side-load puts everything on one lane, so splitter merges come first, and a side-load is offered only
+// when what the consumer port takes fits one lane with margin (`sideLoadLaneShare`).
 //
 // Pure: no Factorio globals (T1: mod/unit/merge.test.ts).
 
 import { ccw, cw, DX, DY, manhattan, tkey } from "./grid"
-import { findModule, LayoutState, routeDangles } from "./layout"
+import { findModule, LayoutState, portRate, routeDangles } from "./layout"
 
 /** One place a second route can join an existing route to the same consumer. */
 export interface MergeGoal {
@@ -33,12 +34,14 @@ function byCost(a: { cost: number; goal: MergeGoal }, b: { cost: number; goal: M
 }
 
 /**
- * Merge points on the existing routes to `to`, nearest `from` first, side-loads before splitter merges.
+ * Merge points on the existing routes to `to`, nearest `from` first. With `lane` (P44: one lane's capacity, items/s, and
+ * the share of it a side-load may carry): splitter merges first, side-loads only when the consumer port's rate is at most
+ * that share. Without it: side-loads first, as before.
  *
  * A splitter merge needs the trunk belt to run straight through (it enters and leaves the splitter straight) and the
  * splitter's far output lane to stay empty, so that lane backs up and every item goes into the trunk.
  */
-export function mergeGoals(layout: LayoutState, to: { module: string; port: string }, from: { module: string; port: string } | undefined): MergeGoal[] {
+export function mergeGoals(layout: LayoutState, to: { module: string; port: string }, from: { module: string; port: string } | undefined, lane?: { capacity: number; share: number }): MergeGoal[] {
   const fm = from !== undefined ? findModule(layout, from.module) : undefined
   const fx = fm !== undefined ? fm.rect.x + fm.rect.w / 2 : 0
   const fy = fm !== undefined ? fm.rect.y + fm.rect.h / 2 : 0
@@ -77,7 +80,20 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   splitter.sort((a, b) => byCost(a, b))
   const out: MergeGoal[] = []
   // Each candidate costs a full search: try the nearest few, then let the ordinary rip/re-place retries take over.
-  for (let i = 0; i < sideLoad.length && i < MAX_SIDE_LOADS; i++) out.push(sideLoad[i].goal)
-  for (let i = 0; i < splitter.length && i < MAX_SPLITTERS; i++) out.push(splitter[i].goal)
+  const sides = (): void => {
+    for (let i = 0; i < sideLoad.length && i < MAX_SIDE_LOADS; i++) out.push(sideLoad[i].goal)
+  }
+  const splits = (): void => {
+    for (let i = 0; i < splitter.length && i < MAX_SPLITTERS; i++) out.push(splitter[i].goal)
+  }
+  if (lane === undefined) {
+    sides()
+    splits()
+    return out
+  }
+  splits()
+  // Unknown demand counts as too much for one lane.
+  const demand = portRate(layout, to, false)
+  if (demand !== undefined && demand <= lane.share * lane.capacity) sides()
   return out
 }

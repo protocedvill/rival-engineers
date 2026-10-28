@@ -503,7 +503,8 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   // there (every plan "no path": vps-b78-r2034469, a parallel smelter given whole consumers its short sibling still
   // feeds); it joins that route like a provider-group merge (B60).
   if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
-    const goals = mergeGoals(job.layout, to, c.from)
+    const share = policy.router.sideLoadLaneShare
+    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined)
     if (goals.length === 0) return `no merge target for ${to.module}.${to.port}`
     req.mergeGoals = goals
     applyMergeGoal(req, goals[0])

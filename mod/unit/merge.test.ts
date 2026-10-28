@@ -101,4 +101,34 @@ test("merge: the trunk must run straight through for a splitter, but a curve sti
   eq(goals.length > 0, true)
 })
 
+/** A consumer module taking `rate` coal/s on `in-coal` (what P44's side-load check reads). */
+function withConsumer(l: LayoutState, rate: number): LayoutState {
+  const m = { id: moduleId("consumer"), def: { ports: [{ id: "in-coal", kind: "belt-in", item: "coal" }], rates: { inputs: [{ item: "coal", perSecond: rate }], outputs: [] } }, rect: { x: 0, y: 30, w: 4, h: 4 } }
+  l.modules = [m as never]
+  return l
+}
+
+test("P44: with a lane given, splitter merges come first; a side-load only when the consumer's demand fits one lane with margin", () => {
+  const lane = { capacity: 7.5, share: 0.8 }
+  // Old order without `lane`: side-loads first.
+  const old = mergeGoals(withConsumer(layoutOf([trunk(6)]), 3), TO, undefined)
+  eq(old[0].x2 === undefined, true, "no lane: a side-load first")
+  // 3/s fits 0.8 of a lane: splitters first, side-loads after.
+  const low = mergeGoals(withConsumer(layoutOf([trunk(6)]), 3), TO, undefined, lane)
+  eq(low[0].x2 !== undefined, true, "a splitter merge first")
+  let firstSide = -1
+  let lastSplit = -1
+  for (let i = 0; i < low.length; i++) {
+    if (low[i].x2 === undefined && firstSide < 0) firstSide = i
+    if (low[i].x2 !== undefined) lastSplit = i
+  }
+  eq(firstSide > lastSplit, true, "every side-load after every splitter merge")
+  // 7/s takes nearly a whole lane: splitter merges only.
+  const high = mergeGoals(withConsumer(layoutOf([trunk(6)]), 7), TO, undefined, lane)
+  eq(high.length > 0 && high.every((g) => g.x2 !== undefined), true, "no side-load above the share")
+  // Unknown demand (no consumer module): splitter merges only.
+  const unknown = mergeGoals(layoutOf([trunk(6)]), TO, undefined, lane)
+  eq(unknown.every((g) => g.x2 !== undefined), true, "unknown demand: no side-load")
+})
+
 run("merge")

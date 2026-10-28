@@ -4,7 +4,7 @@
 
 import { ProtoFacts } from "../modules/facts"
 import { portOutsideTile, Transform, transformRect } from "../modules/geometry"
-import { rotateVec } from "../modules/rates"
+import { rateOf, rotateVec } from "../modules/rates"
 import { ModuleDef, Port } from "../modules/types"
 import type { ConnectionId, LayoutClaimTag, ModuleId, PoleId, PoleLineId, RouteId } from "../shared/ids"
 import { claimInteractionTile, claimMineTile, claimModuleTile, claimRouteTile, claimSoftTile, releaseInteractionTile, releaseMineClaims, releaseModuleTile, releasePoleTile, releaseReservation, releaseRouteTile, releaseSoftClaims, reserveFreeTile, reserveTile } from "./claims"
@@ -233,6 +233,18 @@ export function portTile(m: PlacedModule, p: Port): Vec {
 export function portOutside(m: PlacedModule, p: Port): Vec {
   const o = portOutsideTile(p)
   return { x: m.origin.x + math.floor(o.x), y: m.origin.y + math.floor(o.y) }
+}
+
+/** A port's planned rate (items/s) from its module's rates; several ports of a module with one item share it. */
+export function portRate(state: LayoutState, ref: PortRef, output: boolean): number | undefined {
+  const m = findModule(state, ref.module)
+  const p = m ? findPort(m, ref.port) : undefined
+  if (!m || !p || p.item === undefined) return undefined
+  const list = output ? m.def.rates.outputs : m.def.rates.inputs
+  // Several ports of a module may carry the same item: split its rate evenly.
+  let n = 0
+  for (const q of m.def.ports) if (q.item === p.item && q.kind === p.kind) n++
+  return rateOf(list, p.item) / math.max(1, n)
 }
 
 /** The tile beyond a port's outside tile, straight out from the module. */
