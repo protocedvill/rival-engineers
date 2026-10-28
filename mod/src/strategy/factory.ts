@@ -929,7 +929,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     node.builtTick = ctx.tick
   }
   mark(ctx.faction, "grow-built")
-  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role} at tick ${ctx.tick}`)
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role ?? `${g.growth.node} (no longer in the graph)`} at tick ${ctx.tick}`)
 }
 
 function roleToId(f: FactoryState, g: FactoryGoal, role: string): IDS.ModuleId | undefined {

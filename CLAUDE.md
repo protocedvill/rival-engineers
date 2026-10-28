@@ -68,6 +68,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   value-imports it (e.g. `claims.ts` takes `import type { LayoutState }` while `layout.ts` imports its writers). Only a
   value import closes the cycle, and `require` cycles fail at mod load. Keep the shared *values* in a leaf module
   (`claim-tags.ts`) instead.
+- **`${x?.y}` in a template literal crashes when it is nil**: TSTL compiles templates to `..` and wraps only values it
+  cannot prove are strings in `tostring`; an optional string field goes in raw, and `..` on nil is a Lua error that kills
+  the game (soak `vps-b68` seed 3891760, `goal grew ${node?.role}` after the node was removed). Give it a `??` fallback.
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
