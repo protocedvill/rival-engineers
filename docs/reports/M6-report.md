@@ -2822,6 +2822,10 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b85-r5480563` | `61c9ab5` | 5480563 from `min-0020` | passed, v1-done at 195 min, no stalls (B85 validated) |
 | `vps-b85-r1264816` | `61c9ab5` | 1264816 from the sweep's `min-0140` | Lua crash at 170 min, `graph.lua` rootOf: an orphan tap (→ B88) |
 | `dbg-b88` | `61c9ab5` + an orphan-tap check after each tick subsystem | 1264816 from `min-0140` | the orphan appears at tick 582900 after the factory step (g29's coal-to-power route tapping a ripped tap) |
+| `vps-b88-r1264816` | `e56150c` | 1264816 from `min-0140` | failed fast at 161 min, "no path" for coal-to-power: that save already held the old B83's kept trunk (the fix prevents the state, it doesn't repair a save that has it) |
+| `vps-b88-r1677299` | `e56150c` | 1677299 from the sweep's `min-0140` | passed, v1-done at 294 min, no stalls (B84 validated on the second seed with its signature) |
+| `vps-b88-r1264816-m60` | `e56150c` | 1264816 from `min-0060` | failed at the cap, 12–16/min: B88's tree drop removed the power plant's coal trunk and both smelter fuel lines at ~70 min, and the design never planned the power fuel again (crew-fuelled 400 game-min; everything short of power) → B88 revised (`233da40`: reroute in place) |
+| `m6-random20-922c77c` | `922c77c` | the full 20-seed re-sweep (B85, B87, B88 revised, P44 a/b) | running (3 at a time) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
