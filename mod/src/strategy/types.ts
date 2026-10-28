@@ -96,6 +96,8 @@ export interface BrainState {
   oreFields?: Record<number, boolean>
   /** Dedupe: a maintenance key ("fuel:<unit>") → its active job id. */
   jobKeys: Record<string, number>
+  /** B82: keys whose job failed, with the tick (jobs/keys.ts). */
+  failedKeys?: Record<string, number>
   /** Milestone name → tick first reached. */
   milestones: Record<string, number>
   /** Stall detection: last tick the plan progressed, and the count of plan steps done by then. */

@@ -1,4 +1,5 @@
 import { BoundingBox, LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
+import { keyTaken, pruneFailedKeys } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
@@ -861,12 +862,7 @@ function scanJobs(ctx: Ctx): void {
 }
 
 function keyActive(ctx: Ctx, key: string): boolean {
-  const id = ctx.brain.jobKeys[key]
-  if (id === undefined) return false
-  const job = ctx.faction.board.jobs[id]
-  if (job !== undefined && (job.status === "open" || job.status === "claimed")) return true
-  delete ctx.brain.jobKeys[key]
-  return false
+  return keyTaken(ctx.brain, ctx.faction.board.jobs, key, ctx.tick)
 }
 
 function addKeyed(ctx: Ctx, key: string, spec: JobSpec<JobPayload>): CrewJob {
@@ -1587,6 +1583,9 @@ function pruneBoard(faction: FactionState, tick: number): void {
     if (needed[id] || (job.finishedTick ?? tick) > tick - 1800) continue
     delete board.jobs[id]
   }
+  if (faction.brain !== undefined) pruneFailedKeys(faction.brain, tick)
+  const f = storage.factories?.[faction.name]
+  if (f !== undefined) pruneFailedKeys(f, tick)
 }
 
 /** Telemetry view of a brain (also on the remote interface). */

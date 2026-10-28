@@ -1,4 +1,5 @@
 import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
+import { keyTaken } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
@@ -141,6 +142,8 @@ export interface FactoryState {
   /** Why no goal is being worked on right now. */
   waiting: string[]
   jobKeys: Record<string, number>
+  /** B82: keys whose job failed, with the tick (jobs/keys.ts). */
+  failedKeys?: Record<string, number>
   research: { current?: string; reason?: string; started: Record<string, string> }
   /** Automated science check: research units done since hand-feeding stopped, and what was left in the labs then. */
   verify?: { tick: number; leftover: number; units: number; tech?: string; progress: number; made: number }
@@ -2275,13 +2278,8 @@ function labEntities(ctx: Ctx, node: LogicalNode): LuaEntity[] {
   return findEntities(ctx.surface, { type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
-function keyActive(ctx: Pick<Ctx, "faction" | "f">, key: string): boolean {
-  const id = ctx.f.jobKeys[key]
-  if (id === undefined) return false
-  const job = ctx.faction.board.jobs[id]
-  if (job !== undefined && (job.status === "open" || job.status === "claimed")) return true
-  delete ctx.f.jobKeys[key]
-  return false
+function keyActive(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string): boolean {
+  return keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)
 }
 
 function addKeyed(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string, spec: JobSpec<JobPayload>): void {
