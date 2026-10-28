@@ -251,8 +251,6 @@ const UPKEEP_INTERVAL = 300
 const FUEL_MINUTES = { low: 2, top: 8 }
 const LAB = { low: 2, feed: 5 }
 const MAX_PLAN_ATTEMPTS = 4
-/** P36 (b): plan attempts a new fuel producer must fail to place before its consumers tap a built one. */
-const FUEL_FALLBACK_ATTEMPTS = 2
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
 const TEMP_CLEARANCE = 6
 /** Leftover ghosts get new place jobs at most this often (their jobs failed or were dropped). */
@@ -1124,20 +1122,17 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
           newNoTap = true
         }
       }
-      // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
-      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity"): when a built fuel producer has spare
-      // capacity, at once, before D62 explores (vps-b80d 1264816: an hour of radar outposts for ~0.1 coal/s while built
-      // coal mines had 0.1-0.96/s spare each). Without spare capacity, the old rule: twice, and never for a provider
-      // split to escape its old site (retapping that one defeats the split; D62 explores for an independent patch).
-      const fuel = ctx.faction.brain!.catalog.fuel
-      const spare = (ST.fallbackProducers({ ...f, fallback: { [fuel]: true } })?.[fuel]?.length ?? 0) > 0
+      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity", for every item; replaces P36 (b)'s
+      // fuel-only, second-failure rule): a new producer that cannot be placed makes its consumers tap a built producer of
+      // the same item that has capacity (`ST.hasCapacity`), at once and before D62 explores (vps-b80d 1264816: an hour of
+      // radar outposts for ~0.1 coal/s while built coal mines had 0.1-0.96/s spare). Without one, D62 explores.
       for (const n of g.nodes) {
-        if (n.id !== m || n.item !== fuel || !ctx.config.factoryFuelFallback || f.fallback?.[n.item]) continue
-        if (!spare && (n.newSite === true || g.attempts < FUEL_FALLBACK_ATTEMPTS)) continue
+        if (n.id !== m || n.item === undefined || !ctx.config.factoryFuelFallback || f.fallback?.[n.item]) continue
+        if ((ST.fallbackProducers({ ...f, fallback: { [n.item]: true } })?.[n.item]?.length ?? 0) === 0) continue
         f.fallback ??= {}
         f.fallback[n.item] = true
         newNoTap = true
-        log(`[rival-engineers] faction ${ctx.faction.name}: P36 ${n.role} can't be placed (${v}): new ${n.item} consumers tap a built producer`)
+        log(`[rival-engineers] faction ${ctx.faction.name}: D68 ${n.role} can't be placed (${v}): new ${n.item} consumers tap a built producer with capacity`)
       }
       // B71 (soak vps-b69 seed 7718665): a residual edge found no side-load or splitter spot on the consumer's route, and
       // the same design failed 8 plans in a row. The design no longer splits demand on that port.

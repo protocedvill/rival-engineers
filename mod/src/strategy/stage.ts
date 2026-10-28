@@ -68,6 +68,14 @@ function growableInPlace(f: FactoryState, id: string, item: string): number {
   return per * e.maxUnits
 }
 
+/**
+ * D68 (user, 2026-10-28: "tap first is best as long as there is capacity", for every item): whether built producer `id`
+ * can still serve new consumers of `item`: spare full-speed output over its planned draw, or room to grow in place.
+ */
+export function hasCapacity(f: FactoryState, id: string, item: string): boolean {
+  return spareCapacity(f.graph, id) > 1e-6 || growableInPlace(f, id, item) > 0
+}
+
 export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
@@ -121,8 +129,7 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
       if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
-      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity"): only a producer with spare capacity.
-      if (spareCapacity(f.graph, id) <= 1e-6) continue
+      if (!hasCapacity(f, id, item as string)) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x
