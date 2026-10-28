@@ -16,7 +16,7 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
-import { checkPowerFuel, powerFuelled, serviceHandovers } from "../strategy/fuel"
+import { checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
 import { FactoryGoal, FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
@@ -401,18 +401,19 @@ describe("M5b reconciler", () => {
     assert(r.failed.length === 0, r.failed.join("; "))
     f.layout = layout
     const tick = game.tick
-    node(f.graph, poor, "module", "coal", 1, tick)
-    node(f.graph, rich, "module", "coal", 1, tick)
+    // B70: mines are outpost nodes (the check once took only `module` nodes and never fired).
+    node(f.graph, poor, "outpost", "coal", 1, tick)
+    node(f.graph, rich, "outpost", "coal", 1, tick)
     addNode(f.graph, { id: moduleId("pw"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
     addNode(f.graph, { id: moduleId("pw2"), role: "power#2", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
     edge(f.graph, "coal>power=>power.in-fuel", moduleId("poor"), "out", moduleId("pw"), "in-fuel", "coal", 1)
     edge(f.graph, "coal>power#2=>power#2.in-fuel", moduleId("rich"), "out", moduleId("pw2"), "in-fuel", "coal", 1)
     for (let x = poor.rect.x; x < poor.rect.x + poor.rect.w; x++) for (let y = poor.rect.y; y < poor.rect.y + poor.rect.h; y++) faction.brain!.reserved[tkey(x, y)] = true
     const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
-    assert(checkPowerFuel(ctx, true) === undefined, "not while a plan works on a copy of the layout")
-    assert(checkPowerFuel({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
+    assert(checkMineOre(ctx, true) === undefined, "not while a plan works on a copy of the layout")
+    assert(checkMineOre({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
     // Goalpost 1: the poor outpost is marked as retiring, not deconstructed.
-    const gone = checkPowerFuel(ctx, false)
+    const gone = checkMineOre(ctx, false)
     assert(gone === "poor", `the poor outpost starts handing over (${gone})`)
     assert(f.handover?.["poor"] !== undefined, "it is recorded as handing over")
     assert(f.graph.nodes["poor"] !== undefined && f.graph.edges["coal>power=>power.in-fuel"] !== undefined, "its node and edge stay in the graph while the replacement is planned")
@@ -421,9 +422,9 @@ describe("M5b reconciler", () => {
     let clears = 0
     for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
     assert(clears === 0, `no clear jobs before the replacement is connected (${clears})`)
-    assert(checkPowerFuel(ctx, false) === undefined, "a handover already under way is not started twice")
+    assert(checkMineOre(ctx, false) === undefined, "a handover already under way is not started twice")
     // A built replacement feeds the same consumer port: the gate opens and the old outpost is retired.
-    node(f.graph, rich, "module", "coal", 1, tick)
+    node(f.graph, rich, "outpost", "coal", 1, tick)
     addNode(f.graph, { id: moduleId("poor2"), role: "coal>power#3", kind: "module", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, powerW: 0, lifecycle: "built", status: "ok", createdTick: tick, builtTick: tick })
     edge(f.graph, "coal>power#3=>power.in-fuel", moduleId("poor2"), "out", moduleId("pw"), "in-fuel", "coal", 1)
     serviceHandovers(ctx)
@@ -437,7 +438,33 @@ describe("M5b reconciler", () => {
     assert(clears > 0, `its entities get clear jobs (${clears})`)
     assert(faction.brain!.reserved[tkey(poor.rect.x + 1, poor.rect.y + 1)] === undefined, "its tiles are no longer reserved")
     assert(f.fuelRelocations === 1, "counted")
-    assert(checkPowerFuel(ctx, false) === undefined, "the rich one is kept")
+    assert(checkMineOre(ctx, false) === undefined, "the rich one is kept")
+  })
+
+  test("D67: a science chain's mine with less than factory-mine-lead-minutes of ore left hands over; 0 turns it off", () => {
+    const lab = createLab(48)
+    const { faction, f } = testFaction(lab, 30, 30)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    for (let x = -20; x < 0; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 1 })
+    scan(lab, faction.force)
+    const layout = newLayout()
+    const mine = placeDef(layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }), { x: ox - 15, y: oy + 24 })
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("mine")], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const tick = game.tick
+    node(f.graph, mine, "outpost", "iron-ore", 1, tick)
+    addNode(f.graph, { id: moduleId("smelt"), role: "iron-plate>labs", kind: "module", item: "iron-plate", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    edge(f.graph, "iron-ore>iron-plate>labs=>iron-plate>labs.in-ore", moduleId("mine"), "out", moduleId("smelt"), "in-ore", "iron-ore", 1)
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
+    setConfigOverride("factoryMineLeadMinutes", 0)
+    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === undefined, "0 = never")
+    setConfigOverride("factoryMineLeadMinutes", 30)
+    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === "mine", "the mine starts handing over")
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "recorded; the module stays until its replacement feeds the smelter")
+    setConfigOverride("factoryMineLeadMinutes", undefined)
   })
   test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {
     const lab = createLab(32)

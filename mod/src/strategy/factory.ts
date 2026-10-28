@@ -207,6 +207,8 @@ export interface FactoryState {
    * widening only the failing connection rescues nothing (the blockage is built by the plan's other routes).
    */
   wideJoin?: Record<string, boolean>
+  /** B71: consumer ports (`role.port`) whose route offers no side-load or splitter merge: the design splits no demand there. */
+  noMerge?: Record<string, boolean>
   /** B63 diagnostics: orphan claim tiles seen (`orphanEvents` = plans rejected for them), and the last log tick. */
   orphanClaims?: number
   orphanEvents?: number
@@ -354,7 +356,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   }
   updateGoals(ctx)
   FU.serviceHandovers({ faction, f, config, surface: factionSurface(faction), tick: game.tick })
-  if (FU.checkPowerFuel(ctx, planning(f) !== undefined) === undefined) FU.replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
+  if (FU.checkMineOre(ctx, planning(f) !== undefined) === undefined) FU.replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
@@ -430,6 +432,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
     handover: ST.handoverRoles(getFactory(ctx.faction.name)),
     providerShort: ST.providerShort(getFactory(ctx.faction.name)),
+    noMerge: getFactory(ctx.faction.name)?.noMerge,
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
@@ -472,6 +475,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [key] of pairs(f.providerNoTap ?? {})) providerNoTap += `${key as string};`
   let handover = ""
   for (const [role] of pairs(f.handover ?? {})) handover += `${role as string};`
+  for (const [port] of pairs(f.noMerge ?? {})) handover += `!${port as string};`
   const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
@@ -1078,6 +1082,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     const why: string[] = []
     let newNoTap = false
     let newSplit = false
+    let newNoMerge = false
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
@@ -1121,6 +1126,19 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
         newNoTap = true
         log(`[rival-engineers] faction ${ctx.faction.name}: P36 ${n.role} can't be placed (${v}): new ${n.item} consumers tap a built producer`)
       }
+      // B71 (soak vps-b69 seed 7718665): a residual edge found no side-load or splitter spot on the consumer's route, and
+      // the same design failed 8 plans in a row. The design no longer splits demand on that port.
+      if (string.find(v, "no merge target", 1, true)[0] !== undefined) {
+        for (const e of g.edges) {
+          if (e.role !== k) continue
+          const port = `${e.to}.${e.toPort}`
+          f.noMerge ??= {}
+          if (f.noMerge[port] === true) continue
+          f.noMerge[port] = true
+          newNoMerge = true
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${port} takes no merge (${v}); its provider keeps it whole`)
+        }
+      }
       // B19: a connection from a built producer that failed (its route has no room for a tap): don't tap it again.
       for (const e of g.edges) {
         if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
@@ -1134,12 +1152,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
-    if (newNoTap || newSplit) {
-      // Planned again at once without that tap / with one provider per consumer.
+    if (newNoTap || newSplit || newNoMerge) {
+      // Planned again at once without that tap / with one provider per consumer / without that merge.
       RT.removePlan(entry.id)
       transitionGoal(g, "failed")
       g.deferred = true
-      g.reason = `${newSplit ? "replan with parallel providers" : "replan without taps"} for ${g.reason}`
+      g.reason = `${newSplit ? "replan with parallel providers" : newNoMerge ? "replan without that merge" : "replan without taps"} for ${g.reason}`
       return
     }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)

@@ -63,16 +63,23 @@ function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { 
 
 /**
  * P36 (a): checks every built fuel producer of a steam block once per FUEL_CHECK_TICKS and gives up the first one whose
- * ore runs low. `busy`: a plan or growth works on a copy of the layout now (relocate after it). Returns the role given
+ * ore runs low. D67 (user, 2026-10-28): every other factory mine too, at `factory-mine-lead-minutes`; the handover is
+ * started ahead (soak vps-d66 seed 8646103: three science mines ran dry 200-220 game-min after being built, and each
+ * handover began only then, so lab clusters starved for the whole move). `busy`: a plan or growth works on a copy of the layout now (relocate after it). Returns the role given
  * up, if any.
  */
-export function checkPowerFuel(ctx: FuelCtx, busy: boolean): string | undefined {
+export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
   const { f, config } = ctx
-  const lead = config.factoryPowerFuelMinutes
-  if (lead <= 0 || busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
+  if (config.factoryPowerFuelMinutes <= 0 && config.factoryMineLeadMinutes <= 0) return undefined
+  if (busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
   for (const id of [...f.graph.nodeOrder]) {
     const n = f.graph.nodes[id]
-    if (n === undefined || n.lifecycle !== "built" || n.kind !== "module" || !feedsPower(f.graph, n)) continue
+    // B70: mines are `outpost` nodes; this checked `module` only and never fired (no P36 line in any M6 soak).
+    if (n === undefined || n.lifecycle !== "built" || (n.kind !== "outpost" && n.kind !== "module")) continue
+    if (f.handover?.[n.role] !== undefined) continue
+    const power = feedsPower(f.graph, n)
+    const lead = power ? config.factoryPowerFuelMinutes : config.factoryMineLeadMinutes
+    if (lead <= 0) continue
     // A goal still building a connection from it (a new tap on its route) finishes first.
     let used = false
     for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true
@@ -89,11 +96,16 @@ export function checkPowerFuel(ctx: FuelCtx, busy: boolean): string | undefined 
     const left = oreLeft(ctx.surface, drills, resource)
     const minutes = rate > 0 ? left.amount / rate / 60 : math.huge
     if (!left.dry && minutes >= lead) continue
+    // D67: a dry mine that feeds no power is D55's (claim more of its patch first, else relocate).
+    if (left.dry && !power) continue
+    const what = power ? `P36 ${n.role}` : `D67 ${n.role}`
     const why = string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : "")
     // Goalpost 1: a producer that still has ore is not deconstructed before its replacement feeds its consumers.
-    // Only a newly started handover counts as "acted", so a handover in progress does not block the next check.
-    if (!left.dry) return beginHandover(ctx, n, `P36 ${n.role}`, why) ? n.role : undefined
-    relocate(ctx, n, `P36 ${n.role}`, why)
+    if (!left.dry) {
+      if (beginHandover(ctx, n, what, why)) return n.role
+      continue
+    }
+    relocate(ctx, n, what, why)
     return n.role
   }
   return undefined

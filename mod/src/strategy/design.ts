@@ -50,6 +50,8 @@ export interface DesignContext {
   handover?: Record<string, boolean>
   /** Actual output capacity of built provider roles by role (used only for a short provider). */
   providerCaps?: Record<string, number>
+  /** B71: consumer ports (`role.port`) that cannot take a merged residual: a short provider keeps them whole. */
+  noMerge?: Record<string, boolean>
   enabled: Record<string, boolean>
   /** Technologies the faction can research now or later (the research goal): designs may use what they unlock. */
   plannable?: Record<string, boolean>
@@ -451,6 +453,8 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     const split = splitDemand(consumers, capacity)
     const mergePorts: Record<string, boolean> = {}
     for (const c of split.keep) mergePorts[`${c.to}.${c.toPort}`] = true
+    // B71: the residual of a straddled port that takes no merge is dropped; that consumer gets what this provider makes.
+    if (ctx.noMerge !== undefined) split.rest = split.rest.filter((c) => !(mergePorts[`${c.to}.${c.toPort}`] && ctx.noMerge![`${c.to}.${c.toPort}`]))
     addProducer(w, item, capacity, split.keep, shared, role, capacity)
     if (split.rest.length > 0) addProducer(w, item, rate - capacity, split.rest, shared, parallelRole(w, role), undefined, mergePorts)
     return

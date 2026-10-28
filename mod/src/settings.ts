@@ -842,6 +842,15 @@ data.extend([
     order: "j-bg",
   },
   {
+    type: "int-setting",
+    name: Settings.factoryMineLeadMinutes,
+    setting_type: "runtime-global",
+    default_value: 30,
+    minimum_value: 0,
+    maximum_value: 600,
+    order: "j-bga",
+  },
+  {
     type: "bool-setting",
     name: Settings.factoryFuelFallback,
     setting_type: "runtime-global",

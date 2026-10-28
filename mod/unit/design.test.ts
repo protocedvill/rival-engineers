@@ -129,6 +129,19 @@ test("B60 provider groups: an unexpandable fuel provider keeps its capacity and 
   ok(diff.missing.some((n) => n.role === "coal>power~2"), "the parallel provider is missing and can be scheduled")
 })
 
+test("B71: a port that takes no merge stays whole on its short provider (no residual edge)", () => {
+  // Soak vps-b69 seed 7718665: the residual merge into the mall's iron input had no side-load spot; 8 plans failed.
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    providerShort: { "coal>power": true },
+    providerCaps: { "coal>power": 0.05 },
+    noMerge: { "power.in-fuel": true },
+  }), { item: RED, perSecond: 1 })
+  ok(byRole(d.nodes, "coal>power") !== undefined, "the old provider stays")
+  ok(!d.edges.some((e) => e.to === "power" && e.merge === true), `no merge edge into the power input: ${d.edges.filter((e) => e.to === "power").map((e) => e.from).join(",")}`)
+  eq(d.errors.length, 0, d.errors.join("; "))
+})
+
 test("B60 provider groups: a short parallel provider gets its own next role without crashing", () => {
   const d = design(ctx({
     enabled: ELECTRIC,
