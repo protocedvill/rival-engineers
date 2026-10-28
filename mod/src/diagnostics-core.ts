@@ -109,3 +109,17 @@ export function boardDiagnostics(board: Board<unknown>, crew: Record<number, Dia
   for (const id of board.active) walk(id)
   return { invariants, jobs }
 }
+
+/**
+ * `build-job-missing`: an active goal's build references a job that is no longer on the board. Only planning or
+ * building goals count: a finished build's jobs leave the board when they complete, and a done or failed goal keeps
+ * their ids (every long run reported hundreds of these from done goals).
+ */
+export function goalJobInvariants(goals: { id: string; status: string; jobs: number[] }[], onBoard: (id: number) => boolean): DiagnosticViolation[] {
+  const out: DiagnosticViolation[] = []
+  for (const goal of goals) {
+    if (goal.status !== "planning" && goal.status !== "building") continue
+    for (const id of goal.jobs) if (!onBoard(id)) out.push({ code: "build-job-missing", detail: `goal ${goal.id} references absent job ${id}` })
+  }
+  return out
+}

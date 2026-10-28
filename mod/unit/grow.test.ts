@@ -216,7 +216,7 @@ test("growth tier: undergrounds are capped to 1 until logistics is researched", 
 })
 
 
-test("growing a consumer fed by a provider-group merge keeps the merge: the second feed side-loads again (vps-b72 4410923: power can't grow)", () => {
+test("B75: growing a consumer fed by a provider-group merge keeps the merge: the second feed side-loads again (vps-b72 4410923)", () => {
   const view = oreField(120, 120, 60)
   const l = newLayout()
   const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })

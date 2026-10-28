@@ -1,5 +1,5 @@
 import { addJob, claim, newBoard } from "../src/jobs/board"
-import { boardDiagnostics } from "../src/diagnostics-core"
+import { boardDiagnostics, goalJobInvariants } from "../src/diagnostics-core"
 import { eq, ok, run, test } from "./harness"
 
 test("diagnostics explain dependency, backoff and ready jobs", () => {
@@ -36,6 +36,18 @@ test("diagnostics report a dependency cycle once from its lowest id", () => {
   const cycles = boardDiagnostics(board, {}, 0).invariants.filter((item) => item.code === "dependency-cycle")
   eq(cycles.length, 1)
   eq(cycles[0].detail, "1 -> 3 -> 2 -> 1")
+})
+
+test("build-job-missing counts only active goals: a done goal keeps its finished jobs' ids (vps-b72: 955 false violations)", () => {
+  const onBoard = (id: number): boolean => id === 2
+  const goals = [
+    { id: "g1", status: "done", jobs: [1, 2] },
+    { id: "g2", status: "failed", jobs: [3] },
+    { id: "g3", status: "building", jobs: [2, 4] },
+    { id: "g4", status: "planning", jobs: [5] },
+  ]
+  const out = goalJobInvariants(goals, onBoard)
+  eq(out.map((v) => v.detail).join("; "), "goal g3 references absent job 4; goal g4 references absent job 5")
 })
 
 run("diagnostics")

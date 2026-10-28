@@ -1,6 +1,7 @@
+import type { JobId } from "./shared/ids"
 import { getConfig } from "./config"
 import { rawHoldings, reservedAt, takeable } from "./jobs/supply"
-import { boardDiagnostics, DiagnosticCrew, DiagnosticJob, DiagnosticViolation } from "./diagnostics-core"
+import { boardDiagnostics, DiagnosticCrew, DiagnosticJob, DiagnosticViolation, goalJobInvariants } from "./diagnostics-core"
 import { detectChurn, DiagnosticEventBuckets, recentDiagnosticBuckets, ChurnFinding } from "./diagnostic-events"
 import { findModule } from "./planner/layout"
 import { checkClaimOwners } from "./planner/claims"
@@ -99,7 +100,8 @@ export function factionDiagnostics(name: string, maxJobs = 64): FactionDiagnosti
       const entry = goal.plan !== undefined ? storage.planner?.entries[goal.plan] : undefined
       if ((goal.status === "planning" || (goal.status === "building" && goal.growBuild === undefined)) && goal.plan !== undefined && entry === undefined) diagnosed.invariants.push({ code: "goal-plan-missing", detail: `goal ${goal.id} references absent plan ${goal.plan}` })
       if (entry?.faction !== undefined && entry.faction !== name) diagnosed.invariants.push({ code: "goal-plan-faction", detail: `goal ${goal.id} plan ${entry.id} belongs to ${entry.faction}` })
-      for (const id of [...(entry?.build?.clearJobs ?? []), ...(entry?.build?.placeJobs ?? []), ...(goal.growBuild?.clearJobs ?? []), ...(goal.growBuild?.placeJobs ?? [])]) if (faction.board.jobs[id] === undefined) diagnosed.invariants.push({ code: "build-job-missing", detail: `goal ${goal.id} references absent job ${id}` })
+      const jobs: number[] = [...(entry?.build?.clearJobs ?? []), ...(entry?.build?.placeJobs ?? []), ...(goal.growBuild?.clearJobs ?? []), ...(goal.growBuild?.placeJobs ?? [])]
+      for (const v of goalJobInvariants([{ id: goal.id, status: goal.status, jobs }], (id) => faction.board.jobs[id as JobId] !== undefined)) diagnosed.invariants.push(v)
     }
     for (const [, node] of pairs(factory.graph.nodes)) if ((node.lifecycle === "building" || node.lifecycle === "built") && node.module !== undefined && findModule(factory.layout, node.id) === undefined) diagnosed.invariants.push({ code: "logical-module-missing", detail: `node ${node.id} (${node.role}) is ${node.lifecycle} without layout module` })
   }
