@@ -1009,6 +1009,10 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     if (p === undefined) continue
     for (const id of f.graph.edgeOrder) if (f.graph.edges[id].kind === "belt" && f.graph.edges[id].from === p.id) sharedProducer = true
   }
+  // B84: or a connection whose source port already starts a route in the layout, whatever node owns that route (a mine
+  // another role was folded into, B78): point-to-point cannot start a second route there (vps-b77/eecca19 2229258:
+  // 8 failures "port n6.out already feeds a route").
+  if (!sharedProducer) for (const c of connections) if (c.from !== undefined && LO.portFeedsRoute(f.layout, c.from)) sharedProducer = true
   const topology = (f.taps !== undefined && next(f.taps)[0] !== undefined) || sharedProducer ? "splitter-tap" : undefined
   RT.startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology, known: EX.knownGround(ctx, g) })
   g.plan = id

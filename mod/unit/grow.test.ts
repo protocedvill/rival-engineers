@@ -6,7 +6,7 @@ import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute, routesLand, sealedGoalPorts } from "../src/planner/layout"
+import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
@@ -310,6 +310,18 @@ test("B83: routes land at a port directly or through the trunk they merge into; 
   ok(!routesLand(job.layout, [trunk], { module: "smelt", port: "in-fuel" }), "not on another port")
   ripRoute(job.layout, trunk as never)
   ok(!routesLand(job.layout, [stub], port), "a stub onto a ripped trunk lands nowhere")
+})
+
+test("B84: a source port that already starts a route is known from the layout (vps eecca19 2229258: n6.out)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 30, 75)
+  place(l, "mine2", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 75, 75)
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  ok(portFeedsRoute(job.layout, { module: "mine", port: "out" }), "mine.out feeds the ore route")
+  ok(!portFeedsRoute(job.layout, { module: "mine2", port: "out" }), "mine2.out feeds nothing")
 })
 
 run("grow")

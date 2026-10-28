@@ -854,3 +854,12 @@ export function routesLand(layout: LayoutState, rids: string[], to: PortRef): bo
   }
   return false
 }
+
+/** B84: whether a route of the layout already starts at belt-out port `from` (directly, not as a splitter tap). */
+export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
+  for (const rid of layout.routeOrder) {
+    const r = layout.routes[rid]
+    if (r !== undefined && r.tapOf === undefined && r.from !== undefined && r.from.module === from.module && r.from.port === from.port) return true
+  }
+  return false
+}
