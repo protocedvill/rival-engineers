@@ -959,9 +959,14 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const modules: ModuleRequest[] = []
   for (const n of g.nodes) modules.push({ id: n.id, def: makeModule(n.generator, n.params), newSite: n.newSite })
   const connections: ConnectionRequest[] = []
+  // B78: a node folded into another module (a shared mine) connects through that module's ports. New nodes of this
+  // goal are not in the layout yet: they keep their own ids.
+  const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined || g.nodes.some((n) => n.id === id)
   for (const e of g.edges) {
-    const from = roleToId(f, g, e.from)
-    const to = roleToId(f, g, e.to)
+    const fromNode = roleToId(f, g, e.from)
+    const toNode = roleToId(f, g, e.to)
+    const from = fromNode !== undefined ? LG.connectModule(f.graph, fromNode, inLayout) ?? fromNode : undefined
+    const to = toNode !== undefined ? LG.connectModule(f.graph, toNode, inLayout) ?? toNode : undefined
     if (from === undefined || to === undefined) continue
     connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt, merge: e.merge === true })
   }
@@ -1415,6 +1420,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
       role: n.role,
       kind: n.kind,
       module: def.id,
+      alias: m === undefined && job.alias[n.id] !== undefined ? IDS.moduleId(job.alias[n.id]) : undefined,
       generator: n.generator,
       recipe: def.recipe,
       item: n.item,

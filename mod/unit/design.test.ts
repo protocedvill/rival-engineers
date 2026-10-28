@@ -2,7 +2,7 @@ import { generate, GeneratorName } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
-import { addEdge, addNode, designGraphKey, LogicalGraph, newGraph } from "../src/planner/logical"
+import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor, stuckRounds } from "../src/strategy/design"
 import { eq, near, ok, run, test } from "./harness"
@@ -640,6 +640,19 @@ test("B77: the design cache key changes when a goal adds only connections (vps-b
   // The diff a stale key would have served lists the built edge as missing; the fresh one does not.
   const missing = diffDesign(d, g, () => undefined).missingEdges.map((x) => x.role)
   ok(missing.indexOf(e.role) < 0, "the built edge is not missing")
+})
+
+test("B78: a node folded into a shared mine connects through that mine's module (vps-b77a 2034469 n22 → n16)", () => {
+  const g = newGraph()
+  const node = (id: string, alias?: string) => addNode(g, { id: moduleId(id), role: id, kind: "outpost", item: "iron-ore", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0, alias: alias !== undefined ? moduleId(alias) : undefined })
+  node("n16")
+  node("n22", "n16")
+  node("n30")
+  const layout: Record<string, boolean> = { n16: true }
+  const has = (id: string): boolean => layout[id] === true
+  eq(connectModule(g, "n22", has), "n16", "the alias's module")
+  eq(connectModule(g, "n16", has), "n16", "a module of its own")
+  eq(connectModule(g, "n30", has), undefined, "no module, no alias")
 })
 
 run("design")

@@ -74,6 +74,11 @@ export interface LogicalNode {
   kind: NodeKind
   /** Module definition id and generator (the physical instance has the node's id). */
   module?: string
+  /**
+   * D52 / B78: the layout module this node's role was folded into (a new mine that completed a shared whole-patch
+   * mine): the node has no module of its own, and later connections from or to it use that module's ports.
+   */
+  alias?: ModuleId
   generator?: string
   recipe?: string
   /** The node's main product (an item, "electricity" or "research-unit"). */
@@ -294,4 +299,18 @@ export function designGraphKey(g: LogicalGraph): string {
   let built = 0
   for (const n of nodesOf(g)) if (n.lifecycle === "built") built++
   return `${g.nodeOrder.length}|${built}|${g.edgeOrder.length}`
+}
+
+/**
+ * B78: the layout module a plan connects to for node `id`: the node's own module, else the module it was folded into
+ * (`alias`, followed a few steps), else undefined. vps-b77a 2034469: a mine folded into the shared mine n16 stayed in the
+ * graph as n22 with no module, and every later plan asked for `n22.out` ("no belt-out port"): 8 failures in a row.
+ */
+export function connectModule(g: LogicalGraph, id: string, inLayout: (this: void, id: string) => boolean): ModuleId | undefined {
+  let cur: string | undefined = id
+  for (let i = 0; i < 4 && cur !== undefined; i++) {
+    if (inLayout(cur)) return cur as ModuleId
+    cur = g.nodes[cur]?.alias
+  }
+  return undefined
 }
