@@ -2810,7 +2810,7 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b83-r5480563` | `eecca19` | 5480563 from `min-0020` | failed fast at 225 min (→ B85, open); B83 fired and science held 22–26/min 107–182 min. Note: `fai-dbg` was rebuilt (to `efb3437`) while this run was going; the run is one Factorio process that loaded `eecca19` at start |
 | `vps-b84-r2229258` | `efb3437` | 2229258 from `min-0060` | failed fast at 146 min: the splitter tap's start side was sealed (→ B86, the actual cause) |
 | `vps-b86-r2229258` | `a06d4db` | 2229258 from the sweep's `min-0060` | running |
-| `m6-random20-eecca19` | `eecca19` | the full 20-seed sweep | running (3 at a time) |
+| `m6-random20-eecca19` | `eecca19` | the full 20-seed sweep | running (3 at a time). So far: 8646103 v1-done at 314 min, 7718665 at 285 min; 2229258 failed fast at 146 min (→ B84, B86); 5387208 failed at the cap: science 28/min (0.96 of the target) 220–280 min, then 24/min flat from ~320 min with cluster 1 short of gears and its copper edge reading broken while every route piece stands and lands (not diagnosed) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
