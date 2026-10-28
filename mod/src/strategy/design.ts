@@ -456,7 +456,18 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     const mergePorts: Record<string, boolean> = {}
     for (const c of split.keep) mergePorts[`${c.to}.${c.toPort}`] = true
     // B71: the residual of a straddled port that takes no merge is dropped; that consumer gets what this provider makes.
-    if (ctx.noMerge !== undefined) split.rest = split.rest.filter((c) => !(mergePorts[`${c.to}.${c.toPort}`] && ctx.noMerge![`${c.to}.${c.toPort}`]))
+    // B80: a consumer moved whole whose port takes no merge stays whole on this provider too (its belt still feeds it,
+    // and no second belt can get in: vps-b79-r1459426).
+    if (ctx.noMerge !== undefined) {
+      const noMerge = ctx.noMerge
+      const rest: Demand[] = []
+      for (const c of split.rest) {
+        const port = `${c.to}.${c.toPort}`
+        if (!noMerge[port]) rest.push(c)
+        else if (!mergePorts[port]) split.keep.push(c)
+      }
+      split.rest = rest
+    }
     addProducer(w, item, capacity, split.keep, shared, role, capacity)
     if (split.rest.length > 0) addProducer(w, item, rate - capacity, split.rest, shared, parallelRole(w, role), undefined, mergePorts)
     return

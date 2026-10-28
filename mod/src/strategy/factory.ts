@@ -19,7 +19,7 @@ import { recordDiagnostic } from "../diagnostic-events"
 import * as IDS from "../shared/ids"
 import { abandonParts, applyDiff } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
-import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest } from "../planner/plan"
+import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest, portFedByOther } from "../planner/plan"
 import { sealedInputs } from "../planner/placement"
 import * as PW from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
@@ -1136,16 +1136,19 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       }
       // B71 (soak vps-b69 seed 7718665): a residual edge found no side-load or splitter spot on the consumer's route, and
       // the same design failed 8 plans in a row. The design no longer splits demand on that port.
-      if (string.find(v, "no merge target", 1, true)[0] !== undefined) {
-        for (const e of g.edges) {
-          if (e.role !== k) continue
-          const port = `${e.to}.${e.toPort}`
-          f.noMerge ??= {}
-          if (f.noMerge[port] === true) continue
-          f.noMerge[port] = true
-          newNoMerge = true
-          log(`[rival-engineers] faction ${ctx.faction.name}: ${port} takes no merge (${v}); its provider keeps it whole`)
-        }
+      // B80 (vps-b79-r1459426): a route into a port another belt already feeds can only merge (B79); when it found no
+      // way onto that belt (tightly bundled trunks), the port takes no merge either.
+      const noMergeTarget = string.find(v, "no merge target", 1, true)[0] !== undefined
+      for (const e of g.edges) {
+        if (e.role !== k) continue
+        const id = roleToId(f, g, e.to)
+        if (!noMergeTarget && (id === undefined || !portFedByOther(f.layout, { module: id, port: e.toPort }, e.role))) continue
+        const port = `${e.to}.${e.toPort}`
+        f.noMerge ??= {}
+        if (f.noMerge[port] === true) continue
+        f.noMerge[port] = true
+        newNoMerge = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${port} takes no merge (${v}); its provider keeps it whole`)
       }
       // B72 (soak vps-d67 seed 7718665): a new mine that the plan folded into a shared whole-patch mine starts its route
       // from that mine's boxed-in output, and every replan folds it again (8 failures). Give the role a site of its own.

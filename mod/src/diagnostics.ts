@@ -103,7 +103,7 @@ export function factionDiagnostics(name: string, maxJobs = 64): FactionDiagnosti
       const jobs: number[] = [...(entry?.build?.clearJobs ?? []), ...(entry?.build?.placeJobs ?? []), ...(goal.growBuild?.clearJobs ?? []), ...(goal.growBuild?.placeJobs ?? [])]
       for (const v of goalJobInvariants([{ id: goal.id, status: goal.status, jobs }], (id) => faction.board.jobs[id as JobId] !== undefined)) diagnosed.invariants.push(v)
     }
-    for (const [, node] of pairs(factory.graph.nodes)) if ((node.lifecycle === "building" || node.lifecycle === "built") && node.module !== undefined && findModule(factory.layout, node.id) === undefined) diagnosed.invariants.push({ code: "logical-module-missing", detail: `node ${node.id} (${node.role}) is ${node.lifecycle} without layout module` })
+    for (const [, node] of pairs(factory.graph.nodes)) if ((node.lifecycle === "building" || node.lifecycle === "built") && node.module !== undefined && findModule(factory.layout, node.id) === undefined && (node.alias === undefined || findModule(factory.layout, node.alias) === undefined)) diagnosed.invariants.push({ code: "logical-module-missing", detail: `node ${node.id} (${node.role}) is ${node.lifecycle} without layout module` })
   }
   // World claims: every tagged reservation must name a live site, module, route, pole or mine. Untagged tiles are
   // compatible old-save entries and stay unreported; one-sided owner entries are always a bug.

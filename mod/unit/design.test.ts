@@ -655,4 +655,18 @@ test("B78: a node folded into a shared mine connects through that mine's module 
   eq(connectModule(g, "n30", has), undefined, "no module, no alias")
 })
 
+test("B80: a consumer moved whole to a parallel provider stays on its short provider when its port takes no merge (vps-b79-r1459426)", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>test", [`coal@${SMELT_CU}`]: "coal*>test" }
+  const base = { enabled: ELECTRIC, sharing: { keep, spare: {} }, providerShort: { "coal*>test": true }, providerCaps: { "coal*>test": 0.001 } }
+  const before = design(ctx(base), { item: RED, perSecond: 1 })
+  // The short provider keeps a sliver; the consumer past its capacity moves whole to coal*>test~2 (no merge flag).
+  const whole = before.edges.find((e) => e.from === "coal*>test~2" && e.merge !== true)
+  ok(whole !== undefined, `a consumer moved whole: ${before.edges.filter((e) => e.item === "coal").map((e) => `${e.from}->${e.to}${e.merge ? " (merge)" : ""}`).join(", ")}`)
+  const port = `${whole!.to}.${whole!.toPort}`
+  const after = design(ctx({ ...base, noMerge: { [port]: true } }), { item: RED, perSecond: 1 })
+  ok(!after.edges.some((e) => e.from === "coal*>test~2" && e.to === whole!.to), "no second feed into the no-merge port")
+  ok(after.edges.some((e) => e.from === "coal*>test" && e.to === whole!.to), "its short provider keeps it whole")
+  eq(after.errors.length, 0, after.errors.join("; "))
+})
+
 run("design")
