@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B88, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B89, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2758,6 +2758,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B85 | 5480563 (`vps-b83-r5480563`) | a new module's open lane walled in by its neighbours' margin rings (own ground once built) and the plan's own routes; lane tests now flood with router headings and margins as walls, and a plan re-routes its own routes off its new modules' lanes | `61c9ab5` |
 | B87 | 5387208 (sweep `eecca19`) | a starved module short of an intermediate it makes itself (red line's gears) was traced as crew-supplied before its belt inputs, so its silent iron belt never got a repair | `28dd85a` |
 | B88 | 1264816 (resume on `61c9ab5`) | B83 kept a tapped trunk under the dropped edge's connection id; planned again, the new route tapped its tap and replaced it in place: an orphan tap, a Lua crash in telemetry. B83 now drops the whole tap tree and its edges; a connection never taps its own route | `e56150c` |
+| B89 | 1264816 (B88 revision run) | a merge whose trunk is gone (B88's in-place reroute keeps the merge flag) failed "no merge target"; with no feed at the port it now routes there | `f41f5bb` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2825,6 +2826,8 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b88-r1264816` | `e56150c` | 1264816 from `min-0140` | failed fast at 161 min, "no path" for coal-to-power: that save already held the old B83's kept trunk (the fix prevents the state, it doesn't repair a save that has it) |
 | `vps-b88-r1677299` | `e56150c` | 1677299 from the sweep's `min-0140` | passed, v1-done at 294 min, no stalls (B84 validated on the second seed with its signature) |
 | `vps-b88-r1264816-m60` | `e56150c` | 1264816 from `min-0060` | failed at the cap, 12–16/min: B88's tree drop removed the power plant's coal trunk and both smelter fuel lines at ~70 min, and the design never planned the power fuel again (crew-fuelled 400 game-min; everything short of power) → B88 revised (`233da40`: reroute in place) |
+| `vps-b88b-r1264816-m60` | `233da40` | 1264816 from `min-0060` | stopped at ~182 min: the in-place reroute failed "no merge target" and fell back to the tree drop (→ B89) |
+| `vps-b89-r1264816-m60` | `f41f5bb` | 1264816 from `min-0060` | passed, v1-done at 265 min (B88 revised + B89 validated; one stall 119–128 min, recovered) |
 | `m6-random20-922c77c` | `922c77c` | the full 20-seed re-sweep (B85, B87, B88 revised, P44 a/b) | running (3 at a time) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
