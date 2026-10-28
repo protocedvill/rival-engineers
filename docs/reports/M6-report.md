@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B86, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B87, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2755,6 +2755,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B83 | 5480563 (`vps-b81-r5480563`) | repairs said "nothing missing" for an edge whose routes no longer reached its port (a side-load stub onto a gone trunk); such an edge is now planned again | `eecca19` |
 | B84 | 2229258 (sweep `eecca19`) | a reconnection from a port that already fed a route ran point-to-point; the layout now decides splitter taps | `efb3437` |
 | B86 | 2229258 (sweep `eecca19`) | regression from B79: a growth re-routing a trunk made it a merge onto its own feeders' dangling stubs; dangling routes are now no feed and no merge target | `a06d4db` |
+| B87 | 5387208 (sweep `eecca19`) | a starved module short of an intermediate it makes itself (red line's gears) was traced as crew-supplied before its belt inputs, so its silent iron belt never got a repair | `28dd85a` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2810,7 +2811,8 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b83-r5480563` | `eecca19` | 5480563 from `min-0020` | failed fast at 225 min (→ B85, open); B83 fired and science held 22–26/min 107–182 min. Note: `fai-dbg` was rebuilt (to `efb3437`) while this run was going; the run is one Factorio process that loaded `eecca19` at start |
 | `vps-b84-r2229258` | `efb3437` | 2229258 from `min-0060` | failed fast at 146 min: the splitter tap's start side was sealed (→ B86, the actual cause) |
 | `vps-b86-r2229258` | `a06d4db` | 2229258 from the sweep's `min-0060` | passed, v1-done at 192 min, no stalls (B86 validated) |
-| `m6-random20-eecca19` | `eecca19` | the full 20-seed sweep | running (3 at a time). So far: 8646103 v1-done at 314 min, 7718665 at 285 min; 2229258 failed fast at 146 min (→ B84, B86); 5387208 failed at the cap: science 28/min (0.96 of the target) 220–280 min, then 24/min flat from ~320 min with cluster 1 short of gears and its copper edge reading broken while every route piece stands and lands (not diagnosed) |
+| `m6-random20-eecca19` | `eecca19` | the full 20-seed sweep | running (3 at a time). So far: 8646103 v1-done at 314 min, 7718665 at 285 min; 2229258 failed fast at 146 min (→ B84, B86); 5387208 failed at the cap: science 28/min (0.96 of the target) 220–280 min, then 24/min flat from ~320 min with cluster 1 short of gears and its copper edge reading broken while every route piece stands and lands (→ B87: the red line got no plates and the trace blamed its internal gears); 7587711 v1-done at 218 min, 3891760 at 207 min, 5581724 at 227 min |
+| `vps-a06-r5387208` | `a06d4db` | 5387208 from the sweep's `min-0280` | failed at the cap, 24/min red and green used: n14 (red line) received no plates; the reconciler's cause was "lacks iron-gear-wheel … (crew-supplied)" (→ B87) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
