@@ -142,6 +142,16 @@ test("B71: a port that takes no merge stays whole on its short provider (no resi
   eq(d.errors.length, 0, d.errors.join("; "))
 })
 
+test("B72: a provider role marked ownSite asks for a new site (the plan does not fold it into a shared mine)", () => {
+  // Soak vps-d67 seed 7718665: labs#3's copper mine completed a built whole-patch mine whose output was boxed in.
+  const before = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 1 })
+  const mine = before.nodes.find((n) => n.item === "copper-ore")!
+  ok(mine !== undefined && mine.newSite === undefined, "a copper mine, free to share a patch")
+  const after = design(ctx({ enabled: ELECTRIC, ownSite: { [mine.role]: true } }), { item: RED, perSecond: 1 })
+  eq(byRole(after.nodes, mine.role)?.newSite, true, "the marked role needs its own site")
+  ok(after.nodes.every((n) => n.role === mine.role || n.newSite === undefined), "no other provider is marked")
+})
+
 test("B60 provider groups: a short parallel provider gets its own next role without crashing", () => {
   const d = design(ctx({
     enabled: ELECTRIC,

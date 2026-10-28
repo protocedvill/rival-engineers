@@ -209,6 +209,8 @@ export interface FactoryState {
   wideJoin?: Record<string, boolean>
   /** B71: consumer ports (`role.port`) whose route offers no side-load or splitter merge: the design splits no demand there. */
   noMerge?: Record<string, boolean>
+  /** B72: provider roles (see DesignContext.ownSite). */
+  ownSite?: Record<string, boolean>
   /** B63 diagnostics: orphan claim tiles seen (`orphanEvents` = plans rejected for them), and the last log tick. */
   orphanClaims?: number
   orphanEvents?: number
@@ -433,6 +435,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     handover: ST.handoverRoles(getFactory(ctx.faction.name)),
     providerShort: ST.providerShort(getFactory(ctx.faction.name)),
     noMerge: getFactory(ctx.faction.name)?.noMerge,
+    ownSite: getFactory(ctx.faction.name)?.ownSite,
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
@@ -476,6 +479,7 @@ function designNow(ctx: Ctx): Design | undefined {
   let handover = ""
   for (const [role] of pairs(f.handover ?? {})) handover += `${role as string};`
   for (const [port] of pairs(f.noMerge ?? {})) handover += `!${port as string};`
+  for (const [role] of pairs(f.ownSite ?? {})) handover += `@${role as string};`
   const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
@@ -1083,6 +1087,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     let newNoTap = false
     let newSplit = false
     let newNoMerge = false
+    let newOwnSite = false
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
@@ -1139,6 +1144,19 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
           log(`[rival-engineers] faction ${ctx.faction.name}: ${port} takes no merge (${v}); its provider keeps it whole`)
         }
       }
+      // B72 (soak vps-d67 seed 7718665): a new mine that the plan folded into a shared whole-patch mine starts its route
+      // from that mine's boxed-in output, and every replan folds it again (8 failures). Give the role a site of its own.
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) !== undefined) continue
+        for (const n of g.nodes) {
+          if (n.role !== e.from || entry.job?.alias[n.id] === undefined) continue
+          f.ownSite ??= {}
+          if (f.ownSite[n.role] === true) continue
+          f.ownSite[n.role] = true
+          newOwnSite = true
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} shared mine ${entry.job!.alias[n.id]} has no route (${v}); it gets a site of its own`)
+        }
+      }
       // B19: a connection from a built producer that failed (its route has no room for a tap): don't tap it again.
       for (const e of g.edges) {
         if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
@@ -1152,12 +1170,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
-    if (newNoTap || newSplit || newNoMerge) {
+    if (newNoTap || newSplit || newNoMerge || newOwnSite) {
       // Planned again at once without that tap / with one provider per consumer / without that merge.
       RT.removePlan(entry.id)
       transitionGoal(g, "failed")
       g.deferred = true
-      g.reason = `${newSplit ? "replan with parallel providers" : newNoMerge ? "replan without that merge" : "replan without taps"} for ${g.reason}`
+      g.reason = `${newSplit ? "replan with parallel providers" : newNoMerge ? "replan without that merge" : newOwnSite ? "replan with a mine of its own" : "replan without taps"} for ${g.reason}`
       return
     }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)

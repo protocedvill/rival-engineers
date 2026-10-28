@@ -52,6 +52,8 @@ export interface DesignContext {
   providerCaps?: Record<string, number>
   /** B71: consumer ports (`role.port`) that cannot take a merged residual: a short provider keeps them whole. */
   noMerge?: Record<string, boolean>
+  /** B72: provider roles whose plan folded them into a shared mine whose route then failed: they need a site of their own. */
+  ownSite?: Record<string, boolean>
   enabled: Record<string, boolean>
   /** Technologies the faction can research now or later (the research goal): designs may use what they unlock. */
   plannable?: Record<string, boolean>
@@ -480,7 +482,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     // sized power ~7x above the measured load and, once B66 let the excess plan real steam blocks, used up coal patches.
     powerW: powerOf(s.def.rates.inputs) * util,
     cluster: w.cluster,
-    newSite: newSite || undefined,
+    newSite: newSite || ctx.ownSite?.[role] === true || undefined,
   }
   w.nodes.push(node)
   const from = outPort(s.def, item)
