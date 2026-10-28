@@ -215,4 +215,35 @@ test("growth tier: undergrounds are capped to 1 until logistics is researched", 
   eq(limitUnderground(TIER, undefined), TIER)
 })
 
+
+test("growing a consumer fed by a provider-group merge keeps the merge: the second feed side-loads again (vps-b72 4410923: power can't grow)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", ore, 30, 75)
+  place(l, "mine2", ore, 75, 75)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
+    { id: connectionId("ore~2"), from: { module: "mine2", port: "out" }, to: { module: "smelt", port: "in-ore" }, merge: true },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  const merged = (layout: LayoutState): number => {
+    let n = 0
+    for (const rid of layout.routeOrder) {
+      const r = layout.routes[rid]
+      if (r.merge !== undefined || r.mergeSplitter !== undefined) n++
+    }
+    return n
+  }
+  eq(merged(job.layout), 1, "the second feed merges into the first")
+  const g = planGrowth(job.layout, view, F, POLICY, TIER, "smelt", 1)
+  ok(g.ok, `grown: ${g.reason}`)
+  eq([...g.rerouted].sort().join(","), "ore,ore~2", "both feeds rerouted")
+  eq(merged(g.layout), 1, "the second feed merges again")
+  const problems = checkLayout(g.layout, view, () => 5).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
 run("grow")

@@ -77,7 +77,9 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
       if (gr.tapOf !== undefined) taps = true
       for (const k of gr.tiles) routeTiles[k] = true
       for (const e of partEntities(layout, { modules: [], routes: [gid], poles: [] })) before.push(e)
-      conns.push({ id: gr.conn, from: gr.from, to: gr.to, belt: gr.belt })
+      // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
+      // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
+      conns.push({ id: gr.conn, from: gr.from, to: gr.to, belt: gr.belt, merge: gr.merge !== undefined || gr.mergeSplitter !== undefined || undefined })
     }
     for (const removed of ripRoute(layout, root)) ripped.push(removed)
   }

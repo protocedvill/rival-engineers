@@ -408,8 +408,12 @@ function startRouting(job: PlanJob): void {
     if (!ma || !mb) return 0
     return manhattan({ x: ma.rect.x, y: ma.rect.y }, { x: mb.rect.x, y: mb.rect.y })
   }
-  // Short connections first (they have the fewest alternatives); ids break ties.
+  // Short connections first (they have the fewest alternatives); ids break ties. B75: a provider-group merge goes
+  // after every plain connection: it ends on another route's belt, which must be routed first.
   conns.sort((a, b) => {
+    const ma = a.merge === true ? 1 : 0
+    const mb = b.merge === true ? 1 : 0
+    if (ma !== mb) return ma - mb
     const la = len(a)
     const lb = len(b)
     if (la !== lb) return la - lb

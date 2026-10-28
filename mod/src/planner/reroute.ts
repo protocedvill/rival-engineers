@@ -49,7 +49,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       const r = layout.routes[rid]
       for (const k of r.tiles) freed[k] = true
       for (const e of partEntities(layout, { modules: [], routes: [rid], poles: [] })) before.push(e)
-      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt })
+      // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
+      // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
+      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined })
     }
     ripRoute(layout, id)
   }
