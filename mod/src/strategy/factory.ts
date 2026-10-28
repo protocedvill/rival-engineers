@@ -998,6 +998,8 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   if (RT.getPlannerEntry(id) !== undefined) RT.removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)
   request.compare = compareOptions(ctx, g, maxUnderground)
+  // P44 (b): whole-patch mines join several drill rows only with splitters.
+  request.splitters = unresearchedTech(ctx, "splitter") === undefined
   // Splitter taps: recorded B2 taps, or a shared fuel producer (M6) feeding several consumers.
   let sharedProducer = false
   const fromCount: Record<string, number> = {}

@@ -11,6 +11,7 @@ import { laneCapacity } from "../modules/generators"
 import { entityRect, portOutsideTile, tileKey } from "../modules/geometry"
 import { placePoles } from "../modules/poles"
 import { EAST, ModuleDef, ModuleEntity, NORTH, Port, SOUTH, WEST } from "../modules/types"
+import { DEFAULT_TIER_NAMES } from "./capacity"
 import { OWN, Rect, rectContains, TerrainView, tkey, Vec } from "./grid"
 
 export interface PatchPlan {
@@ -310,6 +311,12 @@ function dirFor(axis: "x" | "y", kind: "minus" | "plus"): 0 | 4 | 8 | 12 {
   return kind === "minus" ? SOUTH : NORTH
 }
 
+/** The splitter of a belt's tier (game data: the vanilla tiers' names). */
+function splitterFor(belt: string): string {
+  for (const t of DEFAULT_TIER_NAMES) if (t.belt === belt) return t.splitter
+  return "splitter"
+}
+
 function alongDir(axis: "x" | "y", sign: -1 | 1): 0 | 4 | 8 | 12 {
   return axis === "y" ? (sign < 0 ? NORTH : SOUTH) : sign < 0 ? WEST : EAST
 }
@@ -339,7 +346,7 @@ function occupiedKeys(def: ModuleDef, origin: Vec, facts: ProtoFacts): number[] 
  * only the nearest requested drills are built at first. Completing the plan adds the remaining drills without moving
  * the port, belts, poles, or any existing drill.
  */
-export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, facts: ProtoFacts, near: Vec, minCoverage = 0): MaterializedMinePlan | undefined {
+export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, facts: ProtoFacts, near: Vec, minCoverage = 0, collectorStyle?: "splitter"): MaterializedMinePlan | undefined {
   const drillName = base.params?.drill
   const belt = base.params?.belt
   if (typeof drillName !== "string" || typeof belt !== "string" || plan.drills.length === 0) return undefined
@@ -368,23 +375,44 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
       maxAlong = math.max(maxAlong, a + half)
     }
   }
-  const lowCollector = math.floor(minAlong - 1) + 0.5
-  const highCollector = math.ceil(maxAlong + 1) - 0.5
+  const firstLane = laneValues[0]
+  const lastLane = laneValues[laneValues.length - 1]
+  // P44 (b) (user, 2026-10-28): with several rows, each row but the farthest joins the collector through a splitter (a
+  // side-load put every row on one lane of the output belt). The collector then lies one row further out: the row
+  // between is where each row's belt turns into its splitter's second input.
+  const split = collectorStyle === "splitter" && laneValues.length > 1
+  const gap = split ? 2 : 1
+  const lowCollector = math.floor(minAlong - gap) + 0.5
+  const highCollector = math.ceil(maxAlong + gap) - 0.5
   const nearAlong = plan.axis === "y" ? near.y : near.x
   const alongSign: -1 | 1 = math.abs(nearAlong - lowCollector) <= math.abs(nearAlong - highCollector) ? -1 : 1
   const collector = alongSign < 0 ? lowCollector : highCollector
-  const firstLane = laneValues[0]
-  const lastLane = laneValues[laneValues.length - 1]
   const nearCross = plan.axis === "y" ? near.x : near.y
   const outputLane = math.abs(nearCross - firstLane) <= math.abs(nearCross - lastLane) ? firstLane : lastLane
   const crossSign: -1 | 1 = outputLane === firstLane ? -1 : 1
+  const farthestLane = crossSign < 0 ? lastLane : firstLane
+  // Where the output belt leaves the footprint: the output lane, or with splitters two tiles past it (its splitter, then
+  // the turn out; the tile behind the turn is the splitter's empty second output, so the turn keeps both lanes).
+  const outputCross = split ? outputLane + 2 * crossSign : outputLane
+  const at = (cross: number, along: number, name: string, dir: 0 | 4 | 8 | 12): ModuleEntity => (plan.axis === "y" ? { name, x: cross, y: along, dir } : { name, x: along, y: cross, dir })
+  const splitterAt: Record<string, boolean> = {}
+  if (split) {
+    const splitter = splitterFor(belt)
+    for (const lane of laneValues) {
+      if (lane === farthestLane) continue
+      // Facing the collector's flow, over the collector tile and the turn row: its inputs are the collector belt and
+      // the row's turn, its outputs the collector on and an unbuilt tile (that side backs up, so all goes on).
+      splitterAt[tostring(lane + crossSign)] = true
+      pushUnique(infrastructure, seen, at(lane + crossSign, collector - alongSign / 2, splitter, crossDir(plan.axis, crossSign)))
+    }
+  }
   // One collector belt joins every row and leaves the footprint at a fixed extreme port.
-  for (let c = math.floor(firstLane); c <= math.floor(lastLane); c++) {
-    const atOutput = c === math.floor(outputLane)
-    const e: ModuleEntity = plan.axis === "y"
-      ? { name: belt, x: c + 0.5, y: collector, dir: atOutput ? alongDir(plan.axis, alongSign) : crossDir(plan.axis, crossSign) }
-      : { name: belt, x: collector, y: c + 0.5, dir: atOutput ? alongDir(plan.axis, alongSign) : crossDir(plan.axis, crossSign) }
-    pushUnique(infrastructure, seen, e)
+  const c1 = math.min(farthestLane, outputCross)
+  const c2 = math.max(farthestLane, outputCross)
+  for (let c = math.floor(c1); c <= math.floor(c2); c++) {
+    if (splitterAt[tostring(c + 0.5)]) continue
+    const atOutput = c === math.floor(outputCross)
+    pushUnique(infrastructure, seen, at(c + 0.5, collector, belt, atOutput ? alongDir(plan.axis, alongSign) : crossDir(plan.axis, crossSign)))
   }
   for (const lane of laneValues) {
     const ds = lanes[tostring(lane)]
@@ -396,11 +424,11 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     }
     const start = math.floor(math.min(collector, far)) + 1
     const stop = math.ceil(math.max(collector, far))
+    // With splitters, a row's last tile (next to the collector) turns into its splitter.
+    const turnAlong = collector - alongSign
     for (let a = start; a < stop; a++) {
-      const e: ModuleEntity = plan.axis === "y"
-        ? { name: belt, x: lane, y: a + 0.5, dir: alongDir(plan.axis, alongSign) }
-        : { name: belt, x: a + 0.5, y: lane, dir: alongDir(plan.axis, alongSign) }
-      pushUnique(infrastructure, seen, e)
+      const turn = split && lane !== farthestLane && a + 0.5 === turnAlong
+      pushUnique(infrastructure, seen, at(lane, a + 0.5, belt, turn ? crossDir(plan.axis, crossSign) : alongDir(plan.axis, alongSign)))
     }
   }
   for (const e of infrastructure) all.push(e)
@@ -423,7 +451,7 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
   const normInfra = infrastructure.map((e) => shifted(e, -x1, -y1))
   const normDrills = drillEntities.map((e) => shifted(e, -x1, -y1))
   const footprint = { w: x2 - x1, h: y2 - y1 }
-  const output = plan.axis === "y" ? { x: outputLane - x1, y: collector - y1 } : { x: collector - x1, y: outputLane - y1 }
+  const output = plan.axis === "y" ? { x: outputCross - x1, y: collector - y1 } : { x: collector - x1, y: outputCross - y1 }
   const wanted = math.max(1, Number(base.params?.rows ?? 1) * Number(base.params?.sides ?? 1))
   const order: number[] = []
   for (let i = 0; i < plan.drills.length; i++) order.push(i)
@@ -454,8 +482,8 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     const far = a - alongSign * half
     chosenLanes[tostring(d.lane)] = alongSign < 0 ? math.max(chosenLanes[tostring(d.lane)] ?? collector, far) : math.min(chosenLanes[tostring(d.lane)] ?? collector, far)
   }
-  let minInitialLane = outputLane
-  let maxInitialLane = outputLane
+  let minInitialLane = outputCross
+  let maxInitialLane = outputCross
   for (const [k] of pairs(chosenLanes)) {
     minInitialLane = math.min(minInitialLane, tonumber(k as string)!)
     maxInitialLane = math.max(maxInitialLane, tonumber(k as string)!)
@@ -465,7 +493,8 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     const world = infrastructure[i]
     const cross = plan.axis === "y" ? world.x : world.y
     const along = plan.axis === "y" ? world.y : world.x
-    const onCollector = along === collector && cross >= minInitialLane && cross <= maxInitialLane
+    // The collector (and, with splitters, the splitters on it) as far as the farthest initial row.
+    const onCollector = (along === collector || (split && along === collector - alongSign / 2)) && cross >= minInitialLane && cross <= maxInitialLane
     const laneFar = chosenLanes[tostring(cross)]
     const onChosenLane = laneFar !== undefined && (alongSign < 0 ? along > collector && along <= laneFar : along < collector && along >= laneFar)
     if (onCollector || onChosenLane) initialInfrastructure.push(normInfra[i])
@@ -511,11 +540,12 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
     mirrorable: false,
     site: "resource-patch",
     anchor: { resource: plan.patch.resource },
-    params: { ...(base.params ?? {}), wholePatch: 1 },
+    params: { ...(base.params ?? {}), wholePatch: 1, ...(split ? { collector: "splitter" } : {}) },
     notes: base.notes?.filter((n) => !n.startsWith("rates:")),
   }, facts)
-  const full = make(`${base.id}/whole`, [...normInfra, ...normDrills])
-  const initial = make(`${base.id}/partial`, [...initialInfrastructure, ...initialDrills])
+  const tag = split ? "/split" : ""
+  const full = make(`${base.id}/whole${tag}`, [...normInfra, ...normDrills])
+  const initial = make(`${base.id}/partial${tag}`, [...initialInfrastructure, ...initialDrills])
   return { initial, full, origin, claim: occupiedKeys(full, origin, facts), occupied: occupiedKeys(initial, origin, facts) }
 }
 

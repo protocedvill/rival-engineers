@@ -201,7 +201,8 @@ function placeMine(state: LayoutState, view: TerrainView, region: Rect, policy: 
   const s = placeNow({ id, def: raw, targets: {}, center, region }, state, view, policy)
   eq(s.phase, "done", `${id} placed (${s.reason})`)
   const m = s.result!
-  prepareWholePatchPlacement(m, view, F, region, policy, state)
+  // Shared (splitter-tap) mines come with splitters researched (P44 b: several rows need them).
+  prepareWholePatchPlacement(m, view, F, region, policy, state, policy.topology === "splitter-tap")
   commitModule(state, m, F, policy.corridor.preferred)
   return m
 }

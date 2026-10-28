@@ -57,6 +57,11 @@ export interface PlanRequest {
   center: Vec
   /** The scanned region the layout must stay in. */
   region: Rect
+  /**
+   * P44 (b): the force can build splitters. Whole-patch mines then join their drill rows with splitter merges (several
+   * rows); without them a whole-patch mine is one row, which fills both lanes of its belt without side-loads.
+   */
+  splitters?: boolean
   /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
   poles?: string
   /**
@@ -569,7 +574,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
     if (s.phase === "done") {
-      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout)
+      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
       commitPlacement(job.layout, s.result!, facts, policy)
     }
     else {
@@ -701,7 +706,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
     delete (job.wholeFail ?? {})[id]
-    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout)
+    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined
     job.placeIdx++

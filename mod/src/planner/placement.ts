@@ -1237,7 +1237,7 @@ export function stripOreUnits(m: PlacedModule, terrain: TerrainView, facts: Prot
  * `state` already hold. When the plan does not fit (its entities on unbuildable or taken ground), the mine stays the
  * strip it was placed as and its growth is clipped to its ore (`stripOreUnits`).
  */
-export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy, state?: LayoutState): void {
+export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy, state?: LayoutState, splitters = false): void {
   if (!isMining(m.canonical) || m.minePlan !== undefined) return
   const strip = (): void => {
     if (m.canonical.expand !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
@@ -1277,6 +1277,9 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
   let cap = beltDrillCap(facts, belt, drill, resource)
   let maxLanes = math.huge
   const spec = m.canonical.expand
+  // P44 (b) (user, 2026-10-28: "Splitters, cap before"): rows past the first join the collector through splitters; with
+  // none researched, the mine is one row (its two drill columns fill the two lanes of its belt, no side-load).
+  if (!splitters) maxLanes = 1
   if (policy.topology !== "splitter-tap") {
     maxLanes = 1
     if (spec !== undefined) {
@@ -1304,7 +1307,7 @@ export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView
   let built: ReturnType<typeof materializeMinePlan>
   for (let attempt = 0; attempt < 2; attempt++) {
     const plan = claimPart(planWholePatch(planView, patch, drill), planView, drill, near, cap, maxLanes)
-    built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage)
+    built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage, maxLanes > 1 ? "splitter" : undefined)
     if (built === undefined) return strip()
     const margin: Record<number, boolean> = {}
     for (const k of moduleMargin({ ...m, minePlan: { full: built.full, claim: built.claim, occupied: built.occupied, complete: false } })) margin[k] = true
@@ -1464,9 +1467,11 @@ function reclaimWholePatch(state: LayoutState, terrain: TerrainView, facts: Prot
   }
   const view: TerrainView = { block: (x, y) => (taken(x, y) ? FOREIGN : terrain.block(x, y)), ore: (x, y) => terrain.ore(x, y) }
   const cap = drillCount(m.minePlan.full, facts)
-  const plan = claimPart(planWholePatch(view, patch, drill), view, drill, near, cap, policy.topology !== "splitter-tap" ? 1 : math.huge)
+  // P44 (b): a mine keeps its collector: only a splitter-collector mine takes several rows.
+  const collector = m.minePlan.full.params?.collector === "splitter" ? "splitter" : undefined
+  const plan = claimPart(planWholePatch(view, patch, drill), view, drill, near, cap, policy.topology === "splitter-tap" && collector !== undefined ? math.huge : 1)
   if (plan.covered.length <= have) return restore(`its patch has no better part left (${plan.covered.length} ore tiles, its drills reach ${have})`)
-  const built = materializeMinePlan(m.minePlan.full, plan, facts, near, policy.minOreCoverage)
+  const built = materializeMinePlan(m.minePlan.full, plan, facts, near, policy.minOreCoverage, collector)
   if (built === undefined) return restore("no mine fits the rest of its patch")
   for (const k of built.claim) {
     const x = keyX(k)

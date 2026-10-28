@@ -163,7 +163,7 @@ test("B67: a D55 reclaim moves a whole-patch mine off its pole line's reach; the
   const s = placeNow({ id: "mine", def: miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), targets: {}, center: { x: 44, y: 44 }, region }, l, view, tap)
   eq(s.phase, "done", `mine placed (${s.reason})`)
   const m = s.result!
-  prepareWholePatchPlacement(m, view, F, region, tap, l)
+  prepareWholePatchPlacement(m, view, F, region, tap, l, true)
   commitModule(l, m, F, tap.corridor.preferred)
   polesNow(l, view, F, tap, "poles:a:")
   eq(unpoweredModules(l, F).length, 0, "the mine is powered")

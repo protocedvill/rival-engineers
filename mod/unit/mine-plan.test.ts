@@ -320,4 +320,66 @@ test("B74: a completion that covers its own output route is refused; another own
   ok(other.ok, `another module's route on the mine's tiles gives way (B25): ${other.reason}`)
 })
 
+/** P44 (b): belts of `def` that side-load: one feeding into the side of a belt that something also feeds from behind. */
+function sideLoads(def: { entities: { name: string; x: number; y: number; dir?: number }[] }): string[] {
+  const DXS = [0, 1, 0, -1]
+  const DYS = [-1, 0, 1, 0]
+  const belts: Record<string, number> = {}
+  const splitters: Record<string, number> = {}
+  for (const e of def.entities) {
+    const d = math.floor((e.dir ?? 0) / 4)
+    if (e.name === "transport-belt") belts[`${math.floor(e.x)},${math.floor(e.y)}`] = d
+    if (e.name === "splitter") {
+      // Two tiles across its direction.
+      const px = d % 2 === 0 ? 0.5 : 0
+      const py = d % 2 === 0 ? 0 : 0.5
+      splitters[`${math.floor(e.x - px)},${math.floor(e.y - py)}`] = d
+      splitters[`${math.floor(e.x + px)},${math.floor(e.y + py)}`] = d
+    }
+  }
+  const feedsFromBehind = (x: number, y: number, d: number): boolean => {
+    const k = `${x - DXS[d]},${y - DYS[d]}`
+    return belts[k] === d || splitters[k] === d
+  }
+  const out: string[] = []
+  for (const [k, d] of pairs(belts)) {
+    const [xs, ys] = string.match(k as string, "(-?%d+),(-?%d+)")
+    const x = tonumber(xs)! + DXS[d as number]
+    const y = tonumber(ys)! + DYS[d as number]
+    const t = belts[`${x},${y}`]
+    const sp = splitters[`${x},${y}`]
+    if (sp !== undefined && sp !== d) out.push(`${k} into a splitter's side`)
+    if (t === undefined || t === d || (t + 2) % 4 === d) continue
+    if (feedsFromBehind(x, y, t)) out.push(`${k} side-loads into ${x},${y}`)
+  }
+  return out
+}
+
+test("P44 (b): a several-row whole-patch mine joins its rows with splitters: no side-load, port fixed, drills powered", () => {
+  const region = { x: 0, y: 0, w: 80, h: 70 }
+  const view = terrain(region, (x, y) => (x >= 14 && x < 58 && y >= 14 && y < 52 ? "iron-ore" : undefined))
+  const patch = connectedPatch(view, "iron-ore", [{ x: 20, y: 20 }], region)!
+  const plan = planWholePatch(view, patch, DRILL)
+  const base = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  const lanes: Record<string, boolean> = {}
+  let laneCount = 0
+  for (const d of plan.drills) if (!lanes[tostring(d.lane)]) { lanes[tostring(d.lane)] = true; laneCount++ }
+  ok(laneCount >= 3, `several rows (${laneCount})`)
+  // The old collector side-loads every row but the farthest.
+  const old = materializeMinePlan(base, plan, F, { x: 20, y: 20 })!
+  ok(sideLoads(old.full).length >= laneCount - 1, `the side-load collector side-loads (${sideLoads(old.full).length})`)
+  for (const near of [{ x: 20, y: 20 }, { x: 60, y: 60 }, { x: -100, y: 30 }, { x: 30, y: 100 }]) {
+    const st = materializeMinePlan(base, plan, F, near, 0, "splitter")!
+    const splitters = st.full.entities.filter((e) => e.name === "splitter").length
+    eq(splitters, laneCount - 1, `one splitter per row but the farthest (near ${near.x},${near.y})`)
+    const sl = sideLoads(st.full)
+    eq(sl.length, 0, `no side-load (near ${near.x},${near.y}): ${sl.join("; ")}`)
+    eq(sideLoads(st.initial).length, 0, "nor in the partial stage")
+    eq(st.initial.ports[0].pos.x, st.full.ports[0].pos.x, "output x stays fixed")
+    eq(st.initial.ports[0].pos.y, st.full.ports[0].pos.y, "output y stays fixed")
+    eq(powerCheck(st.full.entities, F).unpowered.length, 0, "all planned drills are powered")
+    eq(st.full.params?.collector, "splitter", "the mine records its collector")
+  }
+})
+
 run("mine-plan")
