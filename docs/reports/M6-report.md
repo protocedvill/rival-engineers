@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B83, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B84, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2753,6 +2753,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B81 | 5480563 (`vps-d68a`) | a handover replacement was folded into the mine it replaced and was dropped with it; replacements now get a site of their own | `3c2d1c3` |
 | B82 | 1376111 (`vps-d68b`) | an unreachable tree was queued again as soon as its job failed, keeping a crew member boxed in for ~200 min; unreachable targets now cool down | `405d904`, `2e4c0e3` |
 | B83 | 5480563 (`vps-b81-r5480563`) | repairs said "nothing missing" for an edge whose routes no longer reached its port (a side-load stub onto a gone trunk); such an edge is now planned again | `eecca19` |
+| B84 | 2229258 (sweep `eecca19`) | a reconnection from a port that already fed a route ran point-to-point; the layout now decides splitter taps | `efb3437` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2805,7 +2806,8 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-d68a` | `03bdba2` | 6752307, 5480563 (fresh) | 1/2: 6752307 v1-done at 212 min, no stalls; 5480563 failed at the cap, 12/min after the copper feed broke (→ B81) |
 | `vps-b81-r5480563` | `3c2d1c3` | 5480563 from `min-0020` | failed at the cap: 12/min from ~370 min, the replacement copper route side-loaded onto a gone trunk (→ B83) |
 | `vps-b82-r1376111` | `2e4c0e3` | 1376111 from `min-0080` | passed, v1-done at 236 min (was 467), no stalls (B82 validated) |
-| `vps-b83-r5480563` | `eecca19` | 5480563 from `min-0020` | running |
+| `vps-b83-r5480563` | `eecca19` | 5480563 from `min-0020` | failed fast at 225 min (→ B85, open); B83 fired and science held 22–26/min 107–182 min. Note: `fai-dbg` was rebuilt (to `efb3437`) while this run was going; the run is one Factorio process that loaded `eecca19` at start |
+| `vps-b84-r2229258` | `efb3437` | 2229258 from `min-0060` | running |
 | `m6-random20-eecca19` | `eecca19` | the full 20-seed sweep | running (3 at a time) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
