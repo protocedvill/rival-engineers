@@ -863,3 +863,19 @@ export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
   }
   return false
 }
+
+/**
+ * B86: whether route `rid` dangles: it is a provider-group merge (side-load or splitter) whose trunk tile no route owns
+ * any more, followed through a chain of merges. A plain route never dangles. A dangling stub brings nothing to its port.
+ */
+export function routeDangles(layout: LayoutState, rid: string): boolean {
+  let r: Route | undefined = layout.routes[rid as RouteId]
+  for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+    if (join === undefined) return false
+    const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+    if (owner === undefined || owner === r.id) return true
+    r = layout.routes[owner]
+  }
+  return r === undefined
+}

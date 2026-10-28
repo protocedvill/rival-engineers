@@ -10,7 +10,7 @@ import { releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
@@ -441,11 +441,16 @@ function sameSource(job: PlanJob, from: PortRef): string[] {
   return out
 }
 
-/** B79: whether a route other than connection `conn`'s (not a crew-fed stub) already ends at port `to`. */
+/**
+ * B79: whether a route other than connection `conn`'s (not a crew-fed stub) already brings items to port `to`. B86: not
+ * a dangling one (`routeDangles`): a side-load stub whose trunk was ripped (a growth rerouting the trunk) does not feed the
+ * port, and treating it as a feed made the trunk itself a merge onto that stub (vps eecca19 2229258: the steam block's
+ * coal route became a 15-step side-load that landed nowhere).
+ */
 export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): boolean {
   for (const rid of layout.routeOrder) {
     const r = layout.routes[rid]
-    if (r !== undefined && r.conn !== conn && r.external !== true && r.to.module === to.module && r.to.port === to.port) return true
+    if (r !== undefined && r.conn !== conn && r.external !== true && r.to.module === to.module && r.to.port === to.port && !routeDangles(layout, rid)) return true
   }
   return false
 }

@@ -324,4 +324,30 @@ test("B84: a source port that already starts a route is known from the layout (v
   ok(!portFeedsRoute(job.layout, { module: "mine2", port: "out" }), "mine2.out feeds nothing")
 })
 
+test("B86: a ripped trunk routed again lands on its port; the side-load stub left on it is no feed (sweep eecca19 2229258)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", ore, 30, 75)
+  place(l, "mine2", ore, 75, 75)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
+    { id: connectionId("ore~2"), from: { module: "mine2", port: "out" }, to: { module: "smelt", port: "in-ore" }, merge: true },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  const rid = (layout: LayoutState, conn: string): string => layout.routeOrder.find((r) => layout.routes[r].conn === conn)!
+  // A growth rips the trunk (as the root of its group) and routes it again; the stub stays.
+  ripRoute(job.layout, rid(job.layout, "ore") as never)
+  for (const r of job.layout.routeOrder) job.layout.routes[r].fixed = true
+  const again = runJob(newRoutingJob({ modules: [], connections: [conns[0]], center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, job.layout), view, F, POLICY)
+  let why = ""
+  for (const [k, v] of pairs(again.failures)) why += `${k}: ${v}; `
+  eq(again.phase, "done", `trunk routed again: ${why}`)
+  const trunk = again.layout.routes[rid(again.layout, "ore") as never]
+  eq(trunk.merge === undefined && trunk.mergeSplitter === undefined, true, "the trunk is a plain route, not a merge onto the stub")
+  ok(routesLand(again.layout, [rid(again.layout, "ore")], { module: "smelt", port: "in-ore" }), "and it lands on the port")
+})
+
 run("grow")

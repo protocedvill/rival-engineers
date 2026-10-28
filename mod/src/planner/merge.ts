@@ -6,7 +6,7 @@
 // Pure: no Factorio globals (T1: mod/unit/merge.test.ts).
 
 import { ccw, cw, DX, DY, manhattan, tkey } from "./grid"
-import { findModule, LayoutState } from "./layout"
+import { findModule, LayoutState, routeDangles } from "./layout"
 
 /** One place a second route can join an existing route to the same consumer. */
 export interface MergeGoal {
@@ -48,6 +48,8 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   for (const id of layout.routeOrder) {
     const r = layout.routes[id]
     if (r === undefined || r.to.module !== to.module || r.to.port !== to.port) continue
+    // B86: only a route that brings items to the port is a trunk to join (not a stub onto a ripped trunk).
+    if (routeDangles(layout, id)) continue
     let heading = r.tapOf === undefined && r.startDir !== undefined ? r.startDir : -1
     for (let i = 0; i < r.steps.length; i++) {
       const st = r.steps[i]
