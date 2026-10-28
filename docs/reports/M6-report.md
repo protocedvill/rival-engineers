@@ -2742,7 +2742,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B70 | all | P36 (a) never fired: it checked `module` nodes, and mines are `outpost` nodes | `dbf360a` |
 | B71 | 7718665 (`vps-b69`) | a residual merge with no side-load spot failed 8 identical plans; the port is now remembered | `dbf360a` |
 | B72 | 7718665 (`vps-d67`) | a new mine folded into a built shared mine with a boxed-in output failed 8 identical plans; it now gets its own site | `f1c5799` |
-| B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | pending |
+| B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | `922365f` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
