@@ -263,4 +263,29 @@ test("B76: a sealed goal port already fed by a route is no relocation candidate;
   eq(sealedGoalPorts(job.layout, [{ kind: "route", subject: "s", sealed: { side: "start" as const, port: { module: "smelt", port: "in-fuel" } } }]).length, 0, "start side ignored")
 })
 
+test("B79: a plain connection into a port a built route already feeds joins that route (vps-b78-r2034469)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", ore, 30, 75)
+  place(l, "mine2", ore, 75, 75)
+  const first = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(first.phase, "done", "the first feed routed")
+  for (const rid of first.layout.routeOrder) first.layout.routes[rid].fixed = true
+  // The design gave the whole consumer to the second provider (no merge flag), but the built belt still feeds the port.
+  const second = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore~2"), from: { module: "mine2", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, first.layout), view, F, POLICY)
+  let why = ""
+  for (const [k, v] of pairs(second.failures)) why += `${k}: ${v}; `
+  eq(second.phase, "done", `the second feed routed: ${why}`)
+  let merged = 0
+  for (const rid of second.layout.routeOrder) {
+    const r = second.layout.routes[rid]
+    if (r.conn === "ore~2" && (r.merge !== undefined || r.mergeSplitter !== undefined)) merged++
+  }
+  eq(merged, 1, "it joins the built belt")
+  const problems = checkLayout(second.layout, view, () => 5).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
 run("grow")

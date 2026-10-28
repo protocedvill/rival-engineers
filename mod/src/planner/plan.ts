@@ -441,6 +441,15 @@ function sameSource(job: PlanJob, from: PortRef): string[] {
   return out
 }
 
+/** B79: whether a route other than connection `conn`'s (not a crew-fed stub) already ends at port `to`. */
+export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): boolean {
+  for (const rid of layout.routeOrder) {
+    const r = layout.routes[rid]
+    if (r !== undefined && r.conn !== conn && r.external !== true && r.to.module === to.module && r.to.port === to.port) return true
+  }
+  return false
+}
+
 function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
@@ -477,7 +486,10 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
       req.start = { x: o.x, y: o.y, dir: dirIndex(fp.dir) }
     }
   }
-  if (c.merge === true) {
+  // B79: a port tile takes one belt. A plain connection into a port another route already ends at can never route
+  // there (every plan "no path": vps-b78-r2034469, a parallel smelter given whole consumers its short sibling still
+  // feeds); it joins that route like a provider-group merge (B60).
+  if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
     const goals = mergeGoals(job.layout, to, c.from)
     if (goals.length === 0) return `no merge target for ${to.module}.${to.port}`
     req.mergeGoals = goals
