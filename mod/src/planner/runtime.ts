@@ -40,6 +40,8 @@ export interface BuildState {
   extraAdd?: EntitySpec[]
   /** Ghosts created (for re-planning their place jobs if jobs get dropped). */
   ghosts?: LuaEntity[]
+  /** B69: tapped belts (unit numbers) picked up after another build finished them. */
+  tapCleared?: Record<number, boolean>
 }
 
 export interface PlannerEntry {
@@ -414,8 +416,9 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
 }
 
 /** Built belts where new splitter taps of `parts` go onto routes outside `parts` (the base layout's). */
-export function tappedBelts(surface: LuaSurface, layout: LayoutState, parts: BuildParts | undefined, force: string): LuaEntity[] {
-  const out: LuaEntity[] = []
+/** The tiles where new splitter taps of `parts` replace a belt of a route outside `parts`. */
+function tapSpots(layout: LayoutState, parts: BuildParts | undefined): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = []
   if (parts === undefined) return out
   const mine: Record<string, boolean> = {}
   for (const id of parts.routes) mine[id] = true
@@ -424,9 +427,38 @@ export function tappedBelts(surface: LuaSurface, layout: LayoutState, parts: Bui
     if (r === undefined || r.tapOf === undefined || mine[r.tapOf]) continue
     const st = r.steps[0]
     if (st === undefined || st.kind !== "splitter") continue
-    for (const e of findEntities(surface, { type: "transport-belt", force, position: { x: st.x + 0.5, y: st.y + 0.5 }, limit: 1 })) out.push(e)
+    out.push({ x: st.x + 0.5, y: st.y + 0.5 })
   }
   return out
+}
+
+export function tappedBelts(surface: LuaSurface, layout: LayoutState, parts: BuildParts | undefined, force: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  for (const position of tapSpots(layout, parts)) for (const e of findEntities(surface, { type: "transport-belt", force, position, limit: 1 })) out.push(e)
+  return out
+}
+
+/**
+ * B69 (soak vps-d66 seed 5387208): a tap on a route another build has not finished. The splitter's ghost cannot go over
+ * that route's belt ghost, and the build completed without its tap (the consumer never got the item). Waits while such
+ * a ghost has a place job, then picks the built belt up like `startBuild` does (once per belt). True while waiting.
+ */
+function tapsPending(b: BuildState, surface: LuaSurface, force: string, layout: LayoutState): boolean {
+  const faction = getFaction(b.faction)!
+  let wait = false
+  for (const position of tapSpots(layout, b.parts)) {
+    for (const g of findEntities(surface, { name: "entity-ghost", force, position, limit: 1 })) {
+      if (g.ghost_type === "transport-belt" && faction.ghostJobs[g.unit_number!] !== undefined) wait = true
+    }
+    for (const e of findEntities(surface, { type: "transport-belt", force, position, limit: 1 })) {
+      b.tapCleared ??= {}
+      if (e.unit_number === undefined || b.tapCleared[e.unit_number]) continue
+      b.tapCleared[e.unit_number] = true
+      if (clearJobFor(faction, e) === undefined) b.clearJobs.push(addClearJob(faction, e, b.priority))
+      wait = true
+    }
+  }
+  return wait
 }
 
 /**
@@ -474,6 +506,7 @@ export function stepBuild(entry: PlannerEntry): void {
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
     const surface = game.surfaces[entry.surface]
+    if (tapsPending(b, surface, entry.force, entry.job!.layout)) return
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
     if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)

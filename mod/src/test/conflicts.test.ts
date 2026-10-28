@@ -20,7 +20,7 @@ import { claimOreField } from "../world/claims"
 import { at, createLab, Lab } from "./lab"
 import { followRoute } from "./route-lab"
 import { getPlannerEntry, removePlan, startBuild, startPlan, tappedBelts } from "../planner/runtime"
-import { addStockpile } from "../jobs/faction"
+import { addPlaceJob, addStockpile } from "../jobs/faction"
 
 // M5a.2: factions sharing ground. A faction never plans on another faction's claim (its reserved tiles) or ghosts; a
 // route blocked by something the faction doesn't own is rerouted (old pieces picked up); a module whose ground was
@@ -293,61 +293,80 @@ describe("faction conflicts", () => {
   })
 
   test("B19: a new consumer taps a built route: the crew picks up the belt, builds the splitter, both routes connect", () => {
-    const lab = createLab(64)
-    const f = faction(lab, "tap", 10, 0, false)
-    f.brain!.goals = []
-    const { layout, ghosts } = smeltingLab(lab, f.force)
-    revive(ghosts)
-    const ox = math.floor(lab.origin.x)
-    const oy = math.floor(lab.origin.y)
-    // The faction's base: the built mine, smelter and ore route (fixed).
-    for (const m of layout.modules) m.fixed = true
-    for (const id of layout.routeOrder) layout.routes[id].fixed = true
-    storage.factories ??= {}
-    // A base layout under its own key (a real factory state would run its own strategy think).
-    storage.factories["b19-base"] = { layout } as never
-    const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 20.5, 20.5), force: f.force })!
-    chest.insert({ name: "splitter", count: 2 })
-    chest.insert({ name: "transport-belt", count: 120 })
-    chest.insert({ name: "stone-furnace", count: 4 })
-    chest.insert({ name: "inserter", count: 20 })
-    chest.insert({ name: "small-electric-pole", count: 10 })
-    addStockpile(f, chest)
-    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
-    const id = "b19-tap"
-    if (getPlannerEntry(id) !== undefined) removePlan(id)
-    startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: connectionId("ore2"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
-    let building = false
-    async(60 * 60 * 30)
-    on_tick(() => {
-      const e = getPlannerEntry(id)!
-      if (e.phase === "scan" || e.phase === "plan") return
-      const job = e.job!
-      if (!building) {
-        assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
-        const r = job.layout.routes["route:ore2"]
-        assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
-        const parts = { modules: [moduleId("smelt2")], routes: [routeId("route:ore2")], poles: [] }
-        const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
-        assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
-        startBuild(e, { parts, priority: 90 })
-        building = true
-        return
-      }
-      if (e.build!.phase !== "done") return
-      if (lab.surface.count_entities_filtered({ type: "entity-ghost", force: f.force }) > 0) return
-      const problems: string[] = []
-      for (const rid of ["route:ore", "route:ore2"]) {
-        const p = followRoute(lab.surface, job.layout, job.layout.routes[rid])
-        if (p !== undefined) problems.push(`${rid}: ${p}`)
-      }
-      assert(problems.length === 0, problems.join("; "))
-      assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 1, "a splitter")
-      delete storage.factories!["b19-base"]
-      removePlan(id)
-      log(`[m6] B19 tap on a built route built at tick ${game.tick}`)
-      done()
-      return false
-    })
+    tapRoute("b19-tap", false)
+  })
+
+  // B69 (soak vps-d66 seed 5387208): the tapped route's belt was still another build's ghost when the tap was stamped;
+  // the splitter ghost could not go over it and the build finished without its tap.
+  test("B69: a tap on a belt another build has not placed yet waits for it, picks it up, then builds the splitter", () => {
+    tapRoute("b69-tap", true)
   })
 })
+
+/** B19/B69: a new smelter taps the built ore route; `unbuilt`: the tapped belt is still a ghost with a place job. */
+function tapRoute(id: string, unbuilt: boolean): void {
+  const lab = createLab(64)
+  const f = faction(lab, "tap", 10, 0, false)
+  f.brain!.goals = []
+  const { layout, ghosts } = smeltingLab(lab, f.force)
+  revive(ghosts)
+  const ox = math.floor(lab.origin.x)
+  const oy = math.floor(lab.origin.y)
+  // The faction's base: the built mine, smelter and ore route (fixed).
+  for (const m of layout.modules) m.fixed = true
+  for (const id of layout.routeOrder) layout.routes[id].fixed = true
+  storage.factories ??= {}
+  // A base layout under its own key (a real factory state would run its own strategy think).
+  storage.factories["b19-base"] = { layout } as never
+  const chest = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 20.5, 20.5), force: f.force })!
+  chest.insert({ name: "splitter", count: 2 })
+  chest.insert({ name: "transport-belt", count: 120 })
+  chest.insert({ name: "stone-furnace", count: 4 })
+  chest.insert({ name: "inserter", count: 20 })
+  chest.insert({ name: "small-electric-pole", count: 10 })
+  addStockpile(f, chest)
+  const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+  if (getPlannerEntry(id) !== undefined) removePlan(id)
+  startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: connectionId("ore2"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
+  let building = false
+  async(60 * 60 * 30)
+  on_tick(() => {
+    const e = getPlannerEntry(id)!
+    if (e.phase === "scan" || e.phase === "plan") return
+    const job = e.job!
+    if (!building) {
+      assert(e.phase === "done", `plan failed: ${serpent.line(job.failures)}`)
+      const r = job.layout.routes["route:ore2"]
+      assert(r !== undefined && r.tapOf === "route:ore", `the new route taps the built one (${r?.tapOf})`)
+      const parts = { modules: [moduleId("smelt2")], routes: [routeId("route:ore2")], poles: [] }
+      const belts = tappedBelts(lab.surface, job.layout, parts, f.force)
+      assert(belts.length === 1, `one built belt under the splitter (${belts.length})`)
+      if (unbuilt) {
+        // Another build's belt, not placed yet: a ghost with its place job.
+        const b = belts[0]
+        const spot = { name: b.name, position: b.position, direction: b.direction }
+        b.destroy()
+        const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: spot.name, position: spot.position, direction: spot.direction, force: f.force })!
+        assert(addPlaceJob(f, g, { priority: 10 }) !== undefined, "a place job for the tapped belt's ghost")
+      }
+      startBuild(e, { parts, priority: 90 })
+      building = true
+      return
+    }
+    if (e.build!.phase !== "done") return
+    if (lab.surface.count_entities_filtered({ type: "entity-ghost", force: f.force }) > 0) return
+    const problems: string[] = []
+    for (const rid of ["route:ore", "route:ore2"]) {
+      const p = followRoute(lab.surface, job.layout, job.layout.routes[rid])
+      if (p !== undefined) problems.push(`${rid}: ${p}`)
+    }
+    assert(problems.length === 0, problems.join("; "))
+    assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 1, "a splitter")
+    assert(e.build!.failed.length === 0, `ghosts failed: ${e.build!.failed.join("; ")}`)
+    delete storage.factories!["b19-base"]
+    removePlan(id)
+    log(`[m6] ${id} tap on a built route built at tick ${game.tick}`)
+    done()
+    return false
+  })
+}

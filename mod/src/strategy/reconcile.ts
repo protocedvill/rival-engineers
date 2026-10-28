@@ -260,6 +260,12 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       if (prod.status === "starved" || prod.status === "unfuelled" || prod.status === "unpowered") return trace(t, prod, depth + 1)
       // The producer makes more than arrives: the belt between is still filling (or losing items). Wait.
       const made = rateIn(prod.measured?.outputs ?? [], item)
+      // B69 (soak vps-d66 seed 5387208): nothing at all arrives at a warmed-up starved consumer while the producer makes
+      // the item. A filling belt brings some; this route lost a piece (its splitter tap was never built, 150 game-min).
+      if (made > 0 && e.measuredRate === 0) {
+        remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${label(prod)} makes ${fmt(made)}/s of ${item} but none reaches ${label(n)}` })
+        return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: nothing arrives while ${label(prod)} makes ${fmt(made)}/s` }
+      }
       if (made > 0 && (e.measuredRate ?? 0) < p.arrivedShare * made) {
         return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item} but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
       }

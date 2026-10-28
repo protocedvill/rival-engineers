@@ -188,6 +188,18 @@ test("a belt still filling: the producer makes much more than arrives → wait (
   eq(r.remedies.length, 0, "no remedy")
 })
 
+test("B69: nothing arrives while the producer makes the item (its other belts take it) → repair the route, not wait", () => {
+  // Soak vps-d66 seed 5387208: the mall's iron smelter ran flat out for the mall, never backed up, while the tap to a red
+  // science assembler had no splitter: the assembler starved for 150 game-min as a "filling" belt.
+  const g = chain(st({ working: 0.97 }), 2, st({ starved: 1 }), 0, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 0.2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "broken", g.nodes.smelt.cause!.why)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].kind, "repair", "repair")
+  eq(r.remedies[0].edge, "ore", "the silent edge")
+})
+
 test("broken belt: items pile up at the producer and none arrive → repair the route; the producer is backed up for the same cause", () => {
   const g = chain(st({ working: 0.05, blocked: 0.95 }), 0.1, st({ working: 0.05, starved: 0.95 }), 0.1, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0, from: 1, to: 0 })
