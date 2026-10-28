@@ -2795,8 +2795,10 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b80-r1459426` | `8929995` | 1459426 from `min-0020` | passed, v1-done at 209 min, no stalls (B80 validated) |
 | `vps-b80-r8033112` | `8929995` | 8033112 from `min-0060` | passed, v1-done at 257 min, no stalls |
 | `vps-b80d` | `8929995` | 1264816 (fresh) | failed fast at 196 min: an hour exploring for coal (→ D68) |
-| `vps-d68-r1264816` | `03bdba2` | 1264816 from `min-0120` | running |
-| `vps-b80e`, `vps-b80f` | `8929995` | 1677299, 7625436 (fresh) | running |
+| `vps-d68-r1264816` | `03bdba2` | 1264816 from `min-0120` | passed, v1-done at 280 min; D68 fired at the old failure point (no exploring); 1 stall recovered in under a minute at 125 min |
+| `vps-b80e` | `8929995` | 1677299 (fresh) | passed, v1-done at 288 min, no stalls |
+| `vps-b80f` | `8929995` | 7625436 (fresh) | running |
+| `vps-d68a` | `03bdba2` | 6752307, 5480563 (fresh) | running |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
