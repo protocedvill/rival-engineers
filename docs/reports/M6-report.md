@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B75, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B77, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2745,6 +2745,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | `922365f` |
 | B74 | 7718665 (`vps-b72-r7718665`) | a mine completion put a pole on the mine's own output belt; science stopped for 150 min; such completions are now refused | `e23761b` |
 | B75 | 4410923 (`vps-b72`) | a growth or reroute re-requested a provider-group merge as a plain route into the port: the steam block never grew (the "power can't grow" issue); merges are now kept and routed after their trunk | `5dcc66f` |
+| B76 | 4410923 (`vps-b75-r4410923`) | B57 deconstructed both red-science smelters because a second feed couldn't reach their already fed fuel port; fed ports are never relocation candidates now | `e7c75f0` |
+| B77 | 4410923 (`vps-b76-r4410923`) | the design cache key ignored edges, so a goal's built connections were planned again and their failure blocked a working feed | `fc85522` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2774,6 +2776,13 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-b72-r7718665` | `f1c5799` | 7718665 from `min-0160` | failed at the 480-min cap: no science 82–232 min (→ B74, already broken at the resume point); then 16/min of ~30, power short and the steam block cannot grow |
 | `vps-b74-r7718665` | `6afc10a` | 7718665 from `min-0060` (before the mine completion) | passed, v1-done at 238 min; science sustained at 30.8/min of each pack (B74 validated) |
 | `vps-b73-r8646103` | `922365f` | 8646103 from `min-0320` | passed, v1-done at 352 min; no mine retired at the handover valve (B73) |
+| `vps-b75-r4410923` | `5dcc66f` | 4410923 from `min-0040` | stopped by hand at ~350 min, failing: power grew (B75 works), then no science 165–285 min after B57 tore down cluster 1's smelters (→ B76, B77) |
+| `vps-b75` | `5dcc66f` | 5581724, 4819313 (fresh) | 2/2: 4819313 v1-done at 209 min, 5581724 at 238 min, no stalls |
+| `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
+| `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 7741326 v1-done at 237 min; 3088988 running |
+| `vps-b75d` | `5dcc66f` | 1264816 (fresh) | running |
+| `vps-b76-r4410923` | `e7c75f0` | 4410923 from `min-0100` | failed fast at 114 min: 8 identical plan failures (→ B77) |
+| `vps-b77-r4410923` | `fc85522` | 4410923 from `min-0100` | running; past the B76/B77 point without a duplicate goal |
 | `vps-b72` | `f1c5799` | 4410923, 9150347 (fresh) | 1/2: 9150347 v1-done at 272 min (1 recovered stall); 4410923 failed at the 480-min cap: research goal done at 255 min, science held at 24/min (0.91 of the target), power could not grow (→ B75) |
 | `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
