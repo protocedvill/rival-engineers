@@ -230,9 +230,15 @@ function anyFull(g: LogicalGraph, prod: LogicalNode, item: string, tick: number,
 /** A starved (or unfuelled) node: which of its inputs is short, and why. */
 function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number): RootCause {
   const p = t.input.params
+  // B87: an item no edge carries (crew-supplied, or an intermediate made inside the module, like a red line's gears) is
+  // the cause only when no belt input explains the shortage: trace the belt inputs first.
+  let external: RootCause | undefined
   for (const item of items) {
     const edges = edgesInto(t.g, n.id).filter((e) => e.kind === "belt" && e.item === item)
-    if (edges.length === 0) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
+    if (edges.length === 0) {
+      external = external ?? { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
+      continue
+    }
     for (const e of edges) {
       if (e.from === undefined) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, supplied from outside the graph` }
       const prod = t.g.nodes[e.from]
@@ -278,7 +284,7 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       return { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }
     }
   }
-  return { kind: "node", id: n.id, what: "unknown", why: `${label(n)}: no input found short` }
+  return external ?? { kind: "node", id: n.id, what: "unknown", why: `${label(n)}: no input found short` }
 }
 
 function fmt(x: number | undefined): string {

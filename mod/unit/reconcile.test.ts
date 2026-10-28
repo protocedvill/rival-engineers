@@ -380,4 +380,26 @@ test("B60 group remedy: a shared trunk at capacity asks for a parallel provider,
   eq(r.remedies[0].node, "p", "the shared provider")
 })
 
+test("B87: a module short of its own intermediate is traced through its belt inputs, not called crew-supplied", () => {
+  // Soak vps-a06-r5387208: the red line (gears made inside the module) measured "missing gears" most. No edge carries
+  // gears, so the trace stopped at "no producer (crew-supplied)" and never looked at its iron belt, where nothing
+  // arrived while the smelter made 1.27/s: no remedy for 200 game-min.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 1, st({ working: 1 }), 1.27)
+  node(g, "red", "module", "automation-science-pack", 0.2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "automation-science-pack", perSecond: 0 }], machines: 3, states: st({ starved: 1 }), missing: { "iron-gear-wheel": 0.67, "iron-plate": 0.33 } },
+  })
+  belt(g, "plates", "smelt", "red", "iron-plate", 0.37, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.red.cause!.what, "broken", g.nodes.red.cause!.why)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].edge, "plates", "repair the silent plate belt")
+  // Short of only an item no edge carries: still the external cause (hand-fed inputs keep their meaning).
+  g.nodes.red.measured!.missing = { "iron-gear-wheel": 1 }
+  const g2 = newGraph()
+  node(g2, "red", "module", "automation-science-pack", 0.2, st({ starved: 1 }), 0, { measured: g.nodes.red.measured })
+  settle(g2)
+  eq(g2.nodes.red.cause!.kind, "external", "nothing else to trace")
+})
+
 run("reconcile")
