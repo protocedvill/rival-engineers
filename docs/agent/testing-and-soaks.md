@@ -20,6 +20,9 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 - T2 filters are Lua patterns: `-` must be escaped as `%-`, and `|` is not alternation. Pass several filters instead.
 - Parallel shards are separate Factorio games. A test may only consume state created in its own shard unit. Configure
   intentional grouping in `tools/test-shards.json`.
+- Do not run the full T2 suite as one shard (`TEST_JOBS=1`): every file then shares one game, the tests' factions pass
+  Factorio's 64-force limit and 24 tests fail with `Too many forces` in `create_force` (VPS, 2026-10-28). Use
+  `TEST_JOBS=2` or more to cap concurrent instances.
 - Each process needs its own write-data directory. Sharing one produces lock, log and mod-settings collisions.
 - factorio-test normally prints `log()` output only for failures. Use `out/test-results.json` to find the shard and
   read `.factorio-test/shards/N/factorio-current.log`.
