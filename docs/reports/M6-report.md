@@ -2743,7 +2743,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B71 | 7718665 (`vps-b69`) | a residual merge with no side-load spot failed 8 identical plans; the port is now remembered | `dbf360a` |
 | B72 | 7718665 (`vps-d67`) | a new mine folded into a built shared mine with a boxed-in output failed 8 identical plans; it now gets its own site | `f1c5799` |
 | B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | `922365f` |
-| B74 | 7718665 (`vps-b72-r7718665`) | a mine completion put a pole on the mine's own output belt; science stopped for 150 min; such completions are now refused | pending |
+| B74 | 7718665 (`vps-b72-r7718665`) | a mine completion put a pole on the mine's own output belt; science stopped for 150 min; such completions are now refused | `e23761b` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
