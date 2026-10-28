@@ -2,7 +2,7 @@ import { generate, GeneratorName } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
-import { addNode, LogicalGraph, newGraph } from "../src/planner/logical"
+import { addEdge, addNode, designGraphKey, LogicalGraph, newGraph } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor, stuckRounds } from "../src/strategy/design"
 import { eq, near, ok, run, test } from "./harness"
@@ -626,6 +626,20 @@ test("B20: a build escalates after N leftover-ghost rounds that placed nothing; 
   }
   eq(out.join(","), "0,1,2,0,1,2,E", "rounds 2-3 stuck, progress at 4 resets, escalates at the third stuck round")
   eq(stuckRounds(100, 1, 1, 0).escalate, false, "0 = never")
+})
+
+test("B77: the design cache key changes when a goal adds only connections (vps-b76-r4410923 g19 → g20)", () => {
+  const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const g = graphWith(d, d.nodes.map((n) => n.role))
+  const e = d.edges[0]
+  const before = designGraphKey(g)
+  const from = g.nodeOrder.find((id) => g.nodes[id].role === e.from)!
+  const to = g.nodeOrder.find((id) => g.nodes[id].role === e.to)!
+  addEdge(g, { id: `flow:${e.role}`, role: e.role, kind: "belt", item: e.item, from: moduleId(from), fromPort: e.fromPort, to: moduleId(to), toPort: e.toPort, plannedRate: e.rate, physical: [] } as never)
+  ok(designGraphKey(g) !== before, "a new edge changes the key")
+  // The diff a stale key would have served lists the built edge as missing; the fresh one does not.
+  const missing = diffDesign(d, g, () => undefined).missingEdges.map((x) => x.role)
+  ok(missing.indexOf(e.role) < 0, "the built edge is not missing")
 })
 
 run("design")

@@ -282,3 +282,16 @@ export function upstream(g: LogicalGraph, node: string): string[] {
   }
   return out
 }
+
+/**
+ * The graph's part of the factory's design cache key: the design is diffed against the graph, so any change the diff
+ * can see must change the key. B77: edges count too. A goal that only adds connections (no node) left the key unchanged,
+ * so the cached diff still listed its edges as missing once they were built, and the next goal planned them again
+ * (vps-b76-r4410923 g20 after g19); its failure marked the working feed "not tapped" and the design asked for a second
+ * provider into an already fed port.
+ */
+export function designGraphKey(g: LogicalGraph): string {
+  let built = 0
+  for (const n of nodesOf(g)) if (n.lifecycle === "built") built++
+  return `${g.nodeOrder.length}|${built}|${g.edgeOrder.length}`
+}

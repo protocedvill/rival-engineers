@@ -461,8 +461,6 @@ function designNow(ctx: Ctx): Design | undefined {
   // (a session cache: rebuilt after load, same result, so it is deterministic).
   let researchedCount = 0
   for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
-  let built = 0
-  for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built") built++
   let taps = 0
   for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
   let blocked = ""
@@ -480,7 +478,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role] of pairs(f.handover ?? {})) handover += `${role as string};`
   for (const [port] of pairs(f.noMerge ?? {})) handover += `!${port as string};`
   for (const [role] of pairs(f.ownSite ?? {})) handover += `@${role as string};`
-  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
