@@ -6,7 +6,7 @@ import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute } from "../src/planner/layout"
+import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute, sealedGoalPorts } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
@@ -244,6 +244,23 @@ test("B75: growing a consumer fed by a provider-group merge keeps the merge: the
   eq(merged(g.layout), 1, "the second feed merges again")
   const problems = checkLayout(g.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
+})
+
+test("B76: a sealed goal port already fed by a route is no relocation candidate; an unfed one is (vps-b75-r4410923 n15)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 30, 75)
+  const conns: ConnectionRequest[] = [{ id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  const sealed = (port: string) => ({ kind: "route", subject: `x=>smelt.${port}`, sealed: { side: "goal" as const, port: { module: "smelt", port } } })
+  // in-ore is fed by the routed ore belt: its lane is walled in by that belt, not by a pocket.
+  eq(sealedGoalPorts(job.layout, [sealed("in-ore")]).length, 0, "a fed port is not relocated")
+  const open = sealedGoalPorts(job.layout, [sealed("in-ore"), sealed("in-fuel")])
+  eq(open.map((c) => `${c.port.module}.${c.port.port}`).join(","), "smelt.in-fuel", "the unfed port still is")
+  eq(sealedGoalPorts(job.layout, [{ ...sealed("in-fuel"), sealed: { side: "goal" as const, port: { module: "smelt", port: "in-fuel" }, edge: true } }]).length, 0, "a flood cut by the window edge is no proof")
+  eq(sealedGoalPorts(job.layout, [{ kind: "route", subject: "s", sealed: { side: "start" as const, port: { module: "smelt", port: "in-fuel" } } }]).length, 0, "start side ignored")
 })
 
 run("grow")

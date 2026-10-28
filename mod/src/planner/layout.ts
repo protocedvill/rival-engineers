@@ -803,3 +803,25 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
   }
   return { problems }
 }
+
+/**
+ * B57 relocation candidates: the goal ports a failed plan's router proved walled in (`sealed` on the goal side, the flood
+ * not cut by the window edge), on modules of `layout`, in evidence order. B76: a port some route of `layout` already
+ * ends at is not a candidate: its lane is walled in by its own feed belt, the module is fed, and relocating it tore down
+ * working red-science smelters (vps-b75-r4410923 n15/n17, no science for 130 min).
+ */
+export function sealedGoalPorts(layout: LayoutState, evidence: { kind: string; subject: string; sealed?: { side: "start" | "goal"; port: PortRef; edge?: boolean } }[]): { port: PortRef; subject: string }[] {
+  const fed: Record<string, boolean> = {}
+  for (const rid of layout.routeOrder) {
+    const r = layout.routes[rid]
+    if (r !== undefined) fed[`${r.to.module}.${r.to.port}`] = true
+  }
+  const out: { port: PortRef; subject: string }[] = []
+  for (const ev of evidence) {
+    const s = ev.sealed
+    if (ev.kind !== "route" || s === undefined || s.side !== "goal" || s.edge === true) continue
+    if (findModule(layout, s.port.module) === undefined || fed[`${s.port.module}.${s.port.port}`]) continue
+    out.push({ port: s.port, subject: ev.subject })
+  }
+  return out
+}

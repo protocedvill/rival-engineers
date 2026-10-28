@@ -2005,22 +2005,20 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
   // (3891760 n1.in-fuel, 1376111 n8.in-ore, 6752307 n23.in-iron-plate). The old second opinion here (`sealedInputs`,
   // a 32-tile lane-escape check) disagreed in all three and vetoed the only cheap remedy. A flood that hit the window
   // edge (`edge`) is not enclosure: the wider-window replan above answers that first.
-  for (const ev of evidence) {
-    if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
-    if (ev.sealed.edge === true) continue
-    const id = ev.sealed.port.module
+  for (const { port, subject } of LO.sealedGoalPorts(f.layout, evidence)) {
+    const id = port.module
     const n = f.graph.nodes[id]
-    if (n === undefined || LO.findModule(f.layout, id) === undefined) continue
+    if (n === undefined) continue
     let busy: string | undefined
     for (const o of f.goals) {
       if (o === g || (o.status !== "building" && o.status !== "planning")) continue
       for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
     }
     if (busy !== undefined) {
-      log(`[rival-engineers] faction ${ctx.faction.name}: B57 ${n.role} (${id}) has its ${ev.sealed.port.port} lane walled in; relocation waits for goal ${busy}`)
+      log(`[rival-engineers] faction ${ctx.faction.name}: B57 ${n.role} (${id}) has its ${port.port} lane walled in; relocation waits for goal ${busy}`)
       continue
     }
-    FU.relocate(ctx, n, `B57 ${n.role}`, `has its ${ev.sealed.port.port} lane walled in (goal ${g.id}: ${ev.subject})`)
+    FU.relocate(ctx, n, `B57 ${n.role}`, `has its ${port.port} lane walled in (goal ${g.id}: ${subject})`)
     return n.role
   }
   // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
