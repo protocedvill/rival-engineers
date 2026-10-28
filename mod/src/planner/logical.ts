@@ -314,3 +314,16 @@ export function connectModule(g: LogicalGraph, id: string, inLayout: (this: void
   }
   return undefined
 }
+
+/**
+ * D68 (user, 2026-10-28): the fuel a built producer can still give new consumers: its full-speed output minus what its
+ * belt edges are planned to take. For a mine this is real (its drills stand on ore); a smelter's full speed also needs
+ * its own feed grown (B65), so callers use it for fuel outposts.
+ */
+export function spareCapacity(g: LogicalGraph, id: string): number {
+  const n = g.nodes[id]
+  if (n === undefined || n.item === undefined) return 0
+  let used = 0
+  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += e.plannedRate
+  return rateIn(n.capacity.outputs, n.item) - used
+}

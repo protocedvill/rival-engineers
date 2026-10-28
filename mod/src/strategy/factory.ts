@@ -1125,10 +1125,15 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
         }
       }
       // P36 (b): a new fuel producer that found no position twice: new consumers tap a built one instead.
+      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity"): when a built fuel producer has spare
+      // capacity, at once, before D62 explores (vps-b80d 1264816: an hour of radar outposts for ~0.1 coal/s while built
+      // coal mines had 0.1-0.96/s spare each). Without spare capacity, the old rule: twice, and never for a provider
+      // split to escape its old site (retapping that one defeats the split; D62 explores for an independent patch).
+      const fuel = ctx.faction.brain!.catalog.fuel
+      const spare = (ST.fallbackProducers({ ...f, fallback: { [fuel]: true } })?.[fuel]?.length ?? 0) > 0
       for (const n of g.nodes) {
-        // A route-infeasible provider was explicitly split to escape its old site. Retapping an old provider defeats
-        // that remedy and can fail-fast before D62 explores for a genuinely independent patch.
-        if (n.id !== m || n.newSite === true || n.item !== ctx.faction.brain!.catalog.fuel || !ctx.config.factoryFuelFallback || g.attempts < FUEL_FALLBACK_ATTEMPTS || f.fallback?.[n.item]) continue
+        if (n.id !== m || n.item !== fuel || !ctx.config.factoryFuelFallback || f.fallback?.[n.item]) continue
+        if (!spare && (n.newSite === true || g.attempts < FUEL_FALLBACK_ATTEMPTS)) continue
         f.fallback ??= {}
         f.fallback[n.item] = true
         newNoTap = true

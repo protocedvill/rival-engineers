@@ -3,7 +3,7 @@ import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { nodeByRole, rateIn } from "../planner/logical"
+import { nodeByRole, rateIn, spareCapacity } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
@@ -120,7 +120,9 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
     const list: { role: string; key: number }[] = []
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
-      if (n.item !== item || n.kind !== "module" || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
+      if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
+      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity"): only a producer with spare capacity.
+      if (spareCapacity(f.graph, id) <= 1e-6) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x

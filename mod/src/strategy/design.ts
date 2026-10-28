@@ -572,6 +572,19 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     for (const d of fresh) byProducer[fb].push(d)
     fresh.length = 0
   }
+  // D68 (user, 2026-10-28): the consumers of a group split into parallel providers (B61) tap the fallback producer too,
+  // instead of a parallel provider per consumer that may find no free patch at all (vps-b80d 1264816).
+  if (fb !== undefined) {
+    for (const p of [...producers]) {
+      if (p === fb || shared.split?.[p] !== true) continue
+      if (byProducer[fb] === undefined) {
+        byProducer[fb] = []
+        producers.push(fb)
+      }
+      for (const d of byProducer[p]) byProducer[fb].push(d)
+      byProducer[p] = []
+    }
+  }
   // A new steam block (power#2) may tap a built producer, but never waits in a new shared group.
   for (let i = fresh.length - 1; i >= 0; i--) {
     if (!isPowerRole(fresh[i].to)) continue

@@ -2,7 +2,7 @@ import { generate, GeneratorName } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
-import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph } from "../src/planner/logical"
+import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor, stuckRounds } from "../src/strategy/design"
 import { eq, near, ok, run, test } from "./harness"
@@ -667,6 +667,24 @@ test("B80: a consumer moved whole to a parallel provider stays on its short prov
   ok(!after.edges.some((e) => e.from === "coal*>test~2" && e.to === whole!.to), "no second feed into the no-merge port")
   ok(after.edges.some((e) => e.from === "coal*>test" && e.to === whole!.to), "its short provider keeps it whole")
   eq(after.errors.length, 0, after.errors.join("; "))
+})
+
+test("D68: a split coal group taps the fallback producer instead of one new mine per consumer (vps-b80d 1264816)", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>test", [`coal@${SMELT_CU}`]: "coal*>test" }
+  const split = design(ctx({ enabled: ELECTRIC, sharing: { keep, spare: {}, split: { "coal*>test": true } } }), { item: RED, perSecond: 1 })
+  ok(split.nodes.some((n) => n.role === "coal*>test~2"), "without a fallback: parallel providers")
+  const d = design(ctx({ enabled: ELECTRIC, sharing: { keep, spare: {}, split: { "coal*>test": true }, fallback: { coal: ["coal>power"] } } }), { item: RED, perSecond: 1 })
+  ok(!d.nodes.some((n) => string.find(n.role, "coal*>test", 1, true)[0] !== undefined), `no parallel coal providers: ${d.nodes.map((n) => n.role).join(",")}`)
+  for (const smelter of [SMELT_FE, SMELT_CU]) ok(d.edges.some((e) => e.from === "coal>power" && e.to === smelter), `${smelter} taps coal>power`)
+  eq(d.errors.length, 0, d.errors.join("; "))
+})
+
+test("D68: spare capacity is full-speed output minus the planned belt draw", () => {
+  const g = newGraph()
+  addNode(g, { id: moduleId("m"), role: "coal>power", kind: "outpost", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  addNode(g, { id: moduleId("p"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  addEdge(g, { id: "e", role: "coal>power=>power.in-fuel", kind: "belt", item: "coal", from: moduleId("m"), to: moduleId("p"), plannedRate: 0.189, physical: [] })
+  near(spareCapacity(g, "m"), 0.811, 1e-9, "1 - 0.189")
 })
 
 run("design")
