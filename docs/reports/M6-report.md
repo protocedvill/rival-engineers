@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B74, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B75, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2744,6 +2744,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B72 | 7718665 (`vps-d67`) | a new mine folded into a built shared mine with a boxed-in output failed 8 identical plans; it now gets its own site | `f1c5799` |
 | B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | `922365f` |
 | B74 | 7718665 (`vps-b72-r7718665`) | a mine completion put a pole on the mine's own output belt; science stopped for 150 min; such completions are now refused | `e23761b` |
+| B75 | 4410923 (`vps-b72`) | a growth or reroute re-requested a provider-group merge as a plain route into the port: the steam block never grew (the "power can't grow" issue); merges are now kept and routed after their trunk | `5dcc66f` |
+| — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
@@ -2772,6 +2774,7 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-b72-r7718665` | `f1c5799` | 7718665 from `min-0160` | failed at the 480-min cap: no science 82–232 min (→ B74, already broken at the resume point); then 16/min of ~30, power short and the steam block cannot grow |
 | `vps-b74-r7718665` | `6afc10a` | 7718665 from `min-0060` (before the mine completion) | passed, v1-done at 238 min; science sustained at 30.8/min of each pack (B74 validated) |
 | `vps-b73-r8646103` | `922365f` | 8646103 from `min-0320` | passed, v1-done at 352 min; no mine retired at the handover valve (B73) |
+| `vps-b72` | `f1c5799` | 4410923, 9150347 (fresh) | 1/2: 9150347 v1-done at 272 min (1 recovered stall); 4410923 failed at the 480-min cap: research goal done at 255 min, science held at 24/min (0.91 of the target), power could not grow (→ B75) |
 | `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
 D65 held: no seed in `vps-d66` or later ran out of coal patches. D66 held: no crew stall in any of these runs.
@@ -2798,10 +2801,10 @@ D65, D66, B66–B71 add no tuning numbers.
 - **B69's wait has no timeout.** A tap waits while the tapped belt's ghost has a place job. If that job never completes
   (the other build stalls for good), the tapping build waits with it. The other build's own stuck-build handling (B20)
   is what ends that today.
-- **Steam block growth still fails** in every seed that grows power: `reroute failed: coal>power~2=>power.in-fuel:
-  blocked by coal>power=>power.in-fuel (ripped 3 times already)`. The waits then show `power short` from the
-  utilization estimate, while the measured load stays at 40–65%, so it has not limited science yet. Not fixed.
+- ~~Steam block growth still fails~~ (`reroute failed: coal>power~2=>power.in-fuel: blocked by
+  coal>power=>power.in-fuel`): fixed by B75. It did limit science: 4410923 (`vps-b72`) sat at 24/min (0.91 of the
+  target) from ~287 min to the cap.
 - **Patches are ranked by distance only** (`placement.ts` `buildPatches`): the terrain view carries no ore amounts, so
   a small or half-mined patch near the factory wins. D67 makes running out cheaper; it does not pick longer-lived patches.
-- `npm run diagnose` reports hundreds of `build-job-missing` invariant violations (goal g7 references absent jobs) in
-  every long run. Not investigated; no run failed on it.
+- `npm run diagnose` reported hundreds of `build-job-missing` invariant violations in every long run: all came from
+  done goals keeping their finished jobs' ids (checked on 4410923). The check now skips done/failed goals (`c6ac901`).
