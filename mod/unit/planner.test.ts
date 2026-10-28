@@ -533,6 +533,25 @@ test("router: P44 a second provider joins an existing route with a splitter by d
   noProblems(state, terrain, "splitter merge")
 })
 
+test("router: B89 a merge whose trunk is gone routes into the free port itself (vps-b88b-r1264816-m60)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, b, 20, 5)
+  place(state, c, 2, 15)
+  // A reroute keeps the connection's merge flag, but the trunk it joined is no longer there.
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  const job = routeOne(state, terrain, policy(), merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `routed (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.merge === undefined && r.mergeSplitter === undefined, "a plain route into the port")
+  noProblems(state, terrain, "plain")
+})
+
 test("router: side constraint: arrives from the required side over an unfed blocker belt", () => {
   const terrain = asciiTerrain(field(30, 20))
   for (const side of ["left", "right"] as const) {

@@ -510,9 +510,12 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
     const share = policy.router.sideLoadLaneShare
     const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined)
-    if (goals.length === 0) return `no merge target for ${to.module}.${to.port}`
-    req.mergeGoals = goals
-    applyMergeGoal(req, goals[0])
+    if (goals.length > 0) {
+      req.mergeGoals = goals
+      applyMergeGoal(req, goals[0])
+    } else if (portFedByOther(job.layout, to, c.id)) return `no merge target for ${to.module}.${to.port}`
+    // B89 (vps-b88b-r1264816-m60): a merge whose trunk is gone (ripped, or never landing) has nothing to join; the port
+    // is free, so it routes there itself (the B88 in-place reroute of power's coal trunk failed "no merge target").
   }
   return req
 }
