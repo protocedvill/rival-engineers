@@ -2786,6 +2786,8 @@ All were asked as questions and answered by the user in-session; they are record
   after-2-failures rule (that constant is gone). Side finding: P36 (b) listed only `module` nodes, so it could never
   tap a coal mine (an `outpost` node), like B70.
 
+
+- **P44 timing and the whole-patch mine collector** (asked and answered in-session, 2026-10-28). The user's guidance on side-loading ("side loading belts is not great to do ... Using balancers and sometimes even lane balancers are useful") is recorded as P44 in SPEC §11. Asked when to implement it, the user chose "After this sweep" (`eecca19`). After the sweep, (a) was implemented as the agent proposed (splitter merges first; side-loads only within `sideLoadLaneShare` of one lane, `4bf6b94`; its design and number are the agent's proposal). The audit for (b) found the whole-patch mine's collector side-loading every drill row onto one lane; asked how to fix it, the user chose "Splitters, cap before": once splitters are researched each row joins the collector through a splitter merge, and before that the mine is capped at what its output can carry.
 ### Soak results on the VPS
 
 | Run | Code | Seeds | Result |
