@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B73, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B74, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2743,6 +2743,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B71 | 7718665 (`vps-b69`) | a residual merge with no side-load spot failed 8 identical plans; the port is now remembered | `dbf360a` |
 | B72 | 7718665 (`vps-d67`) | a new mine folded into a built shared mine with a boxed-in output failed 8 identical plans; it now gets its own site | `f1c5799` |
 | B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | `922365f` |
+| B74 | 7718665 (`vps-b72-r7718665`) | a mine completion put a pole on the mine's own output belt; science stopped for 150 min; such completions are now refused | pending |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
@@ -2768,6 +2769,8 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-d66` | `dcd75ed` | 3891760, 5387208, 8646103 | 1/3: 3891760 v1-done at 270 min; 5387208 lab cluster 1 starved (→ B69); 8646103 mines ran dry (→ D67, B70) |
 | `vps-b69-r5387208` | `6f317e3` | 5387208 from `min-0120` | passed, v1-done at 420 min (B69 validated) |
 | `vps-b69` | `6f317e3` | 2229258, 7718665 (fresh) | 1/2: 2229258 v1-done at 230 min; 7718665 failed fast at 129 min (→ B71) |
+| `vps-b72-r7718665` | `f1c5799` | 7718665 from `min-0160` | failed at the 480-min cap: no science 82–232 min (→ B74, already broken at the resume point); then 16/min of ~30, power short and the steam block cannot grow |
+| `vps-b73-r8646103` | `922365f` | 8646103 from `min-0320` | passed, v1-done at 352 min; no mine retired at the handover valve (B73) |
 | `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
 D65 held: no seed in `vps-d66` or later ran out of coal patches. D66 held: no crew stall in any of these runs.

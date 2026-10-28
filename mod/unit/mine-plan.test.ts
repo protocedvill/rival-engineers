@@ -288,4 +288,36 @@ test("B55: a completion whose full plan covers its own output tile is refused", 
   ok(string.find(r.reason ?? "", "covers its output", 1, true)[0] !== undefined, `reason: ${r.reason}`)
 })
 
+test("B74: a completion that covers its own output route is refused; another own route still gives way (B25)", () => {
+  // Soak vps-d67 seed 7718665: the mine's output belt ran along its unbuilt top row and the completion put a pole on
+  // its second tile; nothing measured the break while the mine stood backed up, and three clusters starved 150 min.
+  const region = { x: 0, y: 0, w: 100, h: 80 }
+  const view = terrain(region, (x, y) => (x >= 20 && x < 56 && y >= 18 && y < 58 ? "iron-ore" : undefined))
+  const policy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const, searchRadii: [0] }
+  const raw = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), rotatable: false, mirrorable: false }
+  const attempt = (from: string): ReturnType<typeof tryExpand> => {
+    const state = newLayout()
+    const placed = placeNow({ id: "mine", def: raw, targets: {}, center: { x: 25, y: 25 }, region }, state, view, policy)
+    eq(placed.phase, "done", `small placement (${placed.reason})`)
+    const m = placed.result!
+    prepareWholePatchPlacement(m, view, F, region, policy)
+    commitModule(state, m, F, policy.corridor.preferred)
+    // A tile of the completion's new ground, inside the mine's rect (B25's "own" tiles).
+    const current: Record<string, boolean> = {}
+    for (const e of m.def.entities) current[`${e.name}@${e.x},${e.y}`] = true
+    const added = m.minePlan!.full.entities.find((e) => !current[`${e.name}@${e.x},${e.y}`])!
+    const er = entityRect(added, F)
+    const k = tkey(m.origin.x + er.x, m.origin.y + er.y)
+    state.routes["r"] = { id: "r", conn: "c", item: "iron-ore", from: { module: moduleId(from), port: "out" }, to: { module: moduleId("smelter"), port: "in-ore" }, steps: [], tiles: [k], spans: [], belt: "transport-belt", underground: "underground-belt" } as never
+    state.routeOrder.push("r" as never)
+    state.routeOcc[k] = "r" as never
+    return tryExpand(state, view, F, policy, "mine", 1)
+  }
+  const own = attempt("mine")
+  ok(!own.ok, "completion over its own output route refused")
+  ok(string.find(own.reason ?? "", "own output route", 1, true)[0] !== undefined, `reason: ${own.reason}`)
+  const other = attempt("other")
+  ok(other.ok, `another module's route on the mine's tiles gives way (B25): ${other.reason}`)
+})
+
 run("mine-plan")

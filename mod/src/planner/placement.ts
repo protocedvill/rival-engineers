@@ -16,7 +16,7 @@ import { ModuleDef, ModuleEntity } from "../modules/types"
 import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
 import { laneTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, isPoleTag, growthEnd, growthStrip, LayoutState, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
@@ -1454,6 +1454,16 @@ function reclaimWholePatch(state: LayoutState, terrain: TerrainView, facts: Prot
   return undefined
 }
 
+/** B74: route `rid` carries mine `mine`'s output: it starts at the mine, or taps a route that does. */
+function fromMine(state: LayoutState, rid: string, mine: string): boolean {
+  let r: Route | undefined = state.routes[rid]
+  for (let hop = 0; r !== undefined && hop < 8; hop++) {
+    if (r.from?.module === mine) return true
+    r = r.tapOf !== undefined ? state.routes[r.tapOf] : undefined
+  }
+  return false
+}
+
 export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto", reclaim = false): ExpansionResult {
   const m = findModule(state, id)
   if (m === undefined) return { ok: false, reason: "unknown module", movedPorts: [], moved: [] }
@@ -1497,7 +1507,12 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
           if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
           // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
           // belts up and reconcile re-routes the broken edge).
-          if (state.routeOcc[kk] !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
+          const rid = state.routeOcc[kk]
+          if (rid !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
+          // B74 (soak vps-d67 seed 7718665): B55 for the whole output route, not just its first tile. The mine's own
+          // output belt ran west along its unbuilt top row; the completion put a pole on its second tile and picked the
+          // belt up. With the mine backed up nothing measured the break, and three science clusters starved 150 min.
+          if (rid !== undefined && fromMine(state, rid, m.id)) return { ok: false, reason: `planned mine covers its own output route at ${x},${y}`, movedPorts: [], moved: [] }
         }
       }
     }
