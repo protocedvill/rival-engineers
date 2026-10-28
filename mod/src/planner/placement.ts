@@ -12,11 +12,11 @@ import { moduleId } from "../shared/ids"
 import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modules/build"
 import { ProtoFacts } from "../modules/facts"
 import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, Transform } from "../modules/geometry"
-import { ModuleDef, ModuleEntity } from "../modules/types"
+import { ModuleDef, ModuleEntity, Port } from "../modules/types"
 import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
 import { laneTag } from "./claim-tags"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, layoutMargins, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
 import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
@@ -108,7 +108,7 @@ export interface PlacementSearch {
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
   /** B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate. */
-  openPorts?: { x: number; y: number; ok?: boolean; path?: Vec[] }[]
+  openPorts?: { x: number; y: number; out?: number; ok?: boolean; path?: Vec[] }[]
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
@@ -387,15 +387,15 @@ function nearBandTiles(s: PlacementSearch, state: LayoutState, policy: LayoutPol
  * B45: the lane end (approach tile) of every belt port in the layout that no route uses yet, except module `except`'s,
  * inside `area`. A later route must still reach it, so a new module must not wall it in.
  */
-export function openPortEnds(state: LayoutState, except: string | undefined, area?: Rect): { x: number; y: number }[] {
-  const out: { x: number; y: number }[] = []
+export function openPortEnds(state: LayoutState, except: string | undefined, area?: Rect): LaneEnd[] {
+  const out: LaneEnd[] = []
   for (const m of state.modules) {
     if (m.id === except) continue
     for (const p of m.def.ports) {
       if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
       const o = portOutside(m, p)
       if (state.routeOcc[tkey(o.x, o.y)] !== undefined) continue
-      const a = portApproach(m, p)
+      const a = portLaneEnd(m, p)
       if (state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
       if (area !== undefined && !rectContains(area, a.x, a.y)) continue
       out.push(a)
@@ -438,51 +438,82 @@ function spanFree(state: LayoutState | undefined, x: number, y: number, ex: numb
  * out, so a far `need` stays cheap, and it only explores a whole pocket when the lane is in one (8 steps let a 112-tile
  * pocket through on seed 555555 and a 221-tile one on seed 11).
  */
-export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): Vec[] | undefined {
-  const from: Record<number, number> = { [tkey(start.x, start.y)]: -1 }
-  const buckets: Vec[][] = [[start]]
-  let top = 0
-  const path = (k: number): Vec[] => {
+export function laneWayOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): Vec[] | undefined {
+  // B85: states are (tile, heading), as the router's seal check has them: a belt goes on or turns left or right (never
+  // back), and an underground runs straight along the heading, from where the belt is. A tile-only flood let a lane turn
+  // round in a one-wide dead end, or dive sideways from the lane end, under a belt there (seed 5480563: lab cluster 3's
+  // red assembler faced into such a pocket; every lane check passed it, and the router found it sealed).
+  const from: Record<number, number> = {}
+  const buckets: number[][] = [[]]
+  const k0 = tkey(start.x, start.y)
+  for (let h = 0; h < 4; h++) {
+    if (start.out !== undefined && h !== start.out) continue
+    from[k0 * 4 + h] = -1
+    buckets[0].push(k0 * 4 + h)
+  }
+  const path = (st: number): Vec[] => {
     const out: Vec[] = []
-    for (let at = k; at !== -1; at = from[at]) out.push({ x: keyX(at), y: keyY(at) })
+    for (let at = st; at !== -1; at = from[at]) out.push({ x: keyX(math.floor(at / 4)), y: keyY(math.floor(at / 4)) })
     return out
   }
+  let top = 0
   while (top >= 0) {
-    const c = buckets[top]?.pop()
-    if (c === undefined) {
+    const st = buckets[top]?.pop()
+    if (st === undefined) {
       top--
       continue
     }
-    const ck = tkey(c.x, c.y)
-    for (let d = 0; d < 4; d++) {
-      // A step, then (with `hop`) the underground exits 2..max tiles on, over tiles it may go under. As the router, an
-      // underground is entered straight: the tile behind its entrance is ground too (or the entrance is the lane end).
-      const straight = (c.x === start.x && c.y === start.y) || free(c.x - DX[d], c.y - DY[d])
-      // The exit belt feeds only the tile straight on: a hop lands there, past its exit.
-      for (let n = 1; n <= (hop !== undefined && straight ? hop.max : 1); n++) {
-        const ex = c.x + DX[d] * n
-        const ey = c.y + DY[d] * n
-        if (n > 1 && !hop!.under(ex - DX[d], ey - DY[d])) break
-        const x = n > 1 ? ex + DX[d] : ex
-        const y = n > 1 ? ey + DY[d] : ey
-        const k = tkey(x, y)
-        if (from[k] !== undefined || !free(x, y)) continue
-        if (n > 1) {
-          const ek = tkey(ex, ey)
-          if (from[ek] !== undefined || !free(ex, ey) || !spanFree(hop!.state, c.x, c.y, ex, ey, d)) continue
-          from[ek] = ck
-          from[k] = ek
-        } else from[k] = ck
-        const dist = math.abs(x - start.x) + math.abs(y - start.y)
-        if (dist >= need || (goal !== undefined && math.abs(x - goal.x) + math.abs(y - goal.y) <= 1)) return path(k)
-        const b = buckets[dist]
-        if (b === undefined) buckets[dist] = [{ x, y }]
-        else b.push({ x, y })
-        if (dist > top) top = dist
+    const h = st % 4
+    const cx = keyX(math.floor(st / 4))
+    const cy = keyY(math.floor(st / 4))
+    // A step on or to either side; then (with `hop`) the undergrounds straight on: the exit 2..max tiles on, over tiles
+    // it may go under, and its exit belt feeds the tile straight on.
+    const moves: { x: number; y: number; d: number; ex?: number; ey?: number }[] = []
+    for (const nd of [h, (h + 1) % 4, (h + 3) % 4]) moves.push({ x: cx + DX[nd], y: cy + DY[nd], d: nd })
+    if (hop !== undefined) {
+      for (let n = 2; n <= hop.max; n++) {
+        const ex = cx + DX[h] * n
+        const ey = cy + DY[h] * n
+        if (!hop.under(ex - DX[h], ey - DY[h])) break
+        moves.push({ x: ex + DX[h], y: ey + DY[h], d: h, ex, ey })
       }
+    }
+    for (const mv of moves) {
+      const ns = tkey(mv.x, mv.y) * 4 + mv.d
+      if (from[ns] !== undefined || !free(mv.x, mv.y)) continue
+      if (mv.ex !== undefined && mv.ey !== undefined) {
+        const es = tkey(mv.ex, mv.ey) * 4 + mv.d
+        if (from[es] !== undefined || !free(mv.ex, mv.ey) || !spanFree(hop!.state, cx, cy, mv.ex, mv.ey, mv.d)) continue
+        from[es] = st
+        from[ns] = es
+      } else from[ns] = st
+      const dist = math.abs(mv.x - start.x) + math.abs(mv.y - start.y)
+      if (dist >= need || (goal !== undefined && math.abs(mv.x - goal.x) + math.abs(mv.y - goal.y) <= 1)) return path(ns)
+      const b = buckets[dist]
+      if (b === undefined) buckets[dist] = [ns]
+      else b.push(ns)
+      if (dist > top) top = dist
     }
   }
   return undefined
+}
+
+/** B85: a lane end, and the heading a belt leaves it with (away from its module); undefined: any. */
+export interface LaneEnd extends Vec {
+  out?: number
+}
+
+/** B85: the direction index (DX/DY) of a unit step, or undefined. */
+export function stepDir(dx: number, dy: number): number | undefined {
+  for (let d = 0; d < 4; d++) if (DX[d] === dx && DY[d] === dy) return d
+  return undefined
+}
+
+/** B85: the lane end of port `p` of module `m` (its approach tile), heading out of the module. */
+export function portLaneEnd(m: PlacedModule, p: Port): LaneEnd {
+  const o = portOutside(m, p)
+  const a = portApproach(m, p)
+  return { x: a.x, y: a.y, out: stepDir(a.x - o.x, a.y - o.y) }
 }
 
 /**
@@ -491,12 +522,16 @@ export function laneWayOut(start: Vec, free: (this: void, x: number, y: number) 
  */
 export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
   const protectedLane = laneTag(tag)
+  const margins = layoutMargins(state)
   const free = (x: number, y: number): boolean => {
     const k = tkey(x, y)
     if (laneClaimConflict(state, k, tag, protectedLane) !== undefined) return false
     const r = state.reserved[k]
+    if (r === tag || r === protectedLane) return true
+    // B85: a module's margin ring is own ground once built (reserved by the faction): not a way out.
+    if (margins[k]) return false
     const b = terrain.block(x, y)
-    return r === tag || r === protectedLane || b === FREE || b === TREE || b === ROCK
+    return b === FREE || b === TREE || b === ROCK
   }
   const under = (x: number, y: number): boolean => {
     const o = state.occ[tkey(x, y)]
@@ -519,12 +554,12 @@ export function sealedInputs(state: LayoutState, terrain: TerrainView, id: strin
   for (const p of m.def.ports) {
     if (p.kind !== "belt-in" || fed[p.id]) continue
     const g = layoutLaneGround(state, terrain, portTag(m.id, p.id))
-    if (!laneLeadsOut(portApproach(m, p), g.free, need, g.hop)) out.push(p.id)
+    if (!laneLeadsOut(portLaneEnd(m, p), g.free, need, g.hop)) out.push(p.id)
   }
   return out
 }
 
-export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): boolean {
+export function laneLeadsOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): boolean {
   return laneWayOut(start, free, need, hop, goal) !== undefined
 }
 
@@ -535,7 +570,9 @@ export function laneLeadsOut(start: Vec, free: (this: void, x: number, y: number
 function sealsPortLane(s: PlacementSearch, state: LayoutState | undefined, blocked: Rect, need: number): boolean {
   const ports = s.openPorts ?? []
   if (ports.length === 0) return false
-  const hardAt = (x: number, y: number): boolean => (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
+  // B85: placed modules' margin rings are own ground once built.
+  const margins = state !== undefined ? layoutMargins(state) : {}
+  const hardAt = (x: number, y: number): boolean => margins[tkey(x, y)] === true || (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
   const hop: LaneHop = { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of ports) {
     if (p.ok === undefined) {
@@ -560,11 +597,14 @@ function ownLanesOut(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   const need = policy.placement.portEscape ?? 0
   if (need <= 0) return true
   const rect = { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }
-  const free = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  // B85: the candidate's own margin ring and the placed modules' rings are own ground once built: not a way out.
+  const ring = inflate(rect, 1)
+  const margins = layoutMargins(state)
+  const free = (x: number, y: number): boolean => !rectContains(ring, x, y) && !margins[tkey(x, y)] && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
   const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of td.ports) {
     // Reaching the port's connection (its target) is enough: the partner may share the pocket.
-    if (!laneLeadsOut({ x: ox + p.ox + p.nx, y: oy + p.oy + p.ny }, free, need, hop, s.req.targets[p.id])) return false
+    if (!laneLeadsOut({ x: ox + p.ox + p.nx, y: oy + p.oy + p.ny, out: stepDir(p.nx, p.ny) }, free, need, hop, s.req.targets[p.id])) return false
   }
   return true
 }

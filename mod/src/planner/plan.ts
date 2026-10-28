@@ -10,15 +10,15 @@ import { releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutRevision, newLayout, portApproach, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, unmarkModule } from "./layout"
+import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
 import { moduleId, routeId } from "../shared/ids"
-import type { ConnectionId } from "../shared/ids"
+import type { ConnectionId, RouteId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
@@ -191,6 +191,9 @@ export interface PlanJob {
   laneBase?: LayoutState
   /** B57: tiles the plan, planned again, keeps clear for those lanes (reserved `lane:<port>`, dropped when it ends). */
   laneKeep?: number[]
+  /** B85: this plan's new modules' port lanes it already re-routed around (once each), and the tiles it keeps clear. */
+  newLaneTried?: Record<string, boolean>
+  newLaneKeep?: number[]
 }
 
 function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
@@ -730,7 +733,7 @@ function openLanes(layout: LayoutState, terrain: TerrainView, need: number): { t
       const o = portOutside(m, p)
       if (layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
       const tag = portTag(m.id, p.id)
-      const a = portApproach(m, p)
+      const a = portLaneEnd(m, p)
       if (layout.reserved[tkey(a.x, a.y)] !== tag) continue
       const g = layoutLaneGround(layout, terrain, tag)
       const path = laneWayOut(a, g.free, need, g.hop)
@@ -752,11 +755,10 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   if (need <= 0 || job.lanes === undefined || job.laneBase === undefined || job.laneKeep !== undefined) return false
   const sealed: { tag: string; path: Vec[] }[] = []
   for (const lane of job.lanes) {
-    // The path runs from its far end back to the lane end.
-    const end = lane.path[lane.path.length - 1]
     const m = findModule(job.layout, lane.module)
     const p = m !== undefined ? findPort(m, lane.port) : undefined
     if (m === undefined || p === undefined) continue
+    const end = portLaneEnd(m, p)
     // Fed by this plan: no longer an open lane.
     const o = portOutside(m, p)
     if (job.layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
@@ -799,8 +801,80 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.evidence = evidence
   job.deadPatches = dead
   job.laneKeep = keep
+  job.newLaneTried = undefined
+  job.newLaneKeep = undefined
   job.evidence ??= []
   job.evidence.push({ kind: "route", subject: sealed.map((l) => l.tag).join(","), reason: "B57: walled in an open port lane; planned again keeping it clear", rip: false, windowScale: 1, expansions: 0 })
+  return true
+}
+
+/**
+ * B85 (soak vps-b83-r5480563, goal g27): a plan must not wall in an unconnected port lane of a module it places itself
+ * (lab cluster 3's red assembler output, whose labs come in a later goal: the same plan's copper routes ran up its only
+ * way out and under its mouth, and every later route to it found no path). B57 plans again from the base, which can't keep a lane of a module the
+ * new plan may put elsewhere. Here the module stays: when its lane no longer leads out but would with this plan's own
+ * routes lifted, those routes are ripped, the way out is kept clear (`lane:<port>`), and they are routed again. Once per
+ * lane. Returns true when routing continues.
+ */
+function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): boolean {
+  const need = policy.placement.portEscape ?? 0
+  if (need <= 0 || job.compareProbe === true) return false
+  const layout = job.layout
+  const tried = (job.newLaneTried ??= {})
+  const ripped: string[] = []
+  const tags: string[] = []
+  for (const m of layout.modules) {
+    if (m.fixed === true) continue
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      if (layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+      const tag = portTag(m.id, p.id)
+      if (tried[tag] === true) continue
+      const a = portLaneEnd(m, p)
+      const g = layoutLaneGround(layout, terrain, tag)
+      if (laneWayOut(a, g.free, need, g.hop) !== undefined) continue
+      const margins = layoutMargins(layout)
+      // The plan's own (unbuilt) routes lifted: the tiles they hold would be ground again.
+      const lifted = (x: number, y: number): boolean => {
+        if (g.free(x, y)) return true
+        const k = tkey(x, y)
+        const r = layout.routeOcc[k]
+        if (r === undefined || layout.routes[r]?.fixed === true) return false
+        const occ = layout.occ[k]
+        if (occ !== undefined && string.sub(occ, 1, 2) === "m:") return false
+        const res = layout.reserved[k]
+        if (res === tag || res === laneTag(tag)) return true
+        return res === undefined && !margins[k]
+      }
+      tried[tag] = true
+      const path = laneWayOut(a, lifted, need, g.hop)
+      if (path === undefined) continue
+      const victims: RouteId[] = []
+      for (const t of path) {
+        const r = layout.routeOcc[tkey(t.x, t.y)]
+        if (r !== undefined && victims.indexOf(r) < 0) victims.push(r)
+      }
+      for (const v of victims) {
+        for (const removed of ripRoute(layout, v)) {
+          const conn = removed.substring("route:".length)
+          job.stats.ripups++
+          if (ripped.indexOf(conn) < 0) ripped.push(conn)
+          if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
+        }
+      }
+      const keep = (job.newLaneKeep ??= [])
+      for (const t of path) {
+        const k = tkey(t.x, t.y)
+        if (layout.routeOcc[k] === undefined && reserveFreeTile(layout, k, laneTag(tag))) keep.push(k)
+      }
+      tags.push(tag)
+    }
+  }
+  if (ripped.length === 0) return false
+  if (planTrace.sink !== undefined) traceEvent(`B85: the plan walls in its own ${tags.join(", ")}: re-routing ${ripped.join(", ")} around the lane`)
+  job.evidence ??= []
+  job.evidence.push({ kind: "route", subject: tags.join(","), reason: `B85: walled in a new module's open port lane; re-routing ${ripped.join(", ")}`, rip: true, windowScale: 1, expansions: 0 })
   return true
 }
 
@@ -813,6 +887,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
       if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
       else if (guardLanes(job, terrain, policy)) return 1
+      else if (guardNewLanes(job, terrain, policy)) return 1
       else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
       if (failed) job.routingFailed = true
       return 0
@@ -1242,6 +1317,10 @@ export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
     // B57: the lane reservations only bind this plan; the base copy is no longer needed.
     for (const k of job.laneKeep ?? []) releaseLaneReservation(job.layout, k)
     job.laneBase = undefined
+  }
+  if (finished && job.newLaneKeep !== undefined) {
+    for (const k of job.newLaneKeep) releaseLaneReservation(job.layout, k)
+    job.newLaneKeep = undefined
   }
   return finished
 }

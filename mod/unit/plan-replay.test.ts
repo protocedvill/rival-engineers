@@ -8,11 +8,12 @@
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { routeId, layoutClaimTag } from "../src/shared/ids"
-import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
-import { findModule, growthUnitRects, LayoutState, moduleMargin, ripRoute } from "../src/planner/layout"
+import { dirIndex, FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
+import { findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
+import { newSearch, RouteRequest, stepSearch } from "../src/planner/router"
 import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -594,6 +595,69 @@ test("B57: the red-science plan leaves the labs' unfed green input a way out", (
 })
 
 
+
+// B85 (soak vps-b83-r5480563, goal g27, lab cluster 3): the red assembler n53 faced its output into the gap between
+// it and the cluster's copper smelter, three tiles wide while planned. Built, both modules' margin rings read as own
+// ground, so the gap was one tile, a dead end with the plan's copper route under its mouth; its labs came in a later goal
+// and every route to them found no path. The lane tests saw neither: margins as ground, and a belt that dives sideways
+// from the lane end. The judge here is the router's own seal check, on the ground a later plan sees.
+function laterView(l: LayoutState, view: TerrainView): TerrainView {
+  const ring: Record<number, boolean> = {}
+  for (const m of l.modules) for (const k of moduleMargin(m)) ring[k] = true
+  return {
+    ...view,
+    block: (x, y) => {
+      const b = view.block(x, y)
+      if (b !== FREE && b !== TREE && b !== ROCK) return b
+      const k = tkey(x, y)
+      // runtime.ts claimView: the faction's reserved tiles the layout holds nothing on are its own ground.
+      if (ring[k] && l.occ[k] === undefined && l.routeOcc[k] === undefined && l.reserved[k] === undefined && l.mine?.[k] === undefined) return OWN
+      return b
+    },
+  }
+}
+
+function routerSealsStart(l: LayoutState, view: TerrainView, policy: LayoutPolicy, tier: BeltTier, mid: string, pid: string, goal: { x: number; y: number }): boolean {
+  const m = findModule(l, mid)!
+  const p = m.def.ports.find((q) => q.id === pid)!
+  const o = portOutside(m, p)
+  const tag = portTag(m.id, p.id)
+  const req: RouteRequest = { id: "judge", conn: "judge", item: p.item ?? "x", to: { module: mid, port: pid }, start: { x: o.x, y: o.y, dir: dirIndex(p.dir) }, goal: { x: goal.x, y: goal.y, dir: 0 }, tier, own: { [tag]: true } }
+  const s = newSearch(l, view, policy, req, false, true)
+  for (let i = 0; i < 1000 && s.status === "running"; i++) stepSearch(s, l, view, policy, 10000)
+  return s.status === "failed" && s.sealed !== undefined && s.sealed.side === "start" && !s.sealed.edge
+}
+
+test("B85: the lab-cluster plan leaves its new red assembler's unconnected output a way out", () => {
+  const fx = load("b85-5480563-g27-cluster")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  const view = fixtureView(fx)
+  runJob(job, view, F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const n53 = findModule(job.layout, "n53")!
+  // Any open 5×5 ground 30+ tiles from the assembler will do as the far end (the labs came west of the cluster).
+  const later = laterView(job.layout, view)
+  const open = (cx: number, cy: number): boolean => {
+    for (let x = cx - 2; x <= cx + 2; x++) {
+      for (let y = cy - 2; y <= cy + 2; y++) {
+        const k = tkey(x, y)
+        if (later.block(x, y) !== FREE || job.layout.occ[k] !== undefined || job.layout.routeOcc[k] !== undefined || job.layout.reserved[k] !== undefined) return false
+      }
+    }
+    return true
+  }
+  let goal: { x: number; y: number } | undefined
+  for (let d = 30; d < 120 && goal === undefined; d++) {
+    for (const c of [{ x: n53.rect.x - d, y: n53.rect.y + 4 }, { x: n53.rect.x + 12, y: n53.rect.y + d }, { x: n53.rect.x + 12, y: n53.rect.y - d }]) {
+      if (goal === undefined && open(c.x, c.y)) goal = c
+    }
+  }
+  ok(goal !== undefined, "open ground for the judge's far end")
+  const sealed = routerSealsStart(job.layout, later, fx.policy, tier, "n53", "out", goal!)
+  print(`  b85-5480563-g27-cluster: ${job.phase}; n53 at ${n53.rect.x},${n53.rect.y}; its output ${sealed ? "sealed" : "leads out"} for a later plan`)
+  ok(!sealed, "a later plan's route from n53.out is not sealed at its start")
+})
 
 // B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
 // used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under

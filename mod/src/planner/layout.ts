@@ -322,6 +322,22 @@ export function moduleMargin(m: PlacedModule): number[] {
   return out
 }
 
+/** B85: the last `layoutMargins` result (derived data, never stored: keyed by the layout object and its revision). */
+let marginCache: { state: LayoutState; revision: number; modules: number; tiles: Record<number, boolean> } | undefined
+
+/**
+ * B85: every module's footprint and margin ring (`moduleMargin`). The faction reserves the ring (`factoryReserveTiles`),
+ * so once built it reads as own ground to every later plan: lane tests must see it as a wall already while planning.
+ */
+export function layoutMargins(state: LayoutState): Record<number, boolean> {
+  const c = marginCache
+  if (c !== undefined && c.state === state && c.revision === layoutRevision(state) && c.modules === state.modules.length) return c.tiles
+  const tiles: Record<number, boolean> = {}
+  for (const m of state.modules) for (const k of moduleMargin(m)) tiles[k] = true
+  marginCache = { state, revision: layoutRevision(state), modules: state.modules.length, tiles }
+  return tiles
+}
+
 /** Modules whose actual entity footprint intersects `tiles`, even if a later overlapping claim replaced `occ`. */
 export function modulesOnTiles(state: LayoutState, tiles: Record<number, boolean>): PlacedModule[] {
   const out: PlacedModule[] = []
