@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B71, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B73, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2741,6 +2741,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B69 | 5387208 (`vps-d66`) | a splitter tap stamped over another build's belt ghost was silently dropped; silent edges now repaired | `6f317e3` |
 | B70 | all | P36 (a) never fired: it checked `module` nodes, and mines are `outpost` nodes | `dbf360a` |
 | B71 | 7718665 (`vps-b69`) | a residual merge with no side-load spot failed 8 identical plans; the port is now remembered | `dbf360a` |
+| B72 | 7718665 (`vps-d67`) | a new mine folded into a built shared mine with a boxed-in output failed 8 identical plans; it now gets its own site | `f1c5799` |
+| B73 | 8646103 (`vps-d67`) | the 10-min handover limit deconstructed a D55 mine that was short but still mining; any mine with ore is now kept | pending |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
@@ -2766,13 +2768,13 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-d66` | `dcd75ed` | 3891760, 5387208, 8646103 | 1/3: 3891760 v1-done at 270 min; 5387208 lab cluster 1 starved (→ B69); 8646103 mines ran dry (→ D67, B70) |
 | `vps-b69-r5387208` | `6f317e3` | 5387208 from `min-0120` | passed, v1-done at 420 min (B69 validated) |
 | `vps-b69` | `6f317e3` | 2229258, 7718665 (fresh) | 1/2: 2229258 v1-done at 230 min; 7718665 failed fast at 129 min (→ B71) |
-| `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | running |
+| `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
 D65 held: no seed in `vps-d66` or later ran out of coal patches. D66 held: no crew stall in any of these runs.
 
 ### Tests
 
-At `dbf360a`: T1 40/40 files; T2 155/155 (full suite, local). New regressions: T1 `design` B66/B68/D65/B71, `board`
+At `f1c5799`: T1 40/40 files; T2 155/155 (full suite, local; also 155/155 at `dbf360a`). New regressions: T1 `design` B66/B68/D65/B71/B72, `board`
 D66, `pole-eviction` B67, `reconcile` B69; T2 `jobs` B66, `conflicts` B69, `reconciler` D67 (and P36 now on `outpost`
 nodes, for B70). Each B-test was checked to fail without its fix.
 

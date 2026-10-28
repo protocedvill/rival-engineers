@@ -112,7 +112,7 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const why = string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : "")
     // Goalpost 1: a producer that still has ore is not deconstructed before its replacement feeds its consumers.
     if (!left.dry) {
-      if (beginHandover(ctx, n, what, why, true)) return n.role
+      if (beginHandover(ctx, n, what, why)) return n.role
       continue
     }
     relocate(ctx, n, what, why)
@@ -182,17 +182,18 @@ function sealedConsumers(ctx: FuelCtx, ids: string[]): LogicalNode[] {
  * still exists in the graph) and nothing is deconstructed until that replacement feeds every consumer port it served.
  * `serviceHandovers` retires it.
  */
-export function beginHandover(ctx: FuelCtx, n: LogicalNode, what: string, why: string, ahead?: boolean): boolean {
+export function beginHandover(ctx: FuelCtx, n: LogicalNode, what: string, why: string): boolean {
   const f = ctx.f
   f.handover ??= {}
-  if (!HO.beginHandover(f.handover, n.role, n.id, ctx.tick, why, ahead)) return false
+  if (!HO.beginHandover(f.handover, n.role, n.id, ctx.tick, why)) return false
   log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: handing over, the replacement is connected before deconstruction (goalpost 1)`)
   return true
 }
 
 /**
  * Goalpost 1: retires providers whose handover is complete. A `stalled` handover (no replacement appeared in
- * HANDOVER_MAX_MINUTES) is retired anyway, so a replacement that can never be built cannot starve the consumers.
+ * HANDOVER_MAX_MINUTES) is retired anyway, so a replacement that can never be built cannot starve the consumers;
+ * a mine whose drills still find ore is kept until they run dry (it still feeds them).
  */
 export function serviceHandovers(ctx: FuelCtx): void {
   const f = ctx.f
@@ -215,8 +216,10 @@ export function serviceHandovers(ctx: FuelCtx): void {
     const v = HO.handoverVerdict(rec, feeds, ctx.tick, HANDOVER_MAX_MINUTES)
     if (v === "waiting") continue
     // D67: a mine handed over ahead still feeds its consumers; the safety valve waits until its drills run dry (checked
-    // once a minute), or a slow replacement would retire a mine with most of its lead time of ore left.
-    if (v === "stalled" && rec.ahead === true && (ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks || !mineDry(ctx, n))) continue
+    // once a minute), or a slow replacement would retire a mine with most of its lead time of ore left. B73 (soak dbg-d67
+    // seed 8646103): a D55 mine that is short because one of its 4 drills ran dry still made 1.5/s of 1.7/s; retiring
+    // it at the valve left the cluster with nothing. So any mine with ore is kept (mineDry is true for non-mines).
+    if (v === "stalled" && (ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks || !mineDry(ctx, n))) continue
     delete f.handover[role as string]
     relocate(ctx, n, `handover ${n.role}`, v === "stalled" ? `no replacement within ${HANDOVER_MAX_MINUTES} game-min (${rec.why})` : `replacement connected (${rec.why})`)
   }

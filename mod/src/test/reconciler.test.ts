@@ -16,7 +16,7 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
-import { checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
+import { beginHandover, checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
 import { FactoryGoal, FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
@@ -467,6 +467,11 @@ describe("M5b reconciler", () => {
     // No replacement within the 10-min valve: a mine handed over ahead still has ore, so it is not retired yet.
     serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
     assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled handover keeps a mine that still has ore")
+    // B73: a D55 handover (the mine is short, one drill dry) is kept the same way while any drill still finds ore.
+    delete f.handover!["mine"]
+    assert(beginHandover(ctx, f.graph.nodes["mine"], "D55 mine", "is worked out (test)"), "a D55 handover starts")
+    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled D55 handover keeps a mine that still has ore")
     setConfigOverride("factoryMineLeadMinutes", undefined)
   })
   test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {
