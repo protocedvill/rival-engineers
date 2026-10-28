@@ -2189,6 +2189,28 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     for (const s of own.missing) check.missing.push(s)
   }
   if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0) {
+    // B83: every entity stands, but the edge's routes do not bring items to the consumer's port in the layout (a
+    // side-load stub onto a trunk that is gone). Its own routes are dropped (belts picked up) with the edge, and the
+    // design plans the connection again.
+    if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
+      const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
+      const to = LG.connectModule(f.graph, e.to, inLayout) ?? e.to
+      if (!LO.routesLand(f.layout, e.physical, { module: to, port: e.toPort })) {
+        const own: IDS.RouteId[] = []
+        for (const rid of e.physical) {
+          const r = f.layout.routes[rid]
+          if (r === undefined || r.conn !== e.role) continue
+          let tapped = false
+          for (const other of f.layout.routeOrder) if (f.layout.routes[other].tapOf === rid) tapped = true
+          if (!tapped) own.push(IDS.routeId(rid))
+        }
+        const dropped = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [], routes: own, poles: [] }, ctx.config.factoryBuildPriority)
+        LG.removeEdge(f.graph, e.id)
+        resyncReserved(ctx.faction, f.layout)
+        say(`its routes do not reach ${e.to}.${e.toPort} in the layout: ${own.length} routes dropped (${dropped.clearJobs.length} entities to pick up), the design plans the connection again (B83)`)
+        return
+      }
+    }
     // B67: with every planned pole standing, say whether the plan itself leaves the consumer off the network (a layout
     // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
     const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0

@@ -6,7 +6,7 @@ import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute, sealedGoalPorts } from "../src/planner/layout"
+import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, ripRoute, routesLand, sealedGoalPorts } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
@@ -286,6 +286,30 @@ test("B79: a plain connection into a port a built route already feeds joins that
   eq(merged, 1, "it joins the built belt")
   const problems = checkLayout(second.layout, view, () => 5).problems
   eq(problems.length, 0, problems.join("; "))
+})
+
+test("B83: routes land at a port directly or through the trunk they merge into; a stub onto a ripped trunk does not (vps-b81-r5480563)", () => {
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", ore, 30, 75)
+  place(l, "mine2", ore, 75, 75)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
+    { id: connectionId("ore~2"), from: { module: "mine2", port: "out" }, to: { module: "smelt", port: "in-ore" }, merge: true },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  const port = { module: "smelt", port: "in-ore" }
+  const rid = (conn: string): string => job.layout.routeOrder.find((r) => job.layout.routes[r].conn === conn)!
+  const trunk = rid("ore")
+  const stub = rid("ore~2")
+  ok(routesLand(job.layout, [trunk], port), "the trunk lands on the port")
+  ok(routesLand(job.layout, [stub], port), "the merge lands through the trunk")
+  ok(!routesLand(job.layout, [trunk], { module: "smelt", port: "in-fuel" }), "not on another port")
+  ripRoute(job.layout, trunk as never)
+  ok(!routesLand(job.layout, [stub], port), "a stub onto a ripped trunk lands nowhere")
 })
 
 run("grow")

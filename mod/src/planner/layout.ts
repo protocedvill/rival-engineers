@@ -825,3 +825,32 @@ export function sealedGoalPorts(layout: LayoutState, evidence: { kind: string; s
   }
   return out
 }
+
+/**
+ * B83: whether any of routes `rids` brings items to port `to` in the layout: a plain route ends on the port's tile; a
+ * provider-group merge (side-load or splitter) lands if the route owning its trunk tile does, followed a few hops.
+ * vps-b81-r5480563 (and vps-d68a): copper side-load stubs onto a trunk the layout no longer had; every entity of the
+ * edge's routes stood, so the reconciler's repair found "nothing missing" while no copper reached the smelter.
+ */
+export function routesLand(layout: LayoutState, rids: string[], to: PortRef): boolean {
+  const m = findModule(layout, to.module)
+  const p = m !== undefined ? findPort(m, to.port) : undefined
+  if (m === undefined || p === undefined) return false
+  // A route's last belt is the port's outside tile (the module's input inserter picks up from it).
+  const goal = portOutside(m, p)
+  const inner = portTile(m, p)
+  for (const rid of rids) {
+    let r: Route | undefined = layout.routes[rid as RouteId]
+    for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+      const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+      if (join === undefined) {
+        const last = r.steps[r.steps.length - 1]
+        if (r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))) return true
+        break
+      }
+      const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+      r = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
+    }
+  }
+  return false
+}
