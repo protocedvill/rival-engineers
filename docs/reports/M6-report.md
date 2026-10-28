@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B80, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B82, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2750,6 +2750,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B78 | 2034469 (`vps-b77a`) | a mine folded into a shared mine stayed a module-less node; later plans connected from its missing port | `acbfef9` |
 | B79 | 2034469, 1459426 | a plain route into a port another belt already feeds never routes; the planner now merges it | `627b3b5` |
 | B80 | 1459426, 8033112 | a merge into a fed port with no way onto its belt failed every plan; the port now takes no merge and keeps its provider | `8929995` |
+| B81 | 5480563 (`vps-d68a`) | a handover replacement was folded into the mine it replaced and was dropped with it; replacements now get a site of their own | `3c2d1c3` |
+| B82 | 1376111 (`vps-d68b`) | an unreachable tree was queued again as soon as its job failed, keeping a crew member boxed in for ~200 min; unreachable targets now cool down | `405d904`, `2e4c0e3` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2797,8 +2799,9 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b80d` | `8929995` | 1264816 (fresh) | failed fast at 196 min: an hour exploring for coal (→ D68) |
 | `vps-d68-r1264816` | `03bdba2` | 1264816 from `min-0120` | passed, v1-done at 280 min; D68 fired at the old failure point (no exploring); 1 stall recovered in under a minute at 125 min |
 | `vps-b80e` | `8929995` | 1677299 (fresh) | passed, v1-done at 288 min, no stalls |
-| `vps-b80f` | `8929995` | 7625436 (fresh) | running |
-| `vps-d68a` | `03bdba2` | 6752307, 5480563 (fresh) | running |
+| `vps-b80f` | `8929995` | 7625436 (fresh) | passed, v1-done at 295 min, no stalls |
+| `vps-d68b` | `03bdba2` | 1376111 (fresh) | passed at 467 of 480 min, with one crew member boxed in for ~250 min (→ B82) |
+| `vps-d68a` | `03bdba2` | 6752307, 5480563 (fresh) | 1/2: 6752307 v1-done at 212 min, no stalls; 5480563 failed at the cap, 12/min after the copper feed broke (→ B81) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
@@ -2830,7 +2833,9 @@ nodes, for B70). Each B-test was checked to fail without its fix.
 | Throughput tech | `mod/static/data.lua` `rival-engineers-throughput-test` | 30 units × 60 s, red + green | Soak-only hidden repeatable tech (B64, `debug-infinite-research`) that keeps labs consuming after the research goal. Its unit time bounds the lab consumption the sustain check can see; 60 s did not cap any seed here (labs reached 30/min). **Agent guess.** | no |
 | Orphan claim log interval | `strategy/factory.ts` `ORPHAN_LOG_TICKS` | 3600 ticks | B63 diagnostics: how often orphan claim tiles are logged. Log cadence only. **Agent guess.** | no |
 
-D65, D66, B66–B71 add no tuning numbers.
+| Failed-key cooldown | `jobs/keys.ts` `FAILED_KEY_COOLDOWN_TICKS` | 10 game-min | B82: how long a target whose job failed as unreachable stays skipped before the brain or factory queues it again. Long enough that one unreachable tree stops occupying a crew member, short enough that a target that becomes reachable (cleared ground) is retried. **Agent guess, please confirm.** | no |
+
+D65, D66, B66–B71 add no tuning numbers. D68 removed one: P36 (b)'s `FUEL_FALLBACK_ATTEMPTS` (2).
 
 ### Honest limits and still open
 
