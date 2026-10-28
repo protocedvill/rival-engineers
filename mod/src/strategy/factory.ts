@@ -2278,10 +2278,6 @@ function labEntities(ctx: Ctx, node: LogicalNode): LuaEntity[] {
   return findEntities(ctx.surface, { type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
-function keyActive(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string): boolean {
-  return keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)
-}
-
 function addKeyed(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string, spec: JobSpec<JobPayload>): void {
   const job = addJob(ctx.faction.board, spec, ctx.tick)
   ctx.f.jobKeys[key] = job.id
@@ -2307,7 +2303,7 @@ function handFeed(ctx: Ctx): void {
           if (job !== undefined && job.status === "open") failJob(ctx.faction.board, id!, "automated", ctx.tick)
           continue
         }
-        if (inv.get_item_count(ing.name) >= LAB.low || keyActive(ctx, key)) continue
+        if (inv.get_item_count(ing.name) >= LAB.low || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
         addKeyed(ctx, key, {
           kind: "fuel",
           pos: lab.position,
@@ -2441,7 +2437,7 @@ function upkeep(ctx: Ctx): void {
       const low = math.max(1, math.ceil((FUEL_MINUTES.low * 3600 * perTick) / fuelValue))
       const have = inv.get_item_count(fuel)
       const key = `upkeep:${e.unit_number}`
-      if (have >= low || keyActive(ctx, key)) continue
+      if (have >= low || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
       const top = math.max(low + 1, math.ceil((FUEL_MINUTES.top * 3600 * perTick) / fuelValue))
       const count = math.min(top - have, prototypes.item[fuel].stack_size)
       addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
@@ -2459,7 +2455,7 @@ export function refuelBoilers(ctx: Pick<Ctx, "faction" | "f" | "surface" | "tick
     const inv = e.get_fuel_inventory()
     if (inv === undefined || inv.get_item_count(fuel) > 0) continue
     const key = `upkeep:${e.unit_number}`
-    if (keyActive(ctx, key)) continue
+    if (keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
     addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
   }
 }
