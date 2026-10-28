@@ -2770,6 +2770,7 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-b69-r5387208` | `6f317e3` | 5387208 from `min-0120` | passed, v1-done at 420 min (B69 validated) |
 | `vps-b69` | `6f317e3` | 2229258, 7718665 (fresh) | 1/2: 2229258 v1-done at 230 min; 7718665 failed fast at 129 min (→ B71) |
 | `vps-b72-r7718665` | `f1c5799` | 7718665 from `min-0160` | failed at the 480-min cap: no science 82–232 min (→ B74, already broken at the resume point); then 16/min of ~30, power short and the steam block cannot grow |
+| `vps-b74-r7718665` | `6afc10a` | 7718665 from `min-0060` (before the mine completion) | passed, v1-done at 238 min; science sustained at 30.8/min of each pack (B74 validated) |
 | `vps-b73-r8646103` | `922365f` | 8646103 from `min-0320` | passed, v1-done at 352 min; no mine retired at the handover valve (B73) |
 | `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
