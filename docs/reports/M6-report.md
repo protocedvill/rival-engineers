@@ -2756,7 +2756,7 @@ Details, evidence and the regression test for each are in `docs/BUGS.md`.
 
 ### User decisions (in-session, 2026-10-28)
 
-All three were asked as questions in this session and answered by the user; they are recorded in SPEC §2.
+All were asked as questions and answered by the user in-session; they are recorded in SPEC §2.
 
 - **D65, power demand scales with utilization.** Nameplate draw sized power about 7x above the measured load (14%
   load in `vps-b66`), and once B66 let the excess plan real steam blocks, the extra coal mines used up 5387208's coal
@@ -2767,6 +2767,16 @@ All three were asked as questions in this session and answered by the user; they
 - **D67, factory mines replaced before they run dry.** 8646103 (`vps-d66`): three science mines ran dry 200–220 game-min
   after being built, and each handover began only then, so lab clusters starved for the whole move (two stalled at
   the 10-min handover limit). The user chose "Yes, own lead setting": `factory-mine-lead-minutes`, default 30.
+
+- **D68, tap a built producer with capacity first** (asked and answered in-session on the VPS, 2026-10-28, after the
+  three above). 1264816 (`vps-b80d`) failed after an hour of D62 exploring for ~0.1 coal/s while built coal mines had
+  0.1–0.96/s spare. Asked what a fuel provider should do when it finds no free patch, the user: "tap first is best as
+  long as there is capacity", then, on the coal-only first version: "should be agnostic, we should always try to build
+  rules that aren't a bunch of hacks but apply to everything to keep it clean". Implemented for every item
+  (`03bdba2`): a new producer that cannot be placed makes its consumers tap the nearest built producer of that item
+  with capacity (spare full-speed output or room to grow in place), before D62 explores. It replaces P36 (b)'s fuel-only,
+  after-2-failures rule (that constant is gone). Side finding: P36 (b) listed only `module` nodes, so it could never
+  tap a coal mine (an `outpost` node), like B70.
 
 ### Soak results on the VPS
 
@@ -2781,6 +2791,12 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-b73-r8646103` | `922365f` | 8646103 from `min-0320` | passed, v1-done at 352 min; no mine retired at the handover valve (B73) |
 | `vps-b75-r4410923` | `5dcc66f` | 4410923 from `min-0040` | stopped by hand at ~350 min, failing: power grew (B75 works), then no science 165–285 min after B57 tore down cluster 1's smelters (→ B76, B77) |
 | `vps-b75` | `5dcc66f` | 5581724, 4819313 (fresh) | 2/2: 4819313 v1-done at 209 min, 5581724 at 238 min, no stalls |
+| `vps-b79-r2034469` (result) | `627b3b5` | 2034469 from `min-0020` | passed, v1-done at 180 min, no stalls (B78 + B79 validated) |
+| `vps-b80-r1459426` | `8929995` | 1459426 from `min-0020` | passed, v1-done at 209 min, no stalls (B80 validated) |
+| `vps-b80-r8033112` | `8929995` | 8033112 from `min-0060` | passed, v1-done at 257 min, no stalls |
+| `vps-b80d` | `8929995` | 1264816 (fresh) | failed fast at 196 min: an hour exploring for coal (→ D68) |
+| `vps-d68-r1264816` | `03bdba2` | 1264816 from `min-0120` | running |
+| `vps-b80e`, `vps-b80f` | `8929995` | 1677299, 7625436 (fresh) | running |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | failed at the 480-min cap: science peaked at 26/min (0.91 of the target) at ~175 min, then 12/min flat from ~340 min; its iron mines ran short on small patches ("no iron-ore known, exploring to 384 tiles"), a replacement took ~90 min to build, and one D67 mine estimated at 29.9 min of ore ran dry within ~15 min (not explained; the measured draw was below plan). Rerun fresh on `8929995` |
