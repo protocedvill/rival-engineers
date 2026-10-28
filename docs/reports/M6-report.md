@@ -2719,3 +2719,83 @@ deliberate scope boundary rather than a hole.
 | consumer input sealed → relocate the consumer | `relocateSealed` (B57/B61), independent of capacity | works |
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
+
+## M6b.50: B62–B71, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+
+The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
+and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
+decisions, found and validated on the VPS soak server (3 seeds at a time, niced).
+
+### Fixes
+
+| Bug | Seed (run) | Defect, in one line | Commit |
+|---|---|---|---|
+| B62 | 1376111 | "no feasible position" / "no patch" plan failures are knowledge failures: explore on the first attempt | `6ad980c` |
+| B63 | 1376111, 3891760 | kept poles decoded as claims of a missing module (claim leak); pass-through power lines kept on demolition | `6ad980c` |
+| B64 | 3891760 | labs idle after the research goal made `science-sustained` unreachable; soaks use a hidden repeatable tech | `6ad980c` |
+| B65 | 3891760 | shared providers sized for their first consumer only; supply pass raises a node to its edges' demand | `6ad980c` |
+| B66 | 5387208 | power cascade stopped at `power#2`; unrevivable ghosts on live twins in mine completion stalled goals | `68a0331` |
+| B67 | 8646103, 7718665 | a reclaim moved a mine's poles out of wire reach; any growth that unpowers a module now re-poles | `17b3049` |
+| B68 | 5387208, 8646103 | `coal>power#2` was both a parallel provider and `power#2`'s coal: parallel roles are now `~N` | `47909ad` |
+| — | 3891760 (`vps-b68`) | nil in a template literal crashed the game (`grew ${node?.role}`); CLAUDE.md gotcha added | `9c066d7` |
+| B69 | 5387208 (`vps-d66`) | a splitter tap stamped over another build's belt ghost was silently dropped; silent edges now repaired | `6f317e3` |
+| B70 | all | P36 (a) never fired: it checked `module` nodes, and mines are `outpost` nodes | `dbf360a` |
+| B71 | 7718665 (`vps-b69`) | a residual merge with no side-load spot failed 8 identical plans; the port is now remembered | `dbf360a` |
+
+Details, evidence and the regression test for each are in `docs/BUGS.md`.
+
+### User decisions (in-session, 2026-10-28)
+
+All three were asked as questions in this session and answered by the user; they are recorded in SPEC §2.
+
+- **D65, power demand scales with utilization.** Nameplate draw sized power about 7x above the measured load (14%
+  load in `vps-b66`), and once B66 let the excess plan real steam blocks, the extra coal mines used up 5387208's coal
+  patches. Asked between nameplate, measured load and utilization, the user chose "Scale by utilization".
+- **D66, crew prefetch for far builds.** 8646103 (`vps-b68`) carried ~10 belts per 500-tile walk for a 300-belt route and
+  stalled twice. The user chose "Yes, prefetch": a place batch whose source is far also hauls for the ready place
+  jobs nearer to it than that source, within the existing `trip-inventory-fill` share. No new number.
+- **D67, factory mines replaced before they run dry.** 8646103 (`vps-d66`): three science mines ran dry 200–220 game-min
+  after being built, and each handover began only then, so lab clusters starved for the whole move (two stalled at
+  the 10-min handover limit). The user chose "Yes, own lead setting": `factory-mine-lead-minutes`, default 30.
+
+### Soak results on the VPS
+
+| Run | Code | Seeds | Result |
+|---|---|---|---|
+| `vps-b68` | `47909ad` | 3891760, 5387208, 8646103 | 0/3: Lua crash (fixed `9c066d7`); coal patches used up by the power overestimate (→ D65); crew stalls hauling (→ D66) |
+| `vps-d66` | `dcd75ed` | 3891760, 5387208, 8646103 | 1/3: 3891760 v1-done at 270 min; 5387208 lab cluster 1 starved (→ B69); 8646103 mines ran dry (→ D67, B70) |
+| `vps-b69-r5387208` | `6f317e3` | 5387208 from `min-0120` | passed, v1-done at 420 min (B69 validated) |
+| `vps-b69` | `6f317e3` | 2229258, 7718665 (fresh) | 1/2: 2229258 v1-done at 230 min; 7718665 failed fast at 129 min (→ B71) |
+| `vps-d67` | `ead-valve` | 7718665, 8646103, 7587711 | running |
+
+D65 held: no seed in `vps-d66` or later ran out of coal patches. D66 held: no crew stall in any of these runs.
+
+### Tests
+
+At `dbf360a`: T1 40/40 files; T2 155/155 (full suite, local). New regressions: T1 `design` B66/B68/D65/B71, `board`
+D66, `pole-eviction` B67, `reconcile` B69; T2 `jobs` B66, `conflicts` B69, `reconciler` D67 (and P36 now on `outpost`
+nodes, for B70). Each B-test was checked to fail without its fix.
+
+### Magic numbers for the user (M6b.50)
+
+| Name | Where | Value | Why this value | Setting? |
+|---|---|---|---|---|
+| Mine lead time | `factory-mine-lead-minutes` (`strategy/fuel.ts` `checkMineOre`) | 30 game-min | User decision D67 (default stated in the question). A far replacement took more than 10 min to connect in 8646103. | yes |
+| Handover wait limit | `strategy/fuel.ts` `HANDOVER_MAX_MINUTES` | 10 game-min | Unchanged from M6b.47. A handover started ahead (D67, P36) no longer retires its mine at this limit while the drills still have ore; it waits until they run dry (otherwise a slow replacement would have torn down a mine with ~20 min of ore left). Worked-out (D55) and burner (D54) handovers still use it. **Agent guess, please confirm.** | no |
+| Throughput tech | `mod/static/data.lua` `rival-engineers-throughput-test` | 30 units × 60 s, red + green | Soak-only hidden repeatable tech (B64, `debug-infinite-research`) that keeps labs consuming after the research goal. Its unit time bounds the lab consumption the sustain check can see; 60 s did not cap any seed here (labs reached 30/min). **Agent guess.** | no |
+| Orphan claim log interval | `strategy/factory.ts` `ORPHAN_LOG_TICKS` | 3600 ticks | B63 diagnostics: how often orphan claim tiles are logged. Log cadence only. **Agent guess.** | no |
+
+D65, D66, B66–B71 add no tuning numbers.
+
+### Honest limits and still open
+
+- **B69's wait has no timeout.** A tap waits while the tapped belt's ghost has a place job. If that job never completes
+  (the other build stalls for good), the tapping build waits with it. The other build's own stuck-build handling (B20)
+  is what ends that today.
+- **Steam block growth still fails** in every seed that grows power: `reroute failed: coal>power~2=>power.in-fuel:
+  blocked by coal>power=>power.in-fuel (ripped 3 times already)`. The waits then show `power short` from the
+  utilization estimate, while the measured load stays at 40–65%, so it has not limited science yet. Not fixed.
+- **Patches are ranked by distance only** (`placement.ts` `buildPatches`): the terrain view carries no ore amounts, so
+  a small or half-mined patch near the factory wins. D67 makes running out cheaper; it does not pick longer-lived patches.
+- `npm run diagnose` reports hundreds of `build-job-missing` invariant violations (goal g7 references absent jobs) in
+  every long run. Not investigated; no run failed on it.

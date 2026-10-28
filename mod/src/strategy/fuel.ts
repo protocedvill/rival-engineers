@@ -44,6 +44,16 @@ export function powerFuelled(g: LogicalGraph, power: LogicalNode): boolean {
   return false
 }
 
+/** Whether every drill of `n`'s mine has run dry (true when it has no module, resource or drills left). */
+function mineDry(ctx: FuelCtx, n: LogicalNode): boolean {
+  const m = findModule(ctx.f.layout, n.id)
+  const resource = m?.def.anchor?.resource
+  if (m === undefined || resource === undefined) return true
+  const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+  const drills = findEntities(ctx.surface, { type: "mining-drill", force: ctx.faction.force, area })
+  return drills.length === 0 || oreLeft(ctx.surface, drills, resource).dry
+}
+
 /** Ore left (summed over the distinct resource tiles its drills reach) and whether every drill has run dry. */
 function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { amount: number; dry: boolean } {
   const seen: Record<string, boolean> = {}
@@ -102,7 +112,7 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const why = string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : "")
     // Goalpost 1: a producer that still has ore is not deconstructed before its replacement feeds its consumers.
     if (!left.dry) {
-      if (beginHandover(ctx, n, what, why)) return n.role
+      if (beginHandover(ctx, n, what, why, true)) return n.role
       continue
     }
     relocate(ctx, n, what, why)
@@ -172,10 +182,10 @@ function sealedConsumers(ctx: FuelCtx, ids: string[]): LogicalNode[] {
  * still exists in the graph) and nothing is deconstructed until that replacement feeds every consumer port it served.
  * `serviceHandovers` retires it.
  */
-export function beginHandover(ctx: FuelCtx, n: LogicalNode, what: string, why: string): boolean {
+export function beginHandover(ctx: FuelCtx, n: LogicalNode, what: string, why: string, ahead?: boolean): boolean {
   const f = ctx.f
   f.handover ??= {}
-  if (!HO.beginHandover(f.handover, n.role, n.id, ctx.tick, why)) return false
+  if (!HO.beginHandover(f.handover, n.role, n.id, ctx.tick, why, ahead)) return false
   log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: handing over, the replacement is connected before deconstruction (goalpost 1)`)
   return true
 }
@@ -204,6 +214,9 @@ export function serviceHandovers(ctx: FuelCtx): void {
     if (n === undefined) continue
     const v = HO.handoverVerdict(rec, feeds, ctx.tick, HANDOVER_MAX_MINUTES)
     if (v === "waiting") continue
+    // D67: a mine handed over ahead still feeds its consumers; the safety valve waits until its drills run dry (checked
+    // once a minute), or a slow replacement would retire a mine with most of its lead time of ore left.
+    if (v === "stalled" && rec.ahead === true && (ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks || !mineDry(ctx, n))) continue
     delete f.handover[role as string]
     relocate(ctx, n, `handover ${n.role}`, v === "stalled" ? `no replacement within ${HANDOVER_MAX_MINUTES} game-min (${rec.why})` : `replacement connected (${rec.why})`)
   }

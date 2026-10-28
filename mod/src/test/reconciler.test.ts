@@ -464,6 +464,9 @@ describe("M5b reconciler", () => {
     setConfigOverride("factoryMineLeadMinutes", 30)
     assert(checkMineOre({ ...ctx, config: getConfig() }, false) === "mine", "the mine starts handing over")
     assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "recorded; the module stays until its replacement feeds the smelter")
+    // No replacement within the 10-min valve: a mine handed over ahead still has ore, so it is not retired yet.
+    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled handover keeps a mine that still has ore")
     setConfigOverride("factoryMineLeadMinutes", undefined)
   })
   test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {

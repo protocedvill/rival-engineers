@@ -15,6 +15,8 @@ export interface HandoverRecord {
   since: number
   /** Why it is retiring (a provider failure reason, for telemetry and the log). */
   why: string
+  /** D67/P36: started while the mine still has ore. A stalled one is retired only once its drills run dry. */
+  ahead?: boolean
 }
 
 /** One belt feed between two graph nodes, as the handover decision sees it. */
@@ -30,9 +32,9 @@ export interface HandoverFeed {
 export type HandoverVerdict = "complete" | "waiting" | "stalled"
 
 /** Marks `role` as retiring. Returns false when it already is (the first reason and tick are kept). */
-export function beginHandover(records: Record<string, HandoverRecord>, role: string, node: string, tick: number, why: string): boolean {
+export function beginHandover(records: Record<string, HandoverRecord>, role: string, node: string, tick: number, why: string, ahead?: boolean): boolean {
   if (records[role] !== undefined) return false
-  records[role] = { role, node, since: tick, why }
+  records[role] = { role, node, since: tick, why, ahead }
   return true
 }
 
