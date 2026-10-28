@@ -16,15 +16,25 @@ export interface KeyedJobs {
 }
 
 /**
- * Whether `key` is taken: its job is open or claimed, or it failed less than `cooldown` ticks ago. A finished job's
+ * Whether `key` is taken: its job is open or claimed, or it failed because its target was unreachable less than
+ * `cooldown` ticks ago. A finished job's
  * key is released (and a failed one remembered, since the board prunes finished jobs soon after).
  */
-export function keyTaken(k: KeyedJobs, jobs: Record<number, { status: string; finishedTick?: number } | undefined>, key: string, tick: number, cooldown = FAILED_KEY_COOLDOWN_TICKS): boolean {
+/** A job failure that says its target could not be reached (the crew's walk failure reasons). */
+export function unreachable(reason: string | undefined): boolean {
+  if (reason === undefined) return false
+  for (const r of ["no-path", "unreachable", "stuck"]) if (string.find(reason, r, 1, true)[0] === 1) return true
+  return false
+}
+
+export function keyTaken(k: KeyedJobs, jobs: Record<number, { status: string; finishedTick?: number; reason?: string } | undefined>, key: string, tick: number, cooldown = FAILED_KEY_COOLDOWN_TICKS): boolean {
   const id = k.jobKeys[key]
   if (id !== undefined) {
     const job = jobs[id]
     if (job !== undefined && (job.status === "open" || job.status === "claimed")) return true
-    if (job !== undefined && job.status === "failed") {
+    // Only a target no walk could reach: other failures (a replan dropping its jobs, a failed dependency, a transient
+    // pick-up failure) say nothing about the target, and it is queued again at once as before.
+    if (job !== undefined && job.status === "failed" && unreachable(job.reason)) {
       k.failedKeys ??= {}
       k.failedKeys[key] = job.finishedTick ?? tick
     }
