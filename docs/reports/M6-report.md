@@ -2766,7 +2766,7 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-d66` | `dcd75ed` | 3891760, 5387208, 8646103 | 1/3: 3891760 v1-done at 270 min; 5387208 lab cluster 1 starved (→ B69); 8646103 mines ran dry (→ D67, B70) |
 | `vps-b69-r5387208` | `6f317e3` | 5387208 from `min-0120` | passed, v1-done at 420 min (B69 validated) |
 | `vps-b69` | `6f317e3` | 2229258, 7718665 (fresh) | 1/2: 2229258 v1-done at 230 min; 7718665 failed fast at 129 min (→ B71) |
-| `vps-d67` | `ead-valve` | 7718665, 8646103, 7587711 | running |
+| `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | running |
 
 D65 held: no seed in `vps-d66` or later ran out of coal patches. D66 held: no crew stall in any of these runs.
 
