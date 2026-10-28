@@ -579,6 +579,27 @@ export function commitRoute(state: LayoutState, route: Route): void {
 }
 
 /** Removes a route (and the splitter taps hanging off it). Returns the removed route ids. */
+/**
+ * B88: routes `rids` and every route that taps one of them, at any depth (what `ripRoute` takes with each): the routes a
+ * connection's own route carries. Layout order.
+ */
+export function tapTree(state: LayoutState, rids: RouteId[]): RouteId[] {
+  const inTree: Record<string, boolean> = {}
+  for (const id of rids) if (state.routes[id] !== undefined) inTree[id] = true
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const id of state.routeOrder) {
+      const t = state.routes[id]?.tapOf
+      if (!inTree[id] && t !== undefined && inTree[t]) {
+        inTree[id] = true
+        grew = true
+      }
+    }
+  }
+  return state.routeOrder.filter((id) => inTree[id])
+}
+
 export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   const route = state.routes[id]
   if (route === undefined) return []
@@ -646,6 +667,8 @@ export function checkLayoutIndexes(state: LayoutState): LayoutIndexCheck {
       problems.push(`routeOrder contains missing route ${id}`)
       continue
     }
+    // B88: a tap whose trunk is gone (a replanned connection's route replaced the trunk it tapped; telemetry crashed on it).
+    if (route.tapOf !== undefined && state.routes[route.tapOf] === undefined) problems.push(`route ${id} taps missing route ${route.tapOf}`)
     for (const k of route.tiles) if (state.routeOcc[k] !== id) problems.push(`route ${id} tile ${keyX(k)},${keyY(k)} indexed as ${state.routeOcc[k] ?? "free"}`)
     for (const s of route.spans) {
       const found = state.spans[s.line]?.some((x) => x.route === id && x.a === s.span.a && x.b === s.span.b) ?? false

@@ -2203,15 +2203,24 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
         const own: IDS.RouteId[] = []
         for (const rid of e.physical) {
           const r = f.layout.routes[rid]
-          if (r === undefined || r.conn !== e.role) continue
-          let tapped = false
-          for (const other of f.layout.routeOrder) if (f.layout.routes[other].tapOf === rid) tapped = true
-          if (!tapped) own.push(IDS.routeId(rid))
+          if (r !== undefined && r.conn === e.role) own.push(IDS.routeId(rid))
         }
-        const dropped = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [], routes: own, poles: [] }, ctx.config.factoryBuildPriority)
-        LG.removeEdge(f.graph, e.id)
+        // B88 (soak vps-b85-r1264816): a kept tapped route still bore the connection's id, and planned again the new
+        // route replaced it in place (ripping its taps) while tapping one of them: an orphan tap. Its taps hang off
+        // it: they go with it, and their edges are planned again too.
+        const tree = LO.tapTree(f.layout, own)
+        const inTree: Record<string, boolean> = {}
+        for (const rid of tree) inTree[rid] = true
+        const edges: string[] = [e.id]
+        for (const id of f.graph.edgeOrder) {
+          const o = f.graph.edges[id]
+          if (o === undefined || o.id === e.id || o.kind !== "belt") continue
+          if (o.physical.some((rid) => inTree[rid] && f.layout.routes[rid]?.conn === o.role)) edges.push(o.id)
+        }
+        const dropped = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [], routes: tree, poles: [] }, ctx.config.factoryBuildPriority)
+        for (const id of edges) LG.removeEdge(f.graph, id)
         resyncReserved(ctx.faction, f.layout)
-        say(`its routes do not reach ${e.to}.${e.toPort} in the layout: ${own.length} routes dropped (${dropped.clearJobs.length} entities to pick up), the design plans the connection again (B83)`)
+        say(`its routes do not reach ${e.to}.${e.toPort} in the layout: ${tree.length} routes dropped (${dropped.clearJobs.length} entities to pick up), the design plans ${edges.length === 1 ? "the connection" : `${edges.length} connections`} again (B83, B88)`)
         return
       }
     }

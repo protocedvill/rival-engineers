@@ -6,7 +6,7 @@ import { checkClaimOwners } from "../src/planner/claims"
 import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts } from "../src/planner/layout"
+import { checkLayout, checkLayoutIndexes, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts, tapTree } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
@@ -348,6 +348,38 @@ test("B86: a ripped trunk routed again lands on its port; the side-load stub lef
   const trunk = again.layout.routes[rid(again.layout, "ore") as never]
   eq(trunk.merge === undefined && trunk.mergeSplitter === undefined, true, "the trunk is a plain route, not a merge onto the stub")
   ok(routesLand(again.layout, [rid(again.layout, "ore")], { module: "smelt", port: "in-ore" }), "and it lands on the port")
+})
+
+test("B88: a connection planned again while its tapped route stands never taps that route or its taps (vps-b85-r1264816)", () => {
+  // B83 dropped the coal-to-power edge but kept its trunk (the smelters' fuel tapped it); planned again, the new route
+  // (splitter taps, B84) tapped the old trunk's tap, then replaced the trunk in place, which ripped that tap: an orphan
+  // tap, and telemetry crashed on it.
+  const view = oreField(120, 120, 45)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "mine", ore, 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
+  // Where the connection's consumer is now (the trunk no longer lands at it: why B83 dropped the edge).
+  place(l, "c", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 95, 55)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  const trunk = job.layout.routeOrder.find((r) => job.layout.routes[r].tapOf === undefined)!
+  // What the factory drops with the edge now (B83/B88): the trunk and its tap.
+  eq(tapTree(job.layout, [trunk as never]).length, 2, "the trunk's tree holds its tap")
+  for (const r of job.layout.routeOrder) job.layout.routes[r].fixed = true
+  const conn = job.layout.routes[trunk].conn
+  // The planner alone must still not corrupt the layout, whether the plan routes or fails (the old trunk holds the port).
+  const replanned: ConnectionRequest = { id: connectionId(conn), from: { module: "mine", port: "out" }, to: { module: "c", port: "in-ore" } }
+  const again = runJob(newRoutingJob({ modules: [], connections: [replanned], center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, job.layout), view, F, tapPolicy)
+  const orphans = checkLayoutIndexes(again.layout).problems.filter((p) => string.find(p, "taps missing", 1, true)[0] !== undefined)
+  eq(orphans.length, 0, orphans.join("; "))
+  for (const r of again.layout.routeOrder) ok(again.layout.routes[r].tapOf !== r, `${r} does not tap itself`)
 })
 
 run("grow")

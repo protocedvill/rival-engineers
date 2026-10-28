@@ -10,7 +10,7 @@ import { releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, tapTree, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
@@ -433,9 +433,14 @@ function connection(job: PlanJob, id: string): ConnectionRequest {
 
 /** Routes already serving the same producer port (splitter taps branch off them). B23: compared against the
  * alias-resolved source — a request aliased onto a whole-patch base mine feeds from the base route's port. */
-function sameSource(job: PlanJob, from: PortRef): string[] {
+function sameSource(job: PlanJob, from: PortRef, conn: string): string[] {
   const out: string[] = []
+  // B88: never the connection's own route (in the base when it is planned again) or what taps it: committing the new
+  // route replaces that route in place and rips its taps, so a tap of them would be left tapping nothing.
+  const own: Record<string, boolean> = {}
+  for (const id of tapTree(job.layout, [routeId(`route:${conn}`)])) own[id] = true
   for (const id of job.layout.routeOrder) {
+    if (own[id]) continue
     // Routes of the base layout belong to earlier requests: compare the route's own source.
     const r = job.layout.routes[id]
     const src = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
@@ -485,7 +490,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     req.from = from
     own[portTag(fm.id, fp.id)] = true
     own[laneTag(portTag(fm.id, fp.id))] = true
-    const taps = sameSource(job, from)
+    const taps = sameSource(job, from, c.id)
     if (taps.length > 0) {
       if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
       req.taps = taps
