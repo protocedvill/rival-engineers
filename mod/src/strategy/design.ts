@@ -447,6 +447,9 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     for (const c of consumers) ports[`${c.to}.${c.toPort}`] = true
     mergePorts = mergePorts ?? ports
     role = parallelRole(w, role, true)
+    // B81: a replacement never shares the provider it replaces. Folded into the retiring whole-patch mine (D52), it was
+    // an alias of that mine and was dropped with it, and the adopted belt lost its heir (vps-d68a 5480563 n18).
+    newSite = true
   }
   const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
   // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a
@@ -609,11 +612,16 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
       for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role, true), undefined, undefined, true)
     } else {
       let total = 0
-      for (const d of fresh) total += d.rate
-      addProducer(w, item, total, fresh, true, role, undefined, mergePorts)
+      let replacing = false
+      for (const d of fresh) {
+        total += d.rate
+        if (mergePorts[`${d.to}.${d.toPort}`]) replacing = true
+      }
+      // B81: a group that replaces a retiring provider never shares it (see addProducer).
+      addProducer(w, item, total, fresh, true, role, undefined, mergePorts, replacing)
     }
   } else for (const d of fresh) alone.push(d)
-  for (const d of alone) addProducer(w, item, d.rate, [d], false, undefined, undefined, mergePorts)
+  for (const d of alone) addProducer(w, item, d.rate, [d], false, undefined, undefined, mergePorts, mergePorts[`${d.to}.${d.toPort}`] === true)
 }
 
 /** Expands every pending demand for `item` (point-to-point: one producer each; splitter-tap: one for all). */
