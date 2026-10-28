@@ -8,7 +8,7 @@ import type { RouteId } from "../shared/ids"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
-import { LayoutState, ripRoute } from "./layout"
+import { LayoutState, ripRoute, tapTree } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
 
@@ -40,9 +40,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   const seen: Record<string, boolean> = {}
   for (const id of routeIds) {
     if (layout.routes[id] === undefined) continue
-    // The route and its taps: their entities and tiles before they are ripped.
-    const group = [id]
-    for (const other of layout.routeOrder) if (layout.routes[other]?.tapOf === id) group.push(other)
+    // The route and its taps (B88: at any depth, as `ripRoute` takes them all): their entities and tiles before they
+    // are ripped.
+    const group: RouteId[] = tapTree(layout, [id])
     for (const rid of group) {
       if (seen[rid]) continue
       seen[rid] = true

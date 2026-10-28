@@ -8,6 +8,7 @@ import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
 import { checkLayout, checkLayoutIndexes, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts, tapTree } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
+import { planReroute } from "../src/planner/reroute"
 import { ConnectionRequest, newRoutingJob, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
 import { ModuleDef } from "../src/modules/types"
@@ -380,6 +381,34 @@ test("B88: a connection planned again while its tapped route stands never taps t
   const orphans = checkLayoutIndexes(again.layout).problems.filter((p) => string.find(p, "taps missing", 1, true)[0] !== undefined)
   eq(orphans.length, 0, orphans.join("; "))
   for (const r of again.layout.routeOrder) ok(again.layout.routes[r].tapOf !== r, `${r} does not tap itself`)
+})
+
+test("B88: rerouting a trunk in place routes its taps again with it; nothing is left tapping a missing route", () => {
+  // The B83 repair now reroutes an edge's routes in place (planReroute over their whole tap tree) instead of dropping
+  // the edge and waiting for the design (vps-b88-r1264816-m60: the power plant stayed crew-fuelled for 400 game-min).
+  const view = oreField(120, 120, 45)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "mine", ore, 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  for (const r of job.layout.routeOrder) job.layout.routes[r].fixed = true
+  const trunk = job.layout.routeOrder.find((r) => job.layout.routes[r].tapOf === undefined)!
+  const tree = tapTree(job.layout, [trunk as never])
+  const plan = planReroute(job.layout, view, F, tapPolicy, TIER, tree, { x: 0, y: 0, w: 120, h: 120 })
+  ok(plan.ok, `rerouted: ${plan.reason}`)
+  const conns2 = plan.layout.routeOrder.map((r) => plan.layout.routes[r].conn).sort().join(",")
+  eq(conns2, "ore-a,ore-b", "both connections routed again")
+  const orphans = checkLayoutIndexes(plan.layout).problems.filter((p) => string.find(p, "taps missing", 1, true)[0] !== undefined)
+  eq(orphans.length, 0, orphans.join("; "))
+  ok(routesLand(plan.layout, plan.layout.routeOrder.filter((r) => plan.layout.routes[r].conn === "ore-a"), { module: "a", port: "in-ore" }), "the trunk lands on its port")
 })
 
 run("grow")

@@ -2080,6 +2080,80 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     recordRemedy(st, r, ctx.tick, result)
     log(`[rival-engineers] faction ${ctx.faction.name}: reconciler ${r.kind} ${r.node ?? r.edge}: ${r.why} -> ${result}`)
   }
+  /**
+   * B88: routes `routes` (and every route tapping them) again in place, to their ports as they are now, as a repair goal:
+   * the old pieces the new routes don't reuse are picked up first, then the new ones placed. The graph keeps its edges;
+   * their physical routes follow. Returns false when no reroute was found.
+   */
+  const rerouteInPlace = (routes: IDS.RouteId[], why: string): boolean => {
+    const t = storage.terrains?.[f.terrain]
+    if (t === undefined || routes.length === 0) return false
+    const tree = LO.tapTree(f.layout, routes)
+    let all = RT.tiers()
+    const maxUg = maxUndergroundNow(ctx)
+    if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
+    // The whole factory, with the router's detour room around it.
+    const base = policyFor(ctx.config)
+    const policy = tree.length > routes.length ? { ...base, topology: "splitter-tap" as const } : base
+    let x1 = math.huge
+    let y1 = math.huge
+    let x2 = -math.huge
+    let y2 = -math.huge
+    for (const m of f.layout.modules) {
+      x1 = math.min(x1, m.rect.x); y1 = math.min(y1, m.rect.y)
+      x2 = math.max(x2, m.rect.x + m.rect.w); y2 = math.max(y2, m.rect.y + m.rect.h)
+    }
+    for (const rid of f.layout.routeOrder) {
+      for (const k of f.layout.routes[rid].tiles) {
+        x1 = math.min(x1, keyX(k)); y1 = math.min(y1, keyY(k))
+        x2 = math.max(x2, keyX(k) + 1); y2 = math.max(y2, keyY(k) + 1)
+      }
+    }
+    const pad = policy.router.margin
+    const region: Rect = { x: x1 - pad, y: y1 - pad, w: x2 - x1 + 2 * pad, h: y2 - y1 + 2 * pad }
+    const plan = planReroute(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, policy, all[0], tree, region)
+    if (!plan.ok) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B88 reroute of ${tree.join(", ")} failed: ${plan.reason}`)
+      return false
+    }
+    f.layout = plan.layout
+    const reserved = ctx.faction.brain!.reserved
+    for (const k of partTiles(plan.layout, { modules: [], routes: plan.routes, poles: [] })) reserved[k] = true
+    resyncReserved(ctx.faction, plan.layout)
+    for (const id of f.graph.edgeOrder) {
+      const e = f.graph.edges[id]
+      if (e.kind !== "belt") continue
+      const physical: string[] = []
+      for (const rid of plan.layout.routeOrder) {
+        const r = plan.layout.routes[rid]
+        if (r.conn !== e.role) continue
+        if (r.tapOf !== undefined) physical.push(r.tapOf)
+        physical.push(rid)
+      }
+      if (physical.length > 0) e.physical = physical
+    }
+    // Old pieces first (picked up, items kept), then the new ones: a ghost can't go where a belt stands.
+    const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: ctx.config.factoryBuildPriority })
+    const g: FactoryGoal = {
+      id: IDS.goalId(`g${f.nextGoal++}`),
+      kind: "repair",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 0,
+      createdTick: ctx.tick,
+      plannedTick: ctx.tick,
+      placed: 0,
+      rounds: 0,
+      reason: why,
+      growBuild: { phase: d.clearJobs.length > 0 ? "clear" : "place", clearJobs: d.clearJobs, add: plan.add, ghosts: [], placeJobs: [] },
+    }
+    f.goals.push(g)
+    say(`its routes do not reach their port in the layout: goal ${g.id} reroutes ${tree.length} routes in place (${plan.remove.length} entities to pick up, ${plan.add.length} to build) (B83, B88)`)
+    return true
+  }
   if (r.kind === "upkeep") {
     f.lastUpkeep = -math.huge
     upkeep(ctx)
@@ -2205,9 +2279,17 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
           const r = f.layout.routes[rid]
           if (r !== undefined && r.conn === e.role) own.push(IDS.routeId(rid))
         }
-        // B88 (soak vps-b85-r1264816): a kept tapped route still bore the connection's id, and planned again the new
-        // route replaced it in place (ripping its taps) while tapping one of them: an orphan tap. Its taps hang off
-        // it: they go with it, and their edges are planned again too.
+        // B88 (soak vps-b85-r1264816): the routes are routed again in place, with the taps hanging off them, to the
+        // ports as they are now (the edges stay: the design need not plan anything again; dropping them left the power
+        // plant crew-fuelled for 400 game-min). A plan in progress works on a copy of the layout: wait for it.
+        if (planning(f) !== undefined) {
+          say(`its routes do not reach ${e.to}.${e.toPort} in the layout: rerouted after the current plan (B83)`)
+          return
+        }
+        if (rerouteInPlace(own, r.why)) return
+        // The reroute failed. A kept tapped route still bore the connection's id, and planned again the new route
+        // replaced it in place (ripping its taps) while tapping one of them: an orphan tap. Its taps go with it, and
+        // their edges are planned again too.
         const tree = LO.tapTree(f.layout, own)
         const inTree: Record<string, boolean> = {}
         for (const rid of tree) inTree[rid] = true
