@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B77, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B79, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2747,6 +2747,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B75 | 4410923 (`vps-b72`) | a growth or reroute re-requested a provider-group merge as a plain route into the port: the steam block never grew (the "power can't grow" issue); merges are now kept and routed after their trunk | `5dcc66f` |
 | B76 | 4410923 (`vps-b75-r4410923`) | B57 deconstructed both red-science smelters because a second feed couldn't reach their already fed fuel port; fed ports are never relocation candidates now | `e7c75f0` |
 | B77 | 4410923 (`vps-b76-r4410923`) | the design cache key ignored edges, so a goal's built connections were planned again and their failure blocked a working feed | `fc85522` |
+| B78 | 2034469 (`vps-b77a`) | a mine folded into a shared mine stayed a module-less node; later plans connected from its missing port | `acbfef9` |
+| B79 | 2034469, 1459426 | a plain route into a port another belt already feeds never routes; the planner now merges it | `627b3b5` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2779,10 +2781,14 @@ All three were asked as questions in this session and answered by the user; they
 | `vps-b75-r4410923` | `5dcc66f` | 4410923 from `min-0040` | stopped by hand at ~350 min, failing: power grew (B75 works), then no science 165–285 min after B57 tore down cluster 1's smelters (→ B76, B77) |
 | `vps-b75` | `5dcc66f` | 5581724, 4819313 (fresh) | 2/2: 4819313 v1-done at 209 min, 5581724 at 238 min, no stalls |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
-| `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 7741326 v1-done at 237 min; 3088988 running |
+| `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
 | `vps-b75d` | `5dcc66f` | 1264816 (fresh) | running |
 | `vps-b76-r4410923` | `e7c75f0` | 4410923 from `min-0100` | failed fast at 114 min: 8 identical plan failures (→ B77) |
-| `vps-b77-r4410923` | `fc85522` | 4410923 from `min-0100` | running; past the B76/B77 point without a duplicate goal |
+| `vps-b77-r4410923` | `fc85522` | 4410923 from `min-0100` | passed, v1-done at 221 min, no stalls (B76 + B77 validated) |
+| `vps-b77a` | `fc85522` | 2034469 (fresh) | failed fast at 59 min: `no belt-out port n22.out` (→ B78) |
+| `vps-b77b` | `fc85522` | 1459426 (fresh) | failed fast at 78 min: the same (→ B78, B79) |
+| `vps-b78-r2034469`, `vps-b78-r1459426` | `acbfef9` | both from `min-0020` | failed fast at 59 / 78 min: parallel smelter `no path` into fed ports (→ B79) |
+| `vps-b79-r2034469`, `vps-b79-r1459426` | `627b3b5` | both from `min-0020` | running; 2034469's g14 now plans (5 routes) |
 | `vps-b72` | `f1c5799` | 4410923, 9150347 (fresh) | 1/2: 9150347 v1-done at 272 min (1 recovered stall); 4410923 failed at the 480-min cap: research goal done at 255 min, science held at 24/min (0.91 of the target), power could not grow (→ B75) |
 | `vps-d67` | `22778c7` | 7718665, 8646103, 7587711 | 2/3: 8646103 v1-done at 352 min; 7587711 (fresh) v1-done at 203 min; 7718665 past B71, then failed fast at 182 min (→ B72) |
 
