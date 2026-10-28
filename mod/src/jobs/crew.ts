@@ -16,6 +16,7 @@ import {
   planBatch,
   planTrip,
   Pos,
+  prefetchJobs,
   Rect,
   isReady,
   release,
@@ -747,7 +748,18 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   member.stats.batches++
   if (forced !== undefined && ids.indexOf(forced.id) >= 0) member.stats.preemptTaken = (member.stats.preemptTaken ?? 0) + 1
 
-  const missing = missingMaterials([...jobs, ...crafts], held)
+  let missing = missingMaterials([...jobs, ...crafts], held)
+  // D66: a place batch whose source is far also brings what the ready place jobs nearer than that source need, so the
+  // next batches there start from the member's inventory instead of another round trip (8646103: 10 belts a 500-tile walk).
+  if (anchor.kind === "place" && missing.length > 0) {
+    const source = nearestSource(faction, pos, missing[0].item, config)
+    const to = spot ?? anchor.pos
+    if (source !== undefined) {
+      const slots = character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill
+      const extra = prefetchJobs(board, jobs, to, distance(source.position, to), tick, held, slots, stacksFor, accept)
+      if (extra.length > 0) missing = missingMaterials([...jobs, ...extra, ...crafts], held)
+    }
+  }
   recordCrewPlan(faction, member, tick, "batch", rejected, { forced: forced?.id, anchor: anchor.id, jobs: ids, missing })
   // B32: the haul's sources are chosen for the detour on the way to where the batch is worked (a craft: anywhere).
   if (missing.length > 0) haul(faction, member, missing, spot ?? (anchor.kind === "craft" ? pos : anchor.pos), config, tick)
@@ -759,6 +771,13 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
   else for (const job of jobs) enqueueWork(faction, member, job)
   for (const c of crafts) finishCraft(member, c)
+}
+
+/** Inventory stacks `need` takes (D66). */
+function stacksFor(this: void, need: ItemCount[]): number {
+  let n = 0
+  for (const m of need) n += math.ceil(m.count / (prototypes.item[m.item]?.stack_size ?? 1))
+  return n
 }
 
 function withoutMaterials(avail: Record<string, number>, materials: ItemCount[]): Record<string, number> {

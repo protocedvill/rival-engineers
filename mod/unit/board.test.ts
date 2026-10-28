@@ -13,6 +13,7 @@ import {
   newBoard,
   planBatch,
   planTrip,
+  prefetchJobs,
   Pos,
   Rect,
   release,
@@ -263,6 +264,31 @@ test("planTrip: stops when the inventory would overflow; skips claimed and refus
   claim(b, [claimed], 7, 0)
   const trip = planTrip(b, b.jobs[a], 0, { maxJobs: 10, radius: 10, accept: (job) => job.id !== refused, load: () => 1, capacity: 2.5 })
   eq(trip.join(","), [a, j].join(","), "anchor + one more fit in 2.5 slots")
+})
+
+test("D66 prefetch: a far source loads the jobs nearer the batch than the source, nearest first, up to the inventory", () => {
+  const board = newBoard<undefined>()
+  const belt = (x: number): JobId => addJob(board, { kind: "place", pos: { x, y: 0 }, footprint: { x1: x - 0.5, y1: -0.5, x2: x + 0.5, y2: 0.5 }, priority: 0, deps: [], payload: undefined, materials: [{ item: "transport-belt", count: 1 }] }, 0).id
+  const ids: JobId[] = []
+  for (let x = 0; x < 300; x++) ids.push(belt(x))
+  const batch = [board.jobs[ids[0]]]
+  const stacks = (need: { item: string; count: number }[]): number => {
+    let n = 0
+    for (const m of need) n += math.ceil(m.count / 100)
+    return n
+  }
+  // The source is 500 tiles away: every belt of the route is nearer than that; 2 stacks hold 200 belts.
+  const far = prefetchJobs(board, batch, { x: 0, y: 0 }, 500, 0, {}, 2, stacks)
+  eq(far.length, 199, "199 more belts: 200 with the batch's own")
+  eq(far[0].id, ids[1], "nearest first")
+  // A source next door (20 tiles): only the jobs within 20 tiles of the batch.
+  const near = prefetchJobs(board, batch, { x: 0, y: 0 }, 20, 0, {}, 2, stacks)
+  eq(near.length, 19, "x = 1..19")
+  // Held belts count: with 150 in hand, 2 stacks still hold 50 more to fetch beyond them.
+  eq(prefetchJobs(board, batch, { x: 0, y: 0 }, 500, 0, { "transport-belt": 150 }, 1, stacks).length, 249, "held belts reduce the fetch")
+  // Claimed jobs and other kinds are never prefetched.
+  claim(board, [ids[1]], 7, 0)
+  ok(prefetchJobs(board, batch, { x: 0, y: 0 }, 20, 0, {}, 2, stacks).every((j) => j.id !== ids[1]), "a claimed job is skipped")
 })
 
 run("board")

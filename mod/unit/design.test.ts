@@ -156,6 +156,20 @@ test("B66: steam blocks that cannot grow keep their capacity and the excess goes
   ok(two.edges.some((e) => e.to === "power#3" && e.item === "coal"), "the third block gets coal")
 })
 
+test("D65: a module's power demand scales with its utilization, like its inputs", () => {
+  const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 1 })
+  let checked = 0
+  for (const n of d.nodes) {
+    if (n.kind === "power" || n.kind === "labs" || n.capacity <= 0) continue
+    let nameplate = 0
+    for (const r of n.def.rates.inputs) if (r.kind === "power" || r.item === "electricity") nameplate += r.perSecond
+    if (nameplate <= 0) continue
+    near(n.powerW, nameplate * math.min(1, n.need / n.capacity), 1e-6, `${n.role}: ${n.powerW} W of ${nameplate} at ${n.need}/${n.capacity}`)
+    if (n.need < n.capacity - 1e-9) checked++
+  }
+  ok(checked > 0, "at least one module runs below its capacity")
+})
+
 test("B61 provider groups: a shared provider that cannot reach all consumers gets one parallel provider per consumer", () => {
   const keep = { [`coal@${SMELT_FE}`]: "coal*>test", [`coal@${SMELT_CU}`]: "coal*>test" }
   const c = ctx({

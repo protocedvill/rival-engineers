@@ -455,6 +455,51 @@ export function fitMaterials<P>(jobs: Job<P>[], available: Record<string, number
 }
 
 /** Items still needed for `jobs` beyond what is `held` (sorted by item name for determinism). */
+/**
+ * D66 (user, 2026-10-28): ready jobs of `kind` whose materials a member fetching for `batch` should carry as well. A far
+ * source made every batch a full round trip for what one standing spot needs (seed 8646103: ~10 belts per 500-tile
+ * walk, a stall on a 300-belt route). Candidates are nearer to the batch (`to`) than the source is (`reach`), nearest
+ * first (ties by id), and are added while the whole load fits `slots` (`slotsFor` counts inventory stacks).
+ */
+export function prefetchJobs<P>(
+  board: Board<P>,
+  batch: Job<P>[],
+  to: Pos,
+  reach: number,
+  tick: number,
+  held: Record<string, number>,
+  slots: number,
+  slotsFor: (this: void, need: ItemCount[]) => number,
+  accept?: JobFilter<P>,
+): Job<P>[] {
+  const taken: Record<number, boolean> = {}
+  for (const j of batch) taken[j.id] = true
+  const kind = batch[0]?.kind
+  const cands: Job<P>[] = []
+  for (const id of board.active) {
+    const j = board.jobs[id]
+    if (taken[j.id] || j.kind !== kind || j.materials.length === 0 || !isReady(board, j, tick)) continue
+    if (accept !== undefined && !accept(j)) continue
+    if (distance(j.pos, to) < reach) cands.push(j)
+  }
+  cands.sort((a, b) => {
+    const da = distance(a.pos, to)
+    const db = distance(b.pos, to)
+    return da !== db ? da - db : a.id - b.id
+  })
+  const out: Job<P>[] = []
+  const load = [...batch]
+  for (const j of cands) {
+    load.push(j)
+    if (slotsFor(missingMaterials(load, held)) > slots) {
+      load.pop()
+      break
+    }
+    out.push(j)
+  }
+  return out
+}
+
 export function missingMaterials(jobs: Job<unknown>[], held: Record<string, number>): ItemCount[] {
   const need: Record<string, number> = {}
   const names: string[] = []

@@ -472,7 +472,9 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     need: rate,
     capacity: fixedCapacity ?? s.capacity,
     inputs: inputPorts(s.def, util),
-    powerW: powerOf(s.def.rates.inputs),
+    // D65 (user, 2026-10-28): a module draws power in proportion to how busy it is, like its inputs. Nameplate draw
+    // sized power ~7x above the measured load and, once B66 let the excess plan real steam blocks, used up coal patches.
+    powerW: powerOf(s.def.rates.inputs) * util,
     cluster: w.cluster,
     newSite: newSite || undefined,
   }
@@ -663,7 +665,7 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   if (target.mall !== undefined && cluster === 1) {
     const def = ctx.make("curated", { id: target.mall.id })
     const inputs = inputPorts(def, target.mall.utilization)
-    w.nodes.push({ role: "mall", kind: "sink", generator: "curated", params: { id: target.mall.id }, def, item: "mall", need: target.mall.utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs), cluster })
+    w.nodes.push({ role: "mall", kind: "sink", generator: "curated", params: { id: target.mall.id }, def, item: "mall", need: target.mall.utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * target.mall.utilization, cluster })
     for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
   }
   for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
