@@ -612,6 +612,37 @@ export function tapTree(state: LayoutState, rids: RouteId[]): RouteId[] {
   return state.routeOrder.filter((id) => inTree[id])
 }
 
+/**
+ * B91: routes `rids` and every route that depends on one of them, at any depth: its splitter taps (`tapOf`) and the
+ * provider-group joins onto its belt (a side-load `merge` or a `mergeSplitter` on one of its tiles). A route that moves
+ * takes them with it: a join left behind points at a tile the trunk may no longer run straight through (sweep 922c77c
+ * seed 2034469: a growth rerouted a trunk into a curve under a built merge splitter; the splitter cut it). Layout order.
+ */
+export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] {
+  const inTree: Record<string, boolean> = {}
+  const tiles: Record<number, boolean> = {}
+  const add = (id: string): void => {
+    inTree[id] = true
+    for (const k of state.routes[id]?.tiles ?? []) tiles[k] = true
+  }
+  for (const id of rids) if (state.routes[id] !== undefined) add(id)
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const id of state.routeOrder) {
+      if (inTree[id]) continue
+      const r = state.routes[id]
+      if (r === undefined) continue
+      const join = r.merge ?? r.mergeSplitter
+      if ((r.tapOf !== undefined && inTree[r.tapOf]) || (join !== undefined && tiles[tkey(join.x, join.y)])) {
+        add(id)
+        grew = true
+      }
+    }
+  }
+  return state.routeOrder.filter((id) => inTree[id])
+}
+
 export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   const route = state.routes[id]
   if (route === undefined) return []

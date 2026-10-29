@@ -411,4 +411,54 @@ test("B88: rerouting a trunk in place routes its taps again with it; nothing is 
   ok(routesLand(plan.layout, plan.layout.routeOrder.filter((r) => plan.layout.routes[r].conn === "ore-a"), { module: "a", port: "in-ore" }), "the trunk lands on its port")
 })
 
+/** B91: every join (side-load or splitter merge) points at a tile its trunk still runs straight through. */
+function joinsHold(layout: LayoutState): string[] {
+  const out: string[] = []
+  for (const rid of layout.routeOrder) {
+    const r = layout.routes[rid]
+    const join = r.mergeSplitter ?? r.merge
+    if (join === undefined) continue
+    const owner = layout.routeOcc[tkey(join.x, join.y)]
+    const trunk = owner !== undefined ? layout.routes[owner] : undefined
+    if (trunk === undefined || owner === rid) {
+      out.push(`${rid}: no trunk at ${join.x},${join.y}`)
+      continue
+    }
+    const i = trunk.steps.findIndex((st) => st.x === join.x && st.y === join.y)
+    const st = trunk.steps[i]
+    if (st === undefined || st.kind !== "belt" || st.dir !== join.dir) out.push(`${rid}: trunk ${owner} at ${join.x},${join.y} heads ${st?.dir} (${st?.kind}), the join expects ${join.dir}`)
+    else if (r.mergeSplitter !== undefined) {
+      const next = trunk.steps[i + 1]
+      const prev = trunk.steps[i - 1]
+      if (next === undefined || next.dir !== st.dir || prev === undefined || prev.dir !== st.dir) out.push(`${rid}: trunk ${owner} turns at its splitter ${join.x},${join.y}`)
+    }
+  }
+  return out
+}
+
+test("B91: growing a trunk's producer reroutes the splitter merge joined to the trunk too (sweep 922c77c 2034469)", () => {
+  // A growth rerouted a trunk into a curve under a built merge splitter, which then cut the trunk: 2/s of ore made, none
+  // arriving, "nothing missing" for 200 game-min. The joins onto a moved route move with it.
+  const view = oreField(120, 120, 60)
+  const l = newLayout()
+  const ore = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 })
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 50, 15)
+  place(l, "mine", ore, 30, 75)
+  place(l, "mine2", ore, 75, 75)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
+    { id: connectionId("ore~2"), from: { module: "mine2", port: "out" }, to: { module: "smelt", port: "in-ore" }, merge: true },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, POLICY)
+  eq(job.phase, "done", "routed")
+  const splitMerge = job.layout.routeOrder.some((rid) => job.layout.routes[rid].mergeSplitter !== undefined)
+  ok(splitMerge, "the second feed joins with a splitter (P44)")
+  eq(joinsHold(job.layout).length, 0, joinsHold(job.layout).join("; "))
+  const g = planGrowth(job.layout, view, F, POLICY, TIER, "mine", 1)
+  ok(g.ok, `grown: ${g.reason}`)
+  eq([...g.rerouted].sort().join(","), "ore,ore~2", "the trunk and its join rerouted")
+  const bad = joinsHold(g.layout)
+  eq(bad.length, 0, bad.join("; "))
+})
+
 run("grow")

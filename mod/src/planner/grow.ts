@@ -10,7 +10,7 @@ import { ProtoFacts } from "../modules/facts"
 import { BeltTier } from "./capacity"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
 import { FREE, TerrainView, tkey } from "./grid"
-import { findModule, LayoutState, ripRoute } from "./layout"
+import { dependentRoutes, findModule, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, PlanJob, runJob } from "./plan"
 import { HEAD_GROWTH_OPENS_BELT, tryExpand } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -42,11 +42,9 @@ function key(e: EntitySpec): string {
  * Plans growing module `id` of `base` by `units`. The terrain is the faction's (it shows the module and its routes as
  * built): the module's footprint and the tiles of its ripped routes count as free for the growth and the reroute.
  */
-/** A route and, depth first, every splitter tap hanging off it (the route first: a tap is routed onto its root). */
-function tapGroup(layout: LayoutState, rid: RouteId): RouteId[] {
-  const out = [rid]
-  for (const other of layout.routeOrder) if (layout.routes[other]?.tapOf === rid) for (const t of tapGroup(layout, other)) out.push(t)
-  return out
+/** `group` with `root` first (a tap is routed onto its root). */
+function rootFirst(group: RouteId[], root: RouteId): RouteId[] {
+  return [root, ...group.filter((id) => id !== root)]
 }
 
 export function planGrowth(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, id: string, units: number, pole = "small-electric-pole", polePrefix = "poles:grow:", reclaim = false): GrowthPlan {
@@ -72,7 +70,8 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
     // The route and the splitter taps hanging off it (ripRoute rips those too): their entities are picked up, their
     // tiles freed and their connections routed again (seed 11: a tap's belts were left standing, untracked, and the
     // grown coal outpost's drill ghost overlapped them forever).
-    for (const gid of tapGroup(layout, root)) {
+    const group = rootFirst(dependentRoutes(layout, [root]), root)
+    for (const gid of group) {
       const gr = layout.routes[gid]
       if (gr.tapOf !== undefined) taps = true
       for (const k of gr.tiles) routeTiles[k] = true
@@ -81,7 +80,8 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
       // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
       conns.push({ id: gr.conn, from: gr.from, to: gr.to, belt: gr.belt, merge: gr.merge !== undefined || gr.mergeSplitter !== undefined || undefined })
     }
-    for (const removed of ripRoute(layout, root)) ripped.push(removed)
+    // B91: ripRoute takes the taps; the joins onto the group's belts go too.
+    for (const gid of group) for (const removed of ripRoute(layout, gid)) ripped.push(removed)
   }
   // Every other route stays put.
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
@@ -208,8 +208,9 @@ export function maxExpandable(base: LayoutState, terrain: TerrainView, facts: Pr
     while (layout.routes[root]?.tapOf !== undefined) root = layout.routes[root]!.tapOf!
     if (roots[root]) continue
     roots[root] = true
-    for (const gid of tapGroup(layout, root)) for (const k of layout.routes[gid]!.tiles) routeTiles[k] = true
-    for (const removed of ripRoute(layout, root)) void removed
+    const group = dependentRoutes(layout, [root])
+    for (const gid of group) for (const k of layout.routes[gid]!.tiles) routeTiles[k] = true
+    for (const gid of group) for (const removed of ripRoute(layout, gid)) void removed
   }
   const rect = { ...m.rect }
   const view: TerrainView = {

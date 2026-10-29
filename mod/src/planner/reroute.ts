@@ -8,7 +8,7 @@ import type { RouteId } from "../shared/ids"
 import { BuildParts, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
-import { LayoutState, ripRoute, tapTree } from "./layout"
+import { dependentRoutes, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
 
@@ -40,9 +40,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   const seen: Record<string, boolean> = {}
   for (const id of routeIds) {
     if (layout.routes[id] === undefined) continue
-    // The route and its taps (B88: at any depth, as `ripRoute` takes them all): their entities and tiles before they
-    // are ripped.
-    const group: RouteId[] = tapTree(layout, [id])
+    // The route and what depends on it (B88/B91: its taps at any depth, as `ripRoute` takes them, and the provider-group
+    // joins onto its belt): their entities and tiles before they are ripped.
+    const group: RouteId[] = dependentRoutes(layout, [id])
     for (const rid of group) {
       if (seen[rid]) continue
       seen[rid] = true
@@ -53,7 +53,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
       conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined })
     }
-    ripRoute(layout, id)
+    for (const rid of group) ripRoute(layout, rid)
   }
   if (conns.length === 0) return { ok: false, reason: "no route to reroute", layout: base, remove: [], add: [], routes: [] }
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true

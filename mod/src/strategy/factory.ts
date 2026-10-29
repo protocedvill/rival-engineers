@@ -2092,7 +2092,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   const rerouteInPlace = (routes: IDS.RouteId[], why: string): boolean => {
     const t = storage.terrains?.[f.terrain]
     if (t === undefined || routes.length === 0) return false
-    const tree = LO.tapTree(f.layout, routes)
+    const tree = LO.dependentRoutes(f.layout, routes)
     let all = RT.tiers()
     const maxUg = maxUndergroundNow(ctx)
     if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
