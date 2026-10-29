@@ -2762,6 +2762,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B90 | 8033112 (re-sweep) | a whole-patch mine's first-stage pole unreachable from outside its claim and margin: link poles to the edge | `f8e9772` |
 | B91 | 2034469 (re-sweep) | a growth rerouted a trunk but left a splitter merge joined to it; the splitter cut the trunk: reroutes take the joins with them | `66d5329` |
 | B92 | 1264816 (fresh, `f41f5bb`) | a merge splitter stood on a mine's claimed pole tile: merges respect mine claims | `3e1c4d7` |
+| B93 | 1376111 (re-sweep, fresh `3e1c4d7`) | a D55 replacement's connection had the kept old belt's id: no join, "no path" into the port it held; kept routes get their own id | `efacbd6` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2831,7 +2832,9 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b88-r1264816-m60` | `e56150c` | 1264816 from `min-0060` | failed at the cap, 12–16/min: B88's tree drop removed the power plant's coal trunk and both smelter fuel lines at ~70 min, and the design never planned the power fuel again (crew-fuelled 400 game-min; everything short of power) → B88 revised (`233da40`: reroute in place) |
 | `vps-b88b-r1264816-m60` | `233da40` | 1264816 from `min-0060` | stopped at ~182 min: the in-place reroute failed "no merge target" and fell back to the tree drop (→ B89) |
 | `vps-b89-r1264816-m60` | `f41f5bb` | 1264816 from `min-0060` | passed, v1-done at 265 min (B88 revised + B89 validated; one stall 119–128 min, recovered) |
-| `m6-random20-922c77c` | `922c77c` | the full 20-seed re-sweep (B85, B87, B88 revised, P44 a/b) | 13 passed so far (2229258 218, 8646103 201, 5387208 239, 7587711 204, 7718665 273, 3891760 225, 5581724 281, 4361783 226, 4819313 246, 7741326 277, 3088988 250, 1459426 188, 6752307 206 min); failed: 1264816 (cap; → B92), 1376111 (fail fast 301 min; → B93, open), 8033112 (fail fast 93 min; → B90), 2034469 (cap; → B91); 3 running. B90–B92 are older bugs that P44's splitter merges and collectors surfaced. |
+| `m6-random20-922c77c` | `922c77c` | the full 20-seed re-sweep (B85, B87, B88 revised, P44 a/b) | **14/20** (5480563 v1-done at 187 min too; 1677299 and 7625436 failed at the cap with lab clusters short of power, "nothing missing (the layout's poles reach it)", the B92 shape, not confirmed); (2229258 218, 8646103 201, 5387208 239, 7587711 204, 7718665 273, 3891760 225, 5581724 281, 4361783 226, 4819313 246, 7741326 277, 3088988 250, 1459426 188, 6752307 206 min); failed: 1264816 (cap; → B92), 1376111 (fail fast 301 min; → B93, open), 8033112 (fail fast 93 min; → B90), 2034469 (cap; → B91);  B90–B92 are older bugs that P44's splitter merges and collectors surfaced. |
+| `vps-3e1-1376111` | `3e1c4d7` | 1376111, fresh | failed fast at 301 min (B93 reproduced; its failed plans exported this time) |
+| `m6-random20-3e1c4d7` | `3e1c4d7` | the full 20-seed sweep (B89–B92) | running (3 at a time) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
