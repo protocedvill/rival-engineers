@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B96, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B97, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2839,7 +2839,9 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-3e1-1376111` | `3e1c4d7` | 1376111, fresh | failed fast at 301 min (B93 reproduced; its failed plans exported this time) |
 | `vps-b93-1376111` | `efacbd6` | 1376111, fresh | failed fast at 301 min: joined the kept belt now, every candidate sealed (→ B94) |
 | `vps-b94-1376111` | `6afae19` | 1376111, fresh | passed, v1-done at 240 min, no stalls (B93 + B94 validated) |
-| `m6-random20-3e1c4d7` | `3e1c4d7` | the full 20-seed sweep (B89–B92) | running (3 at a time) |
+| `m6-random20-3e1c4d7` | `3e1c4d7` | the full 20-seed sweep (B89–B92) | running; so far 10 passed, failed: 4819313 (cap; → B95), 1376111 (fail fast 301; B93/B94, fixed after this build), 1264816 (cap; → B96) |
+| `vps-6af-1677299` | `6afae19` | 1677299, fresh | passed, v1-done at 243 min (its 922c77c failure is covered by B92–B94) |
+| `vps-386-7625436` | `386eea9` | 7625436, fresh | failed at the cap, ~12/min (→ B97, open) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
