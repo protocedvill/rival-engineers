@@ -1199,7 +1199,9 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     if (ctx.config.frameDumpIntervalTicks > 0) {
       const name = `rival-engineers/failed-plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}`
       RT.exportGraph(entry, `${name}.graph.json`)
-      RT.exportPlanInput(entry, `${name}.input.lua`)
+      // Region radius 384 plans (a far mine or a late cluster) are 768 tiles across: export those up to 800 tiles a side
+      // too, or a failure there leaves nothing to replay (B85 and 1376111 needed capture runs).
+      RT.exportPlanInput(entry, `${name}.input.lua`, 800)
     }
     RT.removePlan(entry.id)
     // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route

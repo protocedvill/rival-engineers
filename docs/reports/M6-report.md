@@ -2861,6 +2861,7 @@ nodes, for B70). Each B-test was checked to fail without its fix.
 | Orphan claim log interval | `strategy/factory.ts` `ORPHAN_LOG_TICKS` | 3600 ticks | B63 diagnostics: how often orphan claim tiles are logged. Log cadence only. **Agent guess.** | no |
 
 | Side-load lane share | `planner/policy.ts` `router.sideLoadLaneShare` | 0.8 | P44 (a): a provider-group merge side-loads only when the consumer port takes at most this share of one lane (6/s on yellow belt), so everything it gets fits one lane whatever lanes the trunk already uses; above it, splitter merges only. Splitter merges are tried first either way. Leaves a margin for uneven delivery. **Agent guess, please confirm.** | no |
+| Failed-plan dump size | `strategy/factory.ts` failed-plan `exportPlanInput(..., 800)` | 800 tiles a side | Soak diagnostics only: radius-384 plans are 768 tiles across and were not exported (400), so their failures could not be replayed without a capture run (B85, 1376111). File size grows to ~2 MB per failed plan. **Agent guess.** | no |
 | Failed-key cooldown | `jobs/keys.ts` `FAILED_KEY_COOLDOWN_TICKS` | 10 game-min | B82: how long a target whose job failed as unreachable stays skipped before the brain or factory queues it again. Long enough that one unreachable tree stops occupying a crew member, short enough that a target that becomes reachable (cleared ground) is retried. **Agent guess, please confirm.** | no |
 
 D65, D66, B66–B71 add no tuning numbers. D68 removed one: P36 (b)'s `FUEL_FALLBACK_ATTEMPTS` (2).
