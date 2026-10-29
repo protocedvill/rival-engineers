@@ -255,6 +255,34 @@ describe("faction conflicts", () => {
     assert(broken === undefined, `route connects again: ${broken}`)
   })
 
+  test("B95: an own underground between a route's underground pair, facing its flow, is an intruder to pick up", () => {
+    // Sweep 3e1c4d7 seed 4819313: an old route's underground stood between a new pair's ends on the same line. The
+    // entrance paired with it, the ore surfaced short of the port, and every repair said "nothing missing".
+    const lab = createLab(32)
+    const a = faction(lab, "intruder", 30, 0)
+    const s = lab.surface
+    const x0 = math.floor(lab.origin.x) + 4
+    const y0 = math.floor(lab.origin.y) + 4
+    const layout = newLayout()
+    const steps = [
+      { kind: "ug-in" as const, x: x0, y: y0, dir: 1 },
+      { kind: "ug-out" as const, x: x0 + 5, y: y0, dir: 1 },
+    ]
+    const r = { id: routeId("route:ug"), conn: connectionId("ug"), item: "iron-ore", to: { module: moduleId("x"), port: "in" }, steps, tiles: [tkey(x0, y0), tkey(x0 + 5, y0)], spans: [], belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: 6, undergrounds: 1, cost: 1, ripped: 0 }
+    layout.routes[r.id] = r as never
+    layout.routeOrder.push(r.id)
+    s.create_entity({ name: "underground-belt", position: { x: x0 + 0.5, y: y0 + 0.5 }, direction: 4 as never, type: "input", force: a.force })
+    s.create_entity({ name: "underground-belt", position: { x: x0 + 5.5, y: y0 + 0.5 }, direction: 4 as never, type: "output", force: a.force })
+    const across = s.create_entity({ name: "underground-belt", position: { x: x0 + 2.5, y: y0 + 0.5 }, direction: 8 as never, type: "input", force: a.force })!
+    let check = checkBuild(s, a.force, layout, { modules: [], routes: [r.id], poles: [] })
+    assert(check.intruders.length === 0, `an underground across the line is no intruder (${check.intruders.length})`)
+    across.destroy()
+    const intruder = s.create_entity({ name: "underground-belt", position: { x: x0 + 3.5, y: y0 + 0.5 }, direction: 4 as never, type: "output", force: a.force })!
+    check = checkBuild(s, a.force, layout, { modules: [], routes: [r.id], poles: [] })
+    assert(check.missing.length === 0, `the pair stands (${check.missing.length} missing)`)
+    assert(check.intruders.length === 1 && check.intruders[0] === intruder, `the underground inside the span (${check.intruders.length})`)
+  })
+
   test("a module whose ground another force took is given up: built entities deconstructed, parts dropped", () => {
     const lab = createLab(64)
     const a = faction(lab, "module", 30, 0)

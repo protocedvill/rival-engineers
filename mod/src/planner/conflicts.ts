@@ -42,6 +42,12 @@ export interface BuildCheck {
    * or place (an older copy of a rerouted connection): the ghost can't be created over them. Pick them up, then place.
    */
   stale: { spec: EntitySpec; entities: LuaEntity[] }[]
+  /**
+   * B95: the faction's own undergrounds between a route's underground pair, on its line and facing its flow: the
+   * entrance pairs with the nearest such exit, so the route's items surface there (sweep 3e1c4d7 seed 4819313: an old
+   * route's underground between a new pair's ends; 2/s of ore made, none arriving, "nothing missing"). Pick them up.
+   */
+  intruders: LuaEntity[]
 }
 
 const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
@@ -157,7 +163,30 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
     const b = foreign[0]
     conflicts.push({ kind: partKind(layout, e.owner), id: e.owner, blocker: `${b.name === "entity-ghost" ? `${b.ghost_name} ghost` : b.name} of ${b.force.name}`, at: { x: e.x, y: e.y } })
   }
-  return { missing, conflicts, misdirected, stale }
+  const intruders: LuaEntity[] = []
+  const seenIntruder: Record<number, boolean> = {}
+  for (const rid of parts.routes) {
+    const r = layout.routes[rid]
+    if (r === undefined) continue
+    for (let i = 0; i + 1 < r.steps.length; i++) {
+      const a = r.steps[i]
+      const b = r.steps[i + 1]
+      if (a.kind !== "ug-in" || b.kind !== "ug-out") continue
+      const dx = b.x === a.x ? 0 : b.x > a.x ? 1 : -1
+      const dy = b.y === a.y ? 0 : b.y > a.y ? 1 : -1
+      const n = math.abs(b.x - a.x) + math.abs(b.y - a.y)
+      for (let t = 1; t < n; t++) {
+        const x = a.x + dx * t
+        const y = a.y + dy * t
+        for (const u of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "underground-belt", force })) {
+          if (u.unit_number === undefined || seenIntruder[u.unit_number] || u.direction !== a.dir * 4) continue
+          seenIntruder[u.unit_number] = true
+          intruders.push(u)
+        }
+      }
+    }
+  }
+  return { missing, conflicts, misdirected, stale, intruders }
 }
 
 /**

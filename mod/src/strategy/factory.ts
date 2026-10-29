@@ -2270,7 +2270,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
     for (const s of own.missing) check.missing.push(s)
   }
-  if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0) {
+  if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0 && check.intruders.length === 0) {
     // B83: every entity stands, but the edge's routes do not bring items to the consumer's port in the layout (a
     // side-load stub onto a trunk that is gone). Its own routes are dropped (belts picked up) with the edge, and the
     // design plans the connection again.
@@ -2321,6 +2321,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   const clearJobs: IDS.JobId[] = []
   for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
   for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+  for (const e of check.intruders) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
   const g: FactoryGoal = {
     id: IDS.goalId(`g${f.nextGoal++}`),
@@ -2341,6 +2342,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   f.goals.push(g)
   let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
   if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
+  if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
   say(`goal ${g.id} re-places ${check.missing.length} entities${turned}${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
 }
 
