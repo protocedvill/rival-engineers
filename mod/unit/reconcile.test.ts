@@ -402,4 +402,21 @@ test("B87: a module short of its own intermediate is traced through its belt inp
   eq(g2.nodes.red.cause!.kind, "external", "nothing else to trace")
 })
 
+test("B96: a shared producer's other belts carry the rest of its output: not 'filling', the producer flat out grows", () => {
+  // Sweep 3e1c4d7 seed 1264816: the iron smelter made 0.633/s for three consumers; 0.3/s reached the green assembler, the
+  // rest the others. Every evaluation called the green belt "filling" (0.3 < 0.75 x 0.633): no remedy for 300 game-min.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 0.6, st({ working: 0.97 }), 0.633)
+  node(g, "green", "module", "logistic-science-pack", 0.2, st({ working: 0.3, starved: 0.7 }), 0.06, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "logistic-science-pack", perSecond: 0.06 }], machines: 2, states: st({ working: 0.3, starved: 0.7 }), missing: { "iron-plate": 0.7 } },
+  })
+  node(g, "red", "module", "automation-science-pack", 0.2, st({ working: 0.95 }), 0.2)
+  belt(g, "to-green", "smelt", "green", "iron-plate", 0.5, { rate: 0.3, from: 0, to: 0 })
+  belt(g, "to-red", "smelt", "red", "iron-plate", 0.4, { rate: 0.333, from: 0, to: 0 })
+  const { r } = settle(g)
+  ok(g.nodes.green.cause!.what !== "filling", `not filling: ${g.nodes.green.cause!.what} (${g.nodes.green.cause!.why})`)
+  eq(g.nodes.green.cause!.what, "undersized", g.nodes.green.cause!.why)
+  eq(r.remedies.length > 0 && r.remedies[0].kind === "grow" && r.remedies[0].node === "smelt", true, "grow the shared smelter")
+})
+
 run("reconcile")

@@ -272,8 +272,14 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${label(prod)} makes ${fmt(made)}/s of ${item} but none reaches ${label(n)}` })
         return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: nothing arrives while ${label(prod)} makes ${fmt(made)}/s` }
       }
-      if (made > 0 && (e.measuredRate ?? 0) < p.arrivedShare * made) {
-        return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item} but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+      // B96 (sweep 3e1c4d7 seed 1264816): a shared producer's other belts of this item carry the rest of its output;
+      // only what they leave is this belt's to bring (0.3/s of 0.633 reached one of three consumers: "filling" for 300
+      // game-min, no remedy).
+      let others = 0
+      for (const o of edgesFrom(t.g, prod.id)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
+      const forThis = math.max(0, made - others)
+      if (forThis > 0 && (e.measuredRate ?? 0) < p.arrivedShare * forThis) {
+        return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
       }
       if (shares(prod).working >= p.busyShare) {
         // Unless one of this producer's belts is already full: then the group remedy below covers it, and growing the
