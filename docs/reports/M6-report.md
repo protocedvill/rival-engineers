@@ -2854,6 +2854,7 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b99-7625436` | `a48616b` | 7625436 from `min-0260` | passed, v1-done at 280 min, no stalls: the alias trace sent a repair to cluster 3's fuel belt at once, and its crew cleared the tree, picked up the stray underground and placed the planned belt |
 | `m6-random20-628fa29` | `628fa29` | the full 20-seed sweep (B93–B99) | running; so far 6 passed (5387208, 8646103, 7587711, 3891760, 5581724, 4819313); failed: 2229258 (cap; → B100), 7718665 (cap; → B101) |
 | `vps-b100-2229258` | B100 fix on `628fa29` | 2229258 from `min-0120` | passed, v1-done at 188 min, no stalls (g19 grew the same smelter, now picking up the 9 belts that changed item) |
+| `vps-b101-7718665` | `0794504` | 7718665 from `min-0040` | passed, v1-done at 254 min, no stalls; growth g8 now completes (grew power at tick 215040). AI 3.1 ms/tick (planner 0.92 average, one interval at 26 ms/tick at 154 min; crew 1.7), measured with 4 instances running: to recheck with `-j 1` |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
