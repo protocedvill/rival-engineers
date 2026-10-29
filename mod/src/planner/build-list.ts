@@ -20,11 +20,30 @@ export interface EntitySpec {
   owner: string
   /** D42: a module buffer chest (its slots are limited when built). */
   buffer?: boolean
+  /**
+   * B100: what the entity carries, for rebuild diffs: a route's item, or `module:<id>` for a module's entities. A belt
+   * that carries something else after a rebuild is picked up and placed again, so its old items go with it.
+   */
+  carries?: string
+}
+
+/** Diff key: an entity stands unchanged only with the same name, place, direction, underground end and carried item. */
+function diffKey(e: EntitySpec): string {
+  return string.format("%s@%g,%g:%g:%s:%s", e.name, e.x, e.y, e.dir, e.ioType ?? "", e.carries ?? "")
+}
+
+/** What a rebuild from `before` to `after` picks up and builds (an entity in both, unchanged, stays). */
+export function entityDiff(before: EntitySpec[], after: EntitySpec[]): { remove: EntitySpec[]; add: EntitySpec[] } {
+  const had: Record<string, boolean> = {}
+  for (const e of before) had[diffKey(e)] = true
+  const has: Record<string, boolean> = {}
+  for (const e of after) has[diffKey(e)] = true
+  return { remove: before.filter((e) => !has[diffKey(e)]), add: after.filter((e) => !had[diffKey(e)]) }
 }
 
 export function moduleEntities(layout: LayoutState): EntitySpec[] {
   const out: EntitySpec[] = []
-  for (const m of layout.modules) for (const e of m.def.entities) out.push(worldEntity(e, m.origin, m.id))
+  for (const m of layout.modules) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
   return out
 }
 
@@ -37,11 +56,11 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
     const steps = r.blocker ? [...r.steps, r.blocker] : r.steps
     for (const s of steps) {
       if (s.kind === "splitter") {
-        splitters.push({ name: r.splitter, x: (s.x + s.x2!) / 2 + 0.5, y: (s.y + s.y2!) / 2 + 0.5, dir: dirValue(s.dir), owner: id })
+        splitters.push({ name: r.splitter, x: (s.x + s.x2!) / 2 + 0.5, y: (s.y + s.y2!) / 2 + 0.5, dir: dirValue(s.dir), owner: id, carries: r.item })
         replaced[tkey(s.x, s.y)] = true
         continue
       }
-      const spec: EntitySpec = { name: s.kind === "belt" ? r.belt : r.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: id }
+      const spec: EntitySpec = { name: s.kind === "belt" ? r.belt : r.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: id, carries: r.item }
       if (s.kind === "ug-in") spec.ioType = "input"
       if (s.kind === "ug-out") spec.ioType = "output"
       out.push(spec)
@@ -71,7 +90,7 @@ export function partEntities(layout: LayoutState, parts: BuildParts): EntitySpec
   const out: EntitySpec[] = []
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  for (const m of layout.modules) if (mods[m.id]) for (const e of m.def.entities) out.push(worldEntity(e, m.origin, m.id))
+  for (const m of layout.modules) if (mods[m.id]) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
   const routes: Record<string, boolean> = {}
   for (const id of parts.routes) routes[id] = true
   for (const e of routeEntities(layout)) if (routes[e.owner]) out.push(e)

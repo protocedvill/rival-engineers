@@ -8,7 +8,7 @@ import { expandMoves } from "../modules/build"
 import type { PoleId, RouteId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier } from "./capacity"
-import { BuildParts, EntitySpec, partEntities } from "./build-list"
+import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { FREE, TerrainView, tkey } from "./grid"
 import { dependentRoutes, findModule, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, PlanJob, runJob } from "./plan"
@@ -164,12 +164,9 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
   }
   const parts: BuildParts = { modules: [id], routes, poles: newPoles }
   const after = partEntities(job.layout, parts)
-  const had: Record<string, boolean> = {}
-  for (const e of before) had[key(e)] = true
-  const has: Record<string, boolean> = {}
-  for (const e of after) has[key(e)] = true
-  const remove = before.filter((e) => !has[key(e)])
-  let add = after.filter((e) => !had[key(e)])
+  const d = entityDiff(before, after)
+  const remove = d.remove
+  let add = d.add
   // An evicted pole the new lines place again where it stands stays (neither picked up nor rebuilt).
   const added: Record<string, boolean> = {}
   for (const e of add) added[key(e)] = true

@@ -3,7 +3,7 @@ import { transformModule } from "../src/modules/geometry"
 import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
-import { factoryReserveTiles, partEntities } from "../src/planner/build-list"
+import { entityDiff, factoryReserveTiles, partEntities } from "../src/planner/build-list"
 import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
 import { checkLayout, checkLayoutIndexes, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts, tapTree } from "../src/planner/layout"
@@ -459,6 +459,27 @@ test("B91: growing a trunk's producer reroutes the splitter merge joined to the 
   eq([...g.rerouted].sort().join(","), "ore,ore~2", "the trunk and its join rerouted")
   const bad = joinsHold(g.layout)
   eq(bad.length, 0, bad.join("; "))
+})
+
+test("B100: a belt that carries another item after a rebuild is picked up and placed again (its old items go with it)", () => {
+  // Soak m6-random20-628fa29 seed 2229258: a smelter column's growth reused its old fuel belt (same tiles, same
+  // direction) for its iron output route; the coal on it flowed into the green and red science modules and jammed both
+  // for 270 game-min (nothing there takes coal).
+  const belt = (x: number, carries: string, owner: string) => ({ name: "transport-belt", x: x + 0.5, y: 0.5, dir: 4, owner, carries })
+  const before = [belt(0, "coal", "route:fuel"), belt(1, "coal", "route:fuel"), belt(2, "module:smelt", "smelt")]
+  const after = [belt(0, "iron-plate", "route:out"), belt(1, "coal", "route:fuel#kept"), belt(2, "iron-plate", "route:out")]
+  const d = entityDiff(before, after)
+  eq(d.remove.map((e) => e.x).join(","), "0.5,2.5", "the belts whose item changes are picked up")
+  eq(d.add.map((e) => e.x).join(","), "0.5,2.5", "and placed again")
+  // The build lists say what each belt carries: its route's item, or its module.
+  const view = free(90, 90)
+  const l = newLayout()
+  place(l, "smelt", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 40, 20)
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 44, 60)
+  const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: 45, y: 45 }, region: { x: 0, y: 0, w: 90, h: 90 } }, TIER, l), view, F, POLICY)
+  const es = partEntities(job.layout, { modules: ["smelt"], routes: [...job.layout.routeOrder], poles: [] })
+  ok(es.some((e) => e.owner === "smelt" && e.carries === "module:smelt"), "module entities carry their module")
+  ok(es.some((e) => e.owner !== "smelt" && e.carries === "iron-ore"), "route entities carry the route's item")
 })
 
 run("grow")

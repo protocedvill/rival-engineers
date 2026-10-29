@@ -5,7 +5,7 @@
 
 import { ProtoFacts } from "../modules/facts"
 import type { RouteId } from "../shared/ids"
-import { BuildParts, EntitySpec, partEntities } from "./build-list"
+import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
 import { dependentRoutes, LayoutState, ripRoute } from "./layout"
@@ -21,10 +21,6 @@ export interface ReroutePlan {
   add: EntitySpec[]
   /** Route ids of the new layout that replace the ripped ones (build parts). */
   routes: RouteId[]
-}
-
-function key(e: EntitySpec): string {
-  return string.format("%s@%g,%g:%g:%s", e.name, e.x, e.y, e.dir, e.ioType ?? "")
 }
 
 /**
@@ -80,9 +76,6 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   for (const rid of routes) job.layout.routes[rid].fixed = true
   const parts: BuildParts = { modules: [], routes, poles: [] }
   const after = partEntities(job.layout, parts)
-  const had: Record<string, boolean> = {}
-  for (const e of before) had[key(e)] = true
-  const has: Record<string, boolean> = {}
-  for (const e of after) has[key(e)] = true
-  return { ok: true, layout: job.layout, remove: before.filter((e) => !has[key(e)]), add: after.filter((e) => !had[key(e)]), routes }
+  const d = entityDiff(before, after)
+  return { ok: true, layout: job.layout, remove: d.remove, add: d.add, routes }
 }
