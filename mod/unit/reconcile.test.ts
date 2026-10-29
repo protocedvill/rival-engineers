@@ -196,6 +196,25 @@ test("B98: a depleted outpost whose D67 handover is under way gets no deplete re
   eq(r.remedies.filter((x) => x.node === "mine").length, 0, "no remedy: the handover replaces it")
 })
 
+test("B99: a consumer fed by a node folded into a shared mine is traced through that mine (backed up, nothing arrives → repair)", () => {
+  // Soak vps-b97b-7625436: cluster 3's coal came from n41, an alias of the power plant's whole-patch coal mine n15. n41
+  // has no machines of its own, so it was never measured ("unknown") and the unfuelled smelter never got a remedy;
+  // n15 was backed up behind a stray underground on its trunk.
+  const g = newGraph()
+  node(g, "mine", "outpost", "coal", 2, st({ working: 0.05, blocked: 0.95 }), 0)
+  node(g, "alias", "outpost", "coal", 0.2, st({}), 0, { alias: moduleId("mine"), measured: undefined })
+  node(g, "smelt", "module", "iron-plate", 1, st({ unfuelled: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 4, states: st({ unfuelled: 1 }), missing: { coal: 1 } },
+  })
+  node(g, "pw", "power", "electricity", 1, st({ working: 1 }), 1)
+  belt(g, "trunk", "mine", "pw", "coal", 1.5, { rate: 0, from: 1, to: 0 })
+  belt(g, "fuel", "alias", "smelt", "coal", 0.2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g, 2)
+  eq(g.nodes.smelt.status, "unfuelled", "smelter unfuelled")
+  ok(g.nodes.smelt.cause !== undefined && g.nodes.smelt.cause.what === "broken", `traced to a broken belt: ${g.nodes.smelt.cause?.why}`)
+  ok(r.remedies.some((x) => x.kind === "repair" && x.edge === "fuel"), `the fuel belt is repaired: ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
+})
+
 test("a belt still filling: the producer makes much more than arrives → wait (no grow)", () => {
   const g = chain(st({ working: 0.97 }), 2, st({ working: 0.3, starved: 0.7 }), 0.4, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.4, from: 0, to: 0 })

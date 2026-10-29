@@ -620,15 +620,18 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
     action.stats.items = gained
     return gained > 0 ? "done" : fail("target-invalid", "entity vanished")
   }
+  // B99: while a covering tree or rock out of reach is in the way, walk to it instead of the target (as `stepMine`).
+  const goal = action.obstacle !== undefined && action.obstacle.valid && action.obstacleFar ? action.obstacle : entity
   if (action.phase === "approach") {
-    const result = approach(character, action, { kind: "entity", entity }, entity.position, config, tick)
+    const result = approach(character, action, { kind: "entity", entity: goal }, goal.position, config, tick)
     if (result !== "done") return result
     startWork(action, tick)
   }
-  if (!character.can_reach_entity(entity)) {
+  if (!character.can_reach_entity(goal)) {
     action.phase = "approach"
     return "running"
   }
+  action.obstacleFar = undefined
   if (action.item && !character.can_insert({ name: action.item, count: 1 })) return fail("inventory-full", action.item)
   if (action.obstacle !== undefined && !action.obstacle.valid) {
     rescanGone(action.obstacleBox)
@@ -641,6 +644,13 @@ function stepPickUp(character: LuaEntity, action: ActionRecord, spec: Extract<Ac
   if (stalled(action, (action.cleared ?? 0) + character.character_mining_progress, config, tick)) return fail("stalled", "pick-up made no progress")
   const step = mineTick(character, entity, action)
   if (step === "refused") return fail("not-minable", "a ghost or another entity covers the target")
-  if (step !== "mining") return fail("unreachable", `${step.approach.name} in front of it is out of reach`)
+  if (step !== "mining") {
+    action.obstacle = step.approach
+    action.obstacleBox = boxOf(step.approach)
+    action.obstacleFar = true
+    character.mining_state = { mining: false }
+    action.phase = "approach"
+    action.walk = undefined
+  }
   return "running"
 }

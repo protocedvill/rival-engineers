@@ -30,6 +30,9 @@ import { feed, followRoute } from "./route-lab"
 const SPEED = 100
 let speed = 1
 let seq = 0
+// Faction names restart each test: a destroyed faction's force is never freed (the engine has 64), so the next test
+// reuses it instead of creating another (the T2 shard holding this file ran out of forces).
+let factionSeq = 0
 
 /** Test cadence: measure every second, a 10 s window, 5 s probes, no warm-up, 2 confirmations. */
 function fastReconciler(): void {
@@ -44,7 +47,7 @@ function fastReconciler(): void {
 
 /** A faction whose bootstrap brain never thinks (the test drives the reconciler), with a factory state. */
 function testFaction(lab: Lab, dx: number, dy: number): { faction: FactionState; f: FactoryState } {
-  const faction = createFaction(`rec-${++seq}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
+  const faction = createFaction(`rec-${++factionSeq}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
   const brain = startBootstrap(faction, at(lab, dx, dy))
   brain.nextThink = math.huge
   const f = startFactory(faction)
@@ -210,6 +213,7 @@ describe("M5b reconciler", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     fastReconciler()
+    factionSeq = 0
   })
 
   test("a deliberately starved module: gears ← smelter ← unpowered outpost is starved, root cause the outpost", () => {

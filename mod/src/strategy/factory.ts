@@ -888,7 +888,12 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       if (e.ioType !== undefined) params.type = e.ioType
       if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
       const gh = ctx.surface.create_entity(params as never)
-      if (gh === undefined) continue
+      if (gh === undefined) {
+        // B99: say so (a clear job that failed leaves its entity standing here, and the goal ends with nothing placed).
+        const there = ctx.surface.find_entities_filtered({ position: { x: e.x, y: e.y }, radius: 0.4, force: ctx.faction.force })[0]
+        log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${e.name} at ${e.x},${e.y}${there !== undefined ? ` (${there.name} stands there)` : ""}`)
+        continue
+      }
       if (e.buffer) registerBuffer(ctx.surface, ctx.faction.force, gh)
       b.ghosts.push(gh)
       markDirty(ctx.faction.surface, gh.bounding_box.left_top, gh.bounding_box.right_bottom)

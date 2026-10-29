@@ -223,9 +223,24 @@ function label(n: LogicalNode): string {
   return `${n.id} (${n.role})`
 }
 
+/**
+ * B99: the node whose machines make `n`'s output: a node folded into a shared whole-patch mine (`alias`, D52/B78) has
+ * none of its own and is never measured; that mine's status and output are its own.
+ */
+function physicalNode(g: LogicalGraph, n: LogicalNode): LogicalNode {
+  return n.alias !== undefined ? (g.nodes[n.alias] ?? n) : n
+}
+
+/** The belts `prod`'s machines feed: its own and those of the nodes folded into it. */
+function beltsFrom(g: LogicalGraph, prod: LogicalNode): LogicalEdge[] {
+  const out = edgesFrom(g, prod.id)
+  for (const id of g.nodeOrder) if (g.nodes[id].alias === prod.id) for (const e of edgesFrom(g, id)) out.push(e)
+  return out
+}
+
 /** Whether any belt from `prod` carrying `item` is already at capacity (the group remedy owns that case). */
 function anyFull(g: LogicalGraph, prod: LogicalNode, item: string, tick: number, p: ReconcileParams): boolean {
-  for (const o of edgesFrom(g, prod.id)) {
+  for (const o of beltsFrom(g, prod)) {
     if (o.kind !== "belt" || o.item !== item || o.from === undefined) continue
     if (edgeVerdict(o, tick, p) === "full") return true
   }
@@ -246,8 +261,9 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
     }
     for (const e of edges) {
       if (e.from === undefined) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, supplied from outside the graph` }
-      const prod = t.g.nodes[e.from]
-      if (prod === undefined) continue
+      const own = t.g.nodes[e.from]
+      if (own === undefined) continue
+      const prod = physicalNode(t.g, own)
       if (prod.lifecycle !== "built") return { kind: "building", id: prod.id, what: "under construction", why: `${item} comes from ${label(prod)}, still being built` }
       const v = edgeVerdict(e, t.input.tick, p)
       if (v === "stale") return wantProbe(t, e)
@@ -258,7 +274,7 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         // assigns the residual consumers to a parallel role with merge side-loads). A point-to-point belt is a
         // single-route sizing decision, which the planner's overflow choice owns; the reconciler stays out of it.
         let shared = 0
-        for (const o of edgesFrom(t.g, prod.id)) if (o.kind === "belt" && o.item === item) shared++
+        for (const o of beltsFrom(t.g, prod)) if (o.kind === "belt" && o.item === item) shared++
         if (shared > 1) remedy(t, { key: `parallel:${prod.id}`, kind: "parallel", node: prod.id, why })
         return { kind: "edge", id: e.id, what: "at-capacity", why }
       }
@@ -281,7 +297,7 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       // only what they leave is this belt's to bring (0.3/s of 0.633 reached one of three consumers: "filling" for 300
       // game-min, no remedy).
       let others = 0
-      for (const o of edgesFrom(t.g, prod.id)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
+      for (const o of beltsFrom(t.g, prod)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
       const forThis = math.max(0, made - others)
       if (forThis > 0 && (e.measuredRate ?? 0) < p.arrivedShare * forThis) {
         return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
@@ -354,7 +370,7 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
     return { kind: "edge", id: pe.id, what: "not connected", why: `${label(n)} lacks power while ${label(pw)} has spare capacity` }
   }
   if (n.status === "backed-up") {
-    const outs = edgesFrom(t.g, n.id).filter((e) => e.kind === "belt")
+    const outs = beltsFrom(t.g, n).filter((e) => e.kind === "belt")
     if (outs.length === 0) return { kind: "demand", id: n.id, what: "no consumer", why: `${label(n)}: nothing in the graph takes its output` }
     for (const e of outs) {
       const c = t.g.nodes[e.to]
