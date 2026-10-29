@@ -14,7 +14,7 @@ import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
-import { findModule, LayoutState, removeModule, ripRoute } from "./layout"
+import { findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
@@ -188,6 +188,56 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
     }
   }
   return { missing, conflicts, misdirected, stale, intruders }
+}
+
+/** Item names on one transport line of a belt entity. */
+function lineItems(e: LuaEntity, line: number): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const it of e.get_transport_line(line).get_contents()) out[it.name] = true
+  return out
+}
+
+/**
+ * B107: the module's own belts downstream of its input port `port` (followed in the world, inside the module's rect)
+ * where another of its input items fills both lanes: the port's item has no lane left there. Sweep 628fa29 seed
+ * 1264816: a smelter column grew, its fuel arrived before the new ore side-load belt stood, the merge tile curved and
+ * put coal on both lanes; 10 of 12 furnaces never saw ore again and every repair said "nothing missing". Picking the
+ * belts up and placing them again empties them.
+ */
+export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string): { spec: EntitySpec; entity: LuaEntity }[] {
+  const m = findModule(layout, module)
+  const p = m !== undefined ? findPort(m, port) : undefined
+  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return []
+  const others: Record<string, boolean> = {}
+  for (const q of m.def.ports) if (q.kind === "belt-in" && q.item !== undefined && q.item !== p.item) others[q.item] = true
+  const specs: Record<string, EntitySpec> = {}
+  for (const e of partEntities(layout, { modules: [m.id], routes: [], poles: [] })) specs[string.format("%s@%g,%g", e.name, e.x, e.y)] = e
+  const inside = (e: LuaEntity): boolean => e.position.x > m.rect.x && e.position.x < m.rect.x + m.rect.w && e.position.y > m.rect.y && e.position.y < m.rect.y + m.rect.h
+  const t = portTile(m, p)
+  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const seen: Record<number, boolean> = {}
+  let todo = findEntities(surface, { position: { x: t.x + 0.5, y: t.y + 0.5 }, type: BELT_TYPES, force, limit: 1 })
+  while (todo.length > 0) {
+    const e = todo.pop()!
+    if (!e.valid || e.unit_number === undefined || seen[e.unit_number] || !inside(e)) continue
+    seen[e.unit_number] = true
+    const spec = specs[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]
+    if (spec !== undefined) {
+      const a = lineItems(e, 1)
+      const b = lineItems(e, 2)
+      for (const [item] of pairs(others)) {
+        if (a[item] && b[item]) {
+          out.push({ spec, entity: e })
+          break
+        }
+      }
+    }
+    if (e.type === "underground-belt" && e.belt_to_ground_type === "input") {
+      const n = e.neighbours as LuaEntity | undefined
+      if (n !== undefined) todo.push(n)
+    } else for (const o of e.belt_neighbours.outputs) todo.push(o)
+  }
+  return out
 }
 
 /**

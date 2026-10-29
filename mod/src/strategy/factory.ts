@@ -18,7 +18,7 @@ import { preparePlanDelta } from "../planner/plan-delta"
 import type { PlanDelta } from "../planner/plan-delta"
 import { recordDiagnostic } from "../diagnostic-events"
 import * as IDS from "../shared/ids"
-import { abandonParts, applyDiff, obstaclesFor } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, obstaclesFor } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest, portFedByOther } from "../planner/plan"
 import { sealedInputs } from "../planner/placement"
@@ -27,7 +27,6 @@ import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { researchGoal, startResearch } from "./research-queue"
 import { newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
-import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
 import * as FU from "./fuel"
@@ -2297,6 +2296,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
   } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
   const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
+  let clogged: { spec: EntitySpec; entity: LuaEntity }[] = []
   if (e.kind === "power") {
     // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing
     // ones are re-placed like line poles. Never their machines (D49).
@@ -2348,8 +2348,16 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     // B67: with every planned pole standing, say whether the plan itself leaves the consumer off the network (a layout
     // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
     const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0
-    say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
-    return
+    // B107: every piece stands, but another input fills both lanes of the consumer's belts past this port: they are
+    // picked up (emptied) and placed again.
+    if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
+      const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
+      clogged = cloggedBelts(ctx.surface, ctx.faction.force, f.layout, LG.connectModule(f.graph, e.to, inLayout) ?? e.to, e.toPort)
+    }
+    if (clogged.length === 0) {
+      say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
+      return
+    }
   }
   // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
   // B56: so are the faction's own stale belt pieces standing where a missing route piece goes.
@@ -2357,6 +2365,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
   for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   for (const e of check.intruders) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+  for (const c of clogged) if (clearJobFor(ctx.faction, c.entity) === undefined) clearJobs.push(addClearJob(ctx.faction, c.entity, ctx.config.factoryBuildPriority))
   const g: FactoryGoal = {
     id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "repair",
@@ -2372,12 +2381,13 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     rounds: 0,
     reason: r.why,
     // B101: the missing pieces too go through the clear phase (trees in their way are cleared before their ghosts).
-    growBuild: { phase: "clear", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec), ...check.missing], ghosts: [], placeJobs: [] },
+    growBuild: { phase: "clear", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec), ...check.missing, ...clogged.map((c) => c.spec)], ghosts: [], placeJobs: [] },
   }
   f.goals.push(g)
   let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
   if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
   if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
+  if (clogged.length > 0) turned += `, empties ${clogged.length} belt(s) of ${clogged[0].spec.owner} where another input fills both lanes (first at ${clogged[0].spec.x},${clogged[0].spec.y}) (B107)`
   say(`goal ${g.id} re-places ${check.missing.length} entities${turned}`)
 }
 

@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, staleUnderRoutes } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, staleUnderRoutes } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -255,6 +255,50 @@ describe("faction conflicts", () => {
     revive(d.ghosts)
     const broken = followRoute(s, layout, layout.routes["route:ore"])
     assert(broken === undefined, `route connects again: ${broken}`)
+  })
+
+  test("B107: another input filling both lanes past a module's input port is found; picked up and placed again, the belts are empty", () => {
+    // Sweep 628fa29 seed 1264816: a smelter column grew; its coal arrived before the new ore side-load belt stood, the
+    // merge tile curved and filled the ore lane with coal. 10 of 12 furnaces starved for 400 game-min, "nothing missing".
+    const lab = createLab(64)
+    const a = faction(lab, "clog", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const m = findModule(layout, "smelt")!
+    const belts = partEntities(layout, { modules: [m.id], routes: [], poles: [] }).filter((e) => e.name === "transport-belt")
+    const beltAt = (x: number, y: number) => s.find_entities_filtered({ name: "transport-belt", position: { x, y }, force: a.force })[0]
+    const fill = (x: number, y: number, item: string, lines: number[]) => {
+      const b = beltAt(x, y)
+      for (const li of lines) for (let k = 0; k < 4; k++) b.get_transport_line(li).insert_at_back({ name: item, count: 1 })
+    }
+    const ox = m.origin.x
+    const oy = m.origin.y
+    const H = m.def.footprint.h
+    const yt = H - 2
+    // The normal state: coal on both lanes of the fuel port, coal and ore on the two lanes of the central belt,
+    // plates on both lanes of the output belt.
+    fill(ox + 4.5, oy + H - 0.5, "coal", [1, 2])
+    fill(ox + 5.5, oy + 3.5, "coal", [1])
+    fill(ox + 5.5, oy + 3.5, "iron-ore", [2])
+    fill(ox + 3.5, oy + 0.5, "iron-plate", [1, 2])
+    assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore").length === 0, "a clean column has no clogged belt")
+    // Coal on both lanes of the merge tile and two central belts: the ore has no lane there.
+    const clog = [{ x: ox + 5.5, y: oy + yt + 0.5 }, { x: ox + 5.5, y: oy + yt - 0.5 }, { x: ox + 5.5, y: oy + 2.5 }]
+    for (const c of clog) fill(c.x, c.y, "coal", [1, 2])
+    const found = cloggedBelts(s, a.force, layout, "smelt", "in-ore")
+    const at = found.map((c) => `${c.spec.x},${c.spec.y}`).sort()
+    const want = clog.map((c) => `${c.x},${c.y}`).sort()
+    assert(serpent.line(at) === serpent.line(want), `clogged ${serpent.line(at)}, want ${serpent.line(want)}`)
+    assert(found.every((c) => belts.indexOf(c.spec) >= 0 || c.spec.owner === m.id), "the clogged pieces are the module's")
+    // Coal is the fuel port's own item: from there nothing is clogged.
+    assert(cloggedBelts(s, a.force, layout, "smelt", "in-fuel").length === 0, "the fuel port's own item clogs nothing")
+    // The crew picks them up (their items go with them); placed again, they are empty and nothing is clogged.
+    for (const c of found) c.entity.destroy()
+    const d = applyDiff(s, a, [], found.map((c) => c.spec), {})
+    assert(d.failed.length === 0, `ghosts: ${d.failed.join("; ")}`)
+    revive(d.ghosts)
+    for (const c of clog) assert(beltAt(c.x, c.y).get_transport_line(1).get_item_count() + beltAt(c.x, c.y).get_transport_line(2).get_item_count() === 0, `belt at ${c.x},${c.y} empty`)
+    assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore").length === 0, "nothing clogged after the flush")
   })
 
   test("B95: an own underground between a route's underground pair, facing its flow, is an intruder to pick up", () => {
