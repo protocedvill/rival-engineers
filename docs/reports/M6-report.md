@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B99, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B101, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2769,6 +2769,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B97 | 7625436, 1459426 | a built parallel provider dropped out of the design when its group changed and starved: the design keeps built providers' consumers first (user decision "Built first") | `5004e99` |
 | B98 | 2034469 (sweep `3e1c4d7`) | a depleted mine being handed over (D67) re-planned a 60-s in-patch move every measurement and discarded it ("wait"): ~700× slowdown. The handover owns the depletion; a waiting growth is not replanned until its blocker is built | `e92352a` |
 | B99 | 7625436 (on `628371c`) | a stray underground dead-ended the power plant's second coal trunk (lab cluster 3 unfuelled for 300 min): the pick-up that should remove it failed on a covering tree out of reach; pick-ups now walk to it like mining does. The reconciler also traces a node folded into a shared mine through that mine | `a48616b` |
+| B100 | 2229258 (sweep `628fa29`) | a growth reused an old fuel belt, coal still on it, for a plate route: the coal jammed two science modules. Rebuilds now replace a belt that changes what it carries | `1f71ec8` |
+| B101 | 7718665 (sweep `628fa29`) | a tree from the next tile reaching 0.05 into a belt's box blocked one trunk belt for good (growths and repairs did not clear trees; the stuck-ghost search was inset 0.05): growths, reroutes and repairs clear trees in the way first, and the search uses the whole box | `e748094` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2850,6 +2852,8 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b98-2034469` | `e92352a` | 2034469 from `min-0180` | passed, v1-done at 242 min, no stalls; factory step ~0.6 s per game minute (was ~700 s) |
 | `vps-b97b-7625436` | `628371c` | 7625436, fresh | failed at the cap: ~24/min peak, then ~18/min; lab cluster 3 unfuelled from ~180 min (→ B99) |
 | `vps-b99-7625436` | `a48616b` | 7625436 from `min-0260` | passed, v1-done at 280 min, no stalls: the alias trace sent a repair to cluster 3's fuel belt at once, and its crew cleared the tree, picked up the stray underground and placed the planned belt |
+| `m6-random20-628fa29` | `628fa29` | the full 20-seed sweep (B93–B99) | running; so far 6 passed (5387208, 8646103, 7587711, 3891760, 5581724, 4819313); failed: 2229258 (cap; → B100), 7718665 (cap; → B101) |
+| `vps-b100-2229258` | B100 fix on `628fa29` | 2229258 from `min-0120` | passed, v1-done at 188 min, no stalls (g19 grew the same smelter, now picking up the 9 belts that changed item) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
