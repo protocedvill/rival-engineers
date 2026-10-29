@@ -2768,7 +2768,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B96 | 1264816 (sweep `3e1c4d7`) | a belt from a shared producer was "filling" forever (compared with the producer's whole output): now with what its other belts leave | `3966fa3` |
 | B97 | 7625436, 1459426 | a built parallel provider dropped out of the design when its group changed and starved: the design keeps built providers' consumers first (user decision "Built first") | `5004e99` |
 | B98 | 2034469 (sweep `3e1c4d7`) | a depleted mine being handed over (D67) re-planned a 60-s in-patch move every measurement and discarded it ("wait"): ~700× slowdown. The handover owns the depletion; a waiting growth is not replanned until its blocker is built | `e92352a` |
-| B99 | 7625436 (on `628371c`) | a stray underground dead-ended the power plant's second coal trunk (lab cluster 3 unfuelled for 300 min): the pick-up that should remove it failed on a covering tree out of reach; pick-ups now walk to it like mining does. The reconciler also traces a node folded into a shared mine through that mine | (this commit) |
+| B99 | 7625436 (on `628371c`) | a stray underground dead-ended the power plant's second coal trunk (lab cluster 3 unfuelled for 300 min): the pick-up that should remove it failed on a covering tree out of reach; pick-ups now walk to it like mining does. The reconciler also traces a node folded into a shared mine through that mine | `a48616b` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2849,7 +2849,7 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-386-7625436` | `386eea9` | 7625436, fresh | failed at the cap, ~12/min (→ B97, open) |
 | `vps-b98-2034469` | `e92352a` | 2034469 from `min-0180` | passed, v1-done at 242 min, no stalls; factory step ~0.6 s per game minute (was ~700 s) |
 | `vps-b97b-7625436` | `628371c` | 7625436, fresh | failed at the cap: ~24/min peak, then ~18/min; lab cluster 3 unfuelled from ~180 min (→ B99) |
-| `vps-b99-7625436` | B99 fix on `18bdb60` | 7625436 from `min-0260` | passed, v1-done at 280 min, no stalls: the alias trace sent a repair to cluster 3's fuel belt at once, and its crew cleared the tree, picked up the stray underground and placed the planned belt |
+| `vps-b99-7625436` | `a48616b` | 7625436 from `min-0260` | passed, v1-done at 280 min, no stalls: the alias trace sent a repair to cluster 3's fuel belt at once, and its crew cleared the tree, picked up the stray underground and placed the planned belt |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
