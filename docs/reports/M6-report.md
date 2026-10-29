@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B95, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B96, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2765,6 +2765,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B93 | 1376111 (re-sweep, fresh `3e1c4d7`) | a D55 replacement's connection had the kept old belt's id: no join, "no path" into the port it held; kept routes get their own id | `efacbd6` |
 | B94 | 1376111 (fresh `efacbd6`) | merge candidates were the 12 nearest, all in a sealed pocket on the trunk's tail: now spread over the whole trunk | `6afae19` |
 | B95 | 4819313 (sweep `3e1c4d7`) | an old underground inside a route's underground span stole the pairing ("nothing missing"): the build check reports such intruders and the repair picks them up | `386eea9` |
+| B96 | 1264816 (sweep `3e1c4d7`) | a belt from a shared producer was "filling" forever (compared with the producer's whole output): now with what its other belts leave | `3966fa3` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
