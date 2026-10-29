@@ -671,13 +671,26 @@ export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
  * the old module is deconstructed: the replacement connection adopts the route. Its `conn` becomes the replacement's
  * and `from` the replacement's port, while the laid tiles stay exactly where they are.
  */
-export function adoptRoute(state: LayoutState, id: RouteId, conn: ConnectionId, from: PortRef | undefined): boolean {
+export function adoptRoute(state: LayoutState, id: RouteId, conn: ConnectionId, from: PortRef | undefined): RouteId | undefined {
   const route = state.routes[id]
-  if (route === undefined) return false
+  if (route === undefined) return undefined
+  // B93 (sweep 3e1c4d7 seed 1376111): a kept route gets an id of its own. Kept as `route:<old conn>`, it bore the id the
+  // replacement connection's own route takes when the replacement has the same role (D55): planned, that route replaced
+  // the belt it was to join.
+  let nid = `${id}#kept` as RouteId
+  for (let n = 2; state.routes[nid] !== undefined; n++) nid = `${id}#kept${n}` as RouteId
+  delete state.routes[id]
+  route.id = nid
+  state.routes[nid] = route
+  const i = state.routeOrder.indexOf(id)
+  if (i >= 0) state.routeOrder[i] = nid
+  for (const k of route.tiles) if (state.routeOcc[k] === id) state.routeOcc[k] = nid
+  for (const sp of route.spans) for (const x of state.spans[sp.line] ?? []) if (x.route === id) x.route = nid
+  for (const other of state.routeOrder) if (state.routes[other]?.tapOf === id) state.routes[other]!.tapOf = nid
   route.conn = conn
   route.from = from
   bumpLayout(state)
-  return true
+  return nid
 }
 
 // ---------------------------------------------------------------------------------------------------------

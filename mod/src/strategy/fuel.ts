@@ -236,9 +236,15 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority, adoptIds)
   // Re-home the adopted routes to the replacement connection and keep them in its flow.
   for (const a of adopt) {
-    if (!adoptRoute(f.layout, a.rid, connectionId(a.conn), a.from)) continue
+    const nid = adoptRoute(f.layout, a.rid, connectionId(a.conn), a.from)
+    if (nid === undefined) continue
+    // B93: the kept route has a new id; every edge listing the old one follows.
+    for (const eid of f.graph.edgeOrder) {
+      const e = f.graph.edges[eid]
+      if (e !== undefined && e.physical !== undefined) e.physical = e.physical.map((p) => (p === a.rid ? nid : p))
+    }
     const heir = f.graph.edges[a.heir]
-    if (heir !== undefined) heir.physical = [...(heir.physical ?? []), a.rid]
+    if (heir !== undefined && (heir.physical ?? []).indexOf(nid) < 0) heir.physical = [...(heir.physical ?? []), nid]
   }
   // D55/P36: the replacement goal waits for these clear jobs; until then the old footprint is still `OWN` on the map.
   if (r.clearJobs.length > 0) {

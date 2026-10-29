@@ -463,7 +463,11 @@ function sameSource(job: PlanJob, from: PortRef, conn: string): string[] {
 export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): boolean {
   for (const rid of layout.routeOrder) {
     const r = layout.routes[rid]
-    if (r !== undefined && r.conn !== conn && r.external !== true && r.to.module === to.module && r.to.port === to.port && !routeDangles(layout, rid)) return true
+    if (r === undefined || r.external === true || r.to.module !== to.module || r.to.port !== to.port || routeDangles(layout, rid)) continue
+    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. A route a handover kept
+    // (D55/D67 adoption) carries the replacement connection's name but is a feed the replacement joins; skipping it by
+    // name routed the replacement into the port it holds ("no path" every plan).
+    if (rid !== `route:${conn}`) return true
   }
   return false
 }

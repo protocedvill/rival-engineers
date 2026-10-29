@@ -1,4 +1,5 @@
 import { adoptRoute } from "../src/planner/layout"
+import { portFedByOther } from "../src/planner/plan"
 import type { LayoutState, Route } from "../src/planner/layout"
 import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { eq, run, test } from "./harness"
@@ -36,7 +37,7 @@ test("adopt route: the replacement connection takes the belt over where it lies"
   const r = route()
   const s = layout(r)
   const from = { module: moduleId("n99"), port: "out" }
-  eq(adoptRoute(s, r.id, connectionId("coal>power#5=>power.in-fuel"), from), true)
+  eq(adoptRoute(s, r.id, connectionId("coal>power#5=>power.in-fuel"), from) !== undefined, true)
   eq(r.conn, connectionId("coal>power#5=>power.in-fuel"))
   eq(r.from?.module, moduleId("n99"))
   eq(r.from?.port, "out")
@@ -50,7 +51,27 @@ test("adopt route: the replacement connection takes the belt over where it lies"
 
 test("adopt route: a missing route is a no-op, not a crash", () => {
   const s = layout(route())
-  eq(adoptRoute(s, routeId("route:missing"), connectionId("x"), undefined), false)
+  eq(adoptRoute(s, routeId("route:missing"), connectionId("x"), undefined), undefined)
+})
+
+test("B93: a kept route gets an id of its own and stays a feed the same-role replacement joins (sweep 3e1c4d7 1376111)", () => {
+  // D55: the replacement mine has the worked-out mine's role, so the same connection name. Kept as route:<conn>, the belt
+  // bore the id the replacement's own route takes, and it did not count as a feed: every plan routed into the port it
+  // holds ("no path").
+  const r = route()
+  r.id = routeId("route:iron-ore>plate=>plate.in-ore")
+  r.conn = connectionId("iron-ore>plate=>plate.in-ore")
+  r.to = { module: moduleId("smelt"), port: "in-ore" }
+  r.tiles = [10, 11]
+  const s = layout(r)
+  s.routeOcc[10] = r.id
+  s.routeOcc[11] = r.id
+  const nid = adoptRoute(s, r.id, connectionId("iron-ore>plate=>plate.in-ore"), { module: moduleId("n79"), port: "out" })!
+  eq(nid !== routeId("route:iron-ore>plate=>plate.in-ore"), true, "a new id")
+  eq(s.routes[nid] === r && s.routes["route:iron-ore>plate=>plate.in-ore"] === undefined, true, "moved")
+  eq(s.routeOrder[0], nid, "in route order")
+  eq(s.routeOcc[10] === nid && s.routeOcc[11] === nid, true, "its tiles follow")
+  eq(portFedByOther(s, { module: moduleId("smelt"), port: "in-ore" }, "iron-ore>plate=>plate.in-ore"), true, "a feed for the same-named connection")
 })
 
 run("handover-route")
