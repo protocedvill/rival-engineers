@@ -73,6 +73,7 @@ python3 tools/harness/soak.py -c tools/harness/two-factions.toml --gif
 python3 tools/harness/soak.py --seeds 11 --hours 0.5 --name dev   # quick one-off
 python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/no-starting-area.toml   # several configs
 python3 tools/harness/soak.py -j 1                        # one at a time (for performance numbers)
+python3 tools/harness/determinism.py --seed 11 --no-build    # T4: fresh x2 and resumed from a save must match
 # → out/soak/<name>/scorecard.md, scorecard.json, seed-N/{telemetry.json,frames/,factorio-current.log}
 ```
 

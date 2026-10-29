@@ -16,6 +16,7 @@ import { prototypeFacts } from "./modules/prototype-facts"
 import { getTerrain, terrainView } from "./planner/terrain"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 import { factionDiagnostics } from "./diagnostics"
+import { writeStateDump } from "./determinism"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
@@ -83,6 +84,8 @@ export function registerRemoteInterface(): void {
     diagnostics: (name: string) => factionDiagnostics(name),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
     goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
+    /** T4 determinism: the canonical state (sorted storage, the factions' entities) to script-output/`file`. */
+    state_dump: (file: string) => writeStateDump(file),
     /** dump_entities(file, center, radius, surface?, water?) */
     dump_entities: (file: string, center: MapPosition, radius: number, surface?: string, water?: boolean) =>
       dumpEntities(file, center, radius, surface !== undefined ? game.surfaces[surface] : undefined, water),

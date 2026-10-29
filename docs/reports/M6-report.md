@@ -2919,3 +2919,41 @@ D65, D66, B66–B71 add no tuning numbers. D68 removed one: P36 (b)'s `FUEL_FALL
   a small or half-mined patch near the factory wins. D67 makes running out cheaper; it does not pick longer-lived patches.
 - `npm run diagnose` reported hundreds of `build-job-missing` invariant violations in every long run: all came from
   done goals keeping their finished jobs' ids (checked on 4410923). The check now skips done/failed goals (`c6ac901`).
+
+## M6c: v1 acceptance checks (2026-10-29)
+
+The user asked what was left on M6 acceptance (SPEC §3, §8 M6) and to work through what was missing, checking first
+what earlier sessions had done. Earlier M6 acceptance soaks all used the 5-seed `m6.toml` set (the last full one,
+`m6-final2`, was 4/5). No run of `m6-fixed10`, `m6-two-factions` or `m6-space-age` and no determinism check was recorded
+anywhere in the repo or the run directories, and no state hash existed in the code.
+
+| Check (SPEC §3) | Run | Commit | Result |
+|---|---|---|---|
+| ≥ 18/20 random seeds | `m6-random20-3c2c18f` | `3c2c18f` | **19/20** (the failure, 5387208, is B106; fixed and validated) |
+| ≥ 18/20 random seeds, final code | `m6-random20-8f39d07` | `8f39d07` (B105–B107) | running |
+| ≥ 9/10 fixed CI seeds | `m6-fixed10` | — | not run yet (after the random sweep: 4 Factorio instances at most) |
+| Two factions, each to `v1-done` | `m6-two-factions` | — | not run yet |
+| Space Age smoke test | `m6-space-age-981ca35` | `981ca35` | **pass**: space-age, quality and elevated-rails loaded, no errors; `first-power` at 10.4 game-min (seed 11) |
+| Determinism (T4) | `tools/harness/determinism.py`, seed 11 | `981ca35` + the dump | **pass**: identical state at 30 and 45 min (3.6 MB / 3.7 MB) for a fresh snapshot-server run, a fresh `--benchmark` run, and a run resumed from the first's `min-0020` save |
+| Research (42 techs) | part of `v1-done` | — | covered by every passing seed |
+| Timelapses approved by the user | renders below | — | **waiting for the user** |
+
+**T4 determinism (new).** `state_dump(file)` (remote interface, `mod/src/determinism.ts`) writes the mod's whole
+`storage` with sorted keys and full-precision numbers (Lua objects as kind and identity, e.g. an entity's name, unit
+number and position), then every entity of each faction force sorted by name and position, and each force's
+researched technologies. `tools/harness/determinism.py` dumps at the chosen minutes in three runs of one seed (A: fresh
+with snapshots, B: fresh under `--benchmark`, C: resumed from A's save) and compares the files byte for byte, printing
+the first difference with context when they differ.
+
+**Timelapses** (sweep `3c2c18f`, one frame per 10 game-minutes, cropped to the faction's buildings; for the user's
+SPEC §3 (3) review):
+
+| Seed 2034469 (v1-done 175 min) | Seed 1264816 (v1-done 207 min) | Seed 7718665 (v1-done 258 min) |
+|---|---|---|
+| ![](m6/m6-seed-2034469-timelapse.gif) | ![](m6/m6-seed-1264816-timelapse.gif) | ![](m6/m6-seed-7718665-timelapse.gif) |
+| ![](m6/m6-seed-2034469-final.png) | ![](m6/m6-seed-1264816-final.png) | ![](m6/m6-seed-7718665-final.png) |
+
+What a reviewer will see: modules are recognisable blocks (smelter columns, assembler rows, lab arrays, the steam
+block by the water); belts run between them in long orthogonal runs, some making wide detours around the core, and
+far mines are reached by long belt and pole lines (seed 1264816's pole line to its south-west mine).
+
