@@ -92,6 +92,9 @@ describe("M5a power and growth", () => {
     on_tick(() => {
       f.adoption = { goal: goalId("g1"), plan: "p-interrupted", phase: "build", tick: game.tick }
       storage.testScratch!.record = f.adoption
+      // Paused until the reload: a factory think between here and the save would clear the record first (the test
+      // failed or passed with the tick it started on).
+      faction.paused = true
       done()
       return false
     })
@@ -100,6 +103,7 @@ describe("M5a power and growth", () => {
     const faction = storage.factions[scratch.faction as string]
     const f = getFactory(faction.name)!
     assert(f.adoption !== undefined, "the interrupted adoption record survives the save")
+    faction.paused = false
     let waited = 0
     on_tick(() => {
       waited++

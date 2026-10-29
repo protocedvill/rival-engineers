@@ -388,6 +388,41 @@ describe("M5b reconciler", () => {
     })
   })
 
+  test("B101: a repair whose belt tile a tree from the next tile overlaps clears the tree first, then places the belt", () => {
+    // Sweep 628fa29 seed 7718665: lab cluster 3's coal belt missed one piece; every repair (and an earlier growth) got
+    // stuck "cannot-place": a tree centred in the next tile reached 0.15 into it, and repairs and growths placed their
+    // ghosts without clearing trees (only a new plan's build did).
+    const c = chainLab()
+    power(c.lab.surface, c.faction.force, c.mine)
+    power(c.lab.surface, c.faction.force, c.gears)
+    power(c.lab.surface, c.faction.force, c.smelt)
+    const s = c.lab.surface
+    const route = c.f.layout.routes["route:ore"]
+    const step = route.steps[math.floor(route.steps.length / 2)]
+    const cut = s.find_entities_filtered({ position: { x: step.x + 0.5, y: step.y + 0.5 }, type: "transport-belt" })[0]
+    assert(cut !== undefined, "a belt to cut")
+    cut.destroy()
+    // tree-01's box is ~0.8 wide: centred 0.27 past the tile's edge, across the route, it reaches ~0.03 into the belt's
+    // box (the soak's tree: ~0.05, under the old leftover-ghost search's 0.05 inset).
+    const across = step.dir === 1 || step.dir === 3
+    const tree = s.create_entity({ name: "tree-01", position: across ? { x: step.x + 0.5, y: step.y - 0.27 } : { x: step.x - 0.27, y: step.y + 0.5 } })!
+    assert(!s.can_place_entity({ name: "transport-belt", position: { x: step.x + 0.5, y: step.y + 0.5 }, force: c.faction.force }), "the tree blocks the belt")
+    const chest = s.create_entity({ name: "iron-chest", position: at(c.lab, 30, 26), force: c.faction.force })!
+    chest.insert({ name: "transport-belt", count: 20 })
+    chest.insert({ name: "coal", count: 50 })
+    // Wood in stock: the brain has no reason to gather this tree for wood.
+    chest.insert({ name: "wood", count: 100 })
+    addStockpile(c.faction, chest)
+    const g = c.f.graph
+    async(60 * 60 * 15)
+    reconcileUntil(c.faction, c.f, 60 * 60 * 14, () => fuelFurnaces(c), () => g.nodes.smelt.status === "ok" && !tree.valid, (ok) => {
+      log(`[b101] goals ${serpent.line(c.f.goals.map((x) => `${x.id} ${x.kind} ${x.status} ${x.reason ?? ""}`))}`)
+      assert(ok, `tree ${tree.valid ? "still there" : "cleared"}, smelter ${g.nodes.smelt.status}`)
+      assert(s.find_entities_filtered({ position: { x: step.x + 0.5, y: step.y + 0.5 }, type: "transport-belt" }).length === 1, "the belt is back")
+      done()
+    })
+  })
+
   test("P36 (a): a steam block's coal outpost with little ore left hands over (nothing deconstructed until the replacement feeds its port); one with plenty is kept", () => {
     const lab = createLab(48)
     const { faction, f } = testFaction(lab, 30, 30)
@@ -539,7 +574,8 @@ describe("M5b reconciler", () => {
     async(60 * 60 * 6)
     reconcileUntil(c.faction, c.f, 60 * 60 * 5, () => undefined, () => {
       goal = c.f.goals.filter((x) => x.kind === "repair")[0]
-      return goal !== undefined
+      // B101: a repair's ghosts follow its clear phase (trees in the way first).
+      return goal !== undefined && goal.growBuild?.phase !== "clear"
     }, (ok) => {
       log(`[b47] ${describe_(g, c.f)}\n  remedies ${serpent.line(c.f.reconciler?.log)}`)
       assert(ok, `a repair goal (gears ${g.nodes.gears.status}, cause ${g.nodes.gears.cause?.why})`)

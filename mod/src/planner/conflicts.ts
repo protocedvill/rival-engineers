@@ -193,6 +193,33 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
  * Makes the world follow a diff: own entities of `remove` get clear jobs (the crew picks them up and keeps the items),
  * own ghosts of it are removed; `add` gets ghosts and place jobs. Returns the new ghosts and job ids.
  */
+/**
+ * B101 (sweep 628fa29 seed 7718665): trees and rocks in the way of entities about to be placed. A tree centred in the
+ * next tile can reach into a planned entity's box (0.15 of a belt tile there); its ghost then never revives. The box is
+ * the prototype's collision box at the spec's place, turned for east/west.
+ */
+export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<string, boolean> = {}
+  for (const e of specs) {
+    const box = prototypes.entity[e.name]?.collision_box
+    if (box === undefined) continue
+    const turned = e.dir === 4 || e.dir === 12
+    const x1 = turned ? -box.right_bottom.y : box.left_top.x
+    const x2 = turned ? -box.left_top.y : box.right_bottom.x
+    const y1 = turned ? box.left_top.x : box.left_top.y
+    const y2 = turned ? box.right_bottom.x : box.right_bottom.y
+    const area = { left_top: { x: e.x + math.min(x1, x2), y: e.y + math.min(y1, y2) }, right_bottom: { x: e.x + math.max(x1, x2), y: e.y + math.max(y1, y2) } }
+    for (const o of findEntities(surface, { area, type: ["tree", "simple-entity"] })) {
+      const id = `${o.name}@${o.position.x},${o.position.y}`
+      if (seen[id]) continue
+      seen[id] = true
+      out.push(o)
+    }
+  }
+  return out
+}
+
 export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
   const force = faction.force
   const clearJobs: JobId[] = []

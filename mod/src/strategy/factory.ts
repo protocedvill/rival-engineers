@@ -10,7 +10,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
 import * as GROW from "../planner/grow"
-import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
+import { destroyEntity, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import * as LO from "../planner/layout"
 import type { LayoutState, PlacedModule, PlannedPole } from "../planner/layout"
@@ -18,7 +18,7 @@ import { preparePlanDelta } from "../planner/plan-delta"
 import type { PlanDelta } from "../planner/plan-delta"
 import { recordDiagnostic } from "../diagnostic-events"
 import * as IDS from "../shared/ids"
-import { abandonParts, applyDiff } from "../planner/conflicts"
+import { abandonParts, applyDiff, obstaclesFor } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest, portFedByOther } from "../planner/plan"
 import { sealedInputs } from "../planner/placement"
@@ -29,7 +29,6 @@ import { researchGoal, startResearch } from "./research-queue"
 import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
-import { registerBuffer } from "../modules/buffers"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
 import * as FU from "./fuel"
 import type { HandoverRecord } from "./handover"
@@ -111,12 +110,12 @@ export interface FactoryGoal {
   clearing?: Record<string, IDS.JobId>
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
-  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[] }
+  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
   deferred?: boolean
-  rework?: { clearJobs: IDS.JobId[]; add: EntitySpec[] }
+  rework?: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean }
   /** B20: leftover-ghost rounds in a row that placed nothing, and the leftover count of the last round. */
   stuck?: number
   lastLeft?: number
@@ -875,6 +874,21 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   return true
 }
 
+/**
+ * B101 (sweep 628fa29 seed 7718665): before placing `w.add`, trees and rocks in their way are cleared, once (a tree from
+ * the next tile reached into a repair's belt tile and its ghost never revived). Returns whether it queued clear jobs.
+ */
+function clearObstacles(ctx: Ctx, w: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean }): boolean {
+  if (w.obstacles === true) return false
+  w.obstacles = true
+  let queued = false
+  for (const o of obstaclesFor(ctx.surface, w.add)) {
+    w.clearJobs.push((clearJobFor(ctx.faction, o) as IDS.JobId | undefined) ?? addClearJob(ctx.faction, o, ctx.config.factoryBuildPriority))
+    queued = true
+  }
+  return queued
+}
+
 function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   const b = g.growBuild!
   const board = ctx.faction.board
@@ -883,23 +897,12 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       const j = getJob(board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
-    for (const e of b.add) {
-      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force: ctx.faction.force }
-      if (e.ioType !== undefined) params.type = e.ioType
-      if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
-      const gh = ctx.surface.create_entity(params as never)
-      if (gh === undefined) {
-        // B99: say so (a clear job that failed leaves its entity standing here, and the goal ends with nothing placed).
-        const there = ctx.surface.find_entities_filtered({ position: { x: e.x, y: e.y }, radius: 0.4, force: ctx.faction.force })[0]
-        log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${e.name} at ${e.x},${e.y}${there !== undefined ? ` (${there.name} stands there)` : ""}`)
-        continue
-      }
-      if (e.buffer) registerBuffer(ctx.surface, ctx.faction.force, gh)
-      b.ghosts.push(gh)
-      markDirty(ctx.faction.surface, gh.bounding_box.left_top, gh.bounding_box.right_bottom)
-      const id = addPlaceJob(ctx.faction, gh, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
-      if (id !== undefined) b.placeJobs.push(id)
-    }
+    if (clearObstacles(ctx, b)) return
+    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+    for (const gh of d.ghosts) b.ghosts.push(gh)
+    for (const id of d.placeJobs) b.placeJobs.push(id)
+    // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
+    if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
     b.phase = "place"
     return
   }
@@ -1780,6 +1783,7 @@ function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boole
     const j = getJob(ctx.faction.board, id)
     if (j !== undefined && j.status !== "done" && j.status !== "failed") return false
   }
+  if (clearObstacles(ctx, w)) return false
   const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority })
   for (const gh of d.ghosts) b.ghosts!.push(gh)
   for (const id of d.placeJobs) b.placeJobs.push(id)
@@ -1902,10 +1906,10 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
   for (const e of evictSites(faction, ctx.surface, under, `goal ${g.id}'s leftover ghosts`)) addClearJob(faction, e, b!.priority)
   for (const gh of left) {
     // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
-    // blocks the placement for good: clear it again.
+    // blocks the placement for good: clear it again. B101: the ghost's whole box (any overlap blocks; seed 7718665's
+    // tree reached ~0.05 into a belt's box and was missed by a 0.05 inset).
     if (!gh.valid) continue
-    const box = gh.bounding_box
-    const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
+    const area = gh.bounding_box
     for (const e of findEntities(ctx.surface, { area, type: ["tree", "simple-entity"] })) {
       const k = `${e.position.x},${e.position.y}`
       g.clearing ??= {}
@@ -2351,7 +2355,6 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
   for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   for (const e of check.intruders) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
-  const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
   const g: FactoryGoal = {
     id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "repair",
@@ -2366,13 +2369,14 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     placed: 0,
     rounds: 0,
     reason: r.why,
-    growBuild: { phase: clearJobs.length > 0 ? "clear" : "place", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec)], ghosts: d.ghosts, placeJobs: d.placeJobs },
+    // B101: the missing pieces too go through the clear phase (trees in their way are cleared before their ghosts).
+    growBuild: { phase: "clear", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec), ...check.missing], ghosts: [], placeJobs: [] },
   }
   f.goals.push(g)
   let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
   if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
   if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
-  say(`goal ${g.id} re-places ${check.missing.length} entities${turned}${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
+  say(`goal ${g.id} re-places ${check.missing.length} entities${turned}`)
 }
 
 // ---------------------------------------------------------------------------------------------------------
