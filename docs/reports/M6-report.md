@@ -2766,6 +2766,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B94 | 1376111 (fresh `efacbd6`) | merge candidates were the 12 nearest, all in a sealed pocket on the trunk's tail: now spread over the whole trunk | `6afae19` |
 | B95 | 4819313 (sweep `3e1c4d7`) | an old underground inside a route's underground span stole the pairing ("nothing missing"): the build check reports such intruders and the repair picks them up | `386eea9` |
 | B96 | 1264816 (sweep `3e1c4d7`) | a belt from a shared producer was "filling" forever (compared with the producer's whole output): now with what its other belts leave | `3966fa3` |
+| B97 | 7625436, 1459426 | a built parallel provider dropped out of the design when its group changed and starved: the design keeps built providers' consumers first (user decision "Built first") | `5004e99` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2796,6 +2797,8 @@ All were asked as questions and answered by the user in-session; they are record
 
 
 - **P44 timing and the whole-patch mine collector** (asked and answered in-session, 2026-10-28). The user's guidance on side-loading ("side loading belts is not great to do ... Using balancers and sometimes even lane balancers are useful") is recorded as P44 in SPEC §11. Asked when to implement it, the user chose "After this sweep" (`eecca19`). After the sweep, (a) was implemented as the agent proposed (splitter merges first; side-loads only within `sideLoadLaneShare` of one lane, `4bf6b94`; its design and number are the agent's proposal). The audit for (b) found the whole-patch mine's collector side-loading every drill row onto one lane; asked how to fix it, the user chose "Splitters, cap before": once splitters are researched each row joins the collector through a splitter merge, and before that the mine is capped at what its output can carry.
+
+- **B97, built providers first** (asked and answered in-session, 2026-10-29). Seed 7625436: a built parallel iron smelter (`~2`) dropped out of the design when its group's first smelter was deconstructed, and starved for 300 game-min. Asked how the design should handle built providers, the user chose "Built first": before planning new providers for an item, the design assigns demand to the providers already built for it, at their real capacity, keeping their roles; only the residual gets a new or parallel provider.
 ### Soak results on the VPS
 
 | Run | Code | Seeds | Result |
