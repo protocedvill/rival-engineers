@@ -1,5 +1,5 @@
 import { addEdge, addNode, LogicalEdge, LogicalGraph, LogicalNode, newGraph, StateShares } from "../src/planner/logical"
-import { classify, edgeVerdict, newReconcileState, reconcile, ReconcileParams, recordRemedy } from "../src/strategy/reconcile"
+import { classify, edgeVerdict, newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, recordRemedy } from "../src/strategy/reconcile"
 import { moduleId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 
@@ -381,6 +381,28 @@ test("B102: a root cause whose node recovered starts a new history (its remedies
   let again = 0
   for (let i = 0; i < P.confirm + 1; i++) again += at((t += P.cooldownTicks)).length
   ok(again > 0, "its repair can act again")
+})
+
+test("B103: a node's plan is at least what its belts are planned to carry (a shared smelter planned for one consumer)", () => {
+  // 1264816 (B102 replay): cluster 1's iron smelter kept its first plan (0.37/s) while its belts were planned for 3.4/s;
+  // making 0.63/s it was "ok", so the starved labs behind it got no remedy (science held at ~27/min of 30).
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 0.37, st({ working: 0.17, starved: 0.83 }), 0.63, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0.63 }], machines: 12, states: st({ working: 0.17, starved: 0.83 }), missing: { "iron-ore": 0.83 } },
+  })
+  node(g, "a", "module", "x", 1, st({ working: 1 }), 1)
+  node(g, "b", "module", "y", 1, st({ working: 1 }), 1)
+  belt(g, "ea", "smelt", "a", "iron-plate", 1.9)
+  belt(g, "eb", "smelt", "b", "iron-plate", 1.5)
+  settle(g, 2)
+  eq(g.nodes.smelt.status, "starved", `starved against its belts' plan: ${g.nodes.smelt.statusReason}`)
+})
+
+test("B104: an edge measurement stays fresh for a whole probe round (one probe at a time over every belt)", () => {
+  // 1264816 (B103 replay): ~38 belts at ~630 ticks a probe is a ~24000-tick round, but a measurement was fresh for 3600:
+  // the trace of a starved smelter fed by three belts always met a stale one ("measuring", 300 game-min, no remedy).
+  eq(probeMaxAgeFor(3600, 600, 30, 2), 3600, "two belts: the node window")
+  eq(probeMaxAgeFor(3600, 600, 30, 38), 38 * 630, "38 belts: one round")
 })
 
 test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {

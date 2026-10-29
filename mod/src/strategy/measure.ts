@@ -400,6 +400,13 @@ function probeable(graph: LogicalGraph, e: LogicalEdge | undefined): boolean {
   return graph.nodes[e.from]?.lifecycle === "built" && graph.nodes[e.to]?.lifecycle === "built"
 }
 
+/** B104: belt edges a probe can measure now (the round the probes go through). */
+export function probeableCount(graph: LogicalGraph): number {
+  let n = 0
+  for (const id of graph.edgeOrder) if (probeable(graph, graph.edges[id])) n++
+  return n
+}
+
 /** Starts the next edge probe (requested edges first, then round-robin over belt edges between built nodes). */
 export function startProbe(meter: MeterState, graph: LogicalGraph, layout: LayoutState, surface: LuaSurface, tick: number, length: number): void {
   let edge: LogicalEdge | undefined

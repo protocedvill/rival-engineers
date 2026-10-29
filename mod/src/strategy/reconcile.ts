@@ -132,7 +132,7 @@ function builtFor(g: LogicalGraph, n: LogicalNode, tick: number): number | undef
 }
 
 /** The raw status of a node from its last measurement (see the file comment), with a reason. */
-export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStatus; why: string } {
+export function classify(n: LogicalNode, p: ReconcileParams, beltPlan = 0): { status: NodeStatus; why: string } {
   const m = n.measured
   if (m === undefined || m.states === undefined || (m.machines ?? 0) === 0) return { status: "unknown", why: "not measured" }
   const s = m.states
@@ -157,7 +157,9 @@ export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStat
   }
   // Sinks (the mall) run at a fraction of their capacity by design and stop when their chests are full.
   if (n.kind === "sink" || n.item === undefined) return { status: "ok", why: "sink" }
-  const planned = rateIn(n.planned.outputs, n.item)
+  // B103 (1264816): a built node keeps the plan it was built with; the belts later planned from it say what it must make
+  // now (a shared smelter planned at 0.37/s fed belts planned for 3.4/s, and at 0.63/s it looked fine).
+  const planned = math.max(rateIn(n.planned.outputs, n.item), beltPlan)
   const out = rateIn(m.outputs, n.item)
   const rate = `${string.format("%.3g", out)}/${string.format("%.3g", planned)}/s`
   if (planned <= 0 || out >= planned * (1 - p.shortfall)) return { status: "ok", why: rate }
@@ -193,6 +195,15 @@ export function expectedShortage(n: LogicalNode, raw: { status: NodeStatus; why:
 
 /** What a belt edge's last flow probe says (see `trace`). */
 export type EdgeVerdict = "stale" | "full" | "intake" | "broken" | "sparse"
+
+/**
+ * B104 (1264816): how long an edge measurement stays fresh: a node window, but at least one round of probes over every
+ * probeable belt (one probe at a time: `probeTicks`, then up to `gapTicks` until the next starts). Shorter, a trace
+ * through several belts always meets a stale one and waits for a probe forever.
+ */
+export function probeMaxAgeFor(windowTicks: number, probeTicks: number, gapTicks: number, belts: number): number {
+  return math.max(windowTicks, belts * (probeTicks + gapTicks))
+}
 
 export function edgeVerdict(e: LogicalEdge, tick: number, p: ReconcileParams): EdgeVerdict {
   if (e.measuredTick === undefined || e.measuredRate === undefined || tick - e.measuredTick > p.probeMaxAge) return "stale"
@@ -417,7 +428,9 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       }
       continue
     }
-    const raw = expectedShortage(n, classify(n, p), input.crewSupplied)
+    let beltPlan = 0
+    for (const e of edgesFrom(g, id)) if (e.kind === "belt" && e.item === n.item) beltPlan += e.plannedRate
+    const raw = expectedShortage(n, classify(n, p, beltPlan), input.crewSupplied)
     if (raw.status === n.status) {
       delete st.pending[id]
       n.statusReason = raw.why

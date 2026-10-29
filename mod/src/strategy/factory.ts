@@ -26,7 +26,7 @@ import * as PW from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
 import { researchGoal, startResearch } from "./research-queue"
-import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
+import { newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
 import { checkBuild } from "../planner/conflicts"
 import { countWork, findEntities } from "../work"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
@@ -2002,7 +2002,9 @@ function measureAndReconcile(ctx: Ctx): void {
       return true
     }
     const handingOver = (n: LogicalNode): boolean => f.handover?.[n.role]?.node === n.id
-    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied, handingOver })
+    const params = reconcileParams(ctx.config)
+    params.probeMaxAge = probeMaxAgeFor(params.probeMaxAge, ctx.config.measureProbeTicks, ctx.config.brainIntervalTicks, MS.probeableCount(f.graph))
+    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params, isFuel, crewSupplied, handingOver })
     countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
     MS.requestProbes(meter, r.probe)
     if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)

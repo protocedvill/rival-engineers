@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B102, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B104, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2772,6 +2772,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B100 | 2229258 (sweep `628fa29`) | a growth reused an old fuel belt, coal still on it, for a plate route: the coal jammed two science modules. Rebuilds now replace a belt that changes what it carries | `1f71ec8` |
 | B101 | 7718665 (sweep `628fa29`) | a tree from the next tile reaching 0.05 into a belt's box blocked one trunk belt for good (growths and repairs did not clear trees; the stuck-ghost search was inset 0.05): growths, reroutes and repairs clear trees in the way first, and the search uses the whole box | `e748094` |
 | B102 | 1264816 (sweep `628fa29`) | a dropped tap's splitter was picked up and the trunk belt under it never put back; the reconciler had used up its repairs on that belt before the cluster ever worked. Dropped splitters now restore the kept route's belt, and a recovered node starts a fresh remedy history | `24577da` |
+| B103 | 1264816 (B102 replay) | a shared smelter judged "ok" against the plan it was built with (0.37/s) while its belts needed 3.4/s: a node's plan now covers its belts | (this commit) |
+| B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | (this commit) |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2853,9 +2855,11 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b98-2034469` | `e92352a` | 2034469 from `min-0180` | passed, v1-done at 242 min, no stalls; factory step ~0.6 s per game minute (was ~700 s) |
 | `vps-b97b-7625436` | `628371c` | 7625436, fresh | failed at the cap: ~24/min peak, then ~18/min; lab cluster 3 unfuelled from ~180 min (→ B99) |
 | `vps-b99-7625436` | `a48616b` | 7625436 from `min-0260` | passed, v1-done at 280 min, no stalls: the alias trace sent a repair to cluster 3's fuel belt at once, and its crew cleared the tree, picked up the stray underground and placed the planned belt |
-| `m6-random20-628fa29` | `628fa29` | the full 20-seed sweep (B93–B99) | running; so far 12 passed (5387208, 8646103, 7587711, 3891760, 5581724, 4819313, 7741326, 4361783, 3088988, 2034469, 1459426, 1376111 at 316 min); failed: 2229258 (cap; → B100), 7718665 (cap; → B101), 1264816 (cap; → B102) |
+| `m6-random20-628fa29` | `628fa29` | the full 20-seed sweep (B93–B99) | **16/20** (best so far). Failed at the cap: 2229258 (→ B100), 7718665 and 8033112 (→ B101), 1264816 (→ B102, B103). 7625436, 1459426, 1376111 (316 min) and 2034469 passed, the seeds of B93–B99 |
 | `vps-b100-2229258` | B100 fix on `628fa29` | 2229258 from `min-0120` | passed, v1-done at 188 min, no stalls (g19 grew the same smelter, now picking up the 9 belts that changed item) |
 | `vps-b101-7718665` | `0794504` | 7718665 from `min-0040` | passed, v1-done at 254 min, no stalls; growth g8 now completes (grew power at tick 215040). AI 3.1 ms/tick (planner 0.92 average, one interval at 26 ms/tick at 154 min; crew 1.7), measured with 4 instances running: to recheck with `-j 1` |
+| `vps-b102-1264816` | `9d3aa12` | 1264816 from `min-0140` | failed at the cap but ~27/min from 285 min (was ~15): B102 put the trunk belt back at (467.5,55.5); g20 still gave up its location over a drill ghost on worked-out ore (no resource under it: the crew's build check refuses it); cluster 1 starved behind an iron smelter "ok" at 0.63/s against its first plan (→ B103) |
+| `vps-b101-8033112` | `9d3aa12` | 8033112 from `min-0100` | passed, v1-done at 279 min, no stalls (its stuck belt at (-44,507) was B101's pattern: tree-04 ~0.05 into the belt's box) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |
@@ -2891,6 +2895,7 @@ nodes, for B70). Each B-test was checked to fail without its fix.
 | Side-load lane share | `planner/policy.ts` `router.sideLoadLaneShare` | 0.8 | P44 (a): a provider-group merge side-loads only when the consumer port takes at most this share of one lane (6/s on yellow belt), so everything it gets fits one lane whatever lanes the trunk already uses; above it, splitter merges only. Splitter merges are tried first either way. Leaves a margin for uneven delivery. **Agent guess, please confirm.** | no |
 | Failed-plan dump size | `strategy/factory.ts` failed-plan `exportPlanInput(..., 800)` | 800 tiles a side | Soak diagnostics only: radius-384 plans are 768 tiles across and were not exported (400), so their failures could not be replayed without a capture run (B85, 1376111). File size grows to ~2 MB per failed plan. **Agent guess.** | no |
 | Failed-key cooldown | `jobs/keys.ts` `FAILED_KEY_COOLDOWN_TICKS` | 10 game-min | B82: how long a target whose job failed as unreachable stays skipped before the brain or factory queues it again. Long enough that one unreachable tree stops occupying a crew member, short enough that a target that becomes reachable (cleared ground) is retried. **Agent guess, please confirm.** | no |
+| Probe freshness | `strategy/reconcile.ts` `probeMaxAgeFor` (called from `factory.ts` `measureAndReconcile`) | max(node window 3600 ticks, belts × (`measure-probe-ticks` + `brain-interval-ticks`)) | B104: an edge measurement stays fresh for one round of the one-at-a-time probes over every belt (~24000 ticks with 38 belts). No new constant: it is derived from the existing settings; the rule itself is the agent's proposal. Longer windows mean a trace may act on a measurement up to one round old (a few game-min). **Agent proposal, please confirm.** | derived from settings |
 
 D65, D66, B66–B71 add no tuning numbers. D68 removed one: P36 (b)'s `FUEL_FALLBACK_ATTEMPTS` (2).
 
