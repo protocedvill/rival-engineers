@@ -66,6 +66,11 @@ export interface FactionState {
   brain?: BrainState
   /** Bounded structured history for explaining why the crew and planners chose or rejected work. */
   diagnosticEvents?: DiagnosticEventStore
+  /**
+   * B102: entities to ghost once the listed clear jobs are over (a kept route's belt where a dropped splitter stands:
+   * no ghost can go over the live splitter). `jobs/crew.ts` `placePendingGhosts` serves them.
+   */
+  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number }[]
 }
 
 export interface CrewStats {

@@ -52,6 +52,8 @@ export interface Remedy {
   node?: string
   edge?: string
   why: string
+  /** B102: the node whose trace found this root cause (its recovery ends the episode). */
+  for?: string
 }
 
 export interface RemedyRecord {
@@ -59,6 +61,8 @@ export interface RemedyRecord {
   last: number
   kind: RemedyKind
   why: string
+  /** B102: the node the remedies were for; once it is ok again the history is dropped. */
+  for?: string
 }
 
 /** Per-faction reconciler state (persisted with the factory). */
@@ -207,10 +211,13 @@ interface TraceCtx {
   remedies: Remedy[]
   probe: string[]
   seen: Record<string, boolean>
+  /** The node being traced (B102: remedies remember it). */
+  origin?: string
 }
 
 function remedy(t: TraceCtx, r: Remedy): void {
   for (const x of t.remedies) if (x.key === r.key) return
+  r.for = t.origin
   t.remedies.push(r)
 }
 
@@ -427,6 +434,10 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       st.changes[raw.status] = (st.changes[raw.status] ?? 0) + 1
     } else st.pending[id] = { status: raw.status, count }
   }
+  // B102 (sweep 628fa29 seed 1264816): a root cause whose node is ok again is over; its history starts again, so its
+  // remedies can act when it fails later (cluster 2's ore belt used its repairs up before it ever worked, and later lost
+  // a belt that nothing repaired).
+  for (const [key, rec] of pairs(st.remedies)) if (rec.for !== undefined && g.nodes[rec.for]?.status === "ok") delete st.remedies[key as string]
   const t: TraceCtx = { g, input, remedies: [], probe: [], seen: {} }
   for (const id of g.nodeOrder) {
     const n = g.nodes[id]
@@ -435,6 +446,7 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       continue
     }
     t.seen = {}
+    t.origin = n.id
     n.cause = trace(t, n, 0)
   }
   const ready: Remedy[] = []
@@ -452,6 +464,7 @@ export function recordRemedy(st: ReconcileState, r: Remedy, tick: number, result
   rec.count++
   rec.last = tick
   rec.why = r.why
+  if (r.for !== undefined) rec.for = r.for
   st.remedies[r.key] = rec
   st.log.push({ tick, key: r.key, kind: r.kind, why: r.why, result })
   while (st.log.length > LOG_KEPT) st.log.shift()

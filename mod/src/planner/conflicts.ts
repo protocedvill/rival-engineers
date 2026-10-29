@@ -6,11 +6,12 @@
 
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { addClearJob, addPlaceJob } from "../jobs/faction"
+import { getJob } from "../jobs/board"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
-import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
+import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
 import { findModule, LayoutState, removeModule, ripRoute } from "./layout"
@@ -264,6 +265,22 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * because its replacement side-loads into it and adopts it (see `adoptRoute`). Those routes keep their tiles, their
  * entities and their claims; the caller re-homes them to the replacement connection.
  */
+/** B102: kept route pieces a dropped splitter stood on, ghosted once that splitter's clear job is over (`jobs/crew.ts`). */
+function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clearJobs: JobId[], priority?: number): void {
+  for (const e of specs) {
+    const after: JobId[] = []
+    for (const id of clearJobs) {
+      const j = getJob(faction.board, id)
+      const t = j !== undefined && j.payload.kind === "clear" ? j.payload.target : undefined
+      if (t === undefined || !t.valid || t.type !== "splitter") continue
+      const b = t.bounding_box
+      if (e.x > b.left_top.x && e.x < b.right_bottom.x && e.y > b.left_top.y && e.y < b.right_bottom.y) after.push(id)
+    }
+    faction.pendingGhosts ??= []
+    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority })
+  }
+}
+
 export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
@@ -287,7 +304,15 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   for (const e of partEntities(layout, all)) if (keepTiles[tkey(math.floor(e.x), math.floor(e.y))] !== true) going.push(e)
   const tiles = partTiles(layout, all)
   const { clearJobs } = applyDiff(surface, faction, going, [], { priority })
+  // B102 (sweep 628fa29 seed 1264816): a dropped tap's or merge's splitter stood on a kept route's tile in place of its
+  // belt. Once the splitter is picked up, that belt goes back (else the kept route has a hole: cluster 2's ore stopped
+  // there for 300 game-min).
+  const dropped: Record<string, boolean> = {}
+  for (const rid of routes) dropped[rid] = true
+  const keptBefore = routeEntities(layout).filter((e) => !dropped[e.owner])
   for (const rid of routes) ripRoute(layout, rid)
+  const restore = entityDiff(keptBefore, routeEntities(layout)).add
+  if (restore.length > 0) restoreUnderSplitters(faction, restore, clearJobs, priority)
   for (const id of parts.modules) removeModule(layout, id, prototypeFacts)
   removePoleLines(layout, bridge.dropLines)
   rehomeKeptPoles(layout, bridge.keepPoles)

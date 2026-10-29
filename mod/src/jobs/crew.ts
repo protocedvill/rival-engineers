@@ -9,6 +9,7 @@ import {
   depsDone,
   distance,
   failJob,
+  getJob,
   fitMaterials,
   ItemCount,
   Job,
@@ -72,7 +73,10 @@ export function onCrewTick(): void {
     config ??= getConfig()
     stepFaction(faction, config, tick)
   }
-  if (tick % 60 === 0) placeUnboxGhosts(tick)
+  if (tick % 60 === 0) {
+    placeUnboxGhosts(tick)
+    placePendingGhosts()
+  }
 }
 
 /**
@@ -442,6 +446,33 @@ export function placeUnboxGhosts(tick: number): void {
     if (ghost !== undefined) addPlaceJob(faction, ghost, { priority: 90 })
   }
   storage.unboxGhosts = keep
+}
+
+/** B102: each faction's `pendingGhosts` whose clear jobs are over get their ghost and place job. */
+export function placePendingGhosts(): void {
+  for (const name of storage.factionOrder) {
+    const faction = storage.factions[name]
+    const list = faction.pendingGhosts
+    if (list === undefined || list.length === 0) continue
+    const left: typeof list = []
+    for (const p of list) {
+      let waiting = false
+      for (const id of p.after) {
+        const j = getJob(faction.board, id)
+        if (j !== undefined && j.status !== "done" && j.status !== "failed") waiting = true
+      }
+      if (waiting) {
+        left.push(p)
+        continue
+      }
+      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: p.name, position: { x: p.x, y: p.y }, direction: p.dir, force: faction.force }
+      if (p.ioType !== undefined) params.type = p.ioType
+      const ghost = factionSurface(faction).create_entity(params as never)
+      log(`[rival-engineers] faction ${faction.name}: B102 puts ${p.name} back at ${p.x},${p.y} under a picked-up splitter${ghost === undefined ? ": ghost failed" : ""}`)
+      if (ghost !== undefined) addPlaceJob(faction, ghost, { priority: p.priority })
+    }
+    faction.pendingGhosts = left
+  }
 }
 
 function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, action: ActionRecord | undefined, tick: number): void {

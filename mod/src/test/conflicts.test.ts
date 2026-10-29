@@ -1,6 +1,7 @@
 import { LuaEntity } from "factorio:runtime"
 import { clearConfigOverrides, setConfigOverride } from "../config"
 import { moduleId, connectionId, routeId } from "../shared/ids"
+import type { JobId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
@@ -21,6 +22,7 @@ import { at, createLab, Lab } from "./lab"
 import { followRoute } from "./route-lab"
 import { getPlannerEntry, removePlan, startBuild, startPlan, tappedBelts } from "../planner/runtime"
 import { addPlaceJob, addStockpile } from "../jobs/faction"
+import { getJob } from "../jobs/board"
 
 // M5a.2: factions sharing ground. A faction never plans on another faction's claim (its reserved tiles) or ghosts; a
 // route blocked by something the faction doesn't own is rerouted (old pieces picked up); a module whose ground was
@@ -329,10 +331,16 @@ describe("faction conflicts", () => {
   test("B69: a tap on a belt another build has not placed yet waits for it, picks it up, then builds the splitter", () => {
     tapRoute("b69-tap", true)
   })
+
+  // B102 (sweep 628fa29 seed 1264816): a production goal that gave up its location dropped its tap of a kept trunk; the
+  // splitter was picked up and nothing put the trunk's belt back, so cluster 2's ore stopped there for 300 game-min.
+  test("B102: abandoning a tap's consumer picks up the splitter and puts the tapped route's belt back", () => {
+    tapRoute("b102-tap", false, true)
+  })
 })
 
 /** B19/B69: a new smelter taps the built ore route; `unbuilt`: the tapped belt is still a ghost with a place job. */
-function tapRoute(id: string, unbuilt: boolean): void {
+function tapRoute(id: string, unbuilt: boolean, abandon = false): void {
   const lab = createLab(64)
   const f = faction(lab, "tap", 10, 0, false)
   f.brain!.goals = []
@@ -357,9 +365,22 @@ function tapRoute(id: string, unbuilt: boolean): void {
   if (getPlannerEntry(id) !== undefined) removePlan(id)
   startPlan({ id, surface: lab.surface.name, force: f.force, faction: f.name, baseFaction: "b19-base", topology: "splitter-tap", request: { modules: [{ id: moduleId("smelt2"), def }], connections: [{ id: connectionId("ore2"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt2"), port: "in-ore" } }], center: { x: ox + 10, y: oy - 20 }, region: { x: ox - 60, y: oy - 60, w: 120, h: 120 } } })
   let building = false
+  let abandoned: { clearJobs: JobId[] } | undefined
   async(60 * 60 * 30)
   on_tick(() => {
     const e = getPlannerEntry(id)!
+    if (abandoned !== undefined) {
+      for (const j of abandoned.clearJobs) if (getJob(f.board, j)?.status !== "done" && getJob(f.board, j)?.status !== "failed") return
+      if (lab.surface.count_entities_filtered({ type: "entity-ghost", force: f.force }) > 0) return
+      const layout = e.job!.layout
+      const p = followRoute(lab.surface, layout, layout.routes["route:ore"])
+      assert(p === undefined, `the tapped route connects again: ${p}`)
+      assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 0, "the splitter is picked up")
+      delete storage.factories!["b19-base"]
+      removePlan(id)
+      done()
+      return false
+    }
     if (e.phase === "scan" || e.phase === "plan") return
     const job = e.job!
     if (!building) {
@@ -391,6 +412,11 @@ function tapRoute(id: string, unbuilt: boolean): void {
     assert(problems.length === 0, problems.join("; "))
     assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 1, "a splitter")
     assert(e.build!.failed.length === 0, `ghosts failed: ${e.build!.failed.join("; ")}`)
+    if (abandon) {
+      abandoned = abandonParts(lab.surface, f, job.layout, { modules: [moduleId("smelt2")], routes: [], poles: [] }, 90)
+      assert(job.layout.routes["route:ore2"] === undefined, "the tap route is dropped with its consumer")
+      return
+    }
     delete storage.factories!["b19-base"]
     removePlan(id)
     log(`[m6] ${id} tap on a built route built at tick ${game.tick}`)

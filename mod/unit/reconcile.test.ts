@@ -349,6 +349,40 @@ test("remedy limits: at most maxRemedies per root cause, cooldown between them",
   ok(s.log.length === 2, "logged")
 })
 
+test("B102: a root cause whose node recovered starts a new history (its remedies can act again when it fails later)", () => {
+  // Sweep 628fa29 seed 1264816: cluster 2's ore belt used up its repairs at ~90 min (nothing missing then); it worked from
+  // ~125 min, lost a belt at ~150 min, and was never repaired again (300 game-min).
+  const g = chain(st({ working: 0.97 }), 1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 1, from: 0, to: 0 })
+  const s = newReconcileState()
+  const at = (tick: number) => {
+    g.edges.ore.measuredTick = tick
+    for (const id of g.nodeOrder) if (g.nodes[id].measured !== undefined) g.nodes[id].measured!.tick = tick
+    return reconcile(g, s, { tick, params: P, isFuel }).remedies
+  }
+  let t = TICK
+  for (let i = 0; i < P.maxRemedies; i++) {
+    const r = at(t)
+    eq(r.length, 1, `remedy ${i + 1}`)
+    recordRemedy(s, r[0], t, "nothing missing")
+    t += P.cooldownTicks
+  }
+  eq(at(t).length, 0, "the limit is reached")
+  // The smelter recovers (confirmed ok) ...
+  const smelt = g.nodes.smelt
+  const starved = smelt.measured!.states
+  smelt.measured!.states = st({ working: 0.95 })
+  smelt.measured!.missing = {}
+  for (let i = 0; i < P.confirm; i++) at((t += 60))
+  eq(smelt.status, "ok", "the smelter is ok again")
+  // ... and fails again later: a new episode.
+  smelt.measured!.states = starved
+  smelt.measured!.missing = { "iron-ore": 0.8 }
+  let again = 0
+  for (let i = 0; i < P.confirm + 1; i++) again += at((t += P.cooldownTicks)).length
+  ok(again > 0, "its repair can act again")
+})
+
 test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {
   const automated: Record<string, boolean> = {}
   const crewSupplied = (n: LogicalNode, item: string): boolean => n.kind === "labs" && !automated[item]
