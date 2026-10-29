@@ -467,7 +467,9 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   // under their own roles; only the rest is this role's. Parallel roles are numbered as the design walks, so when a
   // group changed (its first provider gone) a built `~2` dropped out of the design and starved with nothing planning
   // its inputs.
-  if (fixedCapacity === undefined && sharedRole === undefined && ctx.providerFeeds !== undefined) {
+  // Also on the sharing path (a shared role chosen for these consumers, `sharedRole`): sweep 3e1c4d7 seed 7625436's
+  // group was planned there, all three consumers on `~3`, and the built `~2` feeding the same ports was left out.
+  if (fixedCapacity === undefined && ctx.providerFeeds !== undefined) {
     const family = roleBase(role)
     const roles: string[] = []
     for (const [r] of pairs(ctx.providerCaps ?? {})) roles.push(r as string)

@@ -148,6 +148,25 @@ test("B97: a built parallel provider whose group lost its first member keeps its
   ok(d.edges.some((e) => e.from === "coal>power" && e.to === "power" && e.merge === true), "which joins the kept belt")
 })
 
+test("B97: on the sharing path too, a built provider feeding the shared role's consumers keeps them first", () => {
+  // Sweep 3e1c4d7 seed 7625436: the iron group was planned as a shared role (~3) for all three consumers, and the
+  // built ~2 that fed the same ports dropped out of the design.
+  const probe = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 1 })
+  const ironEdge = probe.edges.find((e) => e.item === "iron-plate" && e.to === `${RED}>labs`)!
+  const port = `${ironEdge.to}.${ironEdge.toPort}`
+  const shared = "iron-plate>shared~3"
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    sharing: { keep: { [`iron-plate@${ironEdge.to}`]: shared }, spare: {} },
+    providerCaps: { "iron-plate>shared~2": 0.05, [shared]: 5 },
+    providerFeeds: { "iron-plate>shared~2": { [port]: true }, [shared]: { [port]: true } },
+  }), { item: RED, perSecond: 1 })
+  const kept = byRole(d.nodes, "iron-plate>shared~2")
+  ok(kept !== undefined, `the built ~2 stays in the design: ${d.nodes.filter((n) => n.item === "iron-plate").map((n) => `${n.role}=${n.need}`).join(",")}`)
+  near(kept!.capacity, 0.05, 1e-9, "at its real capacity")
+  ok(d.edges.some((e) => e.from === "iron-plate>shared~2" && `${e.to}.${e.toPort}` === port), "it keeps feeding its consumer")
+})
+
 test("B71: a port that takes no merge stays whole on its short provider (no residual edge)", () => {
   // Soak vps-b69 seed 7718665: the residual merge into the mall's iron input had no side-load spot; 8 plans failed.
   const d = design(ctx({
