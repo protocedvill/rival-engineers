@@ -438,6 +438,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     noMerge: getFactory(ctx.faction.name)?.noMerge,
     ownSite: getFactory(ctx.faction.name)?.ownSite,
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
+    providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
   }

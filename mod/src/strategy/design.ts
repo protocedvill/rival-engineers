@@ -50,6 +50,11 @@ export interface DesignContext {
   handover?: Record<string, boolean>
   /** Actual output capacity of built provider roles by role (used only for a short provider). */
   providerCaps?: Record<string, number>
+  /**
+   * B97: the consumer ports (`role.port`) each built provider role feeds now (its belt edges). A built provider the design
+   * has left out keeps them first ("Built first", user decision 2026-10-29).
+   */
+  providerFeeds?: Record<string, Record<string, boolean>>
   /** B71: consumer ports (`role.port`) that cannot take a merged residual: a short provider keeps them whole. */
   noMerge?: Record<string, boolean>
   /** B72: provider roles whose plan folded them into a shared mine whose route then failed: they need a site of their own. */
@@ -409,6 +414,12 @@ function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; r
  * also a consumer's suffix (`power#2`, `labs#2`), so `coal>power#2` was both the second coal provider of `power` and the
  * coal supply of `power#2`, and the design merged the two into one node.
  */
+/** B97: a provider role without its parallel suffix (`coal>power~3` → `coal>power`). */
+function roleBase(role: string): string {
+  const m = string.match(role, "^(.*)~%d+$")
+  return m[0] !== undefined ? m[0] : role
+}
+
 function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
   // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
   const m = string.match(role ?? "", "^(.*)~%d+$")
@@ -450,6 +461,39 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     // B81: a replacement never shares the provider it replaces. Folded into the retiring whole-patch mine (D52), it was
     // an alias of that mine and was dropped with it, and the adopted belt lost its heir (vps-d68a 5480563 n18).
     newSite = true
+  }
+  // B97 (user decision in-session 2026-10-29, "Built first"; sweep 3e1c4d7 seed 7625436): built providers of this role's
+  // family (`role`, `role~2`, ...) that the design has not used keep the consumers they feed, at their real capacity and
+  // under their own roles; only the rest is this role's. Parallel roles are numbered as the design walks, so when a
+  // group changed (its first provider gone) a built `~2` dropped out of the design and starved with nothing planning
+  // its inputs.
+  if (fixedCapacity === undefined && sharedRole === undefined && ctx.providerFeeds !== undefined) {
+    const family = roleBase(role)
+    const roles: string[] = []
+    for (const [r] of pairs(ctx.providerCaps ?? {})) roles.push(r as string)
+    roles.sort()
+    const joins: Record<string, boolean> = { ...(mergePorts ?? {}) }
+    for (const r of roles) {
+      const cap = ctx.providerCaps![r]
+      const feeds = ctx.providerFeeds[r]
+      if (r === role || roleBase(r) !== family || cap <= EPS || feeds === undefined || ctx.handover?.[r] === true) continue
+      if (w.nodes.some((n) => n.role === r)) continue
+      const kept = consumers.filter((c) => feeds[`${c.to}.${c.toPort}`] === true)
+      if (kept.length === 0) continue
+      consumers = consumers.filter((c) => feeds[`${c.to}.${c.toPort}`] !== true)
+      const split = splitDemand(kept, cap)
+      let keptRate = 0
+      for (const c of split.keep) keptRate += c.rate
+      addProducer(w, item, keptRate, split.keep, shared, r, cap)
+      rate -= keptRate
+      // What it can't carry joins its belt from the provider this role plans.
+      for (const c of split.rest) {
+        joins[`${c.to}.${c.toPort}`] = true
+        consumers.push(c)
+      }
+    }
+    if (consumers.length === 0 || rate <= EPS) return
+    if (next(joins)[0] !== undefined) mergePorts = joins
   }
   const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
   // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a

@@ -187,6 +187,21 @@ export function providerCaps(f: FactoryState | undefined): Record<string, number
   return out
 }
 
+/** B97: the consumer ports (`role.port`) each built provider role feeds over its belt edges. */
+export function providerFeeds(f: FactoryState | undefined): Record<string, Record<string, boolean>> {
+  const out: Record<string, Record<string, boolean>> = {}
+  if (f === undefined) return out
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e === undefined || e.kind !== "belt" || e.from === undefined || e.to === undefined || e.toPort === undefined) continue
+    const from = f.graph.nodes[e.from]
+    const to = f.graph.nodes[e.to]
+    if (from === undefined || to === undefined || from.lifecycle !== "built") continue
+    ;(out[from.role] ??= {})[`${to.role}.${e.toPort}`] = true
+  }
+  return out
+}
+
 /** B60: roles the design must not grow or tap for new consumers. */
 export function providerShort(f: FactoryState | undefined): Record<string, boolean> | undefined {
   return f?.providerShort

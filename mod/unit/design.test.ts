@@ -129,6 +129,25 @@ test("B60 provider groups: an unexpandable fuel provider keeps its capacity and 
   ok(diff.missing.some((n) => n.role === "coal>power~2"), "the parallel provider is missing and can be scheduled")
 })
 
+test("B97: a built parallel provider whose group lost its first member keeps its consumer (Built first, user 2026-10-29)", () => {
+  // Sweep 3e1c4d7 seed 7625436: the first iron smelter of a group was deconstructed; the design planned one new provider
+  // under the base role for everything, and the built `~2` dropped out of the design and starved (nothing planned its
+  // ore) for 300 game-min.
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    providerCaps: { "coal>power~2": 0.05 },
+    providerFeeds: { "coal>power~2": { "power.in-fuel": true } },
+  }), { item: RED, perSecond: 1 })
+  const kept = byRole(d.nodes, "coal>power~2")
+  ok(kept !== undefined, `the built provider stays in the design: ${d.nodes.map((n) => n.role).join(",")}`)
+  near(kept!.capacity, 0.05, 1e-9, "at its real capacity")
+  ok(kept!.need <= 0.05 + 1e-9, "not asked to grow")
+  ok(d.edges.some((e) => e.from === "coal>power~2" && e.to === "power"), "it keeps feeding the steam block")
+  const rest = byRole(d.nodes, "coal>power")
+  ok(rest !== undefined && rest.need > 0, "the rest goes to a new provider")
+  ok(d.edges.some((e) => e.from === "coal>power" && e.to === "power" && e.merge === true), "which joins the kept belt")
+})
+
 test("B71: a port that takes no merge stays whole on its short provider (no residual edge)", () => {
   // Soak vps-b69 seed 7718665: the residual merge into the mall's iron input had no side-load spot; 8 plans failed.
   const d = design(ctx({
