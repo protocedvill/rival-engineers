@@ -136,6 +136,8 @@ export interface FactoryState {
   goals: FactoryGoal[]
   /** Last failed in-place growth plan by layout node, for diagnostics and the growth overlay. */
   growthDiagnostics?: Record<string, { tick: number; reason: string; units: number }>
+  /** B98: node → the node still being built that its last growth plan had to wait for (B52); no replan until it is built. */
+  growWaits?: Record<string, string>
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
   design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
@@ -738,6 +740,16 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     ctx.waiting.push(`${gr.role} short (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}): cannot expand`)
     return false
   }
+  // B98 (seed 2034469): a growth plan can take a minute of game time to compute (a whole-patch mine's move); one that
+  // had to wait for a goal still building is not planned again until that goal is done.
+  const blocker = f.growWaits?.[gr.node]
+  if (blocker !== undefined) {
+    if (f.graph.nodes[blocker]?.lifecycle === "building") {
+      ctx.waiting.push(`${gr.role} growth waits for ${f.graph.nodes[blocker].goal ?? blocker} to finish building`)
+      return "wait"
+    }
+    delete f.growWaits![gr.node]
+  }
   const t = storage.terrains?.[f.terrain]
   if (t === undefined) return false
   // M6a.2 (seed 222): ore under a mining module's growth may be worked out since the last scan: look again.
@@ -789,6 +801,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
       const other = end !== undefined && end !== gr.node ? f.graph.nodes[end] : undefined
       if (other === undefined || other.lifecycle !== "building") continue
       ctx.waiting.push(`${gr.role} growth waits for ${other.goal ?? other.id} to finish building (it reroutes ${e.role})`)
+      f.growWaits ??= {}
+      f.growWaits[gr.node] = other.id
       return "wait"
     }
   }
@@ -1978,7 +1992,8 @@ function measureAndReconcile(ctx: Ctx): void {
       for (const e of LG.edgesInto(f.graph, n.id)) if (e.kind === "belt" && e.item === item && e.from !== undefined && f.graph.nodes[e.from]?.lifecycle === "built") return false
       return true
     }
-    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied })
+    const handingOver = (n: LogicalNode): boolean => f.handover?.[n.role]?.node === n.id
+    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied, handingOver })
     countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
     MS.requestProbes(meter, r.probe)
     if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)
@@ -2005,6 +2020,14 @@ export function reconcileNow(faction: FactionState, f: FactoryState, config: Con
   f.meter.lastSample = -math.huge
   measureAndReconcile(ctx)
   if (ctx.waiting.length > 0) f.waiting = ctx.waiting
+}
+
+/** For tests (B98): one `startGrow` outside the reconciler. */
+export function growNow(faction: FactionState, f: FactoryState, growth: NonNullable<GoalSpec["growth"]>): boolean | "wait" {
+  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities), waiting: [] }
+  const r = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth })
+  f.waiting = ctx.waiting
+  return r
 }
 
 /**

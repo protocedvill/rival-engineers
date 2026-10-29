@@ -87,6 +87,11 @@ export interface ReconcileInput {
    * short only of such items is "expected": not reported as a problem and never remedied.
    */
   crewSupplied?: (this: void, n: LogicalNode, item: string) => boolean
+  /**
+   * B98: whether node `n` is being handed over to a replacement (D67/D55 provider handover). A depleted outpost under
+   * way to its replacement gets no deplete remedy: the handover is that remedy.
+   */
+  handingOver?: (this: void, n: LogicalNode) => boolean
 }
 
 export interface ReconcileResult {
@@ -319,6 +324,7 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
     if (items[0] === "depleted") {
       // D52/B21: a worked-out outpost expands in place over the rest of its patch (its growth area is already claimed);
       // D55: a whole-patch mine re-claims the next free part of its patch, and with none left it is relocated.
+      if (t.input.handingOver?.(n) === true) return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up; its replacement is being connected (handover)` }
       if (n.kind === "outpost") remedy(t, { key: `deplete:${n.id}`, kind: "grow", node: n.id, why: `${label(n)}: the ore under its drills is used up; expand over the rest of the patch, else relocate` })
       return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D52/D55: expand or move within the patch, else relocate)` }
     }

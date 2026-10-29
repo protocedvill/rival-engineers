@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B97, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B98, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2767,6 +2767,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B95 | 4819313 (sweep `3e1c4d7`) | an old underground inside a route's underground span stole the pairing ("nothing missing"): the build check reports such intruders and the repair picks them up | `386eea9` |
 | B96 | 1264816 (sweep `3e1c4d7`) | a belt from a shared producer was "filling" forever (compared with the producer's whole output): now with what its other belts leave | `3966fa3` |
 | B97 | 7625436, 1459426 | a built parallel provider dropped out of the design when its group changed and starved: the design keeps built providers' consumers first (user decision "Built first") | `5004e99` |
+| B98 | 2034469 (sweep `3e1c4d7`) | a depleted mine being handed over (D67) re-planned a 60-s in-patch move every measurement and discarded it ("wait"): ~700× slowdown. The handover owns the depletion; a waiting growth is not replanned until its blocker is built | (this commit) |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2842,9 +2843,10 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-3e1-1376111` | `3e1c4d7` | 1376111, fresh | failed fast at 301 min (B93 reproduced; its failed plans exported this time) |
 | `vps-b93-1376111` | `efacbd6` | 1376111, fresh | failed fast at 301 min: joined the kept belt now, every candidate sealed (→ B94) |
 | `vps-b94-1376111` | `6afae19` | 1376111, fresh | passed, v1-done at 240 min, no stalls (B93 + B94 validated) |
-| `m6-random20-3e1c4d7` | `3e1c4d7` | the full 20-seed sweep (B89–B92) | running; so far 10 passed, failed: 4819313 (cap; → B95), 1376111 (fail fast 301; B93/B94, fixed after this build), 1264816 (cap; → B96) |
+| `m6-random20-3e1c4d7` | `3e1c4d7` | the full 20-seed sweep (B89–B92) | **13/20**. Failed: 4819313 (cap; → B95), 1376111 (fail fast 301; B93/B94, fixed after this build), 1264816 (cap; → B96), 1459426 and 7625436 (cap; → B97), 1677299 (cap; passes on `6afae19`), 2034469 (stopped at 195 min, ~700 s per game minute; → B98) |
 | `vps-6af-1677299` | `6afae19` | 1677299, fresh | passed, v1-done at 243 min (its 922c77c failure is covered by B92–B94) |
 | `vps-386-7625436` | `386eea9` | 7625436, fresh | failed at the cap, ~12/min (→ B97, open) |
+| `vps-b98-2034469` | B98 fix on `628371c` | 2034469 from `min-0180` | passed, v1-done at 242 min, no stalls; factory step ~0.6 s per game minute (was ~700 s) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |

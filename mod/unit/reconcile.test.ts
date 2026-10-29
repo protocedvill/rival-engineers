@@ -180,6 +180,22 @@ test("depleted outpost: the drills ran out of ore → expand in place over the r
   ok(grow[0] !== undefined && grow[0].key === "deplete:mine", "keyed by the depletion")
 })
 
+test("B98: a depleted outpost whose D67 handover is under way gets no deplete remedy (the handover owns it)", () => {
+  // Seed 2034469: n32 ran out while its replacement (D67) was being built; the deplete remedy re-planned a 60-s
+  // in-patch move every measurement and threw it away ("wait" for the replacement's goal), ~190 ms/tick for hours.
+  const g = newGraph()
+  node(g, "mine", "outpost", "iron-ore", 1, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-ore", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { depleted: 1 }, estimated: true },
+  })
+  node(g, "smelt", "module", "iron-plate", 2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 8, states: st({ starved: 1 }), missing: { "iron-ore": 1 } },
+  })
+  belt(g, "ore", "mine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
+  const r = reconcile(g, newReconcileState(), { tick: TICK, params: P, isFuel, handingOver: (n) => n.id === "mine" })
+  eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
+  eq(r.remedies.filter((x) => x.node === "mine").length, 0, "no remedy: the handover replaces it")
+})
+
 test("a belt still filling: the producer makes much more than arrives → wait (no grow)", () => {
   const g = chain(st({ working: 0.97 }), 2, st({ working: 0.3, starved: 0.7 }), 0.4, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.4, from: 0, to: 0 })

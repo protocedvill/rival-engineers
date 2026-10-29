@@ -17,7 +17,7 @@ import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
 import { beginHandover, checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
-import { FactoryGoal, FactoryState, getFactory, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
+import { FactoryGoal, FactoryState, getFactory, growNow, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
 import { feed, followRoute } from "./route-lab"
@@ -474,6 +474,22 @@ describe("M5b reconciler", () => {
     assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled D55 handover keeps a mine that still has ore")
     setConfigOverride("factoryMineLeadMinutes", undefined)
   })
+  test("B98: a growth that waited for a goal still building is not planned again until that goal's node is built", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const tick = game.tick
+    node(f.graph, placeDef(f.layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }), { x: math.floor(lab.origin.x) - 10, y: math.floor(lab.origin.y) }), "outpost", "iron-ore", 1, tick)
+    addNode(f.graph, { id: moduleId("rep"), role: "rep", kind: "module", item: "iron-plate", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "building", status: "unknown", createdTick: tick })
+    f.growWaits = { mine: "rep" }
+    const goals = f.goals.length
+    const growth = { role: f.graph.nodes["mine"].role, node: "mine", units: 1, need: 0, have: 0, reclaim: true }
+    assert(growNow(faction, f, growth) === "wait", "still waiting: no plan")
+    assert(f.goals.length === goals && f.growthDiagnostics?.["mine"] === undefined, "nothing planned")
+    f.graph.nodes["rep"].lifecycle = "built"
+    growNow(faction, f, growth)
+    assert(f.growWaits["mine"] === undefined, "built: the wait is over and the growth is planned again")
+  })
+
   test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {
     const lab = createLab(32)
     const { faction, f } = testFaction(lab, 20, 20)
