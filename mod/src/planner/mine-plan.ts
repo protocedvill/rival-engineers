@@ -311,6 +311,54 @@ function dirFor(axis: "x" | "y", kind: "minus" | "plus"): 0 | 4 | 8 | 12 {
   return kind === "minus" ? SOUTH : NORTH
 }
 
+/**
+ * B90 (sweep 922c77c seed 8033112): a mine's poles must be reachable from outside it. Its claim and its margin ring (own
+ * ground once built) keep any later pole off them, so some pole must be within wire reach of the first tile past the
+ * ring; else no pole line can ever join the mine (its only pole sat 8 tiles deep in a splitter-collector mine: "no pole
+ * path" for every later plan). When none is, link poles join the nearest one to the edge over tiles no future entity
+ * takes (the footprint keeps one perimeter row for poles). Returns the poles to add.
+ */
+function linkPoles(footprint: { w: number; h: number }, poles: ModuleEntity[], blocked: Record<string, boolean>, facts: ProtoFacts, pole: string): ModuleEntity[] {
+  if (poles.length === 0) return []
+  const reach = facts.entity(pole)?.wireReach ?? 7.5
+  // From a pole centre to the nearest tile centre past the margin ring (1.5 outside the footprint's edge).
+  const outReach = (x: number, y: number): boolean => math.min(x + 1.5, footprint.w + 1.5 - x, y + 1.5, footprint.h + 1.5 - y) <= reach
+  for (const p of poles) if (outReach(p.x, p.y)) return []
+  const taken: Record<string, boolean> = {}
+  for (const p of poles) taken[tileKey(math.floor(p.x), math.floor(p.y))] = true
+  // Breadth-first over free tiles, from every pole, each step at most a wire's reach.
+  const free: { x: number; y: number }[] = []
+  for (let x = 0; x < footprint.w; x++) for (let y = 0; y < footprint.h; y++) if (!blocked[tileKey(x, y)] && !taken[tileKey(x, y)]) free.push({ x: x + 0.5, y: y + 0.5 })
+  const prev: Record<number, number> = {}
+  const queue: number[] = []
+  const seen: Record<number, boolean> = {}
+  const near = (a: { x: number; y: number }, b: { x: number; y: number }): boolean => (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) <= reach * reach
+  for (let i = 0; i < free.length; i++) {
+    for (const p of poles) {
+      if (!seen[i] && near(free[i], p)) {
+        seen[i] = true
+        prev[i] = -1
+        queue.push(i)
+      }
+    }
+  }
+  for (let qi = 0; qi < queue.length; qi++) {
+    const i = queue[qi]
+    if (outReach(free[i].x, free[i].y)) {
+      const out: ModuleEntity[] = []
+      for (let at = i; at !== -1; at = prev[at]) out.push({ name: pole, x: free[at].x, y: free[at].y })
+      return out
+    }
+    for (let j = 0; j < free.length; j++) {
+      if (seen[j] || !near(free[i], free[j])) continue
+      seen[j] = true
+      prev[j] = i
+      queue.push(j)
+    }
+  }
+  return []
+}
+
 /** The splitter of a belt's tier (game data: the vanilla tiers' names). */
 function splitterFor(belt: string): string {
   for (const t of DEFAULT_TIER_NAMES) if (t.belt === belt) return t.splitter
@@ -519,6 +567,7 @@ export function materializeMinePlan(base: ModuleDef, plan: WholePatchMinePlan, f
   const outsideKey = tileKey(math.floor(outside.x), math.floor(outside.y))
   futureBlocked[outsideKey] = true
   const initialPoles = pole !== undefined ? placePoles(footprint, [...initialInfrastructure, ...initialDrills], facts, pole, futureBlocked) : []
+  if (pole !== undefined) for (const e of linkPoles(footprint, initialPoles, futureBlocked, facts, pole)) initialPoles.push(e)
   for (const e of initialPoles) initialInfrastructure.push(e)
   if (pole !== undefined) {
     for (const e of initialPoles) normInfra.push(e)

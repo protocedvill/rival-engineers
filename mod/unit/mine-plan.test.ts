@@ -382,4 +382,37 @@ test("P44 (b): a several-row whole-patch mine joins its rows with splitters: no 
   }
 })
 
+test("B90: a whole-patch mine's first stage always has a pole reachable from past its margin ring", () => {
+  // Sweep 922c77c seed 8033112: a splitter-collector mine's only first-stage pole sat 8 tiles from open ground (its claim
+  // and margin ring all round): "no pole path" for every later plan.
+  const reach = 7.5
+  let checked = 0
+  const fails: string[] = []
+  for (const shape of ["wide", "tall"]) {
+    const region = { x: 0, y: 0, w: 100, h: 100 }
+    const view = terrain(region, (x, y) => {
+      if (shape === "rect") return x >= 14 && x < 58 && y >= 14 && y < 52 ? "iron-ore" : undefined
+      if (shape === "wide") return x >= 10 && x < 80 && y >= 30 && y < 50 ? "iron-ore" : undefined
+      return x >= 30 && x < 52 && y >= 8 && y < 90 ? "iron-ore" : undefined
+    })
+    const patch = connectedPatch(view, "iron-ore", [{ x: 40, y: 40 }], region)!
+    const plan = planWholePatch(view, patch, DRILL)
+    for (const rows of [2, 4]) {
+      const base = miningOutpost(F, { resource: "iron-ore", rows, sides: 1 })
+      for (const near of [{ x: 100, y: 0 }, { x: 100, y: 100 }, { x: 50, y: -50 }]) {
+        for (const style of ["side", "splitter"]) {
+          const st = materializeMinePlan(base, plan, F, near, 0, style === "splitter" ? "splitter" : undefined)
+          if (st === undefined) continue
+          const fp = st.initial.footprint
+          const ok1 = st.initial.entities.some((e) => e.name === "small-electric-pole" && math.min(e.x + 1.5, fp.w + 1.5 - e.x, e.y + 1.5, fp.h + 1.5 - e.y) <= reach)
+          checked++
+          if (!ok1) fails.push(`${shape} rows ${rows} near ${near.x},${near.y} ${style}`)
+        }
+      }
+    }
+  }
+  print(`  B90: ${checked} first stages checked, ${fails.length} without a reachable pole`)
+  eq(fails.length, 0, fails.join("; "))
+})
+
 run("mine-plan")
