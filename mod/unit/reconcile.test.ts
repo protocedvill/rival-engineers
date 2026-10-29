@@ -405,6 +405,22 @@ test("B104: an edge measurement stays fresh for a whole probe round (one probe a
   eq(probeMaxAgeFor(3600, 600, 30, 38), 38 * 630, "38 belts: one round")
 })
 
+test("B105: a passive verdict on one feed does not hide another feed of the same item that has a cause to act on", () => {
+  // 1264816 (B104 replay): cluster 1's smelter took ore from three mines into one port; the trace stopped at the first
+  // ("below plan", no remedy) and never reached the second, backed up 71% ("broken": repair).
+  const g = newGraph()
+  node(g, "m1", "outpost", "iron-ore", 0.37, st({ working: 0.8 }), 0.3)
+  node(g, "m2", "outpost", "iron-ore", 1, st({ working: 0.29, blocked: 0.71 }), 0.29)
+  node(g, "smelt", "module", "iron-plate", 3.4, st({ working: 0.17, starved: 0.83 }), 0.63, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0.63 }], machines: 12, states: st({ working: 0.17, starved: 0.83 }), missing: { "iron-ore": 0.83 } },
+  })
+  belt(g, "a", "m1", "smelt", "iron-ore", 0.37, { rate: 0.6, from: 0, to: 0 })
+  belt(g, "b", "m2", "smelt", "iron-ore", 1, { rate: 0.6, from: 0, to: 0 })
+  const { r } = settle(g, 2)
+  eq(g.nodes.m2.status, "backed-up", "the second mine is backed up")
+  ok(r.remedies.some((x) => x.kind === "repair" && x.edge === "b"), `its belt is repaired: ${g.nodes.smelt.cause?.why} | ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
+})
+
 test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {
   const automated: Record<string, boolean> = {}
   const crewSupplied = (n: LogicalNode, item: string): boolean => n.kind === "labs" && !automated[item]

@@ -618,7 +618,11 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
   for (const mid of ids) {
     if (job.alias[mid] !== undefined) continue
     const m = findModule(job.layout, mid)
-    if (m === undefined || m.fixed || m.canonical.site !== undefined || (job.replaced[mid] ?? 0) >= 2) continue
+    // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
+    // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
+    // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
+    const provenSealed = search?.sealed !== undefined && !search.sealed.edge && (search.sealed.side === "start" ? c.from?.module : c.to.module) === mid
+    if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
     for (const rid of [...job.layout.routeOrder]) {
       const r = job.layout.routes[rid]
       if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue

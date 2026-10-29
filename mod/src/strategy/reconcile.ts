@@ -271,6 +271,9 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
   // B87: an item no edge carries (crew-supplied, or an intermediate made inside the module, like a red line's gears) is
   // the cause only when no belt input explains the shortage: trace the belt inputs first.
   let external: RootCause | undefined
+  // B105 (1264816): a feed that is only filling or below plan (nothing to act on) does not end the search: another feed
+  // of the item may be broken or undersized. It is the answer only when no feed has more to say.
+  let passive: RootCause | undefined
   for (const item of items) {
     const edges = edgesInto(t.g, n.id).filter((e) => e.kind === "belt" && e.item === item)
     if (edges.length === 0) {
@@ -318,7 +321,8 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       for (const o of beltsFrom(t.g, prod)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
       const forThis = math.max(0, made - others)
       if (forThis > 0 && (e.measuredRate ?? 0) < p.arrivedShare * forThis) {
-        return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+        passive ??= { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+        continue
       }
       if (shares(prod).working >= p.busyShare) {
         // Unless one of this producer's belts is already full: then the group remedy below covers it, and growing the
@@ -326,8 +330,9 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         if (!anyFull(t.g, prod, item, t.input.tick, p)) remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
         return { kind: "node", id: prod.id, what: "undersized", why: `${label(prod)} runs flat out and ${label(n)} still lacks ${item}` }
       }
-      return { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }
+      passive ??= { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }
     }
+    if (passive !== undefined) return passive
   }
   return external ?? { kind: "node", id: n.id, what: "unknown", why: `${label(n)}: no input found short` }
 }

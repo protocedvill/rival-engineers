@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B104, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B106, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2774,6 +2774,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B102 | 1264816 (sweep `628fa29`) | a dropped tap's splitter was picked up and the trunk belt under it never put back; the reconciler had used up its repairs on that belt before the cluster ever worked. Dropped splitters now restore the kept route's belt, and a recovered node starts a fresh remedy history | `24577da` |
 | B103 | 1264816 (B102 replay) | a shared smelter judged "ok" against the plan it was built with (0.37/s) while its belts needed 3.4/s: a node's plan now covers its belts | `f1a553f` |
 | B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | `f1a553f` |
+| B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | (this commit) |
+| B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | (this commit) |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2860,6 +2862,8 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b101-7718665` | `0794504` | 7718665 from `min-0040` | passed, v1-done at 254 min, no stalls; growth g8 now completes (grew power at tick 215040). AI 3.1 ms/tick (planner 0.92 average, one interval at 26 ms/tick at 154 min; crew 1.7), measured with 4 instances running: to recheck with `-j 1` |
 | `vps-b102-1264816` | `9d3aa12` | 1264816 from `min-0140` | failed at the cap but ~27/min from 285 min (was ~15): B102 put the trunk belt back at (467.5,55.5); g20 still gave up its location over a drill ghost on worked-out ore (no resource under it: the crew's build check refuses it); cluster 1 starved behind an iron smelter "ok" at 0.63/s against its first plan (→ B103) |
 | `vps-b101-8033112` | `9d3aa12` | 8033112 from `min-0100` | passed, v1-done at 279 min, no stalls (its stuck belt at (-44,507) was B101's pattern: tree-04 ~0.05 into the belt's box) |
+| `vps-b104-1264816` | `f1a553f` + B104 | 1264816 from `min-0140` | failed at the cap: n15 now starved (B103) and traces reach verdicts (B104), but the trace stopped at the first ore feed (→ B105) |
+| `m6-random20-3c2c18f` | `3c2c18f` | the full 20-seed sweep (B100–B104) | running; 5387208 stopped early (fail fast at 141 min; → B106) |
 | `vps-f41-1264816` | `f41f5bb` | 1264816, fresh | failed at the cap: lab cluster 2 unpowered (→ B92) |
 | `vps-b75b` | `5dcc66f` | 4361783 (fresh) | passed, v1-done at 241 min, no stalls |
 | `vps-b75c` | `5dcc66f` | 7741326, 3088988 (fresh) | 2/2: 7741326 v1-done at 237 min, 3088988 at 240 min, no stalls |

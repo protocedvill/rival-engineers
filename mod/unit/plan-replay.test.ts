@@ -696,5 +696,20 @@ test("B58: a splitter tap never sits on the span of the route it taps", () => {
 // each fresh provider must be placed where its one assigned consumer can actually be reached.
 replay("m6-b60-provider-single-route", { newSites: ["n51", "n52"], expect: "failed", failureIncludes: "no free coal patch in the region" })
 
-run("plan-replay")
 
+
+// B106 (sweep 3c2c18f seed 5387208): cluster 3's new copper mine was placed in a pocket of trees and the faction's own
+// buildings; the router proved its output walled in, but a module on a site (its ore patch) was never placed again, so
+// every attempt rebuilt the same plan and failed 8 times ("no path"). A proven seal on its own port now re-places it.
+test("B106: a new mine whose own output the router proves walled in is placed again elsewhere; the plan completes", () => {
+  const fx = load("b106-5387208-g22")
+  const job = newPlanJob(fx.request, tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0], fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 2000000)
+  const failures: string[] = []
+  for (const [k, v] of pairs(job.failures)) failures.push(`${k as string}: ${v}`)
+  ok(job.phase === "done", `plan done (${job.phase}: ${failures.join("; ")})`)
+  const mine = findModule(job.layout, "n57")
+  ok(mine !== undefined && !(mine.rect.x === 427 && mine.rect.y === -47), `the copper mine moved from its walled-in spot (427,-47): ${mine?.rect.x},${mine?.rect.y}`)
+})
+
+run("plan-replay")
