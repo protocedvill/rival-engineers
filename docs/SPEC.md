@@ -92,6 +92,7 @@ Two layers, by analogy:
 | D66 | Crew prefetch for far builds (2026-10-28, user decision in-session) | The user chose "Yes, prefetch" when asked whether a member hauling for a far build should also carry materials for the upcoming place jobs nearby. A place batch whose nearest source is far also hauls for the ready place jobs that are nearer to the batch than that source, nearest first, while the load fits the existing `trip-inventory-fill` share of empty stacks (`board.prefetchJobs`). No new tuning number: the source distance sets the reach. Cause: seed 8646103 (`vps-b68`) fetched ~10 belts per 500-tile walk for a 300-belt outpost route and stalled twice. |
 | D67 | Factory mines replaced before they run dry (2026-10-28, user decision in-session; exception to D28, extends P36 (a)) | Asked whether every factory mine should be replaced ahead of time like the power fuel mine, the user chose "Yes, own lead setting": a factory mine (an `outpost` node) whose drills have less than `factory-mine-lead-minutes` (default **30**, 0 = never) of ore left at its planned rate starts a provider handover (goalpost 1): a replacement on fresh ore is planned and connected before the old mine is deconstructed. Steam-block fuel mines keep `factory-power-fuel-minutes` (10). A mine that runs dry first is still D55's (claim more of its patch, else relocate). Cause: seed 8646103 (`vps-d66`): three science mines ran dry 200-220 game-min after being built and each handover began only then, so lab clusters starved for the whole move. |
 | D68 | Tap a built producer with capacity first (2026-10-28, user decision in-session; replaces P36 (b), before D62) | Seed 1264816 (`vps-b80d`): lab cluster 3's smelters needed a third parallel coal provider (~0.1 coal/s), the only coal patch within 384 tiles was full, and four D62 radar outposts found no more coal: the soak failed after an hour of exploring while built coal mines had 0.1–0.96/s spare each. Asked what a fuel provider should do when it finds no free patch, the user: "tap first is best as long as there is capacity", then: "should be agnostic, we should always try to build rules that aren't a bunch of hacks but apply to everything to keep it clean". **Rule, for every item:** a new producer that cannot be placed makes its consumers tap the nearest built producer of the same item that has capacity (spare full-speed output over its planned draw, or room to grow in place), at once and before D62 explores; consumers of a split shared group (B61) tap it too. Without such a producer, D62 explores. P36 (b)'s fuel-only, after-2-failures rule is gone. Setting `factory-fuel-fallback` (id kept) switches it. |
+| D69 | Conditional-logic refactor deferred to M7 (2026-10-29, user decision in-session) | A code audit (agent-run, 2026-10-29) found the branching hot spots where special cases pile up on the generic rules. The agent proposed three refactors: (1) a typed planner failure plus one constraint store, instead of failure strings parsed downstream; (2) node fields instead of parsing role strings; (3) one remedy handler per kind in the reconciler. The user: "push the refactor to m7". M6 ships without them; M7 does them. |
 
 ## 3. v1 Definition of Done
 
@@ -636,6 +637,9 @@ long belts in v1) · **P5** Space Age · optional **external strategist**
 **Deferred to M7 (D64):** decide whether verified provider handover is needed at all, or refactor it to fit the
 provider-group model. It is kept in M6 and its evaluation is not part of v1 acceptance.
 
+**Deferred to M7 (D69):** the conditional-logic refactor from the 2026-10-29 audit (typed planner failures with one
+constraint store, node fields instead of role-string parsing, one reconciler remedy handler per kind).
+
 ## 9. Agent operating model
 
 - Work milestone by milestone, on branch `mN-<slug>`. Commit freely. Open one PR per milestone.
@@ -925,6 +929,7 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 ## Changelog
 
 - v0.34 (2026-10-28, user decision in-session): D67 (every factory mine starts its handover at `factory-mine-lead-minutes`, default 30).
+- v0.35 (2026-10-29, user decision in-session): D69 (the conditional-logic refactor proposed after the 2026-10-29 audit is deferred to M7).
 - v0.33 (2026-10-28, user decisions in-session): D65 (module power demand scales with utilization) and D66 (crew prefetch for far builds).
 - v0.32 (2026-10-24, user decision in-session): D64 (verified provider handover kept for M6, its necessity or refactor decided in M7; the provider-group rule stays "keep the short provider, add parallel providers").
 - v0.30 (2026-10-21, user decision in-session): P43 → D62 (a): faction radars explore through `on_sector_scanned` (they chart nothing: no players on the force).
