@@ -2774,8 +2774,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B102 | 1264816 (sweep `628fa29`) | a dropped tap's splitter was picked up and the trunk belt under it never put back; the reconciler had used up its repairs on that belt before the cluster ever worked. Dropped splitters now restore the kept route's belt, and a recovered node starts a fresh remedy history | `24577da` |
 | B103 | 1264816 (B102 replay) | a shared smelter judged "ok" against the plan it was built with (0.37/s) while its belts needed 3.4/s: a node's plan now covers its belts | `f1a553f` |
 | B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | `f1a553f` |
-| B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | (this commit) |
-| B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | (this commit) |
+| B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | `3111332` |
+| B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | `3111332` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
