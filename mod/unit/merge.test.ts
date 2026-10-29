@@ -131,4 +131,17 @@ test("P44: with a lane given, splitter merges come first; a side-load only when 
   eq(unknown.every((g) => g.x2 !== undefined), true, "unknown demand: no side-load")
 })
 
+test("B92: a merge never takes a tile a whole-patch mine claims (sweep 922c77c 1264816: a splitter on a future pole's tile)", () => {
+  const l = layoutOf([trunk(6)])
+  // Claim the tiles beside the trunk on its west side (x 9), as a mine's future poles and drills would.
+  l.mine = {}
+  for (let y = 8; y < 20; y++) l.mine[tkey(9, y)] = "mine" as never
+  const goals = mergeGoals(l, TO, undefined)
+  for (const g of goals) {
+    const side = g.x2 !== undefined ? { x: g.x2, y: g.y2! } : g.side === "left" ? { x: g.x - DX[(g.dir + 1) % 4], y: g.y - DY[(g.dir + 1) % 4] } : { x: g.x - DX[(g.dir + 3) % 4], y: g.y - DY[(g.dir + 3) % 4] }
+    eq(side.x !== 9, true, `goal at ${g.x},${g.y} uses ${side.x},${side.y}, a claimed tile`)
+  }
+  eq(goals.length > 0, true, "the east side is still offered")
+})
+
 run("merge")

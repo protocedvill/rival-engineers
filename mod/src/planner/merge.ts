@@ -26,7 +26,9 @@ const MAX_SPLITTERS = 12
 
 function free(layout: LayoutState, x: number, y: number): boolean {
   const k = tkey(x, y)
-  return layout.occ[k] === undefined && layout.routeOcc[k] === undefined && layout.reserved[k] === undefined
+  // B92: nor a whole-patch mine's claim (sweep 922c77c 1264816: a merge splitter took the tile of a mine's future pole,
+  // the pole's ghost never revived, and the lab cluster it linked to the plant stayed unpowered for 300 game-min).
+  return layout.occ[k] === undefined && layout.routeOcc[k] === undefined && layout.reserved[k] === undefined && layout.mine?.[k] === undefined
 }
 
 function byCost(a: { cost: number; goal: MergeGoal }, b: { cost: number; goal: MergeGoal }): number {
@@ -69,7 +71,7 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
         sideLoad.push({ goal: { x: st.x, y: st.y, dir: st.dir, side }, cost: near(x, y) })
         if (!straight) continue
         const back = tkey(x + DX[st.dir], y + DY[st.dir])
-        if (layout.routeOcc[back] !== undefined || layout.occ[back] !== undefined) continue
+        if (layout.routeOcc[back] !== undefined || layout.occ[back] !== undefined || layout.mine?.[back] !== undefined) continue
         splitter.push({ goal: { x: st.x, y: st.y, dir: st.dir, x2: x, y2: y }, cost: near(x, y) })
       }
     }
