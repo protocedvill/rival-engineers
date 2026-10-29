@@ -2864,7 +2864,7 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b102-1264816` | `9d3aa12` | 1264816 from `min-0140` | failed at the cap but ~27/min from 285 min (was ~15): B102 put the trunk belt back at (467.5,55.5); g20 still gave up its location over a drill ghost on worked-out ore (no resource under it: the crew's build check refuses it); cluster 1 starved behind an iron smelter "ok" at 0.63/s against its first plan (→ B103) |
 | `vps-b101-8033112` | `9d3aa12` | 8033112 from `min-0100` | passed, v1-done at 279 min, no stalls (its stuck belt at (-44,507) was B101's pattern: tree-04 ~0.05 into the belt's box) |
 | `vps-b104-1264816` | `f1a553f` + B104 | 1264816 from `min-0140` | failed at the cap: n15 now starved (B103) and traces reach verdicts (B104), but the trace stopped at the first ore feed (→ B105) |
-| `m6-random20-3c2c18f` | `3c2c18f` | the full 20-seed sweep (B100–B104) | running; 5387208 stopped early (fail fast at 141 min; → B106) |
+| `m6-random20-3c2c18f` | `3c2c18f` | the full 20-seed sweep (B100–B104) | **19/20** (meets SPEC §3's 18/20). Only 5387208 failed (fail fast at 141 min; → B106, validated). v1-done from 175 to 256 min, no stalls; AI 1.5–2.9 ms/tick with 3 at a time |
 | `vps-b106-5387208` | `ed1b29b` | 5387208 from `min-0120` | passed, v1-done at 213 min, no stalls |
 | `vps-b105-1264816` | `ed1b29b` | 1264816 from `min-0140` | failed at the cap: the trace now reaches the n27/n16 ore edges (B105), but repairs found nothing missing; belt probes showed n15's ore lane full of coal (→ B107) |
 | `vps-b107-1264816` | B107 on `ed1b29b` | 1264816 from `min-0140` | **passed**, v1-done at 223 min, no stalls (first pass in recent sweeps): repair g22 emptied 10 of n15's belts at ~142 min |
