@@ -144,4 +144,14 @@ test("B92: a merge never takes a tile a whole-patch mine claims (sweep 922c77c 1
   eq(goals.length > 0, true, "the east side is still offered")
 })
 
+test("B94: merge candidates span the whole trunk, not only its nearest stretch (sweep 3e1c4d7 1376111)", () => {
+  // The 12 nearest of 174 lay on the trunk's tail in a sealed pocket by the consumer; its head was open.
+  const goals = mergeGoals(layoutOf([trunk(80)]), TO, undefined)
+  const splitters = goals.filter((g) => g.x2 !== undefined)
+  eq(splitters.length <= 12, true, `capped (${splitters.length})`)
+  let far = 0
+  for (const g of splitters) if (g.y >= 10 + 40) far++
+  eq(far > 0, true, `some candidates on the trunk's far half (${far})`)
+})
+
 run("merge")

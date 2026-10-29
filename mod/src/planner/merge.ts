@@ -31,6 +31,21 @@ function free(layout: LayoutState, x: number, y: number): boolean {
   return layout.occ[k] === undefined && layout.routeOcc[k] === undefined && layout.reserved[k] === undefined && layout.mine?.[k] === undefined
 }
 
+/**
+ * B94: at most `max` of `sorted` (nearest first): the nearest half, then the rest evenly over the remainder, so the
+ * candidates span the whole trunk (sweep 3e1c4d7 seed 1376111: the 12 nearest of 174 all lay on the trunk's tail in a
+ * pocket by the consumer, each sealed, while its head was open: every replacement plan "no path").
+ */
+function spread<T>(sorted: T[], max: number): T[] {
+  if (sorted.length <= max) return sorted
+  const near = math.floor(max / 2)
+  const out = sorted.slice(0, near)
+  const rest = sorted.length - near
+  const far = max - near
+  for (let i = 0; i < far; i++) out.push(sorted[near + math.floor(((i + 1) * rest) / (far + 1))])
+  return out
+}
+
 function byCost(a: { cost: number; goal: MergeGoal }, b: { cost: number; goal: MergeGoal }): number {
   return a.cost !== b.cost ? a.cost - b.cost : a.goal.x !== b.goal.x ? a.goal.x - b.goal.x : a.goal.y !== b.goal.y ? a.goal.y - b.goal.y : a.goal.dir - b.goal.dir
 }
@@ -83,10 +98,10 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   const out: MergeGoal[] = []
   // Each candidate costs a full search: try the nearest few, then let the ordinary rip/re-place retries take over.
   const sides = (): void => {
-    for (let i = 0; i < sideLoad.length && i < MAX_SIDE_LOADS; i++) out.push(sideLoad[i].goal)
+    for (const c of spread(sideLoad, MAX_SIDE_LOADS)) out.push(c.goal)
   }
   const splits = (): void => {
-    for (let i = 0; i < splitter.length && i < MAX_SPLITTERS; i++) out.push(splitter[i].goal)
+    for (const c of spread(splitter, MAX_SPLITTERS)) out.push(c.goal)
   }
   if (lane === undefined) {
     sides()
