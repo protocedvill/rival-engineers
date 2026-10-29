@@ -2772,8 +2772,8 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B100 | 2229258 (sweep `628fa29`) | a growth reused an old fuel belt, coal still on it, for a plate route: the coal jammed two science modules. Rebuilds now replace a belt that changes what it carries | `1f71ec8` |
 | B101 | 7718665 (sweep `628fa29`) | a tree from the next tile reaching 0.05 into a belt's box blocked one trunk belt for good (growths and repairs did not clear trees; the stuck-ghost search was inset 0.05): growths, reroutes and repairs clear trees in the way first, and the search uses the whole box | `e748094` |
 | B102 | 1264816 (sweep `628fa29`) | a dropped tap's splitter was picked up and the trunk belt under it never put back; the reconciler had used up its repairs on that belt before the cluster ever worked. Dropped splitters now restore the kept route's belt, and a recovered node starts a fresh remedy history | `24577da` |
-| B103 | 1264816 (B102 replay) | a shared smelter judged "ok" against the plan it was built with (0.37/s) while its belts needed 3.4/s: a node's plan now covers its belts | (this commit) |
-| B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | (this commit) |
+| B103 | 1264816 (B102 replay) | a shared smelter judged "ok" against the plan it was built with (0.37/s) while its belts needed 3.4/s: a node's plan now covers its belts | `f1a553f` |
+| B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | `f1a553f` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
