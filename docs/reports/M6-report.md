@@ -2776,7 +2776,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B104 | 1264816 (B103 replay) | traces waited for probes forever: a belt measurement went stale (3600 ticks) long before the one-at-a-time probes came round again (~24000 ticks); it now stays fresh for a round | `f1a553f` |
 | B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | `3111332` |
 | B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | `3111332` |
-| B107 | 1264816 (every recent sweep) | a smelter column's ore lane full of coal since a growth (the merge tile curved while the ore side-load was missing): repairs that find nothing missing now empty the consumer's belts where another input fills both lanes | pending |
+| B107 | 1264816 (every recent sweep) | a smelter column's ore lane full of coal since a growth (the merge tile curved while the ore side-load was missing): repairs that find nothing missing now empty the consumer's belts where another input fills both lanes | `e79d77f` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
