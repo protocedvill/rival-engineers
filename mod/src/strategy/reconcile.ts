@@ -42,13 +42,14 @@ export interface ReconcileParams {
   cooldownTicks: number
 }
 
-export type RemedyKind = "grow" | "repair" | "upkeep" | "parallel"
+/** D69: one handler per kind (`factory.ts` `REMEDIES`); `deplete` is a worked-out outpost (expand over its patch, else relocate). */
+export type RemedyKind = "grow" | "deplete" | "repair" | "upkeep" | "parallel"
 
 export interface Remedy {
   /** Root-cause key: one remedy history per key. */
   key: string
   kind: RemedyKind
-  /** grow / upkeep: the node; repair: the edge whose physical parts (route, pole lines) are re-placed. */
+  /** grow / deplete / upkeep / parallel: the node; repair: the edge whose physical parts (route, pole lines) are re-placed. */
   node?: string
   edge?: string
   why: string
@@ -92,10 +93,10 @@ export interface ReconcileInput {
    */
   crewSupplied?: (this: void, n: LogicalNode, item: string) => boolean
   /**
-   * B98: whether node `n` is being handed over to a replacement (D67/D55 provider handover). A depleted outpost under
-   * way to its replacement gets no deplete remedy: the handover is that remedy.
+   * B98: whether node `n` is retiring (D76; D67/D55). A depleted outpost whose replacement is under way gets no
+   * deplete remedy: the retirement is that remedy.
    */
-  handingOver?: (this: void, n: LogicalNode) => boolean
+  retiring?: (this: void, n: LogicalNode) => boolean
 }
 
 export interface ReconcileResult {
@@ -363,8 +364,8 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
     if (items[0] === "depleted") {
       // D52/B21: a worked-out outpost expands in place over the rest of its patch (its growth area is already claimed);
       // D55: a whole-patch mine re-claims the next free part of its patch, and with none left it is relocated.
-      if (t.input.handingOver?.(n) === true) return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up; its replacement is being connected (handover)` }
-      if (n.kind === "outpost") remedy(t, { key: `deplete:${n.id}`, kind: "grow", node: n.id, why: `${label(n)}: the ore under its drills is used up; expand over the rest of the patch, else relocate` })
+      if (t.input.retiring?.(n) === true) return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up; its replacement is under way (retiring)` }
+      if (n.kind === "outpost") remedy(t, { key: `deplete:${n.id}`, kind: "deplete", node: n.id, why: `${label(n)}: the ore under its drills is used up; expand over the rest of the patch, else relocate` })
       return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D52/D55: expand or move within the patch, else relocate)` }
     }
     if (items[0] === "water") return { kind: "node", id: n.id, what: "no water", why: `${label(n)}: boilers without water` }

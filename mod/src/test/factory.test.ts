@@ -17,7 +17,9 @@ import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { claimView, layoutEntityKeys, stampParts, strayUnder } from "../planner/runtime"
+import { claimView, layoutEntityKeys, PlannerEntry, stampParts, startBuild, stepBuild, strayUnder } from "../planner/runtime"
+import { claim, complete } from "../jobs/board"
+import { clearJobFor } from "../jobs/faction"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
 import { at, createLab, Lab } from "./lab"
@@ -378,6 +380,45 @@ describe("M5a power and growth", () => {
     assert(built!.valid, "the re-used pole stays built")
     const overlaid = lab.surface.find_entities_filtered({ ghost_name: "small-electric-pole", position: built!.position, force })
     assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
+  })
+
+  test("D71 (b): a build that evicts a pole line places its new poles before the old ones are picked up", () => {
+    const lab = createLab(16)
+    const f = createFaction("d71b", { position: at(lab, 0, 0), crew: 0 })
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    // The plan's new line: one pole on open ground, one where an old entity is still to be picked up.
+    layout.poles = [
+      { id: poleId("new"), name: "small-electric-pole", x: x + 3, y, line: poleLineId("poles:d71:0") },
+      { id: poleId("late"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:d71:0") },
+    ]
+    layout.poleLines = [{ id: poleLineId("poles:d71:0"), from: "power", to: moduleId("consumer"), poles: [poleId("new"), poleId("late")] }]
+    const old = s.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })!
+    const site = s.create_entity({ name: "wooden-chest", position: { x: x + 6.5, y: y + 0.5 }, force: f.force })!
+    const parts = { modules: [], routes: [], poles: [poleId("new"), poleId("late")] }
+    const entry = { id: "d71b", surface: s.name, force: f.force, faction: f.name, terrain: "", phase: "done", request: {}, belt: "transport-belt", job: { layout }, startTick: 0, scanTicks: 0, planTicks: 0 } as never as PlannerEntry
+    const b = startBuild(entry, { parts, clear: [site], breakAfter: [old], priority: 90 })
+    assert(b.phase === "poles", `the build starts with the new poles (${b.phase})`)
+    assert(clearJobFor(f, old) === undefined, "the evicted pole is not picked up yet")
+    assert(clearJobFor(f, site) !== undefined, "other clearing starts at once")
+    const ghosts = s.find_entities_filtered({ ghost_name: "small-electric-pole", force: f.force })
+    assert(ghosts.length === 1 && ghosts[0].position.x === x + 3.5, `only the pole on open ground is ghosted ahead (${ghosts.length})`)
+    stepBuild(entry)
+    assert(b.phase === "poles" && clearJobFor(f, old) === undefined, "waits while the new pole is not placed")
+    ghosts[0].revive({ raise_revive: true })
+    for (const id of b.poleJobs ?? []) {
+      claim(f.board, [id], 1, game.tick)
+      complete(f.board, id, 1, game.tick)
+    }
+    stepBuild(entry)
+    assert(b.phase === "clear", `then the clearing (${b.phase})`)
+    assert(clearJobFor(f, old) !== undefined, "the evicted pole is picked up once its replacement stands")
+    // Without an eviction the build is unchanged: clearing first.
+    const plain = startBuild({ ...(entry as object), build: undefined } as never as PlannerEntry, { parts, priority: 90 })
+    assert(plain.phase === "clear", `no eviction: no poles phase (${plain.phase})`)
+    destroyFaction("d71b")
   })
 
   test("B46: poles another plan evicted leave a building goal's own plan: its ghost stamp no longer creates them", () => {

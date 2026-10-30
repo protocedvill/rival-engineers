@@ -102,6 +102,10 @@ export interface LogicalNode {
   goal?: string
   createdTick: number
   builtTick?: number
+  /** D69: facts the design minted with the role (`strategy/node-facts.ts`); absent on nodes from older saves. */
+  homeCluster?: number
+  family?: string
+  serves?: "power" | "mall"
 }
 
 export type EdgeKind = "belt" | "power" | "crew"

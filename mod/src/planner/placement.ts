@@ -8,6 +8,8 @@
 // candidate is feasible. Pure: no Factorio globals.
 
 import { moduleId } from "../shared/ids"
+import { planFailure } from "../shared/plan-failure"
+import type { PlanFailure } from "../shared/plan-failure"
 
 import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modules/build"
 import { ProtoFacts } from "../modules/facts"
@@ -102,6 +104,8 @@ export interface PlacementSearch {
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
+  /** D69: the typed failure, when the search knows what kind it is (no patch, no position, no site). */
+  failure?: PlanFailure
   /** Machine-readable certificate explaining why candidates were rejected. */
   rejections?: Record<string, { count: number; sample: Vec }>
   result?: PlacedModule
@@ -299,7 +303,9 @@ function nextPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainView,
     return used
   }
   s.phase = "failed"
-  s.reason = list.length === 0 ? `no free ${s.req.def.anchor?.resource ?? "ore"} patch in the region` : `no feasible position (${s.patchesTried ?? 0} of ${list.length} patches tried)`
+  const ore = s.req.def.anchor?.resource
+  s.failure = list.length === 0 ? planFailure("no-patch", `no free ${ore ?? "ore"} patch in the region`, ore) : planFailure("no-position", `no feasible position (${s.patchesTried ?? 0} of ${list.length} patches tried)`, ore)
+  s.reason = s.failure.reason
   if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
   return used
 }
@@ -951,7 +957,8 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
       if (r > maxR) {
         s.phase = "failed"
-        s.reason = `no ${s.req.def.site} site in the region`
+        s.failure = planFailure("no-site", `no ${s.req.def.site} site in the region`, s.req.def.site)
+        s.reason = s.failure.reason
         if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
         break
       }
@@ -1062,7 +1069,8 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         s.phase = "site"
       } else {
         s.phase = "failed"
-        s.reason = "no feasible position"
+        s.failure = planFailure("no-position", "no feasible position", s.req.def.anchor?.resource)
+        s.reason = s.failure.reason
         if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
       }
       continue

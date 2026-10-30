@@ -16,7 +16,7 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
-import { beginHandover, checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
+import { beginRetire, checkMineOre, powerFuelled, serviceRetiring } from "../strategy/fuel"
 import { FactoryGoal, FactoryState, getFactory, growNow, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
 import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
@@ -423,7 +423,7 @@ describe("M5b reconciler", () => {
     })
   })
 
-  test("P36 (a): a steam block's coal outpost with little ore left hands over (nothing deconstructed until the replacement feeds its port); one with plenty is kept", () => {
+  test("P36 (a), D76: a steam block's coal outpost with little ore left retires (nothing deconstructed until its replacement is built); one with plenty is kept", () => {
     const lab = createLab(48)
     const { faction, f } = testFaction(lab, 30, 30)
     const s = lab.surface
@@ -451,23 +451,28 @@ describe("M5b reconciler", () => {
     const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
     assert(checkMineOre(ctx, true) === undefined, "not while a plan works on a copy of the layout")
     assert(checkMineOre({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
-    // Goalpost 1: the poor outpost is marked as retiring, not deconstructed.
+    // D76: the poor outpost is marked as retiring, not deconstructed.
     const gone = checkMineOre(ctx, false)
-    assert(gone === "poor", `the poor outpost starts handing over (${gone})`)
-    assert(f.handover?.["poor"] !== undefined, "it is recorded as handing over")
+    assert(gone === "poor", `the poor outpost starts retiring (${gone})`)
+    assert(f.retiring?.["poor"] !== undefined, "it is recorded as retiring")
     assert(f.graph.nodes["poor"] !== undefined && f.graph.edges["coal>power=>power.in-fuel"] !== undefined, "its node and edge stay in the graph while the replacement is planned")
     assert(findModule(f.layout, moduleId("poor")) !== undefined, "the module stays in the layout")
     assert(f.fuelRelocations === undefined || f.fuelRelocations === 0, "nothing deconstructed yet")
     let clears = 0
     for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
-    assert(clears === 0, `no clear jobs before the replacement is connected (${clears})`)
-    assert(checkMineOre(ctx, false) === undefined, "a handover already under way is not started twice")
-    // A built replacement feeds the same consumer port: the gate opens and the old outpost is retired.
+    assert(clears === 0, `no clear jobs before the replacement is built (${clears})`)
+    assert(checkMineOre(ctx, false) === undefined, "a retirement already under way is not started twice")
+    // The replacement is planned, not built: the old outpost keeps producing.
+    addNode(f.graph, { id: moduleId("poor2"), role: "poor~2", kind: "module", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, powerW: 0, lifecycle: "planned", status: "unknown", createdTick: tick })
+    serviceRetiring(ctx)
+    assert(f.retiring?.["poor"] !== undefined && findModule(f.layout, moduleId("poor")) !== undefined, "kept while its replacement is not built")
+    // The replacement (same family) is built: the old outpost is retired.
     node(f.graph, rich, "outpost", "coal", 1, tick)
-    addNode(f.graph, { id: moduleId("poor2"), role: "coal>power#3", kind: "module", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, powerW: 0, lifecycle: "built", status: "ok", createdTick: tick, builtTick: tick })
-    edge(f.graph, "coal>power#3=>power.in-fuel", moduleId("poor2"), "out", moduleId("pw"), "in-fuel", "coal", 1)
-    serviceHandovers(ctx)
-    assert(f.handover?.["poor"] === undefined, "the handover is finished")
+    f.graph.nodes["poor2"].lifecycle = "built"
+    f.graph.nodes["poor2"].builtTick = tick
+    edge(f.graph, "poor~2=>power.in-fuel", moduleId("poor2"), "out", moduleId("pw"), "in-fuel", "coal", 1)
+    serviceRetiring(ctx)
+    assert(f.retiring?.["poor"] === undefined, "the retirement is finished")
     assert(f.graph.nodes["poor"] === undefined && f.graph.edges["coal>power=>power.in-fuel"] === undefined, "its node and edge leave the graph")
     assert(findModule(f.layout, moduleId("poor")) === undefined && findModule(f.layout, moduleId("rich")) !== undefined, "it leaves the layout, the rich one stays")
     assert(powerFuelled(f.graph, f.graph.nodes["pw"]), "the replacement feeds the first steam block")
@@ -480,7 +485,7 @@ describe("M5b reconciler", () => {
     assert(checkMineOre(ctx, false) === undefined, "the rich one is kept")
   })
 
-  test("D67: a science chain's mine with less than factory-mine-lead-minutes of ore left hands over; 0 turns it off", () => {
+  test("D67, D76: a science chain's mine with less than factory-mine-lead-minutes of ore left retires; 0 turns it off", () => {
     const lab = createLab(48)
     const { faction, f } = testFaction(lab, 30, 30)
     const s = lab.surface
@@ -501,16 +506,16 @@ describe("M5b reconciler", () => {
     setConfigOverride("factoryMineLeadMinutes", 0)
     assert(checkMineOre({ ...ctx, config: getConfig() }, false) === undefined, "0 = never")
     setConfigOverride("factoryMineLeadMinutes", 30)
-    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === "mine", "the mine starts handing over")
-    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "recorded; the module stays until its replacement feeds the smelter")
-    // No replacement within the 10-min valve: a mine handed over ahead still has ore, so it is not retired yet.
-    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
-    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled handover keeps a mine that still has ore")
-    // B73: a D55 handover (the mine is short, one drill dry) is kept the same way while any drill still finds ore.
-    delete f.handover!["mine"]
-    assert(beginHandover(ctx, f.graph.nodes["mine"], "D55 mine", "is worked out (test)"), "a D55 handover starts")
-    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
-    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled D55 handover keeps a mine that still has ore")
+    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === "mine", "the mine starts retiring")
+    assert(f.retiring?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "recorded; the module stays until its replacement is built")
+    // No replacement for a long time: a mine that still has ore keeps producing (D76 has no time limit).
+    serviceRetiring({ ...ctx, tick: ctx.tick + 3600 * 60 })
+    assert(f.retiring?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "kept while it still has ore")
+    // B73: a D55 retirement (the mine is short, one drill dry) is kept the same way while any drill still finds ore.
+    delete f.retiring!["mine"]
+    assert(beginRetire(ctx, f.graph.nodes["mine"], "D55 mine", "is worked out (test)"), "a D55 retirement starts")
+    serviceRetiring({ ...ctx, tick: ctx.tick + 3600 * 60 })
+    assert(f.retiring?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a D55 retirement keeps a mine that still has ore")
     setConfigOverride("factoryMineLeadMinutes", undefined)
   })
   test("B98: a growth that waited for a goal still building is not planned again until that goal's node is built", () => {

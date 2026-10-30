@@ -175,12 +175,12 @@ test("depleted outpost: the drills ran out of ore → expand in place over the r
   const { r } = settle(g)
   eq(g.nodes.mine.status, "starved", "outpost starved (worked out)")
   eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
-  const grow = r.remedies.filter((x) => x.kind === "grow" && x.node === "mine")
-  eq(grow.length, 1, "a grow remedy for the depleted outpost")
+  const grow = r.remedies.filter((x) => x.kind === "deplete" && x.node === "mine")
+  eq(grow.length, 1, "a deplete remedy for the worked-out outpost")
   ok(grow[0] !== undefined && grow[0].key === "deplete:mine", "keyed by the depletion")
 })
 
-test("B98: a depleted outpost whose D67 handover is under way gets no deplete remedy (the handover owns it)", () => {
+test("B98: a depleted outpost that is retiring (D67, D76) gets no deplete remedy (its retirement owns it)", () => {
   // Seed 2034469: n32 ran out while its replacement (D67) was being built; the deplete remedy re-planned a 60-s
   // in-patch move every measurement and threw it away ("wait" for the replacement's goal), ~190 ms/tick for hours.
   const g = newGraph()
@@ -191,9 +191,9 @@ test("B98: a depleted outpost whose D67 handover is under way gets no deplete re
     measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 8, states: st({ starved: 1 }), missing: { "iron-ore": 1 } },
   })
   belt(g, "ore", "mine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
-  const r = reconcile(g, newReconcileState(), { tick: TICK, params: P, isFuel, handingOver: (n) => n.id === "mine" })
+  const r = reconcile(g, newReconcileState(), { tick: TICK, params: P, isFuel, retiring: (n) => n.id === "mine" })
   eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
-  eq(r.remedies.filter((x) => x.node === "mine").length, 0, "no remedy: the handover replaces it")
+  eq(r.remedies.filter((x) => x.node === "mine").length, 0, "no remedy: its replacement is under way")
 })
 
 test("B99: a consumer fed by a node folded into a shared mine is traced through that mine (backed up, nothing arrives → repair)", () => {

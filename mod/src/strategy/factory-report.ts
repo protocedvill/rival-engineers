@@ -10,6 +10,7 @@ import { isTempRole } from "./stage"
 import { findEntities } from "../work"
 import { isBufferAt, registerBuffer } from "../modules/buffers"
 import type { FactoryState } from "./factory"
+import * as CS from "./constraints"
 
 // Read-only views of a faction's factory (split out of factory.ts, whose main chunk hit Lua's 200-local limit): the
 // D38 temporary cells and the mall's chests as supply sources for the bootstrap economy, and the telemetry / graph
@@ -167,7 +168,7 @@ export function factoryReport(name: string) {
     // over-subscription bug hid for 270 game-min; a non-zero list is the first thing to read in a slow seed.
     supply: supplyReport(f),
     idle: f.idle,
-    growFails: f.growFails,
+    growFails: CS.values(f.constraints, "growFails"),
   }
 }
 

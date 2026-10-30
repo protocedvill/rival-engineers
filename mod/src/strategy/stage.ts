@@ -8,6 +8,7 @@ import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
+import * as CS from "./constraints"
 
 // M6 stage helpers (split out of factory.ts, whose main chunk hit Lua's 200-local limit): stage targets, lab sizing per
 // stage, the design's curated fallbacks, shared fuel and a second steam block, and the science-throughput sampling that
@@ -98,7 +99,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
-      if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role] || f.handover?.[p.role] !== undefined) continue
+      if (p.item === undefined || !tappable(f, p.role)) continue
       // B65: spare is what the plan sized this provider to deliver (`planned`), not its nameplate capacity. A 4-wide
       // smelter running on a 0.183/s ore feed looks like it has 1.07/s spare by capacity; tapping that spare starves
       // the new consumer, because the plan never grew the feed (see `supplyGaps`).
@@ -113,34 +114,41 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room + grow
     }
   }
-  return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit, blocked: f?.providerNoTap }
+  return { keep, spare, fallback: fallbackProducers(f), split: CS.flags(f?.constraints, "providerSplit"), blocked: CS.flags(f?.constraints, "providerNoTap") }
+}
+
+/** D69: whether new consumers may tap provider `role` (not marked no-tap or short, not retiring). */
+function tappable(f: FactoryState, role: string): boolean {
+  return !CS.has(f.constraints, "noTap", role) && !CS.has(f.constraints, "providerShort", role) && f.retiring?.[role] === undefined
 }
 
 /**
- * P36 (b, proposed): for each item whose new producer could not be placed (`FactoryState.fallback`), the built producers
- * of it new consumers tap instead, nearest the hub first (growable ones before those whose growth keeps failing). Never
- * one that is not tapped again (`noTap`).
+ * P36 (b, proposed): for each item whose new producer could not be placed (the `fallback` constraint, plus `extra`), the
+ * built producers of it new consumers tap instead, nearest the hub first (growable ones before those whose growth keeps
+ * failing). Never one that is not tapped again (`noTap`).
  */
-export function fallbackProducers(f: FactoryState | undefined): Record<string, string[]> | undefined {
-  if (f?.fallback === undefined) return undefined
+export function fallbackProducers(f: FactoryState | undefined, extra: string[] = []): Record<string, string[]> | undefined {
+  if (f === undefined) return undefined
+  const items = [...CS.keys(f.constraints, "fallback"), ...extra]
+  if (items.length === 0) return undefined
   let out: Record<string, string[]> | undefined
-  for (const [item] of pairs(f.fallback)) {
+  for (const item of items) {
     const list: { role: string; key: number }[] = []
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
-      if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
-      if (!hasCapacity(f, id, item as string)) continue
+      if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || !tappable(f, n.role)) continue
+      if (!hasCapacity(f, id, item)) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x
       const dy = m.rect.y + m.rect.h / 2 - f.center.y
-      const blocked = (f.growFails?.[n.role] ?? 0) >= GROW_MAX_FAILS ? 1e9 : 0
+      const blocked = (CS.value(f.constraints, "growFails", n.role) ?? 0) >= GROW_MAX_FAILS ? 1e9 : 0
       list.push({ role: n.role, key: blocked + dx * dx + dy * dy })
     }
     list.sort((a, b) => (a.key !== b.key ? a.key - b.key : a.role < b.role ? -1 : 1))
     if (list.length === 0) continue
     out ??= {}
-    out[item as string] = list.map((x) => x.role)
+    out[item] = list.map((x) => x.role)
   }
   return out
 }
@@ -151,7 +159,7 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
  */
 export function cluster1Max(f: FactoryState | undefined): number | undefined {
   let out: number | undefined
-  for (const [, v] of pairs(f?.cluster1Caps ?? {})) out = math.min(out ?? 1, v as number)
+  for (const [, v] of pairs(CS.values(f?.constraints, "cluster1Caps") ?? {})) out = math.min(out ?? 1, v)
   return out
 }
 
@@ -168,7 +176,7 @@ export function powerCaps(f: FactoryState | undefined): { role: string; capacity
   for (let i = 1; ; i++) {
     const role = i === 1 ? "power" : `power#${i}`
     const n = nodeByRole(f.graph, role)
-    if (n === undefined || (f.growFails?.[role] ?? 0) < GROW_MAX_FAILS) break
+    if (n === undefined || (CS.value(f.constraints, "growFails", role) ?? 0) < GROW_MAX_FAILS) break
     out.push({ role, capacity: rateIn(n.capacity.outputs, "electricity") })
   }
   return out.length > 0 ? out : undefined
@@ -202,18 +210,13 @@ export function providerFeeds(f: FactoryState | undefined): Record<string, Recor
   return out
 }
 
-/** B60: roles the design must not grow or tap for new consumers. */
-export function providerShort(f: FactoryState | undefined): Record<string, boolean> | undefined {
-  return f?.providerShort
-}
-
 /**
- * Goalpost 1: provider roles being handed over. Their consumers need a replacement planned under a distinct parallel
- * role, and their spare capacity must not be offered to new consumers (the provider is going away).
+ * D76: provider roles being retired. Their consumers need a replacement planned under a distinct parallel role, and
+ * their spare capacity must not be offered to new consumers (the provider is going away).
  */
-export function handoverRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
+export function retiringRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
   let out: Record<string, boolean> | undefined
-  for (const [role] of pairs(f?.handover ?? {})) {
+  for (const [role] of pairs(f?.retiring ?? {})) {
     out ??= {}
     out[role as string] = true
   }

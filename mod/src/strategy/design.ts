@@ -24,6 +24,8 @@ import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../p
 import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../planner/logical"
 import { requiredRates, SupplyEdge, SupplyNode } from "./growth-plan"
 import { LayoutPolicy } from "../planner/policy"
+import { familyOfRole as roleFamily, nodeServes, rolePower, stampNodeFacts } from "./node-facts"
+import type { Serves } from "./node-facts"
 import { solveNow, SolveResult } from "./solver"
 
 /** A module kind: a generator, or "curated" (params.id names the curated module). */
@@ -44,10 +46,11 @@ export interface DesignContext {
    */
   providerShort?: Record<string, boolean>
   /**
-   * Goalpost 1 (provider handover): roles being retired. Their consumers get a replacement under a distinct parallel
-   * role whose edge merges into the belt the retiring provider still feeds, so nothing is ripped before it is replaced.
+   * D76: roles being retired. Their consumers get a replacement under a distinct parallel role whose edge merges into
+   * the belt the retiring provider still feeds, so both feed the consumer until the old one goes (its belt goes with it
+   * and the replacement's edge is routed again).
    */
-  handover?: Record<string, boolean>
+  retiring?: Record<string, boolean>
   /** Actual output capacity of built provider roles by role (used only for a short provider). */
   providerCaps?: Record<string, number>
   /**
@@ -152,6 +155,10 @@ export interface DesignNode {
   cluster: number
   /** A route-infeasible provider split must use an independent site, not complete the old provider's mine. */
   newSite?: boolean
+  /** D69: facts minted with the role (`node-facts.ts`), set once the design is complete. */
+  homeCluster?: number
+  family?: string
+  serves?: Serves
 }
 
 export interface DesignEdge {
@@ -414,12 +421,6 @@ function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; r
  * also a consumer's suffix (`power#2`, `labs#2`), so `coal>power#2` was both the second coal provider of `power` and the
  * coal supply of `power#2`, and the design merged the two into one node.
  */
-/** B97: a provider role without its parallel suffix (`coal>power~3` → `coal>power`). */
-function roleBase(role: string): string {
-  const m = string.match(role, "^(.*)~%d+$")
-  return m[0] !== undefined ? m[0] : role
-}
-
 function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
   // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
   const m = string.match(role ?? "", "^(.*)~%d+$")
@@ -450,16 +451,15 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   // D54: a steam block only asks for coal once electric drills are enabled, so no producer here needs burner drills.
   let role = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
   if (role === undefined || role === "") role = `${item}${w.suffix}`
-  // Goalpost 1 (provider handover): the retiring provider's role is still in the graph, so reusing it would make the
-  // diff think its replacement already exists. Plan the replacement under a fresh parallel role, merging into the belt
-  // the old provider still feeds (its route is adopted when the old provider is finally deconstructed).
-  if (sharedRole === undefined && ctx.handover !== undefined && ctx.handover[role] === true) {
+  // D76: the retiring provider's role is still in the graph, so reusing it would make the diff think its replacement
+  // already exists. Plan the replacement under a fresh parallel role, merging into the belt the old provider still feeds.
+  if (sharedRole === undefined && ctx.retiring !== undefined && ctx.retiring[role] === true) {
     const ports: Record<string, boolean> = {}
     for (const c of consumers) ports[`${c.to}.${c.toPort}`] = true
     mergePorts = mergePorts ?? ports
     role = parallelRole(w, role, true)
     // B81: a replacement never shares the provider it replaces. Folded into the retiring whole-patch mine (D52), it was
-    // an alias of that mine and was dropped with it, and the adopted belt lost its heir (vps-d68a 5480563 n18).
+    // an alias of that mine and was dropped with it (vps-d68a 5480563 n18).
     newSite = true
   }
   // B97 (user decision in-session 2026-10-29, "Built first"; sweep 3e1c4d7 seed 7625436): built providers of this role's
@@ -470,7 +470,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   // Also on the sharing path (a shared role chosen for these consumers, `sharedRole`): sweep 3e1c4d7 seed 7625436's
   // group was planned there, all three consumers on `~3`, and the built `~2` feeding the same ports was left out.
   if (fixedCapacity === undefined && ctx.providerFeeds !== undefined) {
-    const family = roleBase(role)
+    const family = roleFamily(role)
     const roles: string[] = []
     for (const [r] of pairs(ctx.providerCaps ?? {})) roles.push(r as string)
     roles.sort()
@@ -478,7 +478,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     for (const r of roles) {
       const cap = ctx.providerCaps![r]
       const feeds = ctx.providerFeeds[r]
-      if (r === role || roleBase(r) !== family || cap <= EPS || feeds === undefined || ctx.handover?.[r] === true) continue
+      if (r === role || roleFamily(r) !== family || cap <= EPS || feeds === undefined || ctx.retiring?.[r] === true) continue
       if (w.nodes.some((n) => n.role === r)) continue
       const kept = consumers.filter((c) => feeds[`${c.to}.${c.toPort}`] === true)
       if (kept.length === 0) continue
@@ -576,14 +576,13 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const producers: string[] = []
   const fresh: Demand[] = []
   const alone: Demand[] = []
-  // Consumer ports whose existing belt a handover replacement must side-load into (goalpost 1).
+  // Consumer ports whose existing belt a retiring provider's replacement must side-load into (D76).
   const mergePorts: Record<string, boolean> = {}
   for (const d of mine) {
     let p: string | undefined = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
     if (p !== undefined && shared.blocked?.[`${p}=>${d.to}.${d.toPort}`] === true) p = undefined
-    // Goalpost 1: the provider is retiring. Its consumer needs a replacement that side-loads into the belt it still
-    // feeds; that route is adopted when the old provider is finally deconstructed.
-    if (p !== undefined && w.ctx.handover?.[p] === true) {
+    // D76: the provider is retiring. Its consumer needs a replacement that side-loads into the belt it still feeds.
+    if (p !== undefined && w.ctx.retiring?.[p] === true) {
       mergePorts[`${d.to}.${d.toPort}`] = true
       p = undefined
     }
@@ -792,17 +791,8 @@ function supplyPass(all: DesignNode[], allEdges: DesignEdge[]): void {
   }
 }
 
-/** Whether a role is the power node or a fuel supply of it ("power", "power#2", "coal>power", "coal>power~2", ...). */
-export function isPowerRole(role: string): boolean {
-  const [base] = string.match(role, "^(.-)~%d+$")
-  const r = base ?? role
-  return string.match(r, "^power#?%d*$")[0] !== undefined || string.match(r, ">power#?%d*$")[0] !== undefined
-}
-
-/** B68: whether a role is a parallel provider (`<role>~N`, `parallelRole`). */
-export function isParallelRole(role: string): boolean {
-  return string.match(role, "~%d+$")[0] !== undefined
-}
+/** Whether a role is the power node or a fuel supply of it, while the design walks (graph nodes: `nodeServes`). */
+const isPowerRole = rolePower
 
 /**
  * Power and fuel for everything designed so far: the steam block sized to the electric demand, then every fuel
@@ -1021,6 +1011,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
   }
   mergeShared(nodes)
   supplyPass(nodes, edges)
+  for (const n of nodes) stampNodeFacts(n)
   const techs: string[] = []
   for (const n of nodes) for (const t of n.def.requiresTech) if (!ctx.researched[t] && techs.indexOf(t) < 0) techs.push(t)
   techs.sort()
@@ -1152,7 +1143,8 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
     return gs
   }
   for (const n of diff.missing) {
-    const kind: GoalKind = n.kind === "labs" ? "labs" : isPowerRole(n.role) ? "power" : n.role === "mall" || string.match(n.role, ">mall$")[0] !== undefined ? "mall" : "production"
+    const serves = nodeServes(n)
+    const kind: GoalKind = n.kind === "labs" ? "labs" : serves === "power" ? "power" : serves === "mall" ? "mall" : "production"
     const gs = get(kind, n.cluster)
     gs.nodes.push(n)
     goalOf[n.role] = gs

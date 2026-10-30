@@ -4,7 +4,8 @@ import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, isPowerRole, producerFor, stuckRounds } from "../src/strategy/design"
+import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, stuckRounds } from "../src/strategy/design"
+import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -725,14 +726,14 @@ test("D68: spare capacity is full-speed output minus the planned belt draw", () 
   near(spareCapacity(g, "m"), 0.811, 1e-9, "1 - 0.189")
 })
 
-test("B81: a handover replacement never shares the provider it replaces (newSite; vps-d68a 5480563 n18)", () => {
-  const d = design(ctx({ enabled: ELECTRIC, handover: { "coal>power": true } }), { item: RED, perSecond: 10 / 60 })
+test("B81: a retiring provider's replacement never shares the provider it replaces (newSite; vps-d68a 5480563 n18)", () => {
+  const d = design(ctx({ enabled: ELECTRIC, retiring: { "coal>power": true } }), { item: RED, perSecond: 10 / 60 })
   const repl = d.nodes.find((n) => n.item === "coal" && n.role !== "coal>power" && d.edges.some((e) => e.from === n.role && e.to === "power"))
   ok(repl !== undefined, `a replacement for the steam block's coal: ${d.nodes.map((n) => n.role).join(",")}`)
   eq(repl!.newSite, true, "on a site of its own, never folded into the retiring mine")
   // Shared providers: the consumers of a retiring provider get a replacement group on a site of its own too.
   const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
-  const g = design(ctx({ enabled: ELECTRIC, handover: { "coal*>old": true }, sharing: { keep, spare: {} } }), { item: RED, perSecond: 1 })
+  const g = design(ctx({ enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {} } }), { item: RED, perSecond: 1 })
   const group = g.nodes.filter((n) => n.item === "coal" && g.edges.some((e) => e.from === n.role && (e.to === SMELT_FE || e.to === SMELT_CU)))
   ok(group.length > 0, `a replacement group: ${g.nodes.map((n) => n.role).join(",")}`)
   for (const n of group) eq(n.newSite, true, `${n.role} on a site of its own`)

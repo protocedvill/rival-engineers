@@ -4,6 +4,8 @@
 // table tile is 1/2), so the runtime spreads it over ticks. The job is plain data and lives in `storage`; the policy
 // is looked up by id each step. Pure: no Factorio globals.
 
+import { isPlanFailure, planFailure } from "../shared/plan-failure"
+import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { releaseLaneReservation, reserveFreeTile } from "./claims"
@@ -170,6 +172,8 @@ export interface PlanJob {
   ripCount: Record<string, number>
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
   failures: Record<string, string>
+  /** D69: the same failures, typed (the factory decides from `kind`, never from the text). */
+  failed?: Record<string, PlanFailure>
   /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
   evidence?: PlanEvidence[]
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
@@ -464,19 +468,26 @@ export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): 
   for (const rid of layout.routeOrder) {
     const r = layout.routes[rid]
     if (r === undefined || r.external === true || r.to.module !== to.module || r.to.port !== to.port || routeDangles(layout, rid)) continue
-    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. A route a handover kept
-    // (D55/D67 adoption) carries the replacement connection's name but is a feed the replacement joins; skipping it by
-    // name routed the replacement into the port it holds ("no path" every plan).
+    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. (Route adoption, removed
+    // by D76, kept routes under the replacement connection's name with an id of their own; skipping them by name routed
+    // the replacement into the port they held.)
     if (rid !== `route:${conn}`) return true
   }
   return false
 }
 
-function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
+/** Records a failure of `key` (a connection, `module:<id>` or `power:<owner>`): its text and, D69, its kind. */
+function fail(job: PlanJob, key: string, failure: PlanFailure | string): void {
+  const f = typeof failure === "string" ? planFailure("other", failure) : failure
+  job.failures[key] = f.reason
+  ;(job.failed ??= {})[key] = f
+}
+
+function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | PlanFailure {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
   const tp = tm ? findPort(tm, to.port) : undefined
-  if (!tm || !tp || tp.kind !== "belt-in") return `no belt-in port ${to.module}.${to.port}`
+  if (!tm || !tp || tp.kind !== "belt-in") return planFailure("other", `no belt-in port ${to.module}.${to.port}`)
   const goalTile = portTile(tm, tp)
   const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true, [laneTag(portTag(tm.id, tp.id))]: true }
   const req: RouteRequest = {
@@ -494,14 +505,14 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     const from = resolve(job, c.from)
     const fm = findModule(job.layout, from.module)
     const fp = fm ? findPort(fm, from.port) : undefined
-    if (!fm || !fp || fp.kind !== "belt-out") return `no belt-out port ${from.module}.${from.port}`
-    if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return `item mismatch ${fp.item} → ${tp.item}`
+    if (!fm || !fp || fp.kind !== "belt-out") return planFailure("other", `no belt-out port ${from.module}.${from.port}`)
+    if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return planFailure("other", `item mismatch ${fp.item} → ${tp.item}`)
     req.from = from
     own[portTag(fm.id, fp.id)] = true
     own[laneTag(portTag(fm.id, fp.id))] = true
     const taps = sameSource(job, from, c.id)
     if (taps.length > 0) {
-      if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
+      if (policy.topology !== "splitter-tap") return planFailure("other", `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`)
       req.taps = taps
     } else {
       const o = portOutside(fm, fp)
@@ -517,7 +528,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     if (goals.length > 0) {
       req.mergeGoals = goals
       applyMergeGoal(req, goals[0])
-    } else if (portFedByOther(job.layout, to, c.id)) return `no merge target for ${to.module}.${to.port}`
+    } else if (portFedByOther(job.layout, to, c.id)) return planFailure("no-merge-target", `no merge target for ${to.module}.${to.port}`)
     // B89 (vps-b88b-r1264816-m60): a merge whose trunk is gone (ripped, or never landing) has nothing to join; the port
     // is free, so it routes there itself (the B88 in-place reroute of power's coal trunk failed "no merge target").
   }
@@ -586,7 +597,7 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     }
     else {
       placementEvidence(job, id, s)
-      job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+      fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason: `re-placement: ${s.reason ?? "failed"}`, what: s.failure?.what })
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
     }
     job.placement = undefined
@@ -736,7 +747,8 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       placementEvidence(job, id, s)
       // B23: a request that wanted the shared mine says so in its failure.
       const wf = job.wholeFail?.[id]
-      job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      const reason = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason, what: s.failure?.what })
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: ${job.failures[`module:${id}`]}`)
       job.phase = "failed"
     }
@@ -812,6 +824,7 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.ripCount = {}
   job.current = undefined
   job.failures = {}
+  job.failed = undefined
   job.expanded = {}
   job.wholeFail = undefined
   job.replaceQueue = []
@@ -916,15 +929,15 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     }
     const c = connection(job, id)
     const req = routeRequest(job, c, policy, {})
-    if (typeof req === "string") {
-      job.failures[id] = req
-      traceRouteFailure(job.layout, terrain, policy, id, req, job.compareProbe ? "compare" : "plan")
+    if (isPlanFailure(req)) {
+      fail(job, id, req)
+      traceRouteFailure(job.layout, terrain, policy, id, req.reason, job.compareProbe ? "compare" : "plan")
       return 1
     }
     if (c.from === undefined) {
       const stub = externalStub(job, terrain, policy, c, req)
       if (typeof stub === "string") {
-        job.failures[id] = stub
+        fail(job, id, stub)
         traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
       } else commitRoute(job.layout, stub)
       return 1
@@ -941,9 +954,9 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   const c = connection(job, cur.conn)
   const restart = (rip: boolean, retry = false): void => {
     const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-    if (typeof req === "string") {
-      job.failures[cur.conn] = req
-      traceRouteFailure(job.layout, terrain, policy, cur.conn, req, job.compareProbe ? "compare" : "plan")
+    if (isPlanFailure(req)) {
+      fail(job, cur.conn, req)
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, req.reason, job.compareProbe ? "compare" : "plan")
       job.current = undefined
       return
     }
@@ -958,7 +971,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
       cur.mergeTry = (cur.mergeTry ?? 0) + 1
       const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-      if (typeof req !== "string" && req.mergeGoals !== undefined) {
+      if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
         applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
         cur.rip = false
         cur.search = newSearch(job.layout, terrain, policy, req, false, true)
@@ -976,7 +989,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       cur.winScale = (cur.winScale ?? 1) * 3
       cur.rip = false
       const req = routeRequest(job, c, policy, {}, cur.winScale)
-      if (typeof req !== "string") {
+      if (!isPlanFailure(req)) {
         cur.search = newSearch(job.layout, terrain, policy, req, false, true)
         job.stats.searches++
         return used
@@ -987,7 +1000,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       const reason = cur.search.reason ?? "no path"
       // Traced before tryReplace changes the layout; a re-placement only retries the connection.
       const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-      if (!tryReplace(job, c, facts, policy, cur.search)) job.failures[cur.conn] = reason
+      if (!tryReplace(job, c, facts, policy, cur.search)) fail(job, cur.conn, reason)
       else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
       job.current = undefined
     }
@@ -1001,7 +1014,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       cur.avoid[res.selfCross] = true
       restart(cur.rip)
     } else {
-      job.failures[cur.conn] = "route crosses itself"
+      fail(job, cur.conn, "route crosses itself")
       traceRouteFailure(job.layout, terrain, policy, cur.conn, "route crosses itself", job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
@@ -1020,7 +1033,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       for (const k of route.tiles) cur.avoid[k] = true
       restart(cur.rip)
     } else {
-      job.failures[cur.conn] = "splitter tap would rip its own route"
+      fail(job, cur.conn, "splitter tap would rip its own route")
       traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
@@ -1033,7 +1046,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (n >= policy.router.maxRipups) {
       routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
       if (!tryReplace(job, c, facts, policy)) {
-        job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+        fail(job, cur.conn, `blocked by ${vr.conn} (ripped ${n} times already)`)
         traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
       }
       job.current = undefined
@@ -1305,7 +1318,7 @@ function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   if (stepPoles(job.poleJob, job.layout, terrain, facts, policy, budget)) {
     let failed = false
     for (const [owner, why] of pairs(job.poleJob.failures)) {
-      job.failures[`power:${owner}`] = why as string
+      fail(job, `power:${owner}`, why as string)
       failed = true
     }
     job.phase = failed ? "failed" : "done"

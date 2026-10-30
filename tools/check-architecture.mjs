@@ -32,7 +32,7 @@ compare("setting names vs Config", configKeys, nameKeys)
 compare("setting definitions vs Config", configKeys, definitionKeys)
 
 // These modules promise replayable pure logic. Factorio globals here make T1 fixtures misleading even when TS builds.
-for (const path of ["mod/src/diagnostic-events.ts", "mod/src/diagnostics-core.ts", "mod/src/planner/claim-tags.ts", "mod/src/planner/claims.ts", "mod/src/planner/plan-delta.ts", "mod/src/storage-schema.ts", "mod/src/strategy/goal-lifecycle.ts", "mod/src/strategy/goal-selection.ts"]) {
+for (const path of ["mod/src/diagnostic-events.ts", "mod/src/diagnostics-core.ts", "mod/src/planner/claim-tags.ts", "mod/src/planner/claims.ts", "mod/src/planner/plan-delta.ts", "mod/src/storage-schema.ts", "mod/src/strategy/goal-lifecycle.ts", "mod/src/strategy/goal-selection.ts", "mod/src/strategy/constraints.ts", "mod/src/strategy/failure-rules.ts", "mod/src/strategy/node-facts.ts", "mod/src/strategy/retire.ts", "mod/src/shared/plan-failure.ts", "mod/src/shared/exhausted.ts"]) {
   const source = read(path)
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
   for (const token of ["storage", "game", "prototypes", "settings", "remote", "script", "defines"]) {

@@ -86,9 +86,3 @@ export function chunksAround(pos: Vec, r: number): Vec[] {
   return out
 }
 
-/** The ore a plan failure says has no free patch ("module n45 (...): no free copper-ore patch in the region"). */
-export function noPatchResource(reason: string | undefined): string | undefined {
-  if (reason === undefined) return undefined
-  const [ore] = string.match(reason, "no free (%S+) patch in the region")
-  return ore
-}

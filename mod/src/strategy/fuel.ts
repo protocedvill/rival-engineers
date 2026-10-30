@@ -2,18 +2,17 @@ import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
-import { planAdoption } from "../planner/adoption"
-import { adoptRoute, findModule } from "../planner/layout"
+import { findModule } from "../planner/layout"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import { sealedInputs } from "../planner/placement"
 import * as RT from "../planner/runtime"
 import { markDirty, terrainView } from "../planner/terrain"
-import { connectionId } from "../shared/ids"
 import { findEntities } from "../work"
 import { resyncReserved } from "./evict"
 import type { FactoryState } from "./factory"
-import * as HO from "./handover"
+import * as RE from "./retire"
+import * as CS from "./constraints"
 
 // P36 (a, proposed; an exception to D28 limited to power fuel, like D43 for bootstrap sites): a steam block's fuel
 // producer (a coal outpost feeding a power node) whose drills have less than `factory-power-fuel-minutes` of ore left at
@@ -24,13 +23,6 @@ import * as HO from "./handover"
 
 /** How often the ore under steam-block fuel producers is counted (find_entities per drill). */
 const FUEL_CHECK_TICKS = 3600
-
-/**
- * Goalpost 1 safety valve: how long a retiring provider may wait for a built replacement before it is deconstructed
- * anyway (game-minutes). Without it, a provider whose replacement can never be placed would starve its consumers
- * forever instead of falling back to today's deconstruct-and-replan.
- */
-const HANDOVER_MAX_MINUTES = 10
 
 /** Whether `n` (a built module) feeds a power node through a belt. */
 function feedsPower(g: LogicalGraph, n: LogicalNode): boolean {
@@ -73,9 +65,9 @@ function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { 
 
 /**
  * P36 (a): checks every built fuel producer of a steam block once per FUEL_CHECK_TICKS and gives up the first one whose
- * ore runs low. D67 (user, 2026-10-28): every other factory mine too, at `factory-mine-lead-minutes`; the handover is
- * started ahead (soak vps-d66 seed 8646103: three science mines ran dry 200-220 game-min after being built, and each
- * handover began only then, so lab clusters starved for the whole move). `busy`: a plan or growth works on a copy of the layout now (relocate after it). Returns the role given
+ * ore runs low. D67 (user, 2026-10-28): every other factory mine too, at `factory-mine-lead-minutes`; its retirement
+ * starts ahead (soak vps-d66 seed 8646103: three science mines ran dry 200-220 game-min after being built, and each
+ * replacement began only then, so lab clusters starved for the whole move). `busy`: a plan or growth works on a copy of the layout now (relocate after it). Returns the role given
  * up, if any.
  */
 export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
@@ -86,7 +78,7 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const n = f.graph.nodes[id]
     // B70: mines are `outpost` nodes; this checked `module` only and never fired (no P36 line in any M6 soak).
     if (n === undefined || n.lifecycle !== "built" || (n.kind !== "outpost" && n.kind !== "module")) continue
-    if (f.handover?.[n.role] !== undefined) continue
+    if (f.retiring?.[n.role] !== undefined) continue
     const power = feedsPower(f.graph, n)
     const lead = power ? config.factoryPowerFuelMinutes : config.factoryMineLeadMinutes
     if (lead <= 0) continue
@@ -110,9 +102,9 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     if (left.dry && !power) continue
     const what = power ? `P36 ${n.role}` : `D67 ${n.role}`
     const why = string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : "")
-    // Goalpost 1: a producer that still has ore is not deconstructed before its replacement feeds its consumers.
+    // D76: a producer that still has ore keeps producing while its replacement is planned and built.
     if (!left.dry) {
-      if (beginHandover(ctx, n, what, why)) return n.role
+      if (beginRetire(ctx, n, what, why)) return n.role
       continue
     }
     relocate(ctx, n, what, why)
@@ -139,8 +131,8 @@ export function replaceBurnerOutposts(ctx: FuelCtx & { force: LuaForce; electric
     let used = false
     for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true
     if (used) continue
-    // Goalpost 1: the burner outpost still works; retirement waits for its replacement to be connected.
-    return beginHandover(ctx, n, `D54 ${n.role}`, `uses ${drill}: electric drills are researched`) ? n.role : undefined
+    // D76: the burner outpost still works; it retires once its replacement is built.
+    return beginRetire(ctx, n, `D54 ${n.role}`, `uses ${drill}: electric drills are researched`) ? n.role : undefined
   }
   return undefined
 }
@@ -177,75 +169,56 @@ function sealedConsumers(ctx: FuelCtx, ids: string[]): LogicalNode[] {
   return out
 }
 
+/** Every belt feed in the graph: provider role → consumer port, and whether the provider is built. */
+function retireFeeds(g: LogicalGraph): RE.RetireFeed[] {
+  const out: RE.RetireFeed[] = []
+  for (const id of g.edgeOrder) {
+    const e = g.edges[id]
+    if (e === undefined || e.kind !== "belt" || e.from === undefined || e.toPort === undefined) continue
+    const p = g.nodes[e.from]
+    if (p !== undefined) out.push({ role: p.role, port: `${e.to}.${e.toPort}`, built: p.lifecycle === "built" })
+  }
+  return out
+}
+
 /**
- * Goalpost 1: mark a provider as retiring. The design plans its replacement (a parallel role, because the old role
- * still exists in the graph) and nothing is deconstructed until that replacement feeds every consumer port it served.
- * `serviceHandovers` retires it.
+ * D76: mark a provider as retiring. The design plans a parallel provider for its consumers (the old role still exists
+ * in the graph); the old one keeps producing until `serviceRetiring` deconstructs it.
  */
-export function beginHandover(ctx: FuelCtx, n: LogicalNode, what: string, why: string): boolean {
+export function beginRetire(ctx: FuelCtx, n: LogicalNode, what: string, why: string): boolean {
   const f = ctx.f
-  f.handover ??= {}
-  if (!HO.beginHandover(f.handover, n.role, n.id, ctx.tick, why)) return false
-  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: handing over, the replacement is connected before deconstruction (goalpost 1)`)
+  f.retiring ??= {}
+  if (!RE.beginRetire(f.retiring, n.role, n.id, ctx.tick, why, retireFeeds(f.graph))) return false
+  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: retiring, it keeps producing until a replacement is built or its drills run dry (D76)`)
   return true
 }
 
 /**
- * Goalpost 1: retires providers whose handover is complete. A `stalled` handover (no replacement appeared in
- * HANDOVER_MAX_MINUTES) is retired anyway, so a replacement that can never be built cannot starve the consumers;
- * a mine whose drills still find ore is kept until they run dry (it still feeds them).
+ * D76: deconstructs retiring providers whose drills ran dry or whose replacement feeds every consumer port they fed
+ * (checked once a minute, like the ore). One whose replacement can never be built keeps producing.
  */
-export function serviceHandovers(ctx: FuelCtx): void {
+export function serviceRetiring(ctx: FuelCtx): void {
   const f = ctx.f
-  if (f.handover === undefined) return
-  const feeds: HO.HandoverFeed[] = []
-  for (const eid of f.graph.edgeOrder) {
-    const e = f.graph.edges[eid]
-    if (e.kind !== "belt" || e.from === undefined || e.toPort === undefined) continue
-    const p = f.graph.nodes[e.from]
-    if (p === undefined) continue
-    feeds.push({ role: p.role, node: p.id, toModule: e.to, toPort: e.toPort, built: p.lifecycle === "built" })
-  }
+  if (f.retiring === undefined || ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks) return
   const roles: string[] = []
   for (const id of f.graph.nodeOrder) roles.push(f.graph.nodes[id].role)
-  HO.pruneHandovers(f.handover, roles)
-  for (const [role] of pairs(f.handover)) {
-    const rec = f.handover[role as string]
+  RE.pruneRetiring(f.retiring, roles)
+  const feeds = retireFeeds(f.graph)
+  for (const [role] of pairs(f.retiring)) {
+    const rec = f.retiring[role as string]
     const n = f.graph.nodes[rec.node]
     if (n === undefined) continue
-    const v = HO.handoverVerdict(rec, feeds, ctx.tick, HANDOVER_MAX_MINUTES)
-    if (v === "waiting") continue
-    // D67: a mine handed over ahead still feeds its consumers; the safety valve waits until its drills run dry (checked
-    // once a minute), or a slow replacement would retire a mine with most of its lead time of ore left. B73 (soak dbg-d67
-    // seed 8646103): a D55 mine that is short because one of its 4 drills ran dry still made 1.5/s of 1.7/s; retiring
-    // it at the valve left the cluster with nothing. So any mine with ore is kept (mineDry is true for non-mines).
-    if (v === "stalled" && (ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks || !mineDry(ctx, n))) continue
-    delete f.handover[role as string]
-    relocate(ctx, n, `handover ${n.role}`, v === "stalled" ? `no replacement within ${HANDOVER_MAX_MINUTES} game-min (${rec.why})` : `replacement connected (${rec.why})`)
+    const heir = RE.replacement(rec, feeds)
+    if (heir === undefined && !mineDry(ctx, n)) continue
+    delete f.retiring[role as string]
+    relocate(ctx, n, `retire ${n.role}`, heir !== undefined ? `replaced${heir !== "" ? ` by ${heir}` : ""} (${rec.why})` : `drills dry (${rec.why})`)
   }
 }
 
 export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string, depth = 0): void {
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
-  // Provider handover (goalpost 1): a consumer already fed by this provider keeps its belt. The replacement side-loads
-  // into that route (`Route.merge`), so the route is adopted by the replacement connection instead of ripped with the
-  // module, and the consumer never loses its feed while the crew deconstructs the old one.
-  const adopt = planAdoption(f.graph, f.layout, n.id)
-  const adoptIds = adopt.map((a) => a.rid)
-  const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority, adoptIds)
-  // Re-home the adopted routes to the replacement connection and keep them in its flow.
-  for (const a of adopt) {
-    const nid = adoptRoute(f.layout, a.rid, connectionId(a.conn), a.from)
-    if (nid === undefined) continue
-    // B93: the kept route has a new id; every edge listing the old one follows.
-    for (const eid of f.graph.edgeOrder) {
-      const e = f.graph.edges[eid]
-      if (e !== undefined && e.physical !== undefined) e.physical = e.physical.map((p) => (p === a.rid ? nid : p))
-    }
-    const heir = f.graph.edges[a.heir]
-    if (heir !== undefined && (heir.physical ?? []).indexOf(nid) < 0) heir.physical = [...(heir.physical ?? []), nid]
-  }
+  const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)
   // D55/P36: the replacement goal waits for these clear jobs; until then the old footprint is still `OWN` on the map.
   if (r.clearJobs.length > 0) {
     f.relocation ??= {}
@@ -264,7 +237,6 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
     if (e.kind !== "belt") continue
     let lost = false
     for (const p of e.physical ?? []) if (gone[p]) lost = true
-    // A handover keeps the route but never the retiring edge: the node it starts from is gone.
     if (e.from === n.id) lost = true
     if (!lost) continue
     LG.removeEdge(f.graph, eid)
@@ -274,18 +246,13 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   }
   for (const d of drop) {
     LG.removeNode(f.graph, d.id)
-    if (f.growFails !== undefined) delete f.growFails[d.role]
-    if (f.noTap !== undefined) delete f.noTap[d.role]
-    if (f.providerShort !== undefined) delete f.providerShort[d.role]
-    if (f.providerSplit !== undefined) delete f.providerSplit[d.role]
-    if (f.providerNoTap !== undefined) for (const [key] of pairs(f.providerNoTap)) if (string.find(key as string, `${d.role}=>`, 1, true)[0] === 1) delete f.providerNoTap[key as string]
-    if (f.cluster1Caps !== undefined) delete f.cluster1Caps[d.role]
+    CS.dropRole(f.constraints, d.role)
   }
   f.fuelRelocations = (f.fuelRelocations ?? 0) + 1
   resyncReserved(ctx.faction, f.layout)
   // Its ore tiles are worked out: the terrain is scanned again before the next plan.
   markDirty(ctx.faction.surface, { x: m.rect.x - 8, y: m.rect.y - 8 }, { x: m.rect.x + m.rect.w + 8, y: m.rect.y + m.rect.h + 8 })
-  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped, ${adopt.length} adopted${drop.length > 1 ? `, ${drop.length - 1} aliased nodes dropped` : ""}; the design plans a new one`)
+  log(`[rival-engineers] faction ${ctx.faction.name}: ${what} (${n.id}) ${why}: ${r.clearJobs.length} entities to deconstruct, ${r.routes.length} routes dropped${drop.length > 1 ? `, ${drop.length - 1} aliased nodes dropped` : ""}; the design plans a new one`)
   // B51: a consumer left with a walled-in input lane goes too (once, not further down the chain).
   if (depth > 0) return
   for (const c of sealedConsumers(ctx, consumers)) {

@@ -195,7 +195,7 @@ export interface Config {
   buildStuckRounds: number
   /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
   factoryPowerFuelMinutes: number
-  /** D67: any other factory mine with less than this many minutes of ore left starts its handover (0 = never). */
+  /** D67: any other factory mine with less than this many minutes of ore left starts retiring (D76; 0 = never). */
   factoryMineLeadMinutes: number
   factorySiteRetryMinutes: number
   /** B54: Job Board priority of electric-pole place jobs in factory builds (above every other job: power first). */

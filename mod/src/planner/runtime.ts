@@ -11,6 +11,7 @@ import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { getJob } from "../jobs/board"
 import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
+import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { stampModule } from "../modules/stamp"
 import { registerBuffer } from "../modules/buffers"
@@ -27,7 +28,11 @@ import { chunkKnown, KnownGround } from "../strategy/arms"
 import { countWork, findEntities } from "../work"
 
 export interface BuildState {
-  phase: "clear" | "place" | "done"
+  /**
+   * `poles` (D71 b): the plan's new pole-line poles are placed before anything is cleared, so a pole line the plan
+   * evicts is picked up only once its replacement stands (make before break); `clear`, then `place`.
+   */
+  phase: "poles" | "clear" | "place" | "done"
   faction: string
   clearJobs: JobId[]
   placeJobs: JobId[]
@@ -42,6 +47,9 @@ export interface BuildState {
   ghosts?: LuaEntity[]
   /** B69: tapped belts (unit numbers) picked up after another build finished them. */
   tapCleared?: Record<number, boolean>
+  /** D71 (b): place jobs of the replacement poles (`poles` phase), and the evicted poles cleared once they are done. */
+  poleJobs?: JobId[]
+  breakAfter?: LuaEntity[]
 }
 
 export interface PlannerEntry {
@@ -387,6 +395,8 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
     // Factorio nevertheless permits a pole ghost on top of a live pole, and that ghost can never be revived.
     // Reuse the live pole instead of creating an impossible ghost/place job for it.
     if (ghost && findEntities(surface, { name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
+    // D71 (b): a replacement pole ghosted ahead of the build (`poles` phase) whose place job did not finish.
+    if (ghost && findEntities(surface, { ghost_name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
     else entities.push(e)
@@ -465,7 +475,7 @@ function tapsPending(b: BuildState, surface: LuaSurface, force: string, layout: 
  * Turns a finished plan into Job Board work for its faction: clear jobs now, ghosts and place jobs once the clearing
  * is done (`stepBuild`).
  */
-export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts; clear?: LuaEntity[] } = {}): BuildState {
+export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts; clear?: LuaEntity[]; breakAfter?: LuaEntity[] } = {}): BuildState {
   if (entry.phase !== "done" || entry.job === undefined) error(`plan ${entry.id} is not done`)
   const faction = getFaction(entry.faction ?? "")
   if (faction === undefined) error(`plan ${entry.id} has no faction`)
@@ -493,13 +503,65 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
     }
   }
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
+  // D71 (b) (user decision in-session 2026-10-30): make before break. Evicted pole lines (`breakAfter`) are picked up
+  // only after the plan's new poles stand; until then they keep the modules they served powered (two-faction seed 222:
+  // a goal that evicted 22 poles left most of the factory dark for ~30 game-min while its 153-entity build went up).
+  const breakAfter = (opts.breakAfter ?? []).filter((e) => e.valid)
+  const poleJobs = breakAfter.length > 0 && opts.parts !== undefined ? placeReplacementPoles(surface, faction, partEntities(entry.job.layout, { modules: [], routes: [], poles: opts.parts.poles }), clearJobs, opts) : []
+  if (poleJobs.length > 0) {
+    entry.build.phase = "poles"
+    entry.build.poleJobs = poleJobs
+    entry.build.breakAfter = breakAfter
+  } else for (const e of breakAfter) queueClear(e)
   return entry.build
+}
+
+/**
+ * D71 (b): ghosts the electric poles among `specs` whose tiles nothing still has to be cleared from (`clearJobs`), with
+ * place jobs, so they stand before the poles they replace are picked up. Poles where an obstacle or an old entity goes
+ * first wait for the normal stamp (which reuses a live pole or ghost at its spot).
+ */
+export function placeReplacementPoles(surface: LuaSurface, faction: FactionState, specs: EntitySpec[], clearJobs: JobId[], opts: { fuel?: { item: string; count: number }; priority?: number }): JobId[] {
+  const blocked: { x1: number; y1: number; x2: number; y2: number }[] = []
+  for (const id of clearJobs) {
+    const j = getJob(faction.board, id)
+    const t = j !== undefined && j.payload.kind === "clear" ? j.payload.target : undefined
+    if (t === undefined || !t.valid) continue
+    const b = t.bounding_box
+    blocked.push({ x1: b.left_top.x, y1: b.left_top.y, x2: b.right_bottom.x, y2: b.right_bottom.y })
+  }
+  const out: JobId[] = []
+  for (const spec of specs) {
+    const proto = prototypes.entity[spec.name]
+    if (proto?.type !== "electric-pole") continue
+    const hw = (proto?.tile_width ?? 1) / 2
+    const hh = (proto?.tile_height ?? 1) / 2
+    if (blocked.some((b) => spec.x + hw > b.x1 && spec.x - hw < b.x2 && spec.y + hh > b.y1 && spec.y - hh < b.y2)) continue
+    if (findEntities(surface, { name: spec.name, position: { x: spec.x, y: spec.y }, force: faction.force, limit: 1 }).length > 0) continue
+    const g = createSpec(surface, faction.force, spec, true)
+    if (g === undefined) continue
+    markDirty(surface.name, g.bounding_box.left_top, g.bounding_box.right_bottom)
+    const id = addPlaceJob(faction, g, { fuel: opts.fuel, priority: opts.priority })
+    if (id !== undefined) out.push(id)
+  }
+  return out
 }
 
 export function stepBuild(entry: PlannerEntry): void {
   const b = entry.build!
   const faction = getFaction(b.faction)
   if (faction === undefined) return
+  if (b.phase === "poles") {
+    for (const id of b.poleJobs ?? []) {
+      const j = getJob(faction.board, id)
+      if (j !== undefined && j.status !== "done" && j.status !== "failed") return
+    }
+    // The replacement poles stand: now the evicted ones go (with the rest of the clearing).
+    for (const e of b.breakAfter ?? []) if (e.valid && clearJobFor(faction, e) === undefined) b.clearJobs.push(addClearJob(faction, e, b.priority))
+    b.breakAfter = undefined
+    b.phase = "clear"
+    return
+  }
   if (b.phase === "clear") {
     for (const id of b.clearJobs) {
       const j = getJob(faction.board, id)

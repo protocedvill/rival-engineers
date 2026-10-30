@@ -1,4 +1,4 @@
-import { ARM_FIRST, ARM_SPACING, ARM_STRIP_HALF, armStrip, armTarget, chunkKnown, chunksAround, homeRect, noPatchResource, rectUnion } from "../src/strategy/arms"
+import { ARM_FIRST, ARM_SPACING, ARM_STRIP_HALF, armStrip, armTarget, chunkKnown, chunksAround, homeRect, rectUnion } from "../src/strategy/arms"
 import { tkey } from "../src/planner/grid"
 import { eq, ok, run, test } from "./harness"
 
@@ -49,12 +49,9 @@ test("D62: chunks are known in the home zone and explored strips; elsewhere only
   ok(!chunkKnown(31, 30, scanned, isCharted), "next to a radar-scanned chunk")
 })
 
-test("D62: a radar's nearby square and the no-patch failure text", () => {
+test("D62: a radar's nearby square", () => {
   eq(chunksAround({ x: 40, y: -1 }, 1).length, 9)
   same(chunksAround({ x: 40, y: -1 }, 3)[0], { x: -2, y: -4 })
-  eq(noPatchResource("module n45 (copper-ore>copper-plate*>labs#3): no free copper-ore patch in the region"), "copper-ore")
-  eq(noPatchResource("module n36: no feasible position (1 of 1 patches tried)"), undefined)
-  eq(noPatchResource(undefined), undefined)
   same(rectUnion({ x: 0, y: 0, w: 10, h: 10 }, { x: -5, y: 20, w: 2, h: 2 }), { x: -5, y: 0, w: 15, h: 22 })
 })
 
