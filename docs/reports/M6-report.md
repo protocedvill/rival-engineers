@@ -2940,7 +2940,7 @@ anywhere in the repo or the run directories, and no state hash existed in the co
 | Space Age smoke test | `m6-space-age-981ca35` | `981ca35` | **pass**: space-age, quality and elevated-rails loaded, no errors; `first-power` at 10.4 game-min (seed 11) |
 | Determinism (T4) | `tools/harness/determinism.py`, seed 11 | `981ca35` + the dump | **pass**: identical state at 30 and 45 min (3.6 MB / 3.7 MB) for a fresh snapshot-server run, a fresh `--benchmark` run, and a run resumed from the first's `min-0020` save |
 | Research (42 techs) | part of `v1-done` | — | covered by every passing seed |
-| Timelapses approved by the user | renders below | — | **waiting for the user** |
+| Timelapses approved by the user | renders below | — | **approved by the user in-session, 2026-10-30** ("looks good on the timelapses") |
 
 **Observation from the two-faction run (seed 222, open, not a failure).** Faction 1 reached `v1-done` at 308 min,
 faction 2 at 217. Faction 1's red science stopped from ~100 to ~136 min and green started only at ~150: production goal
