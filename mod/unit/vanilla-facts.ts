@@ -38,6 +38,12 @@ const RECIPES: RecipeFacts[] = [
   r("fast-transport-belt", 0.5, [["iron-gear-wheel", 5], ["transport-belt", 1]], [["fast-transport-belt", 1]]),
   r("express-transport-belt", 0.5, [["iron-gear-wheel", 10], ["fast-transport-belt", 1]], [["express-transport-belt", 1]]),
   r("burner-inserter", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["burner-inserter", 1]]),
+  // M7c: the blue chain.
+  r("steel-plate", 16, [["iron-plate", 5]], [["steel-plate", 1]], "smelting"),
+  r("engine-unit", 10, [["steel-plate", 1], ["iron-gear-wheel", 1], ["pipe", 2]], [["engine-unit", 1]], "advanced-crafting"),
+  r("advanced-circuit", 6, [["electronic-circuit", 2], ["plastic-bar", 2], ["copper-cable", 4]], [["advanced-circuit", 1]]),
+  r("chemical-science-pack", 24, [["engine-unit", 2], ["advanced-circuit", 3], ["sulfur", 1]], [["chemical-science-pack", 2]]),
+  r("assembling-machine-2", 0.5, [["steel-plate", 2], ["electronic-circuit", 3], ["iron-gear-wheel", 5], ["assembling-machine-1", 1]], [["assembling-machine-2", 1]]),
   // M7b: the oil chain (fluids flagged; `box` = the recipe's fluidbox_index).
   { name: "basic-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "crude-oil", amount: 100, fluid: true, box: 2 }], products: [{ name: "petroleum-gas", amount: 45, fluid: true, box: 3 }] },
   { name: "plastic-bar", energy: 1, category: "chemistry", ingredients: [{ name: "coal", amount: 1 }, { name: "petroleum-gas", amount: 20, fluid: true }], products: [{ name: "plastic-bar", amount: 2 }] },
@@ -88,6 +94,7 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
   e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
+  e({ name: "assembling-machine-2", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.75, craftingCategories: ["advanced-crafting", "basic-crafting", "crafting", "crafting-with-fluid"], energyPerTick: 2500, electric: true }),
   e({ name: "oil-refinery", type: "assembling-machine", tileW: 5, tileH: 5, craftingSpeed: 1, craftingCategories: ["oil-processing"], energyPerTick: 7000, electric: true, fluidBoxes: REFINERY_BOXES }),
   e({ name: "chemical-plant", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 1, craftingCategories: ["chemistry"], energyPerTick: 3500, electric: true, fluidBoxes: CHEMICAL_BOXES }),
   e({ name: "pipe-to-ground", type: "pipe-to-ground", tileW: 1, tileH: 1, maxPipeUnderground: 10 }),

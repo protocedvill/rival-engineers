@@ -447,26 +447,37 @@ export interface AssemblerRowParams extends CommonParams {
   machine?: string
   /** D51 / B14: buffer depot chest at the head ("" or absent: none). */
   buffer?: string
+  /** M7c: the long-handed inserter that feeds a third ingredient from its own belt. */
+  longInserter?: string
 }
 
 /**
  * N assemblers in a row between an output belt (north) and an input belt (south) carrying up to two solid
- * ingredients, one per lane. Inserters per machine (1–2 each side) are sized from the recipe's rates.
+ * ingredients, one per lane. Inserters per machine (1–2 each side) are sized from the recipe's rates. M7c: a third
+ * ingredient (the one used most per craft) comes on a belt of its own one row further south, through a long-handed
+ * inserter beside each machine's input inserter; it enters from below at the tail and curves west, so it touches
+ * neither the two-lane belt nor that belt's merge column.
  */
 export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDef {
   const machine = p.machine ?? "assembling-machine-1"
   const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
   const recipe = solidRecipe(facts, p.recipe)
-  if (recipe.ingredients.length < 1 || recipe.ingredients.length > 2) error(`assembler-row: ${p.recipe} needs 1–2 ingredients`)
+  if (recipe.ingredients.length < 1 || recipe.ingredients.length > 3) error(`assembler-row: ${p.recipe} needs 1–3 ingredients`)
+  if (recipe.ingredients.some((i) => i.fluid === true)) error(`assembler-row: ${p.recipe} takes a fluid`)
   if (p.count < 2 || p.count % 2 !== 0) error(`assembler-row: count must be a positive even number, got ${p.count}`)
   const product = mainProduct(recipe)
   const crafts = machineSpeed(facts, machine) / recipe.energy
   let perCraftIn = 0
   for (const i of recipe.ingredients) perCraftIn += i.amount
   const caps = inserterCaps(facts, L.inserter)
-  const nIn = clampInt((crafts * perCraftIn) / caps.belt, 1, 2)
+  const three = recipe.ingredients.length === 3
+  // Three ingredients: the one used most per craft rides its own belt (row 7), the other two share the lanes of row 6.
+  const sorted = [...recipe.ingredients].sort((a, b) => (a.amount !== b.amount ? a.amount - b.amount : a.name < b.name ? -1 : 1))
+  const third = three ? sorted[2] : undefined
+  const nIn = three ? 1 : clampInt((crafts * perCraftIn) / caps.belt, 1, 2)
   const nOut = clampInt((crafts * product.amount) / caps.machine, 1, 2)
-  const inputs = recipe.ingredients.map((i) => i.name)
+  const inputs = (three ? sorted.slice(0, 2) : recipe.ingredients).map((i) => i.name)
+  const long = p.longInserter ?? "long-handed-inserter"
   const units = p.count / 2
   const xt = 6 * units
   for (let u = 0; u < units; u++) {
@@ -476,9 +487,11 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
       L.add(machine, x0 + 1.5, 3.5, undefined, { recipe: p.recipe })
       for (let k = 0; k < nOut; k++) L.ins(x0 + 1.5 + k, 1.5, SOUTH)
       for (let k = 0; k < nIn; k++) L.ins(x0 + 1.5 + k, 5.5, SOUTH)
+      if (three) L.add(long, x0 + 2.5, 5.5, SOUTH)
       for (let dx = 0; dx < 3; dx++) {
         L.beltAt(x0 + dx + 0.5, 0.5, WEST)
         L.beltAt(x0 + dx + 0.5, 6.5, WEST)
+        if (three) L.beltAt(x0 + dx + 0.5, 7.5, WEST)
       }
     }
     L.poleAt(ux + 0.5, 1.5)
@@ -498,16 +511,22 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
     ports = rowTail(L, xt + 1, inputs, 6)
     W = xt + 2
   }
+  if (third !== undefined) {
+    // Row 7: the third ingredient enters from below at the tail column and curves west under the machines.
+    L.beltAt(xt + 0.5, 7.5, WEST)
+    L.beltAt(xt + 0.5, 8.5, NORTH)
+    ports.push({ id: `in-${third.name}`, kind: "belt-in", pos: { x: xt + 0.5, y: 8.5 }, dir: NORTH, item: third.name })
+  }
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 0.5, y: 1.5 }, dir: NORTH })
   const buffered = rowBufferHead(facts, L, ports, p.buffer)
   const head = buffered ? ROW_BUFFER_W : 0
   W += head
-  const H = inputs.length === 1 ? 7 : 8
+  const H = three ? 9 : inputs.length === 1 ? 7 : 8
   // Growth cap: each input lane (two inputs) or the whole belt (one input), and the output belt.
   const lane = laneCapacity(facts, L.belt)
   let maxMachines = (2 * lane) / (crafts * product.amount)
-  for (const i of recipe.ingredients) maxMachines = Math.min(maxMachines, (inputs.length === 1 ? 2 * lane : lane) / (crafts * i.amount))
+  for (const i of recipe.ingredients) maxMachines = Math.min(maxMachines, (inputs.length === 1 || i === third ? 2 * lane : lane) / (crafts * i.amount))
   const draft: ModuleDraft = {
     id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",
@@ -530,6 +549,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   }
   // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
   if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
+  if (!buffered && three) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 7.5)
   return finalizeModule(draft, facts)
 }
 

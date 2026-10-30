@@ -203,6 +203,21 @@ pole line (`pumpPoleLine`, `from: "pump"`); `powerRoles` lists those lines as co
 to the network like a module; `ripRoute` takes them away with the route. T1 `fluid-route`: a 228-tile crude line with
 extent 100 gets its pumps, a pole beside each, and nothing is left unpowered after the pole step.
 
+## M7c: the blue chain
+
+### M7c.1: three-ingredient assembler rows
+
+Engines (steel, gear, pipe), advanced circuits (green circuit, plastic, cable) and blue packs (engine, advanced
+circuit, sulfur) take three ingredients; `assembler-row` took two. A third ingredient (the one used most per craft) now
+rides a belt of its own one row further south, fed by a long-handed inserter beside each machine's input inserter; it
+enters from below at the tail and curves west, so it touches neither the two-lane belt nor that belt's merge column.
+One- and two-ingredient rows are unchanged. T1 facts gained assembler 2, steel, engines, advanced circuits and blue packs.
+
+| Module | Declared | Validation lab |
+|---|---|---|
+| `assembler-row engine 2` (assembler 2) | 0.15 engines/s | 0.153/s (102%; 10-s crafts are lumpy: never "steady") |
+| `assembler-row advanced-circuit 2` (assembler 2) | 0.25/s | 0.244/s (98%) |
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

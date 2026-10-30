@@ -115,6 +115,9 @@ export const V1_CATALOG: CatalogEntry[] = [
   // M7b: refineries under chemical plants (crude and water from infinity pipes in the lab).
   { name: "fluid-chain plastic 2/2", generator: "fluid-chain", params: { recipe: "plastic-bar", chemPlants: 2, refineries: 2 } },
   { name: "fluid-chain sulfur 1/1", generator: "fluid-chain", params: { recipe: "sulfur", chemPlants: 1, refineries: 1 } },
+  // M7c: three-ingredient rows (assembler 2; the third ingredient on its own belt).
+  { name: "assembler-row engine 2", generator: "assembler-row", params: { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" }, slow: true },
+  { name: "assembler-row advanced-circuit 2", generator: "assembler-row", params: { recipe: "advanced-circuit", count: 2, machine: "assembling-machine-2" } },
 ]
 
 export function catalogModule(entry: CatalogEntry): ModuleDef {

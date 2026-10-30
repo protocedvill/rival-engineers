@@ -1,4 +1,4 @@
-import { fluidChain, pumpjackField, waterPump } from "../src/modules/generators"
+import { assemblerRow, fluidChain, pumpjackField, waterPump } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { occupancy } from "../src/modules/geometry"
 import { rateOf } from "../src/modules/rates"
@@ -110,6 +110,32 @@ test("pumpjack field: a pumpjack on every well, one pipe network to the pipe-out
     ok(seen[out] === true, `pumpjack at ${e.x},${e.y}: its output ${out} reaches the port`)
   }
   ok(port.pos.x === def.footprint.w - 0.5, "the port is on the east edge")
+})
+
+test("assembler row, three ingredients: engines (steel, gear, pipe) with pipes on their own belt", () => {
+  const def = assemblerRow(F, { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" })
+  // Assembler 2 (speed 0.75), 10 s: 0.075 engines/s each.
+  near(rateOf(def.rates.outputs, "engine-unit"), 0.15, 1e-6, "two machines")
+  near(rateOf(def.rates.inputs, "pipe"), 0.3, 1e-6, "pipe")
+  near(rateOf(def.rates.inputs, "steel-plate"), 0.15, 1e-6, "steel")
+  occupancy(def.entities, F)
+  const ports: Record<string, string> = {}
+  for (const p of def.ports) ports[p.id] = `${p.kind}@${p.pos.x},${p.pos.y}`
+  // Pipe (2 per craft) is the third ingredient: its own belt-in port from below at the tail.
+  eq(ports["in-pipe"], `belt-in@${def.footprint.w - 2 + 0.5},8.5`)
+  ok(ports["in-steel-plate"] !== undefined && ports["in-iron-gear-wheel"] !== undefined, "the other two share the lanes")
+  eq(def.footprint.h, 9)
+  let longs = 0
+  for (const e of def.entities) if (e.name === "long-handed-inserter") longs++
+  eq(longs, 2, "a long-handed inserter per machine")
+})
+
+test("assembler row, three ingredients: advanced circuits and blue packs", () => {
+  const ac = assemblerRow(F, { recipe: "advanced-circuit", count: 2, machine: "assembling-machine-2" })
+  near(rateOf(ac.rates.outputs, "advanced-circuit"), 0.25, 1e-6, "advanced circuits")
+  const blue = assemblerRow(F, { recipe: "chemical-science-pack", count: 4, machine: "assembling-machine-2" })
+  // 24 s for 2 packs at 0.75: 0.0625 packs/s per machine.
+  near(rateOf(blue.rates.outputs, "chemical-science-pack"), 0.25, 1e-6, "blue packs")
 })
 
 run("fluid-chain")
