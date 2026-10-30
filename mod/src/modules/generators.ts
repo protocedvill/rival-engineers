@@ -516,6 +516,10 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
     L.beltAt(xt + 0.5, 7.5, WEST)
     L.beltAt(xt + 0.5, 8.5, NORTH)
     ports.push({ id: `in-${third.name}`, kind: "belt-in", pos: { x: xt + 0.5, y: 8.5 }, dir: NORTH, item: third.name })
+    // The lanes' first input entered at row 7, now inside the footprint: it starts one tile lower, on the edge (its
+    // outside tile was inside the module, so no route could reach it: first M7 soak, engines "no path").
+    L.beltAt(xt + 1.5, 8.5, NORTH)
+    for (const port of ports) if (port.kind === "belt-in" && port.item === inputs[0]) port.pos = { x: xt + 1.5, y: 8.5 }
   }
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 0.5, y: 1.5 }, dir: NORTH })
