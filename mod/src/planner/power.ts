@@ -182,6 +182,8 @@ export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: M
     if (gen) sources.push(m.id)
     else if (port) consumers.push(m.id)
   }
+  // M7b: fluid route pumps, each with a pole beside it (`pumpPoleLine`): joined like a module.
+  for (const l of layout.poleLines ?? []) if (l.from === "pump") consumers.push(l.id as unknown as ModuleId)
   return { sources, consumers }
 }
 

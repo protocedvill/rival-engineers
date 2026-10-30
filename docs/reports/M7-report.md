@@ -196,11 +196,19 @@ plastic block the planner places, and the layout check passes.
 Open for M7c: the field keeps `anchor.resource`, so the D67/P36 ore checks (`fuel.ts`) would read it as an ore mine;
 crude wells do not run dry the way ore does (their yield falls to a floor), so those checks must skip fluid fields.
 
+### M7b.6: pumps get power
+
+A pump on a long fluid route needs power. `pipeStep` puts a pole on a free tile beside each pump, as the route's own
+pole line (`pumpPoleLine`, `from: "pump"`); `powerRoles` lists those lines as consumers, so the pole step joins them
+to the network like a module; `ripRoute` takes them away with the route. T1 `fluid-route`: a 228-tile crude line with
+extent 100 gets its pumps, a pole beside each, and nothing is left unpowered after the pole step.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
 | Unreachable standing spot avoided for | `jobs/bad-spots.ts` `BAD_SPOT_TICKS` | 10 game-min | Agent guess (B111): long enough for the crew to move on, short enough that a cleared obstacle is tried again. | no |
+| Unreachable spot avoided around | `jobs/bad-spots.ts` `BAD_SPOT_RADIUS` | 2.5 tiles | Agent guess (B111): the next spot nearest the member is usually a tile over in the same pocket; 2.5 clears a four-tile stretch of corridor. | no |
 | Pumpjack field margin | `modules/generators.ts` `PUMPJACK_FIELD_MARGIN` | 2 tiles | Agent guess: room around the pumpjacks for the collector pipes and poles. | no |
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |

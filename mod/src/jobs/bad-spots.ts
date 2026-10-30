@@ -11,6 +11,12 @@ import type { Pos, Rect } from "./board"
  * cleared obstacle is tried again). */
 export const BAD_SPOT_TICKS = 10 * 3600
 
+/**
+ * How far around an unreachable spot the planner stays away (agent guess). The next spot nearest the member is usually
+ * a tile over, in the same pocket (fixed seed 222: a four-tile stretch of corridor between two poles).
+ */
+export const BAD_SPOT_RADIUS = 2.5
+
 function key(p: Pos): string {
   return `${math.floor(p.x * 2) / 2},${math.floor(p.y * 2) / 2}`
 }
@@ -32,7 +38,7 @@ export function badSpotRects(spots: Record<string, number> | undefined, tick: nu
     const [xs, ys] = string.match(k as string, "^(-?[%d%.]+),(-?[%d%.]+)$")
     const x = tonumber(xs)!
     const y = tonumber(ys)!
-    out.push({ x1: x - 0.6, y1: y - 0.6, x2: x + 0.6, y2: y + 0.6 })
+    out.push({ x1: x - BAD_SPOT_RADIUS, y1: y - BAD_SPOT_RADIUS, x2: x + BAD_SPOT_RADIUS, y2: y + BAD_SPOT_RADIUS })
   }
   return out
 }

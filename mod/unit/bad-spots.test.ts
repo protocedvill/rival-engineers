@@ -1,5 +1,5 @@
 import { eq, ok, run, test } from "./harness"
-import { BAD_SPOT_TICKS, badSpotRects, recordBadSpot } from "../src/jobs/bad-spots"
+import { BAD_SPOT_RADIUS, BAD_SPOT_TICKS, badSpotRects, recordBadSpot } from "../src/jobs/bad-spots"
 import { chooseStandingSpot } from "../src/jobs/board"
 
 // T1: B111. A standing spot whose walk found no path is avoided for a while, so the batch planner picks the next spot
@@ -15,7 +15,8 @@ test("B111: an unreachable spot is avoided and the next spot within reach is pic
   recordBadSpot(spots, first, 100)
   const second = chooseStandingSpot(target, badSpotRects(spots, 200), from, 5)!
   ok(second !== undefined, "another spot")
-  ok(math.abs(second.x - first.x) + math.abs(second.y - first.y) >= 0.5, `a different spot (${first.x},${first.y} then ${second.x},${second.y})`)
+  // Not just the next tile over (it is usually in the same pocket): outside the avoided square.
+  ok(math.max(math.abs(second.x - first.x), math.abs(second.y - first.y)) > BAD_SPOT_RADIUS, `a spot out of the pocket (${first.x},${first.y} then ${second.x},${second.y})`)
 })
 
 test("B111: a bad spot expires", () => {

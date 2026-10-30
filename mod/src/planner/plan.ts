@@ -8,11 +8,11 @@ import { isPlanFailure, planFailure } from "../shared/plan-failure"
 import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
-import { releaseLaneReservation, reserveFreeTile } from "./claims"
+import { claimPoleTile, releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, DX, DY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
@@ -21,8 +21,8 @@ import { routePipe } from "./pipe-router"
 import type { PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
-import { moduleId, routeId } from "../shared/ids"
-import type { ConnectionId, RouteId } from "../shared/ids"
+import { moduleId, poleId, routeId } from "../shared/ids"
+import type { ConnectionId, PoleId, RouteId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
@@ -61,7 +61,7 @@ export interface ConnectionRequest {
    * M7b: a fluid connection (`pipe-out` → `pipe-in`), routed with pipes by `planner/pipe-router.ts`. The caller reads
    * the entities and limits from the prototypes (the planner stays pure).
    */
-  fluid?: { name: string; pipe: string; underground: string; pump: string; maxUnderground: number; extent: number }
+  fluid?: { name: string; pipe: string; underground: string; pump: string; maxUnderground: number; extent: number; pole?: string }
 }
 
 export interface PlanRequest {
@@ -540,8 +540,40 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
     return PIPE_BUDGET
   }
   commitRoute(job.layout, pipeRoute(id, c, f, r.steps, r.cost))
+  // Each pump needs power: a pole on a free tile beside it, as a pole line the pole step joins to the network.
+  const poles: PoleId[] = []
+  const line = pumpPoleLine(id)
+  for (let i = 0; i < r.steps.length; i++) {
+    const st = r.steps[i]
+    if (st.kind !== "pump") continue
+    const spot = pumpPoleSpot(job.layout, terrain, policy, costReq, st)
+    if (spot === undefined) {
+      fail(job, c.id, `no room for a pole beside the pump at ${st.x},${st.y}`)
+      return math.max(1, r.expansions)
+    }
+    const pid = poleId(`${line}:${i}`)
+    job.layout.poles = [...(job.layout.poles ?? []), { id: pid, name: f.pole ?? "small-electric-pole", x: spot.x, y: spot.y, line }]
+    claimPoleTile(job.layout, tkey(spot.x, spot.y), line)
+    poles.push(pid)
+  }
+  if (poles.length > 0) job.layout.poleLines = [...(job.layout.poleLines ?? []), { id: line, to: moduleId(id), from: "pump", poles }]
   job.stats.routeWork += r.expansions
   return math.max(1, r.expansions)
+}
+
+/** A free tile beside a pump (either of its two tiles) for its pole. */
+function pumpPoleSpot(layout: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, st: PipeStep): Vec | undefined {
+  const side = [(st.dir + 1) % 4, (st.dir + 3) % 4]
+  for (let along = 0; along < 2; along++) {
+    for (const d of side) {
+      const x = st.x + DX[st.dir] * along + DX[d]
+      const y = st.y + DY[st.dir] * along + DY[d]
+      const k = tkey(x, y)
+      if (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined) continue
+      if (tileCost(layout, terrain, policy, req, false, x, y) >= 0) return { x, y }
+    }
+  }
+  return undefined
 }
 
 /** Expansions one fluid route may take (agent guess; a 600-tile line needs a few thousand). */

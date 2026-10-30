@@ -649,6 +649,11 @@ export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] 
   return state.routeOrder.filter((id) => inTree[id])
 }
 
+/** M7b: the pole line of a fluid route's pumps (one pole beside each pump; the pole planner joins it to the network). */
+export function pumpPoleLine(route: string): PoleLineId {
+  return `pump:${route}` as PoleLineId
+}
+
 export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   const route = state.routes[id]
   if (route === undefined) return []
@@ -657,6 +662,17 @@ export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
     if (state.routes[other]?.tapOf === id) for (const r of ripRoute(state, other)) removed.push(r)
   }
   for (const k of route.tiles) releaseRouteTile(state, k, id)
+  // M7b: a fluid route's pump poles go with it.
+  if (route.fluid !== undefined) {
+    const line = pumpPoleLine(id)
+    const kept: PlannedPole[] = []
+    for (const p of state.poles ?? []) {
+      if (p.line === line) releasePoleTile(state, tkey(p.x, p.y), line)
+      else kept.push(p)
+    }
+    if (state.poles !== undefined) state.poles = kept
+    if (state.poleLines !== undefined) state.poleLines = state.poleLines.filter((l) => l.id !== line)
+  }
   for (const s of route.spans) {
     const list = state.spans[s.line]
     if (list === undefined) continue

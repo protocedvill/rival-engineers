@@ -4,6 +4,7 @@ import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { ConnectionRequest, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
+import { unpoweredModules } from "../src/planner/power"
 import { fluidChain, pumpjackField } from "../src/modules/generators"
 import { beltTiers } from "../src/planner/capacity"
 import { IDENTITY } from "../src/modules/geometry"
@@ -106,6 +107,29 @@ test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a
   ok(m.origin.x === at.x && m.origin.y === at.y, `the field sits on its wells (${m.origin.x},${m.origin.y})`)
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
   ok(job.layout.routes["route:crude"]?.fluid !== undefined, "crude is piped")
+})
+
+test("fluid route: pumps on a long line get a pole each, joined to the power network by the pole step", () => {
+  const terrain = asciiTerrain(field(260, 30))
+  const state = newLayout()
+  // A generator (steam engine + pole) near the start; the line needs a pump every 100 tiles.
+  const gen = { ...box("gen", 5, 3, []), entities: [{ name: "steam-engine", x: 2.5, y: 1.5, dir: EAST as 0 }, { name: "small-electric-pole", x: 0.5, y: 0.5 }] }
+  const src = box("src", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const dst = box("dst", 1, 1, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, gen, 2, 2)
+  place(state, src, 2, 10)
+  place(state, dst, 230, 10)
+  const c: ConnectionRequest = { id: connectionId("crude"), from: { module: "src", port: "out" }, to: { module: "dst", port: "in" }, fluid: { ...FLUID, extent: 100 } }
+  const req = { ...request([gen, src, dst], [c], 260, 30), poles: "small-electric-pole" }
+  const job = runJob(newRoutingJob(req, YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  let pumps = 0
+  for (const st of job.layout.routes["route:crude"].steps) if (st.kind === "pump") pumps++
+  ok(pumps >= 2, `pumps on a 228-tile line with extent 100 (${pumps})`)
+  const line = (job.layout.poleLines ?? []).find((l) => l.from === "pump")
+  ok(line !== undefined && line.poles.length === pumps, "a pole beside each pump")
+  eq(unpoweredModules(job.layout, F).join(","), "", "every pump pole joined the network")
+  eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
 })
 
 run("fluid-route")
