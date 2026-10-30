@@ -805,7 +805,8 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     }
   }
   const mining = isMining(def)
-  if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) {
+  // M7b: a module anchored to a resource (a pumpjack field) stands on its own wells.
+  if (policy.protectOre && !mining && def.anchor?.resource === undefined && sum(s, "ore", rect) !== 0) {
     return reject(s, "ore", ox, oy)
   }
   if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) {
@@ -1194,6 +1195,25 @@ function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainVie
 }
 
 /** Places synchronously (tests, tools). */
+/**
+ * M7b: a module generated for one spot (a pumpjack field on its wells) is placed exactly at `origin` if every footprint
+ * tile is placeable and unclaimed, without a search. Returns the module, or the reason it cannot go there.
+ */
+export function placeFixed(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, id: string, def: ModuleDef, origin: Vec): PlacedModule | string {
+  const td = tdefOf(def, IDENTITY)
+  for (let x = origin.x; x < origin.x + def.footprint.w; x++) {
+    for (let y = origin.y; y < origin.y + def.footprint.h; y++) {
+      const b = terrain.block(x, y)
+      if (b === TREE && policy.obstacles.trees !== "clear") return `tree at ${x},${y}`
+      if (b === ROCK && policy.obstacles.rocks !== "clear") return `rock at ${x},${y}`
+      if (b !== FREE && b !== TREE && b !== ROCK) return `blocked at ${x},${y}`
+      const c = placementClaimConflict(state, tkey(x, y), id)
+      if (c !== undefined) return `${c.code} at ${x},${y}`
+    }
+  }
+  return { id: moduleId(id), canonical: def, def: td.def, transform: IDENTITY, origin: { x: origin.x, y: origin.y }, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h } }
+}
+
 export function placeNow(req: PlacementRequest, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): PlacementSearch {
   const s = newPlacement(req)
   while (s.phase !== "done" && s.phase !== "failed") stepPlacement(s, state, terrain, policy, 1e9)

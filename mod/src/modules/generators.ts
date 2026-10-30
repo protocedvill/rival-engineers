@@ -1115,7 +1115,7 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
     ],
     rotatable: false,
     mirrorable: false,
-    site: "resource-patch",
+    // Generated for one field: the planner places it exactly there (`ModuleRequest.at`), not by a site search.
     anchor: { resource },
     params: { wells: encodeWells(wells), resource },
   }

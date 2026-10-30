@@ -2,8 +2,9 @@ import { ModuleDef, EAST, NORTH, Port } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
-import { ConnectionRequest, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
+import { ConnectionRequest, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
+import { fluidChain, pumpjackField } from "../src/modules/generators"
 import { beltTiers } from "../src/planner/capacity"
 import { IDENTITY } from "../src/modules/geometry"
 import { connectionId, moduleId } from "../src/shared/ids"
@@ -77,6 +78,34 @@ test("fluid route: never runs a plain pipe next to another module's pipe port", 
   }
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
   ok(job.layout.routeOcc[tkey(15, 11)] === undefined, "the other port's tile stays its own")
+})
+
+test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a plastic block the planner places", () => {
+  const terrain = asciiTerrain(field(140, 80))
+  const wells = [
+    { x: 10, y: 10, perSecond: 10 },
+    { x: 16, y: 11, perSecond: 10 },
+    { x: 12, y: 16, perSecond: 10 },
+  ]
+  const oil = pumpjackField(F, { wells })
+  const plastic = fluidChain(F, { recipe: "plastic-bar", chemPlants: 2, refineries: 2 })
+  // The field's footprint starts M tiles before the first well's pumpjack (wells' min x/y − 1 − M).
+  const at = { x: 10 - 1 - 2, y: 10 - 1 - 2 }
+  const req: PlanRequest = {
+    modules: [
+      { id: "oil", def: oil, at },
+      { id: "plastic", def: plastic },
+    ],
+    connections: [{ id: connectionId("crude"), from: { module: "oil", port: "out-crude-oil" }, to: { module: "plastic", port: "in-crude-oil" }, fluid: FLUID }],
+    center: { x: 60, y: 30 },
+    region: { x: 0, y: 0, w: 140, h: 80 },
+  }
+  const job = runJob(newPlanJob(req, YELLOW), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  const m = job.layout.modules.find((x) => x.id === "oil")!
+  ok(m.origin.x === at.x && m.origin.y === at.y, `the field sits on its wells (${m.origin.x},${m.origin.y})`)
+  eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
+  ok(job.layout.routes["route:crude"]?.fluid !== undefined, "crude is piped")
 })
 
 run("fluid-route")

@@ -184,6 +184,18 @@ Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water a
 pumpjack field's network, power and rates),
 T2 validation `fluid-chain plastic 2/2` and `sulfur 1/1`. The water pump is checked in-game with its first real route.
 
+### M7b.5: modules placed on one spot (`ModuleRequest.at`)
+
+A pumpjack field is generated for one field (its wells and their yields, read by the runtime), so the planner must put
+it exactly there. `ModuleRequest.at` places the module at that origin through `placement.ts` `placeFixed` (every
+footprint tile placeable, trees and rocks only where the policy clears them, no claim) without a site search, or fails
+the plan with a `no-position` failure; a fixed module is never moved by a re-placement. A module anchored to a resource
+may stand on that resource (`protectOre` skips it). T1 `fluid-route`: a field fixed on three wells pipes crude to a
+plastic block the planner places, and the layout check passes.
+
+Open for M7c: the field keeps `anchor.resource`, so the D67/P36 ore checks (`fuel.ts`) would read it as an ore mine;
+crude wells do not run dry the way ore does (their yield falls to a floor), so those checks must skip fluid fields.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

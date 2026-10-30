@@ -13,7 +13,7 @@ import { dirIndex, DX, DY, manhattan, Rect, TerrainView, tkey, Vec } from "./gri
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
 import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
@@ -35,6 +35,11 @@ export interface ModuleRequest {
    * and resource) by this many units, if there is room, instead of placing a new one.
    */
   expandUnits?: number
+  /**
+   * M7b: place exactly here (module origin), or fail: a module generated for one spot of the world (a pumpjack field on
+   * its wells). It is never moved by a re-placement.
+   */
+  at?: Vec
 }
 
 export interface ConnectionRequest {
@@ -750,6 +755,7 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
     // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
     const provenSealed = search?.sealed !== undefined && !search.sealed.edge && (search.sealed.side === "start" ? c.from?.module : c.to.module) === mid
     if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
+    if (job.request.modules.some((r) => r.id === mid && r.at !== undefined)) continue
     for (const rid of [...job.layout.routeOrder]) {
       const r = job.layout.routes[rid]
       if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
@@ -787,6 +793,18 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   }
   const id = moduleId(job.order[job.placeIdx])
   const mreq = moduleRequest(job, id)
+  // M7b: a module generated for one spot goes exactly there, or the plan fails.
+  if (mreq.at !== undefined) {
+    const m = placeFixed(job.layout, terrain, policy, id, mreq.def, mreq.at)
+    if (typeof m === "string") {
+      fail(job, `module:${id}`, planFailure("no-position", `no room at its fixed spot: ${m}`))
+      job.phase = "failed"
+    } else {
+      commitPlacement(job.layout, m, facts, policy)
+      job.placeIdx++
+    }
+    return 1
+  }
   if (job.placement === undefined) {
     // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to
     // squeeze another independent strip into its reserved footprint. B23: a built (fixed) mine that is not complete
