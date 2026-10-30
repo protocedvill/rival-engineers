@@ -772,4 +772,10 @@ test("M7c: two-input rows by default keep v1's curated green line (no three-ingr
   eq(tostring(generatorFor(ctx(), "inserter")), "nil", "inserter: still no generator at rowInputs 2")
 })
 
+test("M7c: with three-ingredient rows on, a curated module still keeps its item (the green line)", () => {
+  const c = ctx({ rowInputs: 3, curated: { "logistic-science-pack": "green-line-hellpet" } })
+  eq(generatorFor(c, "inserter"), "assembler-row", "an inserter row exists at 3")
+  eq(producerFor(c, "logistic-science-pack"), "curated", "but green science stays on the curated line")
+})
+
 run("design")

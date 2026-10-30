@@ -257,9 +257,12 @@ weapon-shooting-speed-1/2 are dropped; production and utility science stay (D74:
   east-side inputs enter on the edge, one column wider. Validation lab: `lab-array 4 blue` 98.8% on a three-pack
   technology; the two-pack array is unchanged (100%).
 - The D67/P36 ore checks skip fluid wells (their yield falls to a floor; they do not run dry).
-- **Proposed (not a user decision): `rowInputs` stays 2 by default.** At 3, inserters become producible by an assembler
-  row, and "generators first" (D34) would replace v1's validated curated green line. M7 configs set 3; whether the
-  green line should switch to the generated three-ingredient row is the user's call.
+- `rowInputs` stays 2 by default (v1 unchanged); M7 configs set 3. A curated module keeps its item even at 3:
+  whether a generator chain can make an item is judged with two-ingredient rows (`chainProducible`), so v1's
+  validated green line stays and three-ingredient rows serve only items no curated module covers (engines, advanced
+  circuits, blue packs). The first M7 soak with 3 (`m7x-11`) had replaced the green line with a generated inserter row
+  whose circuit route could not be placed (8 plan failures). Whether the green line should ever move to a generated
+  row stays open for the user (proposed: no, while the curated line is validated).
 
 T1 `design`: 10 blue/min gives plastic and sulfur fluid chains, a pumpjack field, a water pump and assembler-2 engine
 rows with no errors; at the default 2 inserters still have no generator.

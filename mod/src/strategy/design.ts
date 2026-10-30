@@ -248,11 +248,16 @@ export function producerFor(ctx: DesignContext, item: string): ModuleKind | unde
   return curated !== undefined ? "curated" : gen
 }
 
-/** Whether every ingredient of `item`'s recipe has a generator (down to raw resources). */
+/**
+ * Whether every ingredient of `item`'s recipe has a generator (down to raw resources). M7c: judged with two-ingredient
+ * rows, so a validated curated module (v1's green line) keeps its item even when three-ingredient rows are on; those
+ * serve only items no curated module covers (engines, advanced circuits, blue packs). The first M7 soak (`m7x-11`)
+ * replaced the green line with a generated inserter row whose circuit route could not be placed.
+ */
 function chainProducible(ctx: DesignContext, item: string, depth: number): boolean {
   if (depth > 8) return false
   if (resourceFor(ctx, item) !== undefined) return true
-  const gen = generatorRule(ctx, item)
+  const gen = generatorRule({ ...ctx, rowInputs: 2 }, item)
   if (gen === undefined) return false
   const rn = ctx.facts.recipeForItem(item)
   const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
