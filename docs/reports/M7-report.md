@@ -96,6 +96,16 @@ dark until ~130 min. The user deferred the proposed remedy to M7 (D71 (b), 2026-
 Test: T2 `factory` "D71 (b)": a build evicting a pole starts in `poles`, ghosts only the new pole on open ground, keeps
 the old pole until the new one is placed, then queues its clear job; a build without an eviction starts in `clear`.
 
+### M7a.4: fixed seed 222 on the M7a code (D71 a, B110, B111)
+
+`m7a-fixed222-1e01f8b` failed at the cap (0/1). The B110 path changed (D76): n25 retired only when its drills ran dry
+(no valve). A new livelock (B111): after the power plant's coal mine retired (P36), the coal goal g31 stayed `building`
+for 140 game-min because urgent boiler refuels, caused by that very shortage, preempted its last placements; meanwhile
+every production goal waited for power. Fixes: unreachable standing spots are avoided for a while, and builds that
+restore the power supply run at the refuels' priority. Resumed from `min-0340`, g31 is built (at ~427 min) and
+production follows, but seed 222 still falls short: science peaks at ~26.7/min around 230 min and sags to 12–23/min
+as its mines deplete and are rebuilt. D71 (a) stays open; the random20 gate is unaffected (12/12 so far).
+
 ## M7b: fluids
 
 ### M7b.1: how far crude can be piped (engine finding)
