@@ -2865,6 +2865,7 @@ All were asked as questions and answered by the user in-session; they are record
 | `vps-b101-8033112` | `9d3aa12` | 8033112 from `min-0100` | passed, v1-done at 279 min, no stalls (its stuck belt at (-44,507) was B101's pattern: tree-04 ~0.05 into the belt's box) |
 | `vps-b104-1264816` | `f1a553f` + B104 | 1264816 from `min-0140` | failed at the cap: n15 now starved (B103) and traces reach verdicts (B104), but the trace stopped at the first ore feed (→ B105) |
 | `m6-random20-3c2c18f` | `3c2c18f` | the full 20-seed sweep (B100–B104) | **19/20** (meets SPEC §3's 18/20). Only 5387208 failed (fail fast at 141 min; → B106, validated). v1-done from 175 to 256 min, no stalls; AI 1.5–2.9 ms/tick with 3 at a time |
+| `m6-random20-8f39d07` | `8f39d07` | the full 20-seed sweep on the final code (B105–B107) | **20/20**, no stalls; 1264816 at 207, 5387208 at 213 |
 | `vps-b106-5387208` | `ed1b29b` | 5387208 from `min-0120` | passed, v1-done at 213 min, no stalls |
 | `vps-b105-1264816` | `ed1b29b` | 1264816 from `min-0140` | failed at the cap: the trace now reaches the n27/n16 ore edges (B105), but repairs found nothing missing; belt probes showed n15's ore lane full of coal (→ B107) |
 | `vps-b107-1264816` | B107 on `ed1b29b` | 1264816 from `min-0140` | **passed**, v1-done at 223 min, no stalls (first pass in recent sweeps): repair g22 emptied 10 of n15's belts at ~142 min |
@@ -2930,13 +2931,20 @@ anywhere in the repo or the run directories, and no state hash existed in the co
 | Check (SPEC §3) | Run | Commit | Result |
 |---|---|---|---|
 | ≥ 18/20 random seeds | `m6-random20-3c2c18f` | `3c2c18f` | **19/20** (the failure, 5387208, is B106; fixed and validated) |
-| ≥ 18/20 random seeds, final code | `m6-random20-8f39d07` | `8f39d07` (B105–B107) | running |
-| ≥ 9/10 fixed CI seeds | `m6-fixed10` | — | not run yet (after the random sweep: 4 Factorio instances at most) |
-| Two factions, each to `v1-done` | `m6-two-factions` | — | not run yet |
+| ≥ 18/20 random seeds, final code | `m6-random20-8f39d07` | `8f39d07` (B105–B107) | **20/20**, no stalls; v1-done from 175 to 258 min (median ~212); AI 1.3–3.4 ms/tick with 3–4 games at once |
+| ≥ 9/10 fixed CI seeds | `m6-fixed10a-9c41906` + `m6-fixed10b-9c41906` (5 seeds each) | `9c41906` | running |
+| Two factions, each to `v1-done` | `m6-two-factions-9c41906` (11, 222, 3333) | `9c41906` | running: 11 both at ~200 min; 222 at 308 / 217 min (see below) |
 | Space Age smoke test | `m6-space-age-981ca35` | `981ca35` | **pass**: space-age, quality and elevated-rails loaded, no errors; `first-power` at 10.4 game-min (seed 11) |
 | Determinism (T4) | `tools/harness/determinism.py`, seed 11 | `981ca35` + the dump | **pass**: identical state at 30 and 45 min (3.6 MB / 3.7 MB) for a fresh snapshot-server run, a fresh `--benchmark` run, and a run resumed from the first's `min-0020` save |
 | Research (42 techs) | part of `v1-done` | — | covered by every passing seed |
 | Timelapses approved by the user | renders below | — | **waiting for the user** |
+
+**Observation from the two-faction run (seed 222, open, not a failure).** Faction 1 reached `v1-done` at 308 min,
+faction 2 at 217. Faction 1's red science stopped from ~100 to ~136 min and green started only at ~150: production goal
+g19 evicted 22 poles (B37) at 99 min, and their replacement line went up with the rest of its 153-entity build, which
+took until 130 min; meanwhile most of the factory was unpowered and every "lacks power" repair found the planned poles
+(still ghosts) and did nothing. g23 did the same at 136 min. A general remedy (proposed, not implemented): when a goal
+evicts a pole line, place its replacement poles before any other entity of the build (make before break).
 
 **T4 determinism (new).** `state_dump(file)` (remote interface, `mod/src/determinism.ts`) writes the mod's whole
 `storage` with sorted keys and full-precision numbers (Lua objects as kind and identity, e.g. an entity's name, unit
