@@ -297,7 +297,10 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     }
     if (ca.job === undefined) {
       // The walk to the standing spot. B111: no way there: the next plans pick another spot.
-      if (ca.spot !== undefined && status !== "succeeded" && (reason === "no-path" || reason === "unreachable")) recordBadSpot((faction.badSpots ??= {}), ca.spot, tick)
+      if (ca.spot !== undefined && status !== "succeeded" && (reason === "no-path" || reason === "unreachable")) {
+        recordBadSpot((faction.badSpots ??= {}), ca.spot, tick)
+        log(string.format("[rival-engineers] crew %d: no way to the spot %.1f,%.1f (%s): avoided for a while (B111)", member.id, ca.spot.x, ca.spot.y, reason))
+      }
       continue
     }
     const job = board.jobs[ca.job]
