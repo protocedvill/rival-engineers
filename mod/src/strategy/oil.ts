@@ -64,6 +64,8 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
   for (const c of chunks) {
     const area = { left_top: { x: c.x * 32, y: c.y * 32 }, right_bottom: { x: c.x * 32 + 32, y: c.y * 32 + 32 } }
     for (const e of findEntities(surface, { type: "resource", name: resource, area })) {
+      // B118: an area search matches boxes that overlap it: a well on a chunk border was found in both chunks.
+      if (math.floor(e.position.x / 32) !== c.x || math.floor(e.position.y / 32) !== c.y) continue
       wells.push({ x: math.floor(e.position.x), y: math.floor(e.position.y), perSecond: wellRate(resource, e.amount, pumpjack) })
     }
   }

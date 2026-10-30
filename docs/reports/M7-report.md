@@ -334,6 +334,10 @@ With B116 fixed (`m7r-11-m450c`) the outposts keep coming, but slowly: 8 in 120 
 Much of that was the crew walking home to empty its pockets between pole jobs (B117). One outpost (S2) failed: "no pole
 path" within the plan window, and exploring moved on to the next arm.
 
+After B117 (`m7r-11-m450d`) outposts take 4–5 game-min each: the 12th (W3) was built about 50 game-min after the
+search began. It found the crude. Building the field then crashed the game on a well listed twice (B118). S2 and S3
+again found no pole path.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
