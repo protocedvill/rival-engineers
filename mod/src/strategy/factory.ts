@@ -40,7 +40,7 @@ import type { MeterState } from "./measure"
 import * as DS from "./design"
 import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKind, GoalSpec } from "./design"
 import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
-import { nextGoalStatus } from "./goal-lifecycle"
+import * as GLC from "./goal-lifecycle"
 import type { GoalStatus } from "./goal-lifecycle"
 import * as REL from "./relocation"
 import * as AR from "./adoption-runtime"
@@ -239,7 +239,7 @@ export interface FactoryState {
 
 /** The only legal status mutation boundary for an existing goal. Constructors set their initial status directly. */
 function transitionGoal(g: FactoryGoal, to: GoalStatus): void {
-  g.status = nextGoalStatus(g.status, to, g.id)
+  g.status = GLC.nextGoalStatus(g.status, to, g.id)
 }
 
 declare global {
@@ -363,7 +363,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
-  const hooks: EX.ExploreHooks = { busy: () => (planning(f) !== undefined ? "the current plan" : !built(f, "power") ? "power" : undefined), startRadar: (role, site) => startRadar(ctx, role, site) }
+  const hooks: EX.ExploreHooks = { busy: () => (planning(f) !== undefined ? "the current plan" : !GLC.everDone(f.goals, "power") ? "power" : undefined), startRadar: (role, site) => startRadar(ctx, role, site) }
   EX.baseRadar(ctx, hooks)
   EX.exploreStep(ctx, hooks)
   advanceGoals(ctx, d)
@@ -2523,7 +2523,7 @@ function tempFactories(ctx: Ctx): void {
   // Retire the cells whose product the real factory covers now.
   for (const n of LG.nodesOf(f.graph, "sink")) if (ST.isTempRole(n.role) && n.lifecycle === "built" && tempCovered(f, n.item!)) retireTemp(ctx, n)
   if (planning(f) !== undefined || activeGoal(f, "temp") !== undefined) return
-  if (!built(f, "power")) return
+  if (!GLC.everDone(f.goals, "power")) return
   let failed = 0
   for (const g of f.goals) if (g.kind === "temp" && g.status === "failed") failed++
   if (failed >= TEMP_MAX_FAILED) return

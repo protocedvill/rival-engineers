@@ -1,4 +1,4 @@
-import { canTransitionGoal, GoalStatus, nextGoalStatus } from "../src/strategy/goal-lifecycle"
+import { canTransitionGoal, everDone, GoalStatus, nextGoalStatus } from "../src/strategy/goal-lifecycle"
 import { eq, ok, run, test } from "./harness"
 
 test("goal lifecycle admits only the coordinator's intended transitions", () => {
@@ -19,6 +19,20 @@ test("goal lifecycle fails closed at terminal states", () => {
   const [success, message] = pcall(() => nextGoalStatus("done", "planning", "g1"))
   ok(!success, "done goal was reopened")
   ok(tostring(message).indexOf("invalid goal transition g1: done -> planning") >= 0, tostring(message))
+})
+
+test("B108: the factory has power once any power goal is done, even when a later one failed", () => {
+  // Two factions, seed 3333: the third power block found no coal (g28 failed, D62 exploring); the outpost radar waited
+  // for "power" because the last power goal was not done, so nothing ever explored.
+  const goals = [
+    { kind: "power", status: "done" as GoalStatus },
+    { kind: "production", status: "done" as GoalStatus },
+    { kind: "power", status: "done" as GoalStatus },
+    { kind: "power", status: "failed" as GoalStatus },
+  ]
+  ok(everDone(goals, "power"), "built power counts")
+  ok(!everDone([{ kind: "power", status: "building" }], "power"), "a power goal still building is no power")
+  ok(!everDone([{ kind: "production", status: "done" }], "power"), "no power goal")
 })
 
 run("goal-lifecycle")
