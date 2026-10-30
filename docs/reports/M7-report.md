@@ -150,6 +150,30 @@ Fluid connections are kept point to point, so the planner needs no general fluid
 Tests: T1 `fluid-route` (a 55-tile crude line of pipe-to-ground pairs passes the layout check; a water line never puts
 a plain pipe beside another module's crude port), T1 44/44 files.
 
+### M7b.4: fluid facts, fluid-aware rates, the fluid-chain module
+
+- Recipe facts keep fluids (flagged, with their `fluidbox_index`); v1 dropped them (no red/green recipe uses one).
+  Entity facts carry fluid boxes (north-facing connection tiles, from `fluidbox_prototypes`) and the pipe-to-ground
+  reach. T1 vanilla facts gained the refinery, chemical plant, pipe-to-ground, pump and the basic oil, plastic and
+  sulfur recipes.
+- `rates.ts`: inserters carry only items; a machine whose products are all fluids needs no output inserter; fluid
+  rates have kind `fluid`. The internal balance already handles an intermediate made and used inside a module.
+- Generator `fluid-chain` (`recipe`, `chemPlants`, `refineries`): refineries facing north under chemical plants facing
+  south, the intermediate on a manifold between them. Only one riser touches each used fluid box, so the boxes a recipe
+  leaves unused (a refinery's water input on basic processing, heavy and light oil) touch nothing; a second fluid
+  (sulfur's water) rises to the plant's other box on a pipe-to-ground pair from its own manifold at the bottom. Fluid
+  box tiles come from the facts, not from constants. One long-handed inserter takes the product out (1.2 items/s per
+  plant: the design sizes the plant count).
+- Validation lab: `pipe-in` ports are fed from an infinity pipe (only outputs are judged).
+
+| Module | Declared | Measured in the validation lab |
+|---|---|---|
+| `fluid-chain plastic 2/2` (2 refineries, 2 plants) | 1.8 plastic/s, 40 crude/s, 0.9 coal/s | 1.80/s (100%), steady after 3.5 min |
+| `fluid-chain sulfur 1/1` (1 refinery, 1 plant) | 0.6 sulfur/s, 20 crude/s, 9 water/s | 0.60/s (100%), steady after 3.5 min |
+
+Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water apart from petroleum), T2 validation
+`fluid-chain plastic 2/2` and `sulfur 1/1`.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

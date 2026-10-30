@@ -77,6 +77,15 @@ interface Node {
   /** Output inserters drop into another machine (direct insertion) / into a chest. */
   toMachine: boolean
   toChest: boolean
+  /** M7b: ingredients and products that are fluids (piped: no inserter carries them). */
+  fluids: Record<string, boolean>
+}
+
+/** The amounts of `map` that are not fluids. */
+function solidSum(map: Record<string, number>, fluids: Record<string, boolean>): number {
+  let s = 0
+  for (const [k, v] of pairs(map)) if (!fluids[k as string]) s += v
+  return s
 }
 
 function addTo(map: Record<string, number>, key: string, v: number): void {
@@ -126,6 +135,7 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
 
   // --- nodes
   const nodes: Record<number, Node> = {}
+  const fluidItems: Record<string, boolean> = {}
   const machineCounts: Record<string, number> = {}
   const upkeep: Record<string, number> = {}
   let boilers = 0
@@ -175,8 +185,14 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
         continue
       }
       const node: Node = newNode(i, "crafter", (f.craftingSpeed ?? 1) / r.energy)
-      for (const ing of r.ingredients) addTo(node.ins, ing.name, ing.amount)
-      for (const p of r.products) addTo(node.outs, p.name, p.amount)
+      for (const ing of r.ingredients) {
+        addTo(node.ins, ing.name, ing.amount)
+        if (ing.fluid === true) node.fluids[ing.name] = fluidItems[ing.name] = true
+      }
+      for (const p of r.products) {
+        addTo(node.outs, p.name, p.amount)
+        if (p.fluid === true) node.fluids[p.name] = fluidItems[p.name] = true
+      }
       if (f.burner) {
         const perSecond = ((f.energyPerTick ?? 0) * 60) / Math.max(1, facts.fuelValue(fuelItem ?? "coal"))
         node.fuelPerCraft = perSecond / node.ideal
@@ -242,14 +258,17 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
     const n = nodes[i]
     let r = n.ideal
     if (n.kind === "crafter") {
-      const perIn = sumValues(n.ins) + n.fuelPerCraft
+      // M7b: fluids come and go by pipe; inserters carry only the items.
+      const perIn = solidSum(n.ins, n.fluids) + n.fuelPerCraft
       if (perIn > 0) r = Math.min(r, n.inCap / perIn)
-      const perOut = sumValues(n.outs)
-      if (!n.hasOutInserter) {
+      const perOut = solidSum(n.outs, n.fluids)
+      if (perOut === 0) {
+        // Only fluids out: no output inserter.
+      } else if (!n.hasOutInserter) {
         warnings.push(`${entities[i].name}@${entities[i].x},${entities[i].y} has no output inserter`)
         r = 0
       } else if (perOut > 0) r = Math.min(r, n.outCap / perOut)
-      if (n.inCap === 0) warnings.push(`${entities[i].name}@${entities[i].x},${entities[i].y} has no input inserter`)
+      if (n.inCap === 0 && perIn > 0) warnings.push(`${entities[i].name}@${entities[i].x},${entities[i].y} has no input inserter`)
     }
     n.rate = r
   }
@@ -329,7 +348,7 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
   const upkeepFuel: MachineCount[] = []
   for (const [name, count] of pairs(upkeep)) upkeepFuel.push({ name, count })
   upkeepFuel.sort((a, b) => (a.name < b.name ? -1 : 1))
-  const kindOf = (item: string): Rate["kind"] => (item === "electricity" ? "power" : item === "research-unit" ? "research" : "item")
+  const kindOf = (item: string): Rate["kind"] => (item === "electricity" ? "power" : item === "research-unit" ? "research" : fluidItems[item] ? "fluid" : "item")
   return { rates: { inputs: sortedRates(inputs, kindOf), outputs: sortedRates(outputs, kindOf) }, machines, activity, ideal, upkeepFuel, warnings }
 }
 
@@ -441,7 +460,7 @@ function balance(nodes: Record<number, Node>, order: number[], inPort: Record<st
 }
 
 function newNode(index: number, kind: NodeKind, ideal: number): Node {
-  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [], toMachine: false, toChest: false }
+  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [], toMachine: false, toChest: false, fluids: {} }
 }
 
 /** The rate of `item` in a rate list (0 if absent). */

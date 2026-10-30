@@ -38,6 +38,25 @@ const RECIPES: RecipeFacts[] = [
   r("fast-transport-belt", 0.5, [["iron-gear-wheel", 5], ["transport-belt", 1]], [["fast-transport-belt", 1]]),
   r("express-transport-belt", 0.5, [["iron-gear-wheel", 10], ["fast-transport-belt", 1]], [["express-transport-belt", 1]]),
   r("burner-inserter", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["burner-inserter", 1]]),
+  // M7b: the oil chain (fluids flagged; `box` = the recipe's fluidbox_index).
+  { name: "basic-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "crude-oil", amount: 100, fluid: true, box: 2 }], products: [{ name: "petroleum-gas", amount: 45, fluid: true, box: 3 }] },
+  { name: "plastic-bar", energy: 1, category: "chemistry", ingredients: [{ name: "coal", amount: 1 }, { name: "petroleum-gas", amount: 20, fluid: true }], products: [{ name: "plastic-bar", amount: 2 }] },
+  { name: "sulfur", energy: 1, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "petroleum-gas", amount: 30, fluid: true }], products: [{ name: "sulfur", amount: 2 }] },
+]
+
+/** Fluid boxes of a north-facing refinery and chemical plant (entities.lua): offsets from the centre, direction index. */
+const REFINERY_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: -1, y: 2, dir: 2 }] },
+  { production: "input", connections: [{ x: 1, y: 2, dir: 2 }] },
+  { production: "output", connections: [{ x: -2, y: -2, dir: 0 }] },
+  { production: "output", connections: [{ x: 0, y: -2, dir: 0 }] },
+  { production: "output", connections: [{ x: 2, y: -2, dir: 0 }] },
+]
+const CHEMICAL_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: -1, y: -1, dir: 0 }] },
+  { production: "input", connections: [{ x: 1, y: -1, dir: 0 }] },
+  { production: "output", connections: [{ x: -1, y: 1, dir: 2 }] },
+  { production: "output", connections: [{ x: 1, y: 1, dir: 2 }] },
 ]
 
 function e(f: EntityFacts): EntityFacts {
@@ -69,6 +88,10 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
   e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
+  e({ name: "oil-refinery", type: "assembling-machine", tileW: 5, tileH: 5, craftingSpeed: 1, craftingCategories: ["oil-processing"], energyPerTick: 7000, electric: true, fluidBoxes: REFINERY_BOXES }),
+  e({ name: "chemical-plant", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 1, craftingCategories: ["chemistry"], energyPerTick: 3500, electric: true, fluidBoxes: CHEMICAL_BOXES }),
+  e({ name: "pipe-to-ground", type: "pipe-to-ground", tileW: 1, tileH: 1, maxPipeUnderground: 10 }),
+  e({ name: "pump", type: "pump", tileW: 1, tileH: 2, energyPerTick: 500, electric: true }),
 ]
 
 const RESOURCES: Record<string, { time: number; product: string }> = {

@@ -112,6 +112,9 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "curated red-tile-ramqvist", curated: "red-tile-ramqvist", slow: true },
   { name: "curated green-line-hellpet", curated: "green-line-hellpet", slow: true },
   { name: "curated mall-polse", curated: "mall-polse", slow: true },
+  // M7b: refineries under chemical plants (crude and water from infinity pipes in the lab).
+  { name: "fluid-chain plastic 2/2", generator: "fluid-chain", params: { recipe: "plastic-bar", chemPlants: 2, refineries: 2 } },
+  { name: "fluid-chain sulfur 1/1", generator: "fluid-chain", params: { recipe: "sulfur", chemPlants: 1, refineries: 1 } },
 ]
 
 export function catalogModule(entry: CatalogEntry): ModuleDef {

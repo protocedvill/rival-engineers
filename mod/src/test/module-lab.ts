@@ -188,6 +188,14 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         const rate = rateOf(def.rates.inputs, port.item!)
         feeders.push({ item: port.item!, inserted: 0, perTick: rate / 60, credit: 0, lines: [b.get_transport_line(1), b.get_transport_line(2)], next: 0 })
       }
+    } else if (port.kind === "pipe-in") {
+      // M7b: a fluid input comes from an infinity pipe on the port's outside tile (fluids are not rate-limited here:
+      // only the outputs are judged).
+      const local = portOutsideTile(port)
+      taken[`${local.x},${local.y}`] = true
+      const src = surface.create_entity({ name: "infinity-pipe", position: worldPos(origin, local), force })
+      if (src === undefined) problems.push(`no room for the fluid source of ${port.id}`)
+      else src.set_infinity_pipe_filter({ name: port.item!, percentage: 1, mode: "at-least" })
     } else if (port.kind === "chest-out") {
       const c = surface.find_entities_filtered({ position: worldPos(origin, port.pos), type: "container" })[0]
       if (c === undefined) problems.push(`no chest at ${port.id}`)

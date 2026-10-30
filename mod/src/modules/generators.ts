@@ -853,7 +853,126 @@ export function radarCell(facts: ProtoFacts, p: RadarParams): ModuleDef {
 // ---------------------------------------------------------------------------------------------------------
 // Registry
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar"
+// ---------------------------------------------------------------------------------------------------------
+// Fluid chain (M7b)
+
+export interface FluidChainParams extends CommonParams {
+  /** The chemistry recipe whose product leaves on a belt (plastic-bar, sulfur, ...). */
+  recipe: string
+  /** The refinery recipe making its piped intermediate from a piped raw fluid (default basic-oil-processing). */
+  source?: string
+  chemPlants: number
+  refineries: number
+  refinery?: string
+  chemPlant?: string
+  pipe?: string
+  pipeToGround?: string
+  longInserter?: string
+}
+
+/** The tile a fluid box connects to, for an entity centred on `cx`,`cy` (tile centre) facing `facing` (0 or 2). */
+function boxTile(facts: ProtoFacts, entity: string, production: "input" | "output", nth: number, cx: number, cy: number, facing: number): { x: number; y: number } {
+  const boxes = need(facts.entity(entity)?.fluidBoxes, `${entity} has no fluid boxes`).filter((b) => b.production === production)
+  const c = need(boxes[nth - 1]?.connections[0], `${entity} has no ${production} fluid box ${nth}`)
+  const sign = facing === 2 ? -1 : 1
+  const d = (c.dir + facing) % 4
+  const dx = [0, 1, 0, -1][d]
+  const dy = [-1, 0, 1, 0][d]
+  return { x: math.floor(cx) + sign * c.x + dx, y: math.floor(cy) + sign * c.y + dy }
+}
+
+/**
+ * Refineries turn a piped raw fluid (crude oil) into an intermediate (petroleum gas) that chemical plants above them
+ * turn into a solid product on a belt. Rows, top to bottom: product belt (west, port at x = 0), solid-input belt (east,
+ * port at x = 0), inserters (one feeding, one long-handed taking out per plant), chemical plants facing south, their
+ * intermediate risers, the intermediate manifold, the refineries' risers, refineries facing north, raw-fluid risers, the
+ * raw-fluid manifold (`pipe-in` port at x = 0); with a second fluid (sulfur's water) pipe-to-ground pairs run from each
+ * plant's other box under everything to a manifold at the bottom (`pipe-in`). Only risers touch a machine's box, so the
+ * boxes a recipe does not use touch no pipe and two fluids never meet.
+ */
+export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
+  const refinery = p.refinery ?? "oil-refinery"
+  const chem = p.chemPlant ?? "chemical-plant"
+  const pipe = p.pipe ?? "pipe"
+  const ptg = p.pipeToGround ?? "pipe-to-ground"
+  const long = p.longInserter ?? "long-handed-inserter"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  const recipe = solidRecipe(facts, p.recipe)
+  const source = solidRecipe(facts, p.source ?? "basic-oil-processing")
+  const product = need(recipe.products.find((x) => x.fluid !== true), `${p.recipe} makes no solid product`)
+  const mid = need(source.products.find((x) => x.fluid === true && recipe.ingredients.some((i) => i.name === x.name)), `${source.name} makes no fluid ${p.recipe} uses`)
+  const raw = need(source.ingredients.find((x) => x.fluid === true), `${source.name} takes no fluid`)
+  const fluidsIn = recipe.ingredients.filter((i) => i.fluid === true)
+  const solidsIn = recipe.ingredients.filter((i) => i.fluid !== true)
+  const other = fluidsIn.find((i) => i.name !== mid.name)
+  if (solidsIn.length > 1 || fluidsIn.length > 2) error(`fluid-chain: ${p.recipe} needs at most one solid and two fluids`)
+  const C = math.max(1, p.chemPlants)
+  const R = math.max(1, p.refineries)
+  const W = 1 + math.max(5 * R, 3 * C)
+  const H = other !== undefined ? 18 : 16
+  // Fluid boxes in recipe order (no fluidbox_index: the machine takes them in ingredient order).
+  const midBox = mid.box ?? 1
+  const midIn = fluidsIn.findIndex((i) => i.name === mid.name) + 1
+  const otherIn = other !== undefined ? fluidsIn.findIndex((i) => i.name === other.name) + 1 : 0
+  const rawBox = raw.box ?? 1
+  // Product and solid-input belts.
+  for (let x = 0; x < W; x++) L.beltAt(x + 0.5, 0.5, WEST)
+  // The solid input runs east to the last plant's inserter (it ends inside the footprint).
+  if (solidsIn.length > 0) for (let x = 0; x <= 1 + 3 * (math.max(1, p.chemPlants) - 1); x++) L.beltAt(x + 0.5, 1.5, EAST)
+  // Chemical plants, facing south: their inputs point down to row 6.
+  for (let j = 0; j < C; j++) {
+    const c0 = 1 + 3 * j
+    L.add(chem, c0 + 1.5, 4.5, SOUTH, { recipe: recipe.name })
+    if (solidsIn.length > 0) L.ins(c0 + 0.5, 2.5, NORTH)
+    L.add(long, c0 + 2.5, 2.5, SOUTH)
+    L.poleAt(c0 + 1.5, 2.5)
+    const m = boxTile(facts, chem, "input", midIn, c0 + 1.5, 4.5, 2)
+    L.add(pipe, m.x + 0.5, m.y + 0.5)
+    if (otherIn > 0) {
+      // The other fluid comes up from the bottom manifold on a pipe-to-ground pair.
+      const o = boxTile(facts, chem, "input", otherIn, c0 + 1.5, 4.5, 2)
+      L.add(ptg, o.x + 0.5, o.y + 0.5, NORTH)
+      L.add(ptg, o.x + 0.5, H - 1.5, SOUTH)
+    }
+  }
+  // Intermediate manifold (row 7) and the refineries below it, facing north.
+  for (let x = 0; x < W; x++) L.add(pipe, x + 0.5, 7.5)
+  for (let i = 0; i < R; i++) {
+    const x0 = 1 + 5 * i
+    L.add(refinery, x0 + 2.5, 11.5, NORTH, { recipe: source.name })
+    const up = boxTile(facts, refinery, "output", midBox, x0 + 2.5, 11.5, 0)
+    L.add(pipe, up.x + 0.5, up.y + 0.5)
+    const down = boxTile(facts, refinery, "input", rawBox, x0 + 2.5, 11.5, 0)
+    L.add(pipe, down.x + 0.5, down.y + 0.5)
+    L.poleAt(x0 + 1.5, 8.5)
+  }
+  // Raw-fluid manifold (row 15) and the other fluid's (row 17).
+  for (let x = 0; x < W; x++) L.add(pipe, x + 0.5, 15.5)
+  if (other !== undefined) for (let x = 0; x < W; x++) L.add(pipe, x + 0.5, 17.5)
+  const ports: Port[] = [
+    { id: `out-${product.name}`, kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name },
+    { id: `in-${raw.name}`, kind: "pipe-in", pos: { x: 0.5, y: 15.5 }, dir: EAST, item: raw.name },
+    { id: "power", kind: "power", pos: { x: 2.5, y: 2.5 }, dir: NORTH },
+  ]
+  if (solidsIn.length > 0) ports.push({ id: `in-${solidsIn[0].name}`, kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: EAST, item: solidsIn[0].name })
+  if (other !== undefined) ports.push({ id: `in-${other.name}`, kind: "pipe-in", pos: { x: 0.5, y: 17.5 }, dir: EAST, item: other.name })
+  const draft: ModuleDraft = {
+    id: `fluid-chain/${p.recipe}/${C}/${R}`,
+    source: "generated",
+    generator: "fluid-chain",
+    provenance: "generator fluid-chain (Rival Engineers)",
+    description: `${R} ${refinery} (${source.name}) under ${C} ${chem} (${p.recipe})`,
+    footprint: { w: W, h: H },
+    entities: L.entities,
+    ports,
+    rotatable: true,
+    mirrorable: false,
+    params: { recipe: p.recipe, source: source.name, chemPlants: C, refineries: R },
+  }
+  return finalizeModule(draft, facts)
+}
+
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -867,7 +986,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "lab-array") return labArray(facts, P)
   if (name === "chest-cell") return chestCell(facts, P)
   if (name === "radar") return radarCell(facts, P)
+  if (name === "fluid-chain") return fluidChain(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain"]

@@ -72,7 +72,8 @@ export interface Port {
   side?: "left" | "right"
 }
 
-export type RateKind = "item" | "power" | "research"
+/** `fluid` (M7b): piped, never on a belt. */
+export type RateKind = "item" | "power" | "research" | "fluid"
 
 export interface Rate {
   /** Item name; "electricity" for power (perSecond in watts); "research-unit" for labs. */

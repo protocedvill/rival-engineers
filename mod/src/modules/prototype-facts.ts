@@ -63,6 +63,22 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
     f.fluidPerTick = tryCall(() => p.get_fluid_usage_per_tick())
   }
   if (t === "offshore-pump") f.pumpingPerTick = tryCall(() => p.get_pumping_speed())
+  // M7b: fluid boxes, north-facing (`positions[0]` is the north orientation's connection tile offset).
+  const boxes = p.fluidbox_prototypes
+  if (boxes !== undefined && boxes.length > 0) {
+    f.fluidBoxes = []
+    for (const b of boxes) {
+      const connections: { x: number; y: number; dir: number }[] = []
+      for (const c of b.pipe_connections) {
+        const pos = c.positions !== undefined ? vec(c.positions[0]) : undefined
+        if (pos !== undefined && c.direction !== undefined && c.connection_type !== "linked") connections.push({ x: pos.x, y: pos.y, dir: math.floor(c.direction / 4) })
+      }
+      f.fluidBoxes.push({ production: b.production_type as "input", connections })
+    }
+  }
+  if (t === "pipe-to-ground") {
+    for (const b of boxes ?? []) for (const c of b.pipe_connections) if (c.connection_type === "underground" && c.max_underground_distance !== undefined) f.maxPipeUnderground = c.max_underground_distance
+  }
   if (t !== "generator" && t !== "offshore-pump") f.energyPerTick = tryCall(() => p.get_max_energy_usage())
   return f
 }
@@ -88,10 +104,18 @@ export const prototypeFacts: ProtoFacts = {
       const r = prototypes.recipe[name]
       if (r === undefined) c = false
       else {
-        const ingredients: { name: string; amount: number }[] = []
-        for (const i of r.ingredients) if (i.type === "item") ingredients.push({ name: i.name, amount: i.amount })
-        const products: { name: string; amount: number }[] = []
-        for (const p of r.products) if (p.type === "item") products.push({ name: p.name, amount: p.amount ?? ((p.amount_min ?? 1) + (p.amount_max ?? 1)) / 2 })
+        // M7b: fluids too (flagged): a refinery's or chemical plant's fluids come by pipe.
+        const ingredients: RecipeFacts["ingredients"] = []
+        for (const i of r.ingredients) {
+          if (i.type === "item") ingredients.push({ name: i.name, amount: i.amount })
+          else if (i.type === "fluid") ingredients.push({ name: i.name, amount: i.amount, fluid: true, box: (i as { fluidbox_index?: number }).fluidbox_index })
+        }
+        const products: RecipeFacts["products"] = []
+        for (const p of r.products) {
+          const amount = p.amount ?? ((p.amount_min ?? 1) + (p.amount_max ?? 1)) / 2
+          if (p.type === "item") products.push({ name: p.name, amount })
+          else if (p.type === "fluid") products.push({ name: p.name, amount, fluid: true, box: (p as { fluidbox_index?: number }).fluidbox_index })
+        }
         c = { name, energy: r.energy, category: r.category, ingredients, products }
       }
       recipeCache[name] = c

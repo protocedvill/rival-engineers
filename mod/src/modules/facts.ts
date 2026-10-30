@@ -6,8 +6,19 @@ export interface RecipeFacts {
   /** Seconds at crafting speed 1. */
   energy: number
   category: string
-  ingredients: { name: string; amount: number }[]
-  products: { name: string; amount: number }[]
+  /**
+   * M7b: `fluid` marks a fluid (piped, never carried by an inserter); `box` is its `fluidbox_index` (1-based among the
+   * machine's input or output fluid boxes), when the recipe pins one.
+   */
+  ingredients: { name: string; amount: number; fluid?: boolean; box?: number }[]
+  products: { name: string; amount: number; fluid?: boolean; box?: number }[]
+}
+
+/** M7b: one fluid box of a north-facing entity: its kind and the tiles it connects to (offset from the centre). */
+export interface FluidBoxFacts {
+  production: "input" | "output" | "input-output" | "none"
+  /** Each connection: the entity tile it is on (offset from the centre) and the direction it points (index 0..3). */
+  connections: { x: number; y: number; dir: number }[]
 }
 
 export interface EntityFacts {
@@ -46,6 +57,10 @@ export interface EntityFacts {
   fluidPerTick?: number
   /** Offshore pumps: fluid per tick. */
   pumpingPerTick?: number
+  /** M7b: fluid boxes (north-facing), in prototype order. */
+  fluidBoxes?: FluidBoxFacts[]
+  /** Pipe-to-ground: the farthest an exit may be from its entrance. */
+  maxPipeUnderground?: number
 }
 
 export interface ProtoFacts {
