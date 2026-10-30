@@ -972,7 +972,43 @@ export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
   return finalizeModule(draft, facts)
 }
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain"
+// ---------------------------------------------------------------------------------------------------------
+// Water pump (M7b)
+
+export interface WaterPumpParams extends CommonParams {
+  pump?: string
+  pipe?: string
+}
+
+/**
+ * An offshore pump on a shore (water west of the footprint, `site = shore` like the steam block) and the pipe its
+ * output connects to, which is the `pipe-out` port (flowing east). The pump faces west: its output is on its east side.
+ */
+export function waterPump(facts: ProtoFacts, p: WaterPumpParams): ModuleDef {
+  const pump = p.pump ?? "offshore-pump"
+  const pipe = p.pipe ?? "pipe"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  L.add(pump, 0.5, 0.5, WEST)
+  L.add(pipe, 1.5, 0.5)
+  const draft: ModuleDraft = {
+    id: `water-pump/${pump}`,
+    source: "generated",
+    generator: "water-pump",
+    provenance: "generator water-pump (Rival Engineers)",
+    description: `${pump} and its output pipe`,
+    footprint: { w: 2, h: 1 },
+    entities: L.entities,
+    ports: [{ id: "out-water", kind: "pipe-out", pos: { x: 1.5, y: 0.5 }, dir: EAST, item: "water" }],
+    rotatable: true,
+    mirrorable: false,
+    site: "shore",
+    anchor: { water: [{ x: -2, y: -1, w: 2, h: 3 }] },
+    params: { pump },
+  }
+  return finalizeModule(draft, facts)
+}
+
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -987,7 +1023,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "chest-cell") return chestCell(facts, P)
   if (name === "radar") return radarCell(facts, P)
   if (name === "fluid-chain") return fluidChain(facts, P)
+  if (name === "water-pump") return waterPump(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump"]

@@ -1,4 +1,4 @@
-import { fluidChain } from "../src/modules/generators"
+import { fluidChain, waterPump } from "../src/modules/generators"
 import { occupancy } from "../src/modules/geometry"
 import { rateOf } from "../src/modules/rates"
 import { ModuleDef } from "../src/modules/types"
@@ -61,6 +61,15 @@ test("fluid chain: sulfur gets water by pipe-to-ground to the plant's other box,
     const y = tonumber(ys)! + DY[d]
     if (y === 16) ok(p[`${x},${y}`] !== "pipe", "nothing plain below the crude manifold")
   }
+})
+
+test("water pump: an offshore pump on a shore puts 1200 water/s out of its pipe-out port", () => {
+  const def = waterPump(F, {})
+  near(rateOf(def.rates.outputs, "water"), 1200, 1e-6, "water")
+  eq(def.rates.outputs[0]?.kind, "fluid", "water is a fluid output")
+  eq(def.site, "shore")
+  const port = def.ports[0]
+  ok(port.kind === "pipe-out" && port.item === "water", "a water pipe-out port")
 })
 
 run("fluid-chain")

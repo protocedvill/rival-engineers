@@ -340,6 +340,11 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
     }
     if (fuelItem === undefined && boilers > 0) upkeep["boiler"] = boilers
   }
+  // M7b: offshore pumps that feed a water port (not boilers) put their water out.
+  if (pumps > 0 && boilers === 0 && outPortItems["water"]) {
+    outputs["water"] = pumps * pumpPerTick * 60
+    fluidItems["water"] = true
+  }
   if (electricDemand > 0) inputs["electricity"] = electricDemand
 
   const machines: MachineCount[] = []

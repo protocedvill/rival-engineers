@@ -171,8 +171,11 @@ a plain pipe beside another module's crude port), T1 44/44 files.
 | `fluid-chain plastic 2/2` (2 refineries, 2 plants) | 1.8 plastic/s, 40 crude/s, 0.9 coal/s | 1.80/s (100%), steady after 3.5 min |
 | `fluid-chain sulfur 1/1` (1 refinery, 1 plant) | 0.6 sulfur/s, 20 crude/s, 9 water/s | 0.60/s (100%), steady after 3.5 min |
 
-Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water apart from petroleum), T2 validation
-`fluid-chain plastic 2/2` and `sulfur 1/1`.
+- Generator `water-pump`: an offshore pump on a shore (`site = shore`, like the steam block) and its output pipe as the
+  `pipe-out` port; `rates.ts` puts a water-port pump's 1200/s out (pumps feeding boilers stay the steam block's).
+
+Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water apart from petroleum; the water pump),
+T2 validation `fluid-chain plastic 2/2` and `sulfur 1/1`. The water pump is checked in-game with its first real route.
 
 ### Magic numbers for the user (M7)
 
