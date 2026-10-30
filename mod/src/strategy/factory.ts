@@ -36,6 +36,7 @@ import * as CS from "./constraints"
 import * as FR from "./failure-rules"
 import * as NF from "./node-facts"
 import * as LF from "./lab-feed"
+import { mark } from "./milestone"
 import * as OIL from "./oil"
 import type { PlanFailure } from "../shared/plan-failure"
 import * as LG from "../planner/logical"
@@ -291,12 +292,6 @@ export function startFactory(faction: FactionState): FactoryState {
   return f
 }
 
-function mark(faction: FactionState, name: string): void {
-  const brain = faction.brain
-  if (brain === undefined || brain.milestones[name] !== undefined) return
-  brain.milestones[name] = game.tick
-  log(`[rival-engineers] faction ${faction.name}: milestone ${name} at tick ${game.tick}`)
-}
 
 // ---------------------------------------------------------------------------------------------------------
 // Tick
@@ -361,7 +356,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     f.lastUpkeep = ctx.tick
     upkeep(ctx)
   }
-  milestones(ctx)
+  LF.milestones(ctx)
   ST.sampleScience(ctx, LF.packsAutomated(f), (name) => mark(faction, name))
   f.waiting = ctx.waiting
   checkStall(ctx)
@@ -2509,67 +2504,6 @@ export function refuelBoilers(ctx: Pick<Ctx, "faction" | "f" | "surface" | "tick
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Milestones
-
-function moduleEntities(ctx: Ctx, node: LogicalNode, type: string): LuaEntity[] {
-  const m = LO.findModule(ctx.f.layout, node.id)
-  if (m === undefined) return []
-  return findEntities(ctx.surface, { type, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
-}
-
-/** Research units done: progress of the current technology plus whole technologies finished since the last look. */
-function researchUnits(ctx: Ctx, v: NonNullable<FactoryState["verify"]>): void {
-  const cur = ctx.force.current_research
-  const name = cur?.name
-  const progress = ctx.force.research_progress
-  if (name !== v.tech) {
-    if (v.tech !== undefined) {
-      const prev = ctx.force.technologies[v.tech]
-      if (prev !== undefined && prev.researched) v.units += (1 - v.progress) * prev.research_unit_count
-    }
-    v.tech = name
-    v.progress = progress
-    return
-  }
-  if (cur !== undefined && progress > v.progress) {
-    v.units += (progress - v.progress) * cur.research_unit_count
-    v.progress = progress
-  }
-}
-
-function milestones(ctx: Ctx): void {
-  const f = ctx.f
-  const faction = ctx.faction
-  const brain = faction.brain!
-  // First power: a lab or other machine of a built node draws energy.
-  if (brain.milestones["first-power"] === undefined) {
-    for (const node of LF.labsBuilt(f)) for (const lab of LF.labEntities(ctx, node)) if (lab.energy > 0) mark(faction, "first-power")
-  }
-  // Automated science: after hand-feeding stopped (the pack's producer is built), the labs did more research units
-  // than the packs left in them, while the producer made packs.
-  const automated = LF.packsAutomated(f)
-  let producer: LogicalNode | undefined
-  for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && n.kind === "module" && n.item !== undefined && automated[n.item]) producer = n
-  if (producer === undefined || brain.milestones["automated-science"] !== undefined) return
-  if (f.verify === undefined) {
-    let leftover = 0
-    for (const node of LF.labsBuilt(f)) for (const lab of LF.labEntities(ctx, node)) leftover += lab.get_inventory(defines.inventory.lab_input)?.get_item_count(producer.item!) ?? 0
-    f.verify = { tick: ctx.tick, leftover, units: 0, tech: ctx.force.current_research?.name, progress: ctx.force.research_progress, made: 0 }
-    log(`[rival-engineers] faction ${faction.name}: ${producer.item} automated (node ${producer.id}); verifying with ${leftover} hand-fed packs left in the labs`)
-    return
-  }
-  const v = f.verify
-  researchUnits(ctx, v)
-  let made = 0
-  for (const a of moduleEntities(ctx, producer, "assembling-machine")) if (a.get_recipe()[0]?.name === producer.recipe) made += a.products_finished
-  v.made = made
-  if (v.units > v.leftover + 5 && made >= 10) {
-    mark(faction, "automated-science")
-    mark(faction, `automated:${producer.item}`)
-    if (producer.item === "automation-science-pack") mark(faction, "automated-red-science")
-  }
-}
-
 // ---------------------------------------------------------------------------------------------------------
 // Stalls (SPEC §3: no planner progress for stall-ticks). Before the bootstrap is done its own check runs.
 
