@@ -700,7 +700,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
   member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick, coveredItems(board, held, tick))) return
   const rejected: Record<number, string> = {}
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
@@ -895,6 +895,21 @@ function enqueueTrip(faction: FactionState, member: CrewMember, jobs: CrewJob[])
   member.stats.trips = (member.stats.trips ?? 0) + 1
 }
 
+/**
+ * B117: items the member keeps between jobs: every material of an open, ready job that its pocket alone covers. A member
+ * carrying poles to an outpost 600 tiles out walked home to deposit them before each pole job, then took them back.
+ * Materials split across pockets (13 and 10 wood for a craft of 14, B116) are still deposited, so they pool.
+ */
+function coveredItems(board: FactionState["board"], held: Record<string, number>, tick: number): Record<string, boolean> {
+  const keep: Record<string, boolean> = {}
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (job.materials.length === 0 || isSelfJob(job) || !isReady(board, job, tick) || !hasMaterials(job, held)) continue
+    for (const m of job.materials) keep[m.item] = true
+  }
+  return keep
+}
+
 /** Item types a crew member keeps on itself instead of depositing (its own weapons and armour). */
 const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true }
 
@@ -902,11 +917,11 @@ const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true
  * Puts what the member carries into the faction's stockpiles (whatever fits). Returns whether it queued
  * anything. Creates a deposit job the member claims for itself, like a haul.
  */
-function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number): boolean {
+function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number, keep: Record<string, boolean>): boolean {
   const piles = validStockpiles(faction)
   if (piles.length === 0) return false
   const names: string[] = []
-  for (const item in held) if (held[item] > 0 && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
+  for (const item in held) if (held[item] > 0 && !keep[item] && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
   if (names.length === 0) return false
   names.sort()
   const board = faction.board

@@ -330,6 +330,10 @@ with its third outpost, the 12th outpost in arm order. The second east outpost (
 another within 24 tiles of the hub. The bootstrap pools pockets when there is a depot, so it saw enough wood, while
 neither member could claim the craft alone.
 
+With B116 fixed (`m7r-11-m450c`) the outposts keep coming, but slowly: 8 in 120 game-min, against the 12 seed 11 needs.
+Much of that was the crew walking home to empty its pockets between pole jobs (B117). One outpost (S2) failed: "no pole
+path" within the plan window, and exploring moved on to the next arm.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
