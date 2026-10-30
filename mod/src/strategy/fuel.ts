@@ -36,6 +36,12 @@ export function powerFuelled(g: LogicalGraph, power: LogicalNode): boolean {
   return false
 }
 
+/** M7c: whether a resource yields a fluid (crude oil): its wells never run dry the way ore does. */
+function fluidResource(resource: string): boolean {
+  const product = prototypes.entity[resource]?.mineable_properties.products?.[0]
+  return product !== undefined && product.type === "fluid"
+}
+
 /** Whether every drill of `n`'s mine has run dry (true when it has no module, resource or drills left). */
 function mineDry(ctx: FuelCtx, n: LogicalNode): boolean {
   const m = findModule(ctx.f.layout, n.id)
@@ -89,6 +95,8 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const m = findModule(f.layout, id)
     const resource = m?.def.anchor?.resource
     if (m === undefined || resource === undefined) continue
+    // M7c: a fluid well's yield falls to a floor instead of running out: no ore count, no lead time.
+    if (fluidResource(resource)) continue
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     const drills = findEntities(ctx.surface, { type: "mining-drill", force: ctx.faction.force, area })
     if (drills.length === 0) continue

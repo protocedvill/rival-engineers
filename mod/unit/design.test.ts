@@ -739,4 +739,37 @@ test("B81: a retiring provider's replacement never shares the provider it replac
   for (const n of group) eq(n.newSite, true, `${n.role} on a site of its own`)
 })
 
+test("M7c: blue packs: fluid chains for plastic and sulfur, a pumpjack field, a water pump, assembler-2 rows", () => {
+  const blue = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  })
+  eq(generatorFor(blue, "crude-oil"), "pumpjack-field", "crude: pumped")
+  eq(generatorFor(blue, "water"), "water-pump", "water: offshore pump")
+  eq(tostring(generatorFor(blue, "petroleum-gas")), "nil", "petroleum is made inside a fluid chain")
+  eq(generatorFor(blue, "plastic-bar"), "fluid-chain", "plastic")
+  eq(generatorFor(blue, "sulfur"), "fluid-chain", "sulfur")
+  eq(generatorFor(blue, "engine-unit"), "assembler-row", "engines")
+  eq(generatorFor(blue, "steel-plate"), "smelter-column", "steel")
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const gens: Record<string, string[]> = {}
+  for (const n of d.nodes) (gens[n.generator] ??= []).push(n.role)
+  ok(gens["fluid-chain"] !== undefined && gens["fluid-chain"].length >= 2, `plastic and sulfur chains (${(gens["fluid-chain"] ?? []).join(", ")})`)
+  ok(gens["pumpjack-field"] !== undefined, `a pumpjack field (errors: ${d.errors.join("; ")})`)
+  ok(gens["water-pump"] !== undefined, "a water pump for sulfur")
+  const engine = d.nodes.find((n) => n.item === "engine-unit")!
+  eq(engine.params.machine, "assembling-machine-2", "engines need assembler 2 (advanced-crafting)")
+  // Crude edges are fluid edges (pipe ports at both ends).
+  const crude = d.edges.filter((e) => e.item === "crude-oil")
+  ok(crude.length >= 1, "crude is delivered")
+  eq(d.errors.length, 0, d.errors.join("; "))
+})
+
+test("M7c: two-input rows by default keep v1's curated green line (no three-ingredient rows)", () => {
+  eq(tostring(generatorFor(ctx(), "inserter")), "nil", "inserter: still no generator at rowInputs 2")
+})
+
 run("design")

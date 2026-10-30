@@ -159,6 +159,9 @@ export const prototypeFacts: ProtoFacts = {
     }
     return c === false ? undefined : c
   },
+  isFluid(name: string): boolean {
+    return prototypes.fluid[name] !== undefined
+  },
   itemToPlace(entity: string): string | undefined {
     const items = prototypes.entity[entity]?.items_to_place_this
     return items !== undefined && items.length > 0 ? items[0].name : undefined

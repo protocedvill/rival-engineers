@@ -145,4 +145,5 @@ export const vanillaFacts: ProtoFacts = {
     return undefined
   },
   itemToPlace: (entity) => entity,
+  isFluid: (name) => name === "crude-oil" || name === "water" || name === "petroleum-gas" || name === "steam",
 }

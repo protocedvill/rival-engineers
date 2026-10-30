@@ -78,4 +78,6 @@ export interface ProtoFacts {
   recipeForItem(item: string): string | undefined
   /** The item that places an entity. */
   itemToPlace(entity: string): string | undefined
+  /** M7c: whether a name is a fluid (piped). Absent: nothing is. */
+  isFluid?(name: string): boolean
 }

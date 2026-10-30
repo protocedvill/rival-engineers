@@ -17,7 +17,8 @@
 //    clusters (parallel routes need parallel port pairs, i.e. module copies). A module that cannot grow big enough
 //    splits the target the same way.
 
-import { ProtoFacts } from "../modules/facts"
+import { ProtoFacts, RecipeFacts } from "../modules/facts"
+import { encodeWells } from "../modules/generators"
 import { GeneratorName } from "../modules/generators"
 import { ModuleDef, Rate } from "../modules/types"
 import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../planner/capacity"
@@ -78,6 +79,20 @@ export interface DesignContext {
   lab: string
   boiler: string
   engine: string
+  /**
+   * M7c: assemblers to choose from, best first: a row uses the first whose crafting categories include its recipe's
+   * (engines need assembler 2). Absent: `assembler` only.
+   */
+  assemblers?: string[]
+  /** M7c: most ingredients an assembler row takes (2: v1; 3: engines, advanced circuits, blue packs). Default 2. */
+  rowInputs?: number
+  /** M7c: fluid chains (refinery recipe making the intermediate, the machines) and the offshore-pumped fluid. */
+  fluidSource?: string
+  refinery?: string
+  chemPlant?: string
+  pumpjack?: string
+  /** The fluid an offshore pump gives (water). */
+  pumpedFluid?: string
   /** Science packs the labs take (one belt port each). */
   packs: string[]
   /** Seconds per research unit the lab count is sized for. */
@@ -247,10 +262,15 @@ function chainProducible(ctx: DesignContext, item: string, depth: number): boole
 }
 
 function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefined {
-  if (resourceFor(ctx, item) !== undefined) return "mining-outpost"
+  const fluid = ctx.facts.isFluid?.(item) === true
+  // M7c: a fluid resource is pumped (pumpjack field), the offshore-pumped fluid comes from a water pump, and other fluids
+  // are made and used inside a module (a fluid chain's petroleum): no producer of their own.
+  if (resourceFor(ctx, item) !== undefined) return fluid ? "pumpjack-field" : "mining-outpost"
+  if (fluid) return item === (ctx.pumpedFluid ?? "water") ? "water-pump" : undefined
   const rn = ctx.facts.recipeForItem(item)
   const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
   if (r === undefined) return undefined
+  if (r.ingredients.some((i) => i.fluid === true)) return fluidSourceFor(ctx, r) !== undefined ? "fluid-chain" : undefined
   const furnaceCats = ctx.facts.entity(ctx.furnace)?.craftingCategories ?? []
   if (furnaceCats.indexOf(r.category) >= 0 && r.ingredients.length === 1) return "smelter-column"
   if (r.ingredients.length === 2) {
@@ -263,9 +283,26 @@ function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefi
       return amount >= 2 ? "circuit-block" : "red-line"
     }
   }
-  if (r.ingredients.length >= 1 && r.ingredients.length <= 2) return "assembler-row"
+  if (r.ingredients.length >= 1 && r.ingredients.length <= (ctx.rowInputs ?? 2) && machineFor(ctx, r.category) !== undefined) return "assembler-row"
   return undefined
 }
+
+/** M7c: the first assembler whose crafting categories include `category`. */
+function machineFor(ctx: DesignContext, category: string): string | undefined {
+  for (const m of ctx.assemblers ?? [ctx.assembler]) if ((ctx.facts.entity(m)?.craftingCategories ?? []).indexOf(category) >= 0) return m
+  return undefined
+}
+
+/** M7c: the refinery recipe making the fluid a chemistry recipe uses, from a fluid it does not (crude oil → petroleum). */
+function fluidSourceFor(ctx: DesignContext, r: RecipeFacts): RecipeFacts | undefined {
+  const src = ctx.facts.recipe(ctx.fluidSource ?? "basic-oil-processing")
+  if (src === undefined) return undefined
+  for (const p of src.products) if (p.fluid === true && r.ingredients.some((i) => i.name === p.name)) return src
+  return undefined
+}
+
+/** M7c: crude per second of a nominal well (100% yield) when a pumpjack field is sized before its field is known. */
+const NOMINAL_WELL = 10
 
 /** Candidate parameter sets for a generator, smallest first. */
 function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<string, unknown>[] {
@@ -289,7 +326,24 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
   } else if (gen === "circuit-block") {
     for (let u = 1; u <= 8; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler, buffer: ctx.buffer ?? "" })
   } else if (gen === "assembler-row") {
-    for (let n = 2; n <= 24; n += 2) out.push({ recipe: ctx.facts.recipeForItem(item), count: n, machine: ctx.assembler, buffer: ctx.buffer ?? "" })
+    const recipe = ctx.facts.recipeForItem(item)!
+    const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? ctx.assembler
+    for (let n = 2; n <= 24; n += 2) out.push({ recipe, count: n, machine, buffer: ctx.buffer ?? "" })
+  } else if (gen === "fluid-chain") {
+    // Fewest machines first: plants, then refineries for them.
+    const recipe = ctx.facts.recipeForItem(item)!
+    for (let c = 1; c <= 8; c++) for (let r = 1; r <= 2 * c + 1; r++) out.push({ recipe, chemPlants: c, refineries: r, source: ctx.fluidSource ?? "basic-oil-processing", refinery: ctx.refinery ?? "oil-refinery", chemPlant: ctx.chemPlant ?? "chemical-plant" })
+  } else if (gen === "pumpjack-field") {
+    // Sized on nominal wells (100%, in a row 7 tiles apart): the runtime generates the module from a real field when it
+    // plans it, and that field must yield at least this much.
+    const resource = resourceFor(ctx, item)!
+    for (let n = 1; n <= 16; n++) {
+      const wells: { x: number; y: number; perSecond: number }[] = []
+      for (let i = 0; i < n; i++) wells.push({ x: 7 * i, y: 0, perSecond: NOMINAL_WELL })
+      out.push({ wells: encodeWells(wells), resource, pumpjack: ctx.pumpjack ?? "pumpjack" })
+    }
+  } else if (gen === "water-pump") {
+    out.push({})
   } else if (gen === "steam-block") {
     for (let b = 1; b <= 10; b++) out.push({ boilers: b, fuel: ctx.fuel, boiler: ctx.boiler, engine: ctx.engine })
   }
@@ -353,9 +407,11 @@ function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: num
 function inputPorts(def: ModuleDef, utilization: number): DesignPort[] {
   const out: DesignPort[] = []
   const count: Record<string, number> = {}
-  for (const p of def.ports) if (p.kind === "belt-in" && p.item !== undefined) count[p.item] = (count[p.item] ?? 0) + 1
+  // M7c: fluid inputs (`pipe-in`) are demands too.
+  const isIn = (k: string): boolean => k === "belt-in" || k === "pipe-in"
+  for (const p of def.ports) if (isIn(p.kind) && p.item !== undefined) count[p.item] = (count[p.item] ?? 0) + 1
   for (const p of def.ports) {
-    if (p.kind !== "belt-in" || p.item === undefined) continue
+    if (!isIn(p.kind) || p.item === undefined) continue
     let rate = 0
     for (const r of def.rates.inputs) if (r.item === p.item) rate += r.perSecond
     out.push({ port: p.id, item: p.item, rate: (rate * utilization) / count[p.item] })
@@ -364,7 +420,7 @@ function inputPorts(def: ModuleDef, utilization: number): DesignPort[] {
 }
 
 function outPort(def: ModuleDef, item: string): string {
-  for (const p of def.ports) if (p.kind === "belt-out" && p.item === item) return p.id
+  for (const p of def.ports) if ((p.kind === "belt-out" || p.kind === "pipe-out") && p.item === item) return p.id
   return "out"
 }
 
@@ -752,6 +808,14 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
     for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
   }
   for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
+  // M7c: a module may ask for an item the recipe walk never reaches (a fluid chain's crude oil and water: its petroleum
+  // has no recipe of its own). Expand those too, until nothing new is asked for.
+  for (let pass = 0; pass < 4; pass++) {
+    const left: string[] = []
+    for (const d of w.demands) if (d.item !== ctx.fuel && left.indexOf(d.item) < 0) left.push(d.item)
+    if (left.length === 0) break
+    for (const item of left) expandItem(w, item)
+  }
   for (const d of w.demands) if (d.item !== ctx.fuel) w.errors.push(`unplanned demand for ${d.item}`)
   return w
 }

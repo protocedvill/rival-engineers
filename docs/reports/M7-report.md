@@ -241,6 +241,26 @@ weapon-shooting-speed-1/2 are dropped; production and utility science stay (D74:
 `research` pins the count. M7 harness configs set `research-science-packs`, `research-excluded-triggers` and
 `research-skip-combat`.
 
+### M7c.3: the design knows the blue chain
+
+- `ProtoFacts.isFluid`. Generator rules: a fluid resource (crude oil) → `pumpjack-field`; the offshore-pumped fluid
+  (water) → `water-pump`; other fluids are made and used inside a module (no producer); a recipe with a fluid
+  ingredient whose fluid a refinery recipe makes → `fluid-chain`; an assembler row takes up to `rowInputs` ingredients
+  on the first assembler whose crafting categories include the recipe's (`assemblers`; engines need assembler 2).
+- Sizes: fluid chains by plant count, then refineries; pumpjack fields on nominal wells at 100% (10/s, game data; the
+  runtime generates the module from a real field when it plans it); one water pump.
+- Pipe ports are demands and outputs like belt ports (`inputPorts`, `outPort`). A module may ask for items the recipe
+  walk never reaches (a fluid chain's crude and water: petroleum has no recipe of its own): they are expanded after
+  the ordered walk.
+- Lab arrays take a third pack on a belt of their own (long-handed inserters, as the assembler rows).
+- The D67/P36 ore checks skip fluid wells (their yield falls to a floor; they do not run dry).
+- **Proposed (not a user decision): `rowInputs` stays 2 by default.** At 3, inserters become producible by an assembler
+  row, and "generators first" (D34) would replace v1's validated curated green line. M7 configs set 3; whether the
+  green line should switch to the generated three-ingredient row is the user's call.
+
+T1 `design`: 10 blue/min gives plastic and sulfur fluid chains, a pumpjack field, a water pump and assembler-2 engine
+rows with no errors; at the default 2 inserters still have no generator.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

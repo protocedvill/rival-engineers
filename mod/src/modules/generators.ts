@@ -738,8 +738,9 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
 export interface LabArrayParams extends CommonParams {
   /** Labs, even: each belt-fed lab passes packs on to the next through an inserter. */
   labs: number
-  /** One or two science packs (one per lane). */
+  /** One or two science packs (one per lane); M7c: a third on a belt of its own (long-handed inserters). */
   packs: string[]
+  longInserter?: string
   /** Seconds per research unit used for the declared rates (the technology being researched decides). */
   unitTime?: number
   lab?: string
@@ -750,7 +751,10 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
   const lab = p.lab ?? "lab"
   const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
   if (p.labs < 2 || p.labs % 2 !== 0) error(`lab-array: labs must be a positive even number, got ${p.labs}`)
-  if (p.packs.length < 1 || p.packs.length > 2) error("lab-array: one or two packs")
+  if (p.packs.length < 1 || p.packs.length > 3) error("lab-array: one to three packs")
+  const three = p.packs.length === 3
+  const lanes = three ? p.packs.slice(0, 2) : p.packs
+  const long = p.longInserter ?? "long-handed-inserter"
   const units = p.labs / 2
   const xt = 8 * units
   for (let u = 0; u < units; u++) {
@@ -762,8 +766,18 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
     L.poleAt(ux + 3.5, 2.5)
     L.poleAt(ux + 7.5, 2.5)
     for (let dx = 0; dx < 8; dx++) L.beltAt(ux + dx + 0.5, 4.5, WEST)
+    if (three) {
+      // The third pack: a belt one row south, picked by a long-handed inserter beside the first lab's inserter.
+      L.add(long, ux + 0.5, 3.5, SOUTH)
+      for (let dx = 0; dx < 8; dx++) L.beltAt(ux + dx + 0.5, 5.5, WEST)
+    }
   }
-  const ports = rowTail(L, xt, p.packs, 4)
+  const ports = rowTail(L, xt, lanes, 4)
+  if (three) {
+    // It enters from below one column before the merge column and curves west (it touches neither belt of the tail).
+    L.beltAt(xt - 0.5, 6.5, NORTH)
+    ports.push({ id: `in-${p.packs[2]}`, kind: "belt-in", pos: { x: xt - 0.5, y: 6.5 }, dir: NORTH, item: p.packs[2] })
+  }
   ports.push({ id: "power", kind: "power", pos: { x: 3.5, y: 2.5 }, dir: NORTH })
   const unitTime = p.unitTime ?? 30
   const draft: ModuleDraft = {
@@ -772,14 +786,14 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
     generator: "lab-array",
     provenance: "generator lab-array (Rival Engineers)",
     description: `${p.labs} labs, ${p.packs.join(" + ")} merged on one belt`,
-    footprint: { w: xt + 1, h: p.packs.length === 2 ? 6 : 5 },
+    footprint: { w: xt + 1, h: three ? 7 : p.packs.length === 2 ? 6 : 5 },
     entities: L.entities,
     ports,
     rotatable: true,
     mirrorable: true,
     params: { labs: p.labs, packs: p.packs.join(","), unitTime, belt: L.belt, inserter: L.inserter },
     expand: {
-      unit: { footprint: { w: 8, h: p.packs.length === 2 ? 6 : 5 }, entities: sliceUnit(L.entities, "x", 0, 8) },
+      unit: { footprint: { w: 8, h: three ? 7 : p.packs.length === 2 ? 6 : 5 }, entities: sliceUnit(L.entities, "x", 0, 8) },
       axis: "x",
       insertAt: xt,
       maxUnits: Math.max(0, 10 - units),
@@ -787,6 +801,7 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
   }
   // B25: the pack belt ends at the first lab's inserter.
   draft.entities = dropBelt(draft.entities, L.belt, 0.5, 4.5)
+  if (three) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 5.5)
   return finalizeModule(draft, facts)
 }
 
