@@ -508,7 +508,19 @@ function designNow(ctx: Ctx): Design | undefined {
       }
     }
   }
-  const goals = DS.goalsFrom(diff, researched)
+  // M7c: a technology no lab can research yet: an unresearched trigger technology, or one behind such a trigger.
+  const triggerMemo: Record<string, boolean> = {}
+  const waitsOnTrigger = (tech: string): boolean => {
+    const known = triggerMemo[tech]
+    if (known !== undefined) return known
+    triggerMemo[tech] = false
+    const t = ctx.force.technologies[tech]
+    let blocked = t !== undefined && !t.researched && t.prototype.research_trigger !== undefined
+    if (t !== undefined && !t.researched && !blocked) for (const [pre] of pairs(t.prerequisites)) if (waitsOnTrigger(pre as string)) blocked = true
+    triggerMemo[tech] = blocked
+    return blocked
+  }
+  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger)
   for (const tech of [f.needUndergrounds, f.needSplitters]) {
     if (tech === undefined || researched[tech]) continue
     if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]

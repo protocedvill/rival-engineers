@@ -778,4 +778,28 @@ test("M7c: with three-ingredient rows on, a curated module still keeps its item 
   eq(producerFor(c, "logistic-science-pack"), "curated", "but green science stays on the curated line")
 })
 
+test("M7c: nodes behind an unresearched trigger technology go in a later goal; the pumpjack field first", () => {
+  const blue = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  })
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  // Every module needs "tech:<generator>" in this test; fluid chains are behind the trigger.
+  const diff = diffDesign(d, newGraph(), () => undefined)
+  for (const n of diff.missing) n.def = { ...n.def, requiresTech: [`tech:${n.generator}`] }
+  const goals = goalsFrom(diff, {}, (t) => t === "tech:fluid-chain")
+  const prod = goals.filter((g) => g.kind === "production")
+  ok(prod.length >= 2, `the production goal is split (${prod.length})`)
+  const first = prod[0]
+  ok(first.nodes.some((n) => n.generator === "pumpjack-field"), "the pumpjack field is in the first part")
+  ok(!first.nodes.some((n) => n.generator === "fluid-chain"), "no fluid chain in the first part")
+  const later = prod.find((g) => g.nodes.some((n) => n.generator === "fluid-chain"))!
+  ok(later.edges.some((e) => e.item === "crude-oil"), "the crude edge belongs to the part that builds its consumer")
+  // Without the callback (v1) nothing is split.
+  eq(goalsFrom(diff, {}).filter((g) => g.kind === "production").length < prod.length, true, "v1: no split")
+})
+
 run("design")

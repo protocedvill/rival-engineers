@@ -1195,13 +1195,13 @@ export interface GoalSpec {
  * Build goals from a diff, in build order: power (the steam block and its fuel supply), labs, then the production
  * chain, then growth of existing modules. An edge belongs to the goal that builds its later end.
  */
-export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>): GoalSpec[] {
+export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean): GoalSpec[] {
   const goals: GoalSpec[] = []
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
   const keys: string[] = []
-  const get = (kind: GoalKind, cluster = 1): GoalSpec => {
-    const key = kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind
+  const get = (kind: GoalKind, cluster = 1, late = false): GoalSpec => {
+    const key = (kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind) + (late ? "~trigger" : "")
     let gs = byKind[key]
     if (gs === undefined) {
       gs = { kind, nodes: [], edges: [], techs: [] }
@@ -1214,30 +1214,41 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>)
   for (const n of diff.missing) {
     const serves = nodeServes(n)
     const kind: GoalKind = n.kind === "labs" ? "labs" : serves === "power" ? "power" : serves === "mall" ? "mall" : "production"
-    const gs = get(kind, n.cluster)
+    // M7c: a node needing a technology that a trigger blocks (`oil-processing` fires when crude is first mined, and
+    // `plastics`, `advanced-circuit`... come after it) goes in a later goal of its kind, so the rest (the pumpjack field
+    // that fires the trigger) is built first instead of the whole goal waiting for a research no lab can do.
+    let late = false
+    // Only goals that wait for their technologies (production, mall): labs and power never did.
+    if (waitsOnTrigger !== undefined && (kind === "production" || kind === "mall")) for (const t of n.def.requiresTech) if (!researched[t] && waitsOnTrigger(t)) late = true
+    const gs = get(kind, n.cluster, late)
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
   const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5, repair: 6, temp: 7, radar: 8 }
+  const lateGoals: GoalSpec[] = []
+  for (const k of keys) if (string.find(k, "~trigger", 1, true)[0] !== undefined) lateGoals.push(byKind[k])
   for (const e of diff.missingEdges) {
     const a = goalOf[e.from]
     const b = goalOf[e.to]
     let gs = a ?? b ?? get("production")
     if (a !== undefined && b !== undefined && rank[b.kind] > rank[a.kind]) gs = b
+    // An edge into a trigger-blocked part belongs to that later goal (it builds the consumer).
+    if (b !== undefined && b !== a && lateGoals.indexOf(b) >= 0) gs = b
     gs.edges.push(e)
   }
   // Build order: power, then each cluster's labs and production in turn (cluster 1 first), the mall after cluster 1.
   let clusters = 1
   for (const k of keys) {
-    const [c] = string.match(k, "#(%d+)$")
+    const [c] = string.match(k, "#(%d+)")
     if (c !== undefined) clusters = math.max(clusters, tonumber(c)!)
   }
   const order = ["power"]
   for (let c = 1; c <= clusters; c++) {
-    order.push(`labs#${c}`, `production#${c}`)
+    order.push(`labs#${c}`, `production#${c}`, `production#${c}~trigger`)
     if (c === 1) order.push("mall")
   }
+  order.push("mall~trigger")
   for (const k of order) if (byKind[k] !== undefined) goals.push(byKind[k])
   for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
   for (const gs of goals) gs.techs.sort()

@@ -304,6 +304,16 @@ weapon-shooting-speed-1/2 are dropped; production and utility science stay (D74:
 T1 `design`: 10 blue/min gives plastic and sulfur fluid chains, a pumpjack field, a water pump and assembler-2 engine
 rows with no errors; at the default 2 inserters still have no generator.
 
+### M7c.4: goals behind a trigger technology
+
+First M7 soak (`m7x-11`), stage 3: after 150 game-min no blue goal had started. The blue cluster's production goal held
+the pumpjack field and the refineries and chemical plants together; those need `oil-processing`, a trigger technology
+(it completes when crude is first mined), and `plastics`/`advanced-circuit` sit behind it: the goal waited for a research
+no lab can do, and the pumpjack field that would fire the trigger was in the same waiting goal. `goalsFrom` now puts a
+production or mall node needing an unresearched trigger technology (or one behind such a trigger) in a later goal of its
+kind (`production#c~trigger`): the rest, the pumpjack field included, is built first, and an edge into the later part
+belongs to it. Labs and power goals never waited for technologies and are not split (v1 order unchanged). T1 `design`.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
