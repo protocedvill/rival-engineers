@@ -37,6 +37,8 @@ export interface Config {
   researchSciencePacks: string
   /** Items, entities or fluids the research goal may not need (trigger technologies), comma-separated. */
   researchExcludedTriggers: string
+  /** D74 / P47: leave combat-only technologies out of the research goal (kept when a kept technology needs them). */
+  researchSkipCombat: boolean
   /** Create `factionCount` factions on a new map (never while factorio-test is running). */
   autoSpawn: boolean
   spawnMode: string

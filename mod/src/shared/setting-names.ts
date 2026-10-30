@@ -18,6 +18,7 @@ export const Settings = {
   beltPlaceDelayTicks: "rival-engineers-belt-place-delay-ticks",
   researchSciencePacks: "rival-engineers-research-science-packs",
   researchExcludedTriggers: "rival-engineers-research-excluded-triggers",
+  researchSkipCombat: "rival-engineers-research-skip-combat",
   autoSpawn: "rival-engineers-auto-spawn",
   spawnMode: "rival-engineers-spawn-mode",
   spawnMinDistance: "rival-engineers-spawn-min-distance",

@@ -156,6 +156,14 @@ data.extend([
     order: "f-b",
   },
   {
+    // D74 / P47 (M7): leave combat-only technologies out of the research goal (weapon damage and speed, turrets, walls).
+    type: "bool-setting",
+    name: Settings.researchSkipCombat,
+    setting_type: "runtime-global",
+    default_value: false,
+    order: "f-c",
+  },
+  {
     type: "bool-setting",
     name: Settings.autoSpawn,
     setting_type: "runtime-global",

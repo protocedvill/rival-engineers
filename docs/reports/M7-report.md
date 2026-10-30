@@ -218,6 +218,19 @@ One- and two-ingredient rows are unchanged. T1 facts gained assembler 2, steel, 
 | `assembler-row engine 2` (assembler 2) | 0.15 engines/s | 0.153/s (102%; 10-s crafts are lumpy: never "steady") |
 | `assembler-row advanced-circuit 2` (assembler 2) | 0.25/s | 0.244/s (98%) |
 
+### M7c.2: the M7 research goal (D74, P47)
+
+The goal stays computed from prototypes (D30). New setting `research-skip-combat` (default off, so v1 runs keep their
+42): a technology is combat-only when every effect is a combat modifier (ammo damage, gun speed, turret attack,
+artillery range) or unlocks recipes whose every product is a combat item (a gun, ammo, a capsule, something that
+places a turret, wall, gate or land mine, or a science pack outside the goal made only of those: military science).
+Combat-only technologies leave the goal unless a kept one needs them as a prerequisite (`military` stays for heavy
+armour). With packs red + green + blue and the `uranium-ore` trigger excluded, vanilla 2.0.77 gives **89 of 98**:
+gate, gun-turret, military-science-pack, physical-projectile-damage-1/2, stone-wall, stronger-explosives-1,
+weapon-shooting-speed-1/2 are dropped; production and utility science stay (D74: every blue technology). T2
+`research` pins the count. M7 harness configs set `research-science-packs`, `research-excluded-triggers` and
+`research-skip-combat`.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
