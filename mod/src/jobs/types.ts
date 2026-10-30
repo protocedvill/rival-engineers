@@ -40,6 +40,8 @@ export type JobPayload =
   | { kind: "clear"; target: LuaEntity }
 
 export interface FactionState {
+  /** B111: standing spots the crew could not walk to, avoided until the tick (`jobs/bad-spots.ts`). */
+  badSpots?: Record<string, number>
   name: string
   /** The surface the faction lives on (name). */
   surface: string
@@ -108,6 +110,8 @@ export interface CrewStats {
 export interface CrewAction {
   action: number
   job?: number
+  /** B111: the standing spot this walk goes to (absent for other actions). */
+  spot?: { x: number; y: number }
   /** A take from a stockpile reserves this until it finishes (`from`: the source's unit number, B32). */
   reserve?: ItemCount & { from?: number }
   /** B36: the source kind of a take (telemetry). */

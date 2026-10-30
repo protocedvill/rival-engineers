@@ -36,6 +36,7 @@ declare global {
   }
 }
 import { CrewMember, FactionState, JobPayload } from "./types"
+import { badSpotRects, recordBadSpot } from "./bad-spots"
 import { countWork, findEntities } from "../work"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
@@ -294,7 +295,11 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
       unbox(faction, member, tick)
       return
     }
-    if (ca.job === undefined) continue // the walk to the standing spot
+    if (ca.job === undefined) {
+      // The walk to the standing spot. B111: no way there: the next plans pick another spot.
+      if (ca.spot !== undefined && status !== "succeeded" && (reason === "no-path" || reason === "unreachable")) recordBadSpot((faction.badSpots ??= {}), ca.spot, tick)
+      continue
+    }
     const job = board.jobs[ca.job]
     if (job.status !== "claimed" || job.claimedBy !== member.id) continue
     if (isLenientJob(job)) {
@@ -660,6 +665,8 @@ function otherSpots(faction: FactionState, member: CrewMember): Rect[] {
     const p = other.spot ?? other.character.position
     rects.push({ x1: p.x - 0.6, y1: p.y - 0.6, x2: p.x + 0.6, y2: p.y + 0.6 })
   }
+  // B111: spots no walk could reach lately.
+  for (const r of badSpotRects(faction.badSpots, game.tick)) rects.push(r)
   return rects
 }
 
@@ -797,7 +804,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   for (const c of crafts) startCraft(member, c)
   if (spot && distance(pos, spot) > 0.5) {
     member.spot = spot
-    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }) })
+    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }), spot })
   }
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
   else for (const job of jobs) enqueueWork(faction, member, job)
