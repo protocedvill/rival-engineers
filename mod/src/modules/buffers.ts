@@ -46,6 +46,12 @@ export function registerBuffer(surface: LuaSurface, force: string, entity: LuaEn
   storage.buffers[key(surface.name, entity.position)] = e
 }
 
+/** B36: a built buffer chest is registered at `pos`. */
+export function isBufferAt(surface: string, pos: MapPosition): boolean {
+  const e = storage.buffers?.[key(surface, pos)]
+  return e !== undefined && e.entity !== undefined && e.entity.valid
+}
+
 /** Built-entity events: a registered buffer ghost became its chest. */
 export function onBufferBuilt(entity: LuaEntity | undefined): void {
   if (storage.buffers === undefined || entity === undefined || !entity.valid || entity.type !== "container") return
@@ -53,6 +59,22 @@ export function onBufferBuilt(entity: LuaEntity | undefined): void {
   if (e === undefined || e.force !== entity.force.name) return
   e.entity = entity
   limitBuffer(entity, getConfig().moduleBufferSlots)
+}
+
+/** B32: built buffer chests of a force, in key order (supply points the crew takes from). */
+export function bufferChests(force: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const all = storage.buffers
+  if (all === undefined) return out
+  const keys: string[] = []
+  for (const [k, e] of pairs(all)) if (e.force === force && e.entity !== undefined) keys.push(k as string)
+  keys.sort()
+  for (const k of keys) {
+    const chest = all[k].entity!
+    if (chest.valid) out.push(chest)
+    else delete all[k]
+  }
+  return out
 }
 
 /** Built buffer chests of a force holding `item` (or anything), with amounts: a collect source for the crew. */

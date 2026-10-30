@@ -7,6 +7,9 @@ import { computeResearchGoal } from "./research"
 
 let goalCache: string[] | undefined
 
+/** Debug/soak-only hidden technology: a repeatable red + green pack sink after the v1 research goal. */
+export const INFINITE_RESEARCH = "rival-engineers-throughput-test"
+
 /** The research goal (D30), computed once per session from prototypes and config. */
 export function researchGoal(): string[] {
   goalCache ??= computeResearchGoal()
@@ -16,6 +19,17 @@ export function researchGoal(): string[] {
 /** Units × seconds per unit × pack kinds: a crude cost to order technologies by. */
 export function techCost(t: LuaTechnologyPrototype): number {
   return t.research_unit_count * (t.research_unit_energy / 60) * math.max(1, t.research_unit_ingredients.length)
+}
+
+/** Longest seconds per research unit over the research goal's pack technologies (labs sized for it never cap a stage). */
+export function maxUnitTime(): number {
+  let best = 0
+  for (const name of researchGoal()) {
+    const t = prototypes.technology[name]
+    if (t.research_trigger !== undefined || t.research_unit_ingredients.length === 0) continue
+    best = math.max(best, t.research_unit_energy / 60)
+  }
+  return best > 0 ? best : 30
 }
 
 /** Mean seconds per research unit over the research goal's pack technologies (sizes the labs). */
@@ -77,7 +91,7 @@ export interface ResearchPick {
  * The next technology to research: unblocking `wanted` first (with `packs`, hand-fed ones included), then the research
  * goal (with `goalPacks`: automated packs only, so the crew don't hand-craft packs for research nothing waits on).
  */
-export function pickResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs): ResearchPick | undefined {
+export function pickResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs, infinite = false): ResearchPick | undefined {
   const sorted = [...wanted].sort()
   for (const w of sorted) {
     const need: string[] = []
@@ -88,13 +102,19 @@ export function pickResearch(force: LuaForce, wanted: string[], packs: Record<st
   }
   const ready = researchGoal().filter((n) => researchable(force, n, goalPacks))
   const pick = cheapest(ready)
-  return pick !== undefined ? { tech: pick, reason: "research goal" } : undefined
+  if (pick !== undefined) return { tech: pick, reason: "research goal" }
+  // Debug/soak only: after every normal goal technology, keep the labs consuming red + green packs. This technology is
+  // hidden, has no effects and is excluded from the v1 research count.
+  if (infinite && force.technologies[INFINITE_RESEARCH] !== undefined && packs["automation-science-pack"] && packs["logistic-science-pack"]) {
+    return { tech: INFINITE_RESEARCH, reason: "debug infinite research (throughput test)" }
+  }
+  return undefined
 }
 
 /** Starts the picked research if the force has none running. Returns what was started. */
-export function startResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs): ResearchPick | undefined {
+export function startResearch(force: LuaForce, wanted: string[], packs: Record<string, boolean>, goalPacks: Record<string, boolean> = packs, infinite = false): ResearchPick | undefined {
   if (force.current_research !== undefined) return undefined
-  const pick = pickResearch(force, wanted, packs, goalPacks)
+  const pick = pickResearch(force, wanted, packs, goalPacks, infinite)
   if (pick === undefined) return undefined
   return force.add_research(pick.tech) ? pick : undefined
 }

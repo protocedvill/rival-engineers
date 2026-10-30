@@ -41,8 +41,43 @@ export interface RouterWeights {
    * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
    */
   bundleFactor?: number
-  /** B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim). */
+  /**
+   * B9 (D48 (4)): extra cost of a tile an expandable module can still grow into (its soft claim), in its next growth
+   * unit. B52: was 0.5; a route crossed the steam block's whole growth strip for 7 extra (user: "10 or so").
+   */
   softClaim?: number
+  /**
+   * B52 (user, 2026-10-20: "diminish a bit after every single expansion unit"): the soft-claim cost is multiplied by this
+   * for each growth unit farther out. An underground crossing pays only its ends, so the far units must be much cheaper
+   * than the near one: on seed 3333's g20 replay 10 / 0.5 crossed unit 5, 10 / 0.55 still unit 1.
+   */
+  softClaimDecay?: number
+  /**
+   * Seal check (user, 2026-10-20): before a route search, a relaxed flood from both ends proves "no path" when one end
+   * is boxed in, at the cost of that end's enclosed tiles. It gives up (the search runs as before) after this many
+   * tiles. 0: off.
+   */
+  sealCheck?: number
+  /** Seal check cap on a retry after "no path" (rip pass, wider windows): 0 runs it to the end. */
+  sealRetry?: number
+  /**
+   * P44 (user, 2026-10-28: avoid side-loading, it puts everything on one lane): a provider-group merge side-loads only
+   * when the consumer port takes at most this share of one lane (everything it gets then fits one lane, whatever lanes
+   * the trunk uses); otherwise it joins with a splitter only. Splitter merges are tried first either way. Absent: the
+   * old order (side-loads first, no rate check).
+   */
+  sideLoadLaneShare?: number
+  /**
+   * Two-level routing (user, 2026-10-20): a connection whose ends are at least this far apart (Manhattan tiles) is
+   * routed over `coarseCell`-tile cells first, then tile by tile inside a corridor of those cells. 0: off.
+   */
+  longRoute?: number
+  /** Cell size (tiles) of the coarse search. */
+  coarseCell?: number
+  /** Corridor half-width around the coarse path, in cells (the ends get one more). */
+  corridorCells?: number
+  /** Heuristic weight inside a corridor (weighted A*: the route costs at most this times the corridor's best). */
+  corridorWeight?: number
 }
 
 export interface PlacementWeights {
@@ -60,8 +95,34 @@ export interface PlacementWeights {
   exactGap: number
   /** Mining modules: penalty per missing fraction of ore coverage. */
   coverage: number
+  /** D52: penalty per missing fraction of ore coverage of the first growth unit (the mine must be able to expand). */
+  growthCoverage?: number
   /** B9 (D48 (4)): per footprint tile in another module's soft claim (the area it can still grow into). */
   softClaim?: number
+  /**
+   * B26: per footprint tile in the near part (the first `growthBandUnits` units) of another expandable module's growth
+   * area, on top of `softClaim` and for partners too: the growth corridor that `tryExpand` needs first stays clear.
+   */
+  growthBand?: number
+  /** B26: how many growth units, next to the module, count as its near band (`growthBand`). */
+  growthBandUnits?: number
+  /**
+   * B26: an expandable non-mining module, per growth unit it could not grow by at this site: `tryExpand`'s checks
+   * (terrain, ore, other modules and their corridor, routes, reservations, mine and soft claims) over its own band.
+   */
+  growthBlocked?: number
+  /**
+   * B45: a placement must leave every other module's unconnected port lane leading at least this many steps (Manhattan)
+   * out (0: off): its footprint and margin ring, and a whole-patch mine's claim, must not wall the lane in. B57: its own
+   * port lanes too, and a plan's routes (plan.ts `guardLanes`). 8 let a 112-tile pocket (seed 555555) and a 221-tile one
+   * (seed 11) count as open.
+   */
+  portEscape?: number
+  /**
+   * D57: a new mine ranks the patches it may use by distance; a patch where the faction has no mine yet (a fresh
+   * field) counts this many tiles farther.
+   */
+  newField?: number
 }
 
 export interface LayoutPolicy {
@@ -74,7 +135,8 @@ export interface LayoutPolicy {
   /** Packing strategy: a registered scorer (`registerPacking`). */
   packing: string
   expansion: "expand-first" | "new-module-first"
-  obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number }
+  /** B37 `poleEvict`: placement/routing cost per pole-line tile taken (the line is evicted and re-poled). */
+  obstacles: { trees: "clear" | "avoid"; rocks: "clear" | "avoid"; maxClearCost: number; poleEvict?: number }
   /** D22: how one producer feeds several consumers. */
   topology: "point-to-point" | "splitter-tap"
   /**
@@ -112,8 +174,14 @@ export interface CandidateFeatures {
   exactGap: number
   /** Mining modules: ore coverage of the mining areas (0..1). */
   coverage: number
+  /** D52: ore coverage of the first growth unit (0..1) — a mine placed where it can't expand is a dead end. */
+  growthCoverage?: number
   /** Footprint tiles in other modules' soft claims (B9). */
   softClaim?: number
+  /** B26: footprint tiles in the near band of another module's growth area (partners included). */
+  growthBand?: number
+  /** B26: growth units this module's own band would refuse (0 = it can grow by every unit it may). */
+  growthBlocked?: number
 }
 
 export type PackingScorer = (this: void, f: CandidateFeatures, policy: LayoutPolicy) => number
@@ -156,9 +224,31 @@ registerPacking("compact-cluster", (f, p) => {
     w.adjacent * f.adjacent -
     w.exactGap * f.exactGap +
     w.coverage * (1 - f.coverage) +
-    (w.softClaim ?? 0) * (f.softClaim ?? 0)
+    (w.growthCoverage ?? 0) * (f.growthCoverage !== undefined && f.growthCoverage < 0.3 ? 1 : 0) +
+    (w.softClaim ?? 0) * (f.softClaim ?? 0) +
+    (w.growthBand ?? 0) * (f.growthBand ?? 0) +
+    (w.growthBlocked ?? 0) * (f.growthBlocked ?? 0)
   )
 })
+
+/**
+ * The compact-cluster score split into its weighted terms (plan dumps, `planner/trace.ts`); they sum to the scorer's
+ * value (pinned by a T1 test). Not on the hot path: the scorer above stays allocation-free.
+ */
+export function placementTerms(f: CandidateFeatures, p: LayoutPolicy): Record<string, number> {
+  const w = p.placement
+  return {
+    center: w.center * f.centerDist,
+    port: w.port * f.portDist,
+    facing: w.facing * f.facingAway,
+    clear: w.clear * f.clearCost,
+    adjacent: -w.adjacent * f.adjacent,
+    exactGap: -w.exactGap * f.exactGap,
+    coverage: w.coverage * (1 - f.coverage),
+    growthCoverage: (w.growthCoverage ?? 0) * (f.growthCoverage !== undefined && f.growthCoverage < 0.3 ? 1 : 0),
+    softClaim: (w.softClaim ?? 0) * (f.softClaim ?? 0),
+  }
+}
 
 /** The v1 early-game policy (SPEC §5.3): compact cluster, 1–2-tile corridors, expand-first, clear trees and rocks. */
 export const EARLY_COMPACT: LayoutPolicy = {
@@ -168,7 +258,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
   moduleSelection: { preferGenerated: true },
   packing: "compact-cluster",
   expansion: "expand-first",
-  obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400 },
+  obstacles: { trees: "clear", rocks: "clear", maxClearCost: 400, poleEvict: 0.5 },
   topology: "point-to-point",
   smelting: "compact-core",
   protectOre: true,
@@ -190,9 +280,17 @@ export const EARLY_COMPACT: LayoutPolicy = {
     margin: 24,
     underModules: false,
     bundleFactor: 0.9,
-    softClaim: 0.5,
+    softClaim: 10,
+    softClaimDecay: 0.5,
+    sealCheck: 2000,
+    sealRetry: 0,
+    sideLoadLaneShare: 0.8,
+    longRoute: 128,
+    coarseCell: 8,
+    corridorCells: 1,
+    corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, softClaim: 0.5 },
+  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 
@@ -206,7 +304,16 @@ export interface PolicyOverrides {
   /** D50: soft-claim and bundling weights (settings; absent or negative = keep the policy's value). */
   placementSoftClaim?: number
   routerSoftClaim?: number
+  routerSoftClaimDecay?: number
   routerBundleFactor?: number
+  /** B26: near growth band weight, its depth in units, and the per-unit cost of a blocked own band (negative = keep). */
+  placementGrowthBand?: number
+  placementGrowthBandUnits?: number
+  placementGrowthBlocked?: number
+  /** B37: cost per pole-line tile a placement or route takes (negative = keep). */
+  poleEvict?: number
+  /** D57: extra tiles a new mine pays for a fresh field (negative = keep). */
+  placementNewField?: number
 }
 
 /**
@@ -237,7 +344,13 @@ export function selectPolicy(id: string | undefined, ctx: LayoutContext, overrid
   if (overrides.utilization !== undefined && overrides.utilization > 0) p.utilization = overrides.utilization
   if (overrides.smelting === "compact-core" || overrides.smelting === "near-ore") p.smelting = overrides.smelting
   if (overrides.placementSoftClaim !== undefined && overrides.placementSoftClaim >= 0) p.placement = { ...p.placement, softClaim: overrides.placementSoftClaim }
+  if (overrides.placementGrowthBand !== undefined && overrides.placementGrowthBand >= 0) p.placement = { ...p.placement, growthBand: overrides.placementGrowthBand }
+  if (overrides.placementGrowthBandUnits !== undefined && overrides.placementGrowthBandUnits >= 0) p.placement = { ...p.placement, growthBandUnits: overrides.placementGrowthBandUnits }
+  if (overrides.placementGrowthBlocked !== undefined && overrides.placementGrowthBlocked >= 0) p.placement = { ...p.placement, growthBlocked: overrides.placementGrowthBlocked }
+  if (overrides.placementNewField !== undefined && overrides.placementNewField >= 0) p.placement = { ...p.placement, newField: overrides.placementNewField }
+  if (overrides.poleEvict !== undefined && overrides.poleEvict >= 0) p.obstacles = { ...p.obstacles, poleEvict: overrides.poleEvict }
   if (overrides.routerSoftClaim !== undefined && overrides.routerSoftClaim >= 0) p.router = { ...p.router, softClaim: overrides.routerSoftClaim }
+  if (overrides.routerSoftClaimDecay !== undefined && overrides.routerSoftClaimDecay >= 0) p.router = { ...p.router, softClaimDecay: overrides.routerSoftClaimDecay }
   if (overrides.routerBundleFactor !== undefined && overrides.routerBundleFactor > 0) p.router = { ...p.router, bundleFactor: overrides.routerBundleFactor }
   return p
 }

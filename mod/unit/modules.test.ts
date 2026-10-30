@@ -1,11 +1,16 @@
-import { expandModule, expandMoves, expandTail } from "../src/modules/build"
-import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
-import { occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
+import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
+import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
-import { EAST, ModuleDef, ModuleEntity, NORTH, SOUTH, WEST } from "../src/modules/types"
+import { CuratedModuleFile, EAST, ModuleDef, ModuleEntity, NORTH, SOUTH, WEST } from "../src/modules/types"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
+
+/** @noSelf */
+declare function require(this: void, module: string): unknown
+// Written next to the compiled tests by tools/run-unit-tests.mjs, exactly as the mod build ships it.
+const curatedFiles = require("modules.curated_data") as Record<string, CuratedModuleFile>
 
 // Inserter throughput used by the rate engine: one item per full turn (yellow: 0.014 rev/tick).
 const INS_BELT = 60 * 0.014 * INSERTER_EFFICIENCY_FROM_BELT
@@ -151,6 +156,29 @@ test("D42 / B5: a smelter column's buffer depot: an inserter off the west output
   eq(burner.entities.filter((e) => e.buffer === true).length, 0, "no buffer with burner inserters (it would need fuel)")
 })
 
+test("D51 / B14: gear rows and circuit blocks get a buffer head at the output end; rates and units unchanged", () => {
+  const cases: [ModuleDef, ModuleDef, string][] = [
+    [assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, buffer: "iron-chest" }), "iron-gear-wheel"],
+    [circuitBlock(F, { units: 1 }), circuitBlock(F, { units: 1, buffer: "iron-chest" }), "electronic-circuit"],
+  ]
+  for (const [plain, def, item] of cases) {
+    eq(def.footprint.w, plain.footprint.w + 2, `${def.id}: two columns wider`)
+    const chest = def.entities.filter((e) => e.buffer === true)
+    eq(chest.length, 1, "one buffer chest")
+    eq(`${chest[0].x},${chest[0].y}`, "1.5,2.5", "at the head")
+    const ins = def.entities.filter((e) => e.x === 1.5 && e.y === 1.5)[0]
+    eq(ins.name, "inserter", "an inserter above it")
+    eq(ins.dir, NORTH, "picks from the output belt (1.5, 0.5)")
+    eq(def.entities.filter((e) => e.x === 1.5 && e.y === 0.5)[0].name, "transport-belt", "the output belt runs past it")
+    const outPort = def.ports.filter((p) => p.kind === "belt-out")[0]
+    eq(`${outPort.pos.x},${outPort.pos.y}`, "0.5,0.5", "output port at the head")
+    near(out(def, item), out(plain, item), 1e-9, "the buffer is no demand: same output")
+    eq(def.expand!.unit.entities.length, plain.expand!.unit.entities.length, "same unit")
+    eq(def.expand!.insertAt, plain.expand!.insertAt + 2, "units go in at the same place")
+    eq(def.expand!.maxUnits, plain.expand!.maxUnits, "same cap")
+  }
+})
+
 test("D38: a chest cell (temporary factory): chest → inserter → assembler → inserter → chest, rates of one assembler", () => {
   const gear = chestCell(F, { recipe: "iron-gear-wheel" })
   eq(gear.footprint.w * 10 + gear.footprint.h, 73, "7 × 3")
@@ -163,6 +191,15 @@ test("D38: a chest cell (temporary factory): chest → inserter → assembler �
   eq(ins.join(","), "copper-plate,iron-gear-wheel", "one chest-in port per ingredient")
   eq(red.ports.filter((p) => p.kind === "chest-out")[0].item, "automation-science-pack", "chest-out: the product")
   eq(red.expand, undefined, "not expandable (temporary)")
+})
+
+test("radar cell (D56): one radar and its pole, 4 × 3, powered, no belts", () => {
+  const m = radarCell(F, {})
+  eq(m.footprint.w * 10 + m.footprint.h, 43, "4 × 3")
+  eq(m.ports.length, 1, "one port")
+  eq(m.ports[0].kind, "power", "the power port")
+  near(inp(m, "electricity"), 300000, 1e-6, "300 kW")
+  eq(m.entities.filter((e) => e.name === "radar").length, 1, "one radar")
 })
 
 // --- Layout invariants -------------------------------------------------------------------------------------
@@ -182,6 +219,10 @@ function allGenerated(): ModuleDef[] {
     assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }),
     assemblerRow(F, { recipe: "transport-belt", count: 6 }),
     assemblerRow(F, { recipe: "pipe", count: 2 }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" }),
+    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest" }),
+    circuitBlock(F, { units: 2, buffer: "iron-chest" }),
+    radarCell(F, {}),
     redLine(F, { units: 3 }),
     circuitBlock(F, { units: 2 }),
     labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
@@ -213,6 +254,73 @@ test("every generated module: no overlaps, inside its footprint, all powered on 
   }
 })
 
+// --- B25: belts never run out of a module except at a belt-out port -------------------------------------------
+
+/** Every module layout the library can produce: generated (base, grown at the tail by 1–2 units) and curated. */
+function everyLayout(): ModuleDef[] {
+  const out: ModuleDef[] = []
+  for (const def of allGenerated()) {
+    out.push(def)
+    const max = def.expand?.maxUnits ?? 0
+    for (let k = 1; k <= math.min(2, max); k++) out.push(expandModule(def, k, F))
+  }
+  for (const [, f] of pairs(curatedFiles)) {
+    // Geometry only: the curated recipes need prototypes the T1 facts table doesn't have (the T2 lab finalizes them).
+    out.push({ ...f, source: "curated", recipes: [], machines: [], rates: { inputs: [], outputs: [] }, requiresTech: [], rotatable: f.rotatable ?? true, mirrorable: f.mirrorable ?? true, expand: undefined } as ModuleDef)
+  }
+  return out
+}
+
+test("B25: no module belt feeds out of its footprint except at a belt-out port, in every orientation", () => {
+  let curated = 0
+  for (const def of everyLayout()) {
+    if (def.source === "curated") curated++
+    for (let rot = 0; rot < 4; rot++) {
+      for (const mirror of [false, true]) {
+        if ((rot > 0 && !def.rotatable) || (mirror && !def.mirrorable)) continue
+        const t = transformModule(def, { rot, mirror })
+        const leaks = beltLeaks(t, F)
+        eq(leaks.length, 0, `${def.id} rot ${rot} mirror ${tostring(mirror)}: ${leaks.join("; ")}`)
+      }
+    }
+  }
+  ok(curated >= 3, `curated modules checked (${curated})`)
+})
+
+test("B25: beltLeaks flags a belt, an underground exit or a splitter half pointing out with no port; finalize refuses it", () => {
+  const box = { w: 4, h: 4 }
+  const leaks = (entities: ModuleEntity[], ports: ModuleDef["ports"] = []): number => beltLeaks({ footprint: box, entities, ports }, F).length
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }]), 1, "belt out of the north edge")
+  eq(leaks([{ name: "transport-belt", x: 0.5, y: 2.5, dir: WEST }]), 1, "belt out of the west edge")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: EAST }]), 0, "belt along the edge")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 1.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 0, "belt-out port")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "in", kind: "belt-in", pos: { x: 1.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 1, "a belt-in port doesn't excuse it")
+  eq(leaks([{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 1.5, y: 0.5 }, dir: WEST, item: "iron-plate" }]), 1, "port pointing elsewhere")
+  eq(leaks([{ name: "underground-belt", x: 1.5, y: 0.5, dir: NORTH, ioType: "output" }]), 1, "underground exit")
+  eq(leaks([{ name: "underground-belt", x: 1.5, y: 0.5, dir: NORTH, ioType: "input" }]), 0, "underground entrance (goes under)")
+  eq(leaks([{ name: "splitter", x: 2, y: 0.5, dir: NORTH }]), 2, "both splitter halves")
+  eq(leaks([{ name: "splitter", x: 2, y: 0.5, dir: NORTH }], [{ id: "out", kind: "belt-out", pos: { x: 2.5, y: 0.5 }, dir: NORTH, item: "iron-plate" }]), 1, "one splitter half has a port")
+  eq(leaks([{ name: "splitter", x: 3.5, y: 2, dir: EAST }]), 2, "east splitter halves")
+  const [built, err] = pcall(() =>
+    finalizeModule({ id: "leaky", source: "generated", footprint: box, entities: [{ name: "transport-belt", x: 1.5, y: 0.5, dir: NORTH }], ports: [], rotatable: true, mirrorable: true }, F),
+  )
+  ok(!built && string.find(tostring(err), "no belt-out port", 1, true)[0] !== undefined, `finalize refuses a leaking layout: ${tostring(err)}`)
+})
+
+test("B25: row modules' input belts end at the first machine's inserter; head growth that would open a belt is refused", () => {
+  const row = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  let head: ModuleEntity | undefined
+  for (const e of row.entities) if (e.name === "transport-belt" && e.y === 6.5 && (head === undefined || e.x < head.x)) head = e
+  eq(head?.x, 1.5, "the input belt's last tile is under the first input inserter")
+  // Growing at the head puts new units' belts at the west edge, where nothing closes them.
+  for (const def of allGenerated()) {
+    if ((def.expand?.maxUnits ?? 0) < 1) continue
+    const grown = expandHeadModule(def, 1, F)
+    if (grown !== undefined) eq(beltLeaks(grown, F).length, 0, `${def.id} grown at the head`)
+  }
+  eq(expandHeadModule(labArray(F, { labs: 2, packs: ["automation-science-pack"] }), 1, F), undefined, "lab array head growth refused")
+})
+
 test("expandModule(gen(n), k) is exactly gen(n + k): growth never moves a unit", () => {
   const pairsToCheck: [ModuleDef, number, ModuleDef][] = [
     [smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 2, smelterColumn(F, { recipe: "iron-plate", furnaces: 12 })],
@@ -220,6 +328,8 @@ test("expandModule(gen(n), k) is exactly gen(n + k): growth never moves a unit",
     [assemblerRow(F, { recipe: "copper-cable", count: 2 }), 1, assemblerRow(F, { recipe: "copper-cable", count: 4 })],
     [redLine(F, { units: 1 }), 2, redLine(F, { units: 3 })],
     [circuitBlock(F, { units: 1 }), 1, circuitBlock(F, { units: 2 })],
+    [assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, buffer: "iron-chest" }), 2, assemblerRow(F, { recipe: "iron-gear-wheel", count: 6, buffer: "iron-chest" })],
+    [circuitBlock(F, { units: 1, buffer: "iron-chest" }), 1, circuitBlock(F, { units: 2, buffer: "iron-chest" })],
     [labArray(F, { labs: 2, packs: ["automation-science-pack", "logistic-science-pack"] }), 3, labArray(F, { labs: 8, packs: ["automation-science-pack", "logistic-science-pack"] })],
     [miningOutpost(F, { resource: "iron-ore", rows: 2 }), 2, miningOutpost(F, { resource: "iron-ore", rows: 6 })],
     [miningOutpost(F, { resource: "coal", rows: 1, drill: "burner-mining-drill" }), 4, miningOutpost(F, { resource: "coal", rows: 5, drill: "burner-mining-drill" })],

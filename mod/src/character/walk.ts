@@ -194,6 +194,7 @@ export function stepWalk(character: LuaEntity, walk: WalkState, stats: ActionSta
           return "running"
         }
       }
+      if (!request.tryAgainLater) log(string.format("[rival-engineers] walk: no path from %.1f,%.1f to %.1f,%.1f (radius %.2f, %d escapes)", character.position.x, character.position.y, walk.goal.x, walk.goal.y, pathRadiusFor(character, walk.reach, walk.radius), walk.escapes ?? 0))
       return { fail: "no-path", detail: request.tryAgainLater ? "pathfinder busy" : "pathfinder found no path" }
     }
     const waypoints: MapPosition[] = []

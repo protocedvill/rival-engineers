@@ -23,6 +23,10 @@ export interface TerrainView {
   block(x: number, y: number): number
   /** The resource under a tile, if any. */
   ore(x: number, y: number): string | undefined
+  /** D57: tile keys of `resource` inside `rect`, from the scan's ore tables (absent: `ore` is read tile by tile). */
+  oreTiles?(resource: string, rect: Rect): number[]
+  /** D57: changes whenever a chunk under `rect` is scanned again (absent: no dead-patch memory). */
+  stamp?(rect: Rect): string
 }
 
 export interface Vec {

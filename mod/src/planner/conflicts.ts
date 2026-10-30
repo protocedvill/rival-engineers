@@ -6,15 +6,17 @@
 
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { addClearJob, addPlaceJob } from "../jobs/faction"
+import { getJob } from "../jobs/board"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
-import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
-import { tkey, Vec } from "./grid"
-import { findModule, LayoutState, ripRoute, unmarkModule } from "./layout"
-import { removePoleLines } from "./power"
-import { markDirty } from "./terrain"
+import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
+import type { JobId, RouteId } from "../shared/ids"
+import { keyX, keyY, tkey, Vec } from "./grid"
+import { findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
+import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
+import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
 
 export interface PartConflict {
@@ -31,6 +33,58 @@ export interface BuildCheck {
   missing: EntitySpec[]
   /** Parts with a missing entity or a ghost blocked by another force's entity (one per part). */
   conflicts: PartConflict[]
+  /**
+   * B52: planned belts, undergrounds, splitters and inserters whose own entity of that name stands there facing another
+   * way (another goal's stale copy of a rerouted route turned it): pick it up, then place the planned one.
+   */
+  misdirected: { spec: EntitySpec; entity: LuaEntity }[]
+  /**
+   * B56: planned route pieces with no own entity or ghost, standing on the faction's own belt pieces of another kind
+   * or place (an older copy of a rerouted connection): the ghost can't be created over them. Pick them up, then place.
+   */
+  stale: { spec: EntitySpec; entities: LuaEntity[] }[]
+  /**
+   * B95: the faction's own undergrounds between a route's underground pair, on its line and facing its flow: the
+   * entrance pairs with the nearest such exit, so the route's items surface there (sweep 3e1c4d7 seed 4819313: an old
+   * route's underground between a new pair's ends; 2/s of ore made, none arriving, "nothing missing"). Pick them up.
+   */
+  intruders: LuaEntity[]
+}
+
+const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
+
+/**
+ * B56: the faction's own belts, undergrounds and splitters on `e`'s tiles that are not `e` itself (seed 3333: a reroute
+ * planned an underground exit where the old copy's belt still stood, so its ghost was never created and the coal never
+ * arrived; repairs failed on the same ghost forever).
+ */
+export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<number, boolean> = {}
+  for (const k of specTiles(e)) {
+    const x = keyX(k)
+    const y = keyY(k)
+    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: BELT_TYPES, force })) {
+      if (b.unit_number === undefined || seen[b.unit_number]) continue
+      seen[b.unit_number] = true
+      // The planned piece itself (B52's misdirected check handles a wrong direction of the same name).
+      if (b.name === e.name && b.position.x === e.x && b.position.y === e.y) continue
+      out.push(b)
+    }
+  }
+  return out
+}
+
+/** Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side). */
+const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true }
+
+/** B52: an own entity of `e`'s name at its position that faces another way (or is the other underground end). */
+function ownMisdirected(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
+  const found = findEntities(surface, { name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+  if (found === undefined || !DIRECTED[found.type]) return undefined
+  if (found.direction !== e.dir) return found
+  if (e.ioType !== undefined && found.type === "underground-belt" && found.belt_to_ground_type !== e.ioType) return found
+  return undefined
 }
 
 /** Tile keys under an entity spec (its prototype's footprint at its direction). */
@@ -60,15 +114,49 @@ function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
   return "pole"
 }
 
+/**
+ * B56: before a build stamps its routes, the faction's own belt pieces on their tiles that are not the planned piece
+ * (another kind, another place, or the same belt facing another way): the ghost could not be created over them.
+ */
+export function staleUnderRoutes(surface: LuaSurface, force: string, layout: LayoutState, routes: RouteId[]): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<number, boolean> = {}
+  const push = (e: LuaEntity): void => {
+    if (e.unit_number === undefined || seen[e.unit_number]) return
+    seen[e.unit_number] = true
+    out.push(e)
+  }
+  for (const e of partEntities(layout, { modules: [], routes, poles: [] })) {
+    if (ownBuilt(surface, force, e) !== undefined) {
+      const wrong = ownMisdirected(surface, force, e)
+      if (wrong !== undefined) push(wrong)
+      continue
+    }
+    for (const b of staleBeltsUnder(surface, force, e)) push(b)
+  }
+  return out
+}
+
 /** Checks `parts` of `layout` against the world (see the file comment). */
-export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts): BuildCheck {
+export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
+  const misdirected: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const stale: { spec: EntitySpec; entities: LuaEntity[] }[] = []
   const seen: Record<string, boolean> = {}
   for (const e of partEntities(layout, parts)) {
-    if (ownBuilt(surface, force, e) !== undefined) continue
+    if (only !== undefined && !only(e)) continue
+    if (ownBuilt(surface, force, e) !== undefined) {
+      const wrong = ownMisdirected(surface, force, e)
+      if (wrong !== undefined) misdirected.push({ spec: e, entity: wrong })
+      continue
+    }
     const ghost = ownGhost(surface, force, e)
-    if (ghost === undefined) missing.push(e)
+    if (ghost === undefined) {
+      const under = layout.routes[e.owner] !== undefined ? staleBeltsUnder(surface, force, e) : []
+      if (under.length > 0) stale.push({ spec: e, entities: under })
+      else missing.push(e)
+    }
     if (seen[e.owner]) continue
     const foreign = foreignEntitiesOn(surface, force, specTiles(e))
     if (foreign.length === 0) continue
@@ -76,24 +164,124 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
     const b = foreign[0]
     conflicts.push({ kind: partKind(layout, e.owner), id: e.owner, blocker: `${b.name === "entity-ghost" ? `${b.ghost_name} ghost` : b.name} of ${b.force.name}`, at: { x: e.x, y: e.y } })
   }
-  return { missing, conflicts }
+  const intruders: LuaEntity[] = []
+  const seenIntruder: Record<number, boolean> = {}
+  for (const rid of parts.routes) {
+    const r = layout.routes[rid]
+    if (r === undefined) continue
+    for (let i = 0; i + 1 < r.steps.length; i++) {
+      const a = r.steps[i]
+      const b = r.steps[i + 1]
+      if (a.kind !== "ug-in" || b.kind !== "ug-out") continue
+      const dx = b.x === a.x ? 0 : b.x > a.x ? 1 : -1
+      const dy = b.y === a.y ? 0 : b.y > a.y ? 1 : -1
+      const n = math.abs(b.x - a.x) + math.abs(b.y - a.y)
+      for (let t = 1; t < n; t++) {
+        const x = a.x + dx * t
+        const y = a.y + dy * t
+        for (const u of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "underground-belt", force })) {
+          if (u.unit_number === undefined || seenIntruder[u.unit_number] || u.direction !== a.dir * 4) continue
+          seenIntruder[u.unit_number] = true
+          intruders.push(u)
+        }
+      }
+    }
+  }
+  return { missing, conflicts, misdirected, stale, intruders }
+}
+
+/** Item names on one transport line of a belt entity. */
+function lineItems(e: LuaEntity, line: number): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const it of e.get_transport_line(line).get_contents()) out[it.name] = true
+  return out
+}
+
+/**
+ * B107: the module's own belts downstream of its input port `port` (followed in the world, inside the module's rect)
+ * where another of its input items fills both lanes: the port's item has no lane left there. Sweep 628fa29 seed
+ * 1264816: a smelter column grew, its fuel arrived before the new ore side-load belt stood, the merge tile curved and
+ * put coal on both lanes; 10 of 12 furnaces never saw ore again and every repair said "nothing missing". Picking the
+ * belts up and placing them again empties them.
+ */
+export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string): { spec: EntitySpec; entity: LuaEntity }[] {
+  const m = findModule(layout, module)
+  const p = m !== undefined ? findPort(m, port) : undefined
+  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return []
+  const others: Record<string, boolean> = {}
+  for (const q of m.def.ports) if (q.kind === "belt-in" && q.item !== undefined && q.item !== p.item) others[q.item] = true
+  const specs: Record<string, EntitySpec> = {}
+  for (const e of partEntities(layout, { modules: [m.id], routes: [], poles: [] })) specs[string.format("%s@%g,%g", e.name, e.x, e.y)] = e
+  const inside = (e: LuaEntity): boolean => e.position.x > m.rect.x && e.position.x < m.rect.x + m.rect.w && e.position.y > m.rect.y && e.position.y < m.rect.y + m.rect.h
+  const t = portTile(m, p)
+  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const seen: Record<number, boolean> = {}
+  let todo = findEntities(surface, { position: { x: t.x + 0.5, y: t.y + 0.5 }, type: BELT_TYPES, force, limit: 1 })
+  while (todo.length > 0) {
+    const e = todo.pop()!
+    if (!e.valid || e.unit_number === undefined || seen[e.unit_number] || !inside(e)) continue
+    seen[e.unit_number] = true
+    const spec = specs[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]
+    if (spec !== undefined) {
+      const a = lineItems(e, 1)
+      const b = lineItems(e, 2)
+      for (const [item] of pairs(others)) {
+        if (a[item] && b[item]) {
+          out.push({ spec, entity: e })
+          break
+        }
+      }
+    }
+    if (e.type === "underground-belt" && e.belt_to_ground_type === "input") {
+      const n = e.neighbours as LuaEntity | undefined
+      if (n !== undefined) todo.push(n)
+    } else for (const o of e.belt_neighbours.outputs) todo.push(o)
+  }
+  return out
 }
 
 /**
  * Makes the world follow a diff: own entities of `remove` get clear jobs (the crew picks them up and keeps the items),
  * own ghosts of it are removed; `add` gets ghosts and place jobs. Returns the new ghosts and job ids.
  */
-export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: number[]; clearJobs: number[]; failed: string[] } {
+/**
+ * B101 (sweep 628fa29 seed 7718665): trees and rocks in the way of entities about to be placed. A tree centred in the
+ * next tile can reach into a planned entity's box (0.15 of a belt tile there); its ghost then never revives. The box is
+ * the prototype's collision box at the spec's place, turned for east/west.
+ */
+export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<string, boolean> = {}
+  for (const e of specs) {
+    const box = prototypes.entity[e.name]?.collision_box
+    if (box === undefined) continue
+    const turned = e.dir === 4 || e.dir === 12
+    const x1 = turned ? -box.right_bottom.y : box.left_top.x
+    const x2 = turned ? -box.left_top.y : box.right_bottom.x
+    const y1 = turned ? box.left_top.x : box.left_top.y
+    const y2 = turned ? box.right_bottom.x : box.right_bottom.y
+    const area = { left_top: { x: e.x + math.min(x1, x2), y: e.y + math.min(y1, y2) }, right_bottom: { x: e.x + math.max(x1, x2), y: e.y + math.max(y1, y2) } }
+    for (const o of findEntities(surface, { area, type: ["tree", "simple-entity"] })) {
+      const id = `${o.name}@${o.position.x},${o.position.y}`
+      if (seen[id]) continue
+      seen[id] = true
+      out.push(o)
+    }
+  }
+  return out
+}
+
+export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
   const force = faction.force
-  const clearJobs: number[] = []
+  const clearJobs: JobId[] = []
   for (const e of remove) {
     const ghost = ownGhost(surface, force, e)
-    if (ghost !== undefined) ghost.destroy()
+    if (ghost !== undefined) destroyEntity(ghost)
     const built = ownBuilt(surface, force, e)
     if (built !== undefined) clearJobs.push(addClearJob(faction, built, opts.priority))
   }
   const ghosts: LuaEntity[] = []
-  const placeJobs: number[] = []
+  const placeJobs: JobId[] = []
   const failed: string[] = []
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
@@ -122,27 +310,61 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
  * Gives up some parts of a layout (a module location something foreign took): their own ghosts are removed, their
  * built entities get clear jobs (the crew deconstructs them and keeps the items), and they leave the layout, with the
  * routes to and from removed modules and the pole lines of removed poles. Returns the tiles freed and the clear jobs.
+ *
+ * `adopt` lists routes that survive their module: a provider handover keeps the retiring provider's belt to a consumer
+ * because its replacement side-loads into it and adopts it (see `adoptRoute`). Those routes keep their tiles, their
+ * entities and their claims; the caller re-homes them to the replacement connection.
  */
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: number[]; routes: string[] } {
+/** B102: kept route pieces a dropped splitter stood on, ghosted once that splitter's clear job is over (`jobs/crew.ts`). */
+function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clearJobs: JobId[], priority?: number): void {
+  for (const e of specs) {
+    const after: JobId[] = []
+    for (const id of clearJobs) {
+      const j = getJob(faction.board, id)
+      const t = j !== undefined && j.payload.kind === "clear" ? j.payload.target : undefined
+      if (t === undefined || !t.valid || t.type !== "splitter") continue
+      const b = t.bounding_box
+      if (e.x > b.left_top.x && e.x < b.right_bottom.x && e.y > b.left_top.y && e.y < b.right_bottom.y) after.push(id)
+    }
+    faction.pendingGhosts ??= []
+    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority })
+  }
+}
+
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
+  const kept: Record<string, boolean> = {}
+  for (const rid of adopt ?? []) kept[rid] = true
   const routes = [...parts.routes]
   for (const rid of layout.routeOrder) {
+    if (kept[rid] === true) continue
     const r = layout.routes[rid]
     if ((mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) && routes.indexOf(rid) < 0) routes.push(rid)
   }
   const lineIds: string[] = []
   for (const p of layout.poles ?? []) if (parts.poles.indexOf(p.id) >= 0 && lineIds.indexOf(p.line) < 0) lineIds.push(p.line)
-  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => lineIds.indexOf(p.line) >= 0).map((p) => p.id) }
+  // B63 (bridge rule): a pole that is the only path from a generator to a module that stays is not removed with the
+  // abandoned ground. A line passing through it can carry everything behind it (3891760: 91 modules on a 17-tile gap).
+  const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules)
+  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => bridge.dropLines.indexOf(p.line) >= 0).map((p) => p.id) }
+  const keepTiles: Record<number, boolean> = {}
+  for (const k of bridge.keepPoles) keepTiles[k.key] = true
+  const going: EntitySpec[] = []
+  for (const e of partEntities(layout, all)) if (keepTiles[tkey(math.floor(e.x), math.floor(e.y))] !== true) going.push(e)
   const tiles = partTiles(layout, all)
-  const { clearJobs } = applyDiff(surface, faction, partEntities(layout, all), [], { priority })
+  const { clearJobs } = applyDiff(surface, faction, going, [], { priority })
+  // B102 (sweep 628fa29 seed 1264816): a dropped tap's or merge's splitter stood on a kept route's tile in place of its
+  // belt. Once the splitter is picked up, that belt goes back (else the kept route has a hole: cluster 2's ore stopped
+  // there for 300 game-min).
+  const dropped: Record<string, boolean> = {}
+  for (const rid of routes) dropped[rid] = true
+  const keptBefore = routeEntities(layout).filter((e) => !dropped[e.owner])
   for (const rid of routes) ripRoute(layout, rid)
-  for (const id of parts.modules) {
-    const m = findModule(layout, id)
-    if (m === undefined) continue
-    unmarkModule(layout, m, prototypeFacts)
-    layout.modules = layout.modules.filter((x) => x.id !== id)
-  }
-  removePoleLines(layout, lineIds)
-  return { tiles, clearJobs, routes }
+  const restore = entityDiff(keptBefore, routeEntities(layout)).add
+  if (restore.length > 0) restoreUnderSplitters(faction, restore, clearJobs, priority)
+  for (const id of parts.modules) removeModule(layout, id, prototypeFacts)
+  removePoleLines(layout, bridge.dropLines)
+  rehomeKeptPoles(layout, bridge.keepPoles)
+  return { tiles, clearJobs, routes, keptPoles: bridge.keepPoles.length }
 }

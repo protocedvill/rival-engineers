@@ -11,6 +11,10 @@ import { LabOptions, LabResult, runModuleLab } from "./module-lab"
 
 const PASS_RATIO = 0.9
 const SPEED = 100
+/** Coal primed into each burner machine (`LabOptions.primeFuel`): the lab's own refuel amount (upkeep). */
+const PRIME_FUEL = 5
+/** The validation that starts its burners from empty (the rest are primed). */
+const COLD_START = "smelter iron 12"
 
 /** Writes the module as a tools/render dump: script-output/modules/<id>.json (ports drawn as small grey squares). */
 function writeDump(def: ModuleDef): void {
@@ -133,9 +137,12 @@ function labTest(entry: CatalogEntry): void {
       steadyWeights = {}
       for (const r of def.rates.outputs) steadyWeights[r.item] = rawCost(def, r.item)
     }
-    const opts = { ...timing(entry.slow === true), setupForce, steadyWeights }
+    const opts: LabOptions = { ...timing(entry.slow === true), setupForce, steadyWeights, primeFuel: entry.name === COLD_START ? undefined : PRIME_FUEL, measureSteady: true }
     // A mall's products are lumpy (an assembler is worth ~22 plates): measure its plate value over 15 minutes.
-    if (steadyWeights !== undefined) opts.measureTicks = 60 * 60 * 15
+    if (steadyWeights !== undefined) {
+      opts.measureTicks = 60 * 60 * 15
+      opts.measureSteady = false
+    }
     runModuleLab(def, opts, (r) => check(entry.name, def, r))
   })
 }

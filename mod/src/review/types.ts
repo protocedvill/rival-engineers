@@ -34,11 +34,17 @@ export interface CrewTime {
 
 export interface PlayerReview {
   open: boolean
+  /** The factory-graph window (B16) is open. */
+  graphOpen?: boolean
+  /** Last tick the factory-graph window was refreshed (shares the inspector's cadence). */
+  graphLastRefresh?: number
   /** Selected faction (name) and crew member (id). */
   faction?: string
   crew?: number
   /** Crew member the camera follows (remote view centred on it). */
   follow?: number
+  /** Overlays drawn with the inspector closed (the review toolbar's Overlay button, B35). */
+  overlay?: boolean
   /** Overlay layer name → on. */
   layers: Record<string, boolean>
   /** Rendering objects drawn for this player (destroyed before each redraw). */

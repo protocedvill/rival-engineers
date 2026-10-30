@@ -71,7 +71,9 @@ export function expandRecipe(force: LuaForce, recipe: LuaRecipePrototype, crafts
   for (const ing of recipe.ingredients) {
     const need = ing.amount * crafts
     const sub = depth < 8 ? handRecipe(force, ing.name) : undefined
-    if (!sub) {
+    // A locked recipe is not a way for the character to make the ingredient (Space Age's scrap-recycling is locked
+    // and also lists raw items such as coal/stone). Treat it as a raw item; the bootstrap can mine/gather it.
+    if (!sub || !sub.enabled) {
       result.raw[ing.name] = (result.raw[ing.name] ?? 0) + need
       continue
     }

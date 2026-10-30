@@ -1,5 +1,6 @@
 import { LuaEntity, MapPosition } from "factorio:runtime"
 import { Patch } from "../world/resources"
+import type { JobId, WorldClaimTag } from "../shared/ids"
 
 // Storage shapes of the strategy layer (SPEC §5.5). Plain tables only.
 
@@ -19,7 +20,7 @@ export interface SitePart {
   position: MapPosition
   direction: defines.direction
   /** The place job filling this part's ghost. */
-  job?: number
+  job?: JobId
   /** The built entity, once placed. */
   built?: LuaEntity
   /** Whether the crew keeps it fuelled. */
@@ -76,6 +77,8 @@ export interface Catalog {
 
 export interface BrainState {
   base: MapPosition
+  /** B15: bootstrap sites evicted by the factory's plans so far. */
+  evicted?: number
   /** Hub the depot sits at (between the chosen patches). */
   hub?: MapPosition
   catalog: Catalog
@@ -87,10 +90,14 @@ export interface BrainState {
   goals: Goal[]
   /** Tile keys reserved by sites (footprint and margin). */
   reserved: Record<number, boolean>
+  /** Paired owner for `reserved` ("site:3", "module:n6", "route:...", "pole:...", "mine:..."). Absent in old saves. */
+  reservedBy?: Record<number, WorldClaimTag>
   /** D46: tile keys of the ore fields this faction mines (bootstrap sites, mining modules); off limits to others. */
   oreFields?: Record<number, boolean>
   /** Dedupe: a maintenance key ("fuel:<unit>") → its active job id. */
   jobKeys: Record<string, number>
+  /** B82: keys whose job failed, with the tick (jobs/keys.ts). */
+  failedKeys?: Record<string, number>
   /** Milestone name → tick first reached. */
   milestones: Record<string, number>
   /** Stall detection: last tick the plan progressed, and the count of plan steps done by then. */
@@ -100,6 +107,8 @@ export interface BrainState {
   replans: number
   /** Why the plan is waiting right now (for stall reports and telemetry). */
   waiting: string[]
+  /** B38: the last think's shortfalls: item → demand, stock, pending and what `produce` did about it (telemetry). */
+  shortfalls?: Record<string, { demand: number; stock: number; pending: number; action: string }>
   done: boolean
   doneTick?: number
   nextThink: number

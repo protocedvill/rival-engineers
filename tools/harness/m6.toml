@@ -1,0 +1,37 @@
+# M6a acceptance soak (SPEC §3, §8 M6): from a fresh start, one faction with the default crew reaches the v1 bar:
+# ≥ 30 red + 30 green science per minute consumed by its labs, sustained over 30 game-minutes, within 8 game-hours, and
+# every technology of the research goal (D30, 42 in vanilla 2.0.77). Every mod setting keeps its default (§5.7) except
+# the telemetry outputs and the milestone that ends a run (`v1-done` = `science-sustained` + `research-goal-done`).
+# Scorecard: python3 tools/harness/m6_scorecard.py out/soak/m6-v1
+
+[run]
+name = "m6-v1"
+seeds = [11, 222, 3333, 44444, 555555]
+game_hours = 8.0          # cap per seed (the §3 limit); the run stops early once the faction is done
+stop_when_done = true
+work_baseline = "tools/harness/baselines/m6-work.json"   # SPEC §9 work-count soft gate (workcounts.py)
+
+[run.fail_fast]           # stop a stuck seed early (soak.py --no-fail-fast to run it to the cap)
+stalls = 2                        # second STALL line (§3 stall check: no progress for stall-ticks)
+consecutive_plan_failures = 8     # two goals' worth of failed plan attempts in a row
+ghost_rounds = 20                 # the same build's leftover ghosts unplaceable for 20 rounds (10 game-min)
+exploring_minutes = 60            # D62: searching past the home zone for ore (radar outposts) for over 1 game-hour (user, 2026-10-21)
+
+[run.fail_fast.deadlines]         # game hours by which a milestone must have happened (a seed that can't make 8 h)
+"automated-red-science" = 1.5
+"stage-2" = 3.0
+"automated:logistic-science-pack" = 5.0
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600     # 1 game-minute
+frameDumpIntervalTicks = 36000    # 10 game-minutes
+frameDumpRadius = 160
+soakDoneMilestone = "v1-done"
+# As m6-random20: keep labs consuming red+green after the v1 research goal (hidden tech; the setting stays false in
+# game), or science-sustained is unreachable once research-goal-done fires (fixed10 seed 222, 9c41906: research done at
+# 287 min at ~28/min, then 0/min to the cap).
+debugInfiniteResearch = true

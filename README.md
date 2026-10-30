@@ -5,6 +5,9 @@ See [`docs/SPEC.md`](docs/SPEC.md) for the full design and milestones.
 
 ## Development
 
+Agents and contributors start with [`AGENTS.md`](AGENTS.md). It routes each kind of change to the Factorio/TSTL
+lessons that must be read before editing; those engine facts cannot be recovered reliably from the TypeScript alone.
+
 Requirements: Node 22, Lua 5.2+ (`lua5.2` or `lua` on PATH, or `$LUA`) for unit tests, Python 3 with Pillow
 (renderer), and Linux (headless Factorio).
 
@@ -15,8 +18,14 @@ mkdir -p .factorio-test && curl -fsSL https://factorio.com/get-download/2.0.77/h
 mkdir -p .factorio-test/data/mods && cp ci/mods/*.zip .factorio-test/data/mods/
 
 npm run typecheck        # T0
+npm run check:architecture # setting registry parity and pure-module boundary checks (also included in typecheck)
+npm run status           # branch/commit, dirty state, current report and unresolved BUGS rows
+npm run doctor           # read-only environment check: build freshness, runtimes, locks and Factorio processes
+npm run diagnose -- RUN [SEED] [FACTION]  # explain a soak's goal/planner/job/crew blocker chain
 npm run test:unit        # T1: pure logic (mod/unit), compiled by TSTL, run with plain Lua
-npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (~2.5 min, serial ~11)
+npm run test:unit -- --no-build -t "green-line-dev11" plan-replay   # reuse the last build, one test (0.5 s, not 30 s + all)
+npm run replay:sweep -- "seed11-production-ok" "REPLAY_UG=,1" "REPLAY_SOFT_PLACE=0.25,0.5" -j 2   # replay variants in parallel
+npm test                 # build + in-game tests (T2) on headless Factorio, in parallel shards (over 5 min: ~10 min on 2026-10-19 with other runs going; manager-only, SPEC §9)
 npm test -- "pattern"    # filter tests by Lua pattern (several patterns: any of them)
 npm test -- -j 4 "pattern"      # shard count (default: half the cores, at most one shard per unit; or $TEST_JOBS)
 npm test -- --plan              # print the shard plan without running
@@ -25,6 +34,12 @@ npm test -- "routing lab"       # M4b: 5 modules placed, routed and run in a lab
 npm test -- "real terrain"      # M4b: the module set on 5 generated maps (~10 s; filters are Lua patterns: no "|", escape "-" as "%-")
 npm run test:serial      # build + one `factorio-test run` in .factorio-test/data (debugging; takes the same filters)
 ```
+
+T1 options (`tools/run-unit-tests.mjs`): `--no-build` skips the delete + TSTL compile (~20–30 s) and runs the existing
+build (it stops with an error if there is none); `--out DIR` or `$UNIT_OUT` builds and runs in DIR instead of
+`mod/build-unit`, so concurrent runs in one checkout don't clobber each other (any number of runs may share one build
+read-only with `--no-build`); `-t TEXT` (`$UNIT_TEST_FILTER`) runs only the tests whose name contains TEXT; the last
+argument filters test files. Without options it rebuilds and runs everything, as before.
 
 `npm test` (`tools/test-parallel.mjs`) runs one `factorio-test run` per shard, each with its own write-data directory
 `.factorio-test/shards/N/` (vendored mods copied from `ci/mods/`). A test file is one unit; `tools/test-shards.json`
@@ -58,8 +73,15 @@ python3 tools/harness/soak.py -c tools/harness/two-factions.toml --gif
 python3 tools/harness/soak.py --seeds 11 --hours 0.5 --name dev   # quick one-off
 python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/no-starting-area.toml   # several configs
 python3 tools/harness/soak.py -j 1                        # one at a time (for performance numbers)
+python3 tools/harness/determinism.py --seed 11 --no-build    # T4: fresh x2 and resumed from a save must match
 # → out/soak/<name>/scorecard.md, scorecard.json, seed-N/{telemetry.json,frames/,factorio-current.log}
 ```
+
+Every new soak also writes `out/soak/<name>/run.json` atomically. It records the commit and dirty state, generated-mod
+content hash, invocation, per-seed PID/status/exit reason and whether the experiment completed. Incremental scorecards
+are marked partial until every seed finishes; use the manifest instead of inferring process state from file mtimes.
+An unexpected Factorio exit also writes `seed-N/failure.json`. Start there: it bundles both log tails, last structured
+diagnostics, and pointers to the newest visual/planner evidence so a fatal error is not stranded in terminal output.
 
 Seeds and configs run concurrently, `-j` at a time (default `$SOAK_JOBS`, else half the cores), each in its own
 write-data directory `.factorio-test/soak/<name>/seed-N/`. Concurrent runs slow each other: compare wall and AI
@@ -77,10 +99,31 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
 3. **Failed plans as T1 tests:** with frame dumps on, every failed plan writes `failed-plans/<faction>/<goal>-aN-tT`
    `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
    Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the
-   plan in plain Lua in ~10 s (`npm run test:unit -- plan-replay`; `REPLAY_ROUTER="maxRipups=6"` and
-   `REPLAY_UNDERGROUND=4` try router variants). Soaks also keep every *adopted* plan's input (`plans/<faction>/`);
-   `compareReplay(...)` replays one with the D36 / B2 comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`,
-   `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
+   plan in plain Lua (`npm run test:unit -- --no-build -t "<fixture>" plan-replay`: one replay takes from 0.5 s to a minute or so; the
+   whole file takes over 5 minutes). `REPLAY_ROUTER="maxRipups=6"` and `REPLAY_UNDERGROUND=4` try router variants. Soaks
+   also keep every *adopted* plan's input (`plans/<faction>/`); `compareReplay(...)` replays one with the D36 / B2
+   comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`, `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
+   - **Replays use today's weights.** A capture freezes the policy of the day it was taken; `load` replaces every
+     weight (router, placement, obstacles, corridor, search radii) with the current defaults and keeps only the plan's
+     own choices (topology, smelting, utilization). A default change therefore shows up in the replays at once, and a
+     replay that pins a past decision pins its weights itself with a comment (the logistics comparisons: B26, D59).
+     `REPLAY_CAPTURED=1` replays with the captured policy.
+   - **Read the dump first.** A replay that fails writes `out/replay-dumps/<replay>/summary.txt` and `plan.json`
+     (`REPLAY_DUMP=1`: every replay; `REPLAY_DUMP=0`: no trace). For each placement: the chosen site and the runners-up
+     with every weighted score term (`center`, `port`, `facing`, `clear`, `adjacent`, `exactGap`, `coverage`,
+     `growthCoverage`, `softClaim`; lower wins), and the rejected candidates counted by reason (`hard`, `ore`,
+     `corridor`, `port-lane`, ...) with the nearest one's blocker (`blocked at 475,-70: terrain own`,
+     `ore at ...`, `occupied m:n3`, `reserved p:n21.out`, `route route:... (fixed)`). For each failed route: window,
+     expansions, and what walls the explored region (tiles per blocker), plus the start and goal neighbourhoods.
+     Events list re-placements, expansions and shared-mine completions. The trace (`src/planner/trace.ts`) is off in
+     game: one nil check per placement candidate.
+   - **Sweep variants in parallel**, not one replay at a time: `npm run replay:sweep -- "<test filter>" "VAR=a,b"
+     "VAR2=x,y" [-j N] [--no-build] [--out DIR] [--name NAME]` builds once, runs every combination as its own Lua
+     process (`-j`: default half the cores, or `$SWEEP_JOBS`) and prints one row per replay and combination: result,
+     phase, work (placement / routing / comparison), searches, rip-ups, re-placements, route tiles, failures. An empty
+     value unsets the variable (`REPLAY_UG=,1`); split values on `|` when one contains a comma
+     (`"REPLAY_ROUTER=maxRipups=6,rip=10|maxRipups=8"`). Output: `out/replay-sweep/NAME/summary.{txt,json}` and per
+     combination `output.log` and `dumps/`.
 4. Engine-side bugs (walks, mining, placement) get a T2 test with the same neighbourhood (`npm test -- "name"`, ~20 s).
 5. Full acceptance last, more seeds than the bar (`--seeds 11,222,...,7,77,777`) so one round shows several bugs.
 
@@ -158,10 +201,34 @@ spawns. Factions spawn on the first tick per the mod settings (faction count, cr
 starting areas, SPEC §5.7 / D32). In a normal freeplay game with the mod, the inspector works the same way; its
 **Spectate / Take body** button switches between your character and a spectator camera.
 
-**Inspector** (Ctrl+Shift+I, or the magnifier button on the shortcut bar):
+**Review toolbar** (top left, in the sandbox and for any spectator; a spectator has no shortcut bar): *Inspector*,
+*Graph* (the factory-graph window), *Overlay* (draws the overlay layers with the inspector closed) with one toggle per
+overlay layer, and *Report…*. Hotkeys: **Ctrl+Shift+I** inspector, **Ctrl+Shift+G** factory graph, **Ctrl+Shift+R**
+report (they work while spectating; a character player also has them as shortcut-bar buttons).
+
+**Reports** (B34): *Report…* asks what you see, then writes a diagnostic bundle to
+`.factorio-review/script-output/rival-engineers/reports/<tick>-<slug>/` and saves the game as
+`.factorio-review/saves/_autosave-re-report-<tick>-<slug>.zip` (the chat line names both). The bundle:
+`message.txt`; `report.json` (message, tick, save name, surface, your camera position and zoom, controller, the
+inspector's selected faction/crew, game speed, mod version, and per faction the soak telemetry: brain, board job
+counts and open jobs, depot, research, each crew member's pocket, stats, last action and position, plus the work
+report; the brain's `shortfalls` say what it was short of and what it did about it); `entities.json` (a frame dump
+around the camera, `frame-dump-radius` tiles, `tools/render` format; built entities carry their non-empty `inventories`,
+`status` and electric `network` id, so full furnaces and unjoined poles show) and
+`graph-<faction>.json` (each Factory Graph). An agent diagnosing one: read `message.txt` and `report.json`, render
+`entities.json` with `tools/render` (with `--graph` for a graph), then reproduce from the save:
+`npm run review -- --load _autosave-re-report-<tick>-<slug>` to watch it, or copy the zip and
+`python3 tools/harness/soak.py --seeds 1 --name repro --from-save <copy>` to resume it headless with the current
+build. The mod's log lines from that session are in `.factorio-review/factorio-current.log` (until the next start).
+
+**Inspector** (Ctrl+Shift+I, the toolbar, or the magnifier button on the shortcut bar):
 - Top row: game speed ×1–×16, Pause/Resume, Step (one tick), Spectate. Overlay checkboxes: *Crew paths and
   actions* (each crew member's walk path, its target, and "#id action · category Ns" above its head) and *Planned
-  entities* (ghosts outlined in the faction's colour, brighter when claimed). Overlays are drawn only for you.
+  entities* (ghosts outlined in the faction's colour, brighter when claimed), *Factory graph*, and *Growth plans* (B33,
+  off by default: each expandable module's footprint in white, its planned growth units in order `+1`, `+2`... in amber
+  with an arrow toward the last one, a strip mine's units past its ore in dashed red; a whole-patch mine's full planned
+  footprint in violet, its built drills in green, its unbuilt planned drills dashed violet and its ore patch outlined in
+  yellow). Overlays are drawn only for you.
 - Faction (◀ ▶ to cycle, Go to base): the brain's current goal, what it waits on, the Job Board (ready, claimed,
   waiting on dependencies, in back-off, done, failed, releases), the oldest job nobody is working and why, and
   stalls (with the current one, if any).

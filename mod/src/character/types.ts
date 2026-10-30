@@ -139,6 +139,13 @@ export interface ActionRecord {
   readyTick?: number
   /** The entity a `place` action created. */
   placed?: LuaEntity
+  /**
+   * Mine / pick up: the box the target (or a covering obstacle) covered while it was valid. Character mining raises
+   * no event the terrain model listens to (M6a.2, seed 222), so the ground is rescanned when it vanishes.
+   */
+  goneBox?: { surface: string; left: MapPosition; right: MapPosition }
+  /** Mine: the box a covering obstacle (tree/rock) covered, for the same rescan. */
+  obstacleBox?: { surface: string; left: MapPosition; right: MapPosition }
 }
 
 export interface ControllerState {

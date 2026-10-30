@@ -4,10 +4,11 @@
 // that the new one doesn't reuse) and what it builds. Pure: no Factorio globals.
 
 import { ProtoFacts } from "../modules/facts"
-import { BuildParts, EntitySpec, partEntities } from "./build-list"
+import type { RouteId } from "../shared/ids"
+import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
-import { LayoutState, ripRoute } from "./layout"
+import { dependentRoutes, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
 
@@ -19,11 +20,7 @@ export interface ReroutePlan {
   remove: EntitySpec[]
   add: EntitySpec[]
   /** Route ids of the new layout that replace the ripped ones (build parts). */
-  routes: string[]
-}
-
-function key(e: EntitySpec): string {
-  return string.format("%s@%g,%g:%g:%s", e.name, e.x, e.y, e.dir, e.ioType ?? "")
+  routes: RouteId[]
 }
 
 /**
@@ -31,7 +28,7 @@ function key(e: EntitySpec): string {
  * faction's view (its built entities and ghosts are OWN, other forces' FOREIGN): the ripped routes' own tiles count as
  * free, so a reroute can reuse every piece not in the way; a foreign entity on them still blocks.
  */
-export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: string[], region: Rect): ReroutePlan {
+export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect): ReroutePlan {
   const layout = cloneLayout(base)
   const before: EntitySpec[] = []
   const conns: ConnectionRequest[] = []
@@ -39,18 +36,20 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   const seen: Record<string, boolean> = {}
   for (const id of routeIds) {
     if (layout.routes[id] === undefined) continue
-    // The route and its taps: their entities and tiles before they are ripped.
-    const group = [id]
-    for (const other of layout.routeOrder) if (layout.routes[other]?.tapOf === id) group.push(other)
+    // The route and what depends on it (B88/B91: its taps at any depth, as `ripRoute` takes them, and the provider-group
+    // joins onto its belt): their entities and tiles before they are ripped.
+    const group: RouteId[] = dependentRoutes(layout, [id])
     for (const rid of group) {
       if (seen[rid]) continue
       seen[rid] = true
       const r = layout.routes[rid]
       for (const k of r.tiles) freed[k] = true
       for (const e of partEntities(layout, { modules: [], routes: [rid], poles: [] })) before.push(e)
-      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt })
+      // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
+      // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
+      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined })
     }
-    ripRoute(layout, id)
+    for (const rid of group) ripRoute(layout, rid)
   }
   if (conns.length === 0) return { ok: false, reason: "no route to reroute", layout: base, remove: [], add: [], routes: [] }
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
@@ -67,7 +66,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
     for (const [k, v] of pairs(job.failures)) why.push(`${k}: ${v}`)
     return { ok: false, reason: `reroute failed: ${why.join("; ")}`, layout: base, remove: [], add: [], routes: [] }
   }
-  const routes: string[] = []
+  const routes: RouteId[] = []
   const wanted: Record<string, boolean> = {}
   for (const c of conns) wanted[c.id] = true
   for (const rid of job.layout.routeOrder) {
@@ -77,9 +76,6 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   for (const rid of routes) job.layout.routes[rid].fixed = true
   const parts: BuildParts = { modules: [], routes, poles: [] }
   const after = partEntities(job.layout, parts)
-  const had: Record<string, boolean> = {}
-  for (const e of before) had[key(e)] = true
-  const has: Record<string, boolean> = {}
-  for (const e of after) has[key(e)] = true
-  return { ok: true, layout: job.layout, remove: before.filter((e) => !has[key(e)]), add: after.filter((e) => !had[key(e)]), routes }
+  const d = entityDiff(before, after)
+  return { ok: true, layout: job.layout, remove: d.remove, add: d.add, routes }
 }

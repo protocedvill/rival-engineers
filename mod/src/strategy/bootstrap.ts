@@ -1,17 +1,23 @@
 import { BoundingBox, LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
+import { keyTaken, pruneFailedKeys } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
+import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
+import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-index"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { mallSources, tempCells } from "./factory"
-import { bufferSources } from "../modules/buffers"
+import { moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
+import { pickTreeItem } from "./tree-products"
+import { bufferChests } from "../modules/buffers"
+import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
 import { countEntities, findEntities } from "../work"
+import { destroyEntity, markDirty } from "../planner/terrain"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -23,14 +29,16 @@ import { countEntities, findEntities } from "../work"
 //     Site kind comes from prototypes: a resource whose product is a fuel gets self-feeding drill pairs, one
 //     that smelts gets a drill feeding a furnace, anything else a drill feeding a chest.
 //  H2 At most SITE_WINDOW goals are worked on at once, so materials go to the earliest goals first.
-//  H3 Everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
-//     jobs. Craft jobs take raw materials (the crafting queue makes intermediates).
-//  H4 Demand-driven production: the materials of active jobs and the goal's items are the demand. A shortfall
-//     is met, in order, by collecting from the faction's machines (furnace plates, stone chests, surplus in
-//     coal pairs), by hand-crafting, or by hand-mining (ore goes straight into a furnace of its kind).
-//     Hand-mining is capped at one job per crew member.
+//  H3 Everything gathered or crafted goes to the depot; crew empty their pockets there between jobs. Craft jobs
+//     take raw materials (the crafting queue makes intermediates).
+//  H4 Demand-driven production: the materials of active jobs and the goal's items are the demand. Stock is what the
+//     depot, the crew's pockets and the supply points hold (B32: furnace plates and chests of sites, surplus coal in
+//     pairs, the factory's output chests, module buffers, within `supply-radius` of the hub): the crew takes from
+//     supply points directly when a job needs the item. A shortfall beyond that is met by temporary cells, by
+//     hand-crafting, or by hand-mining (ore goes straight into a furnace of its kind). Hand-mining is capped at one
+//     job per crew member.
 //  H5 Burners are refuelled when they hold less than FUEL_LOW_MINUTES of fuel, up to FUEL_TOP_MINUTES.
-//     Outputs are collected only on demand: a full furnace just pauses its drill until plates are needed
+//     Outputs are never moved to the depot (B32): a full furnace just pauses its drill until a job takes its plates
 //     (collecting everything filled depot after depot with plates nobody needed).
 //  H6 Sites go on the patch chosen by distance and size from the hub (the depot), on the patch tiles
 //     nearest the depot, facing it, one tile apart, on tiles free of trees and rocks.
@@ -38,19 +46,18 @@ import { countEntities, findEntities } from "../work"
 const SITE_WINDOW = 2
 const FUEL_LOW_MINUTES = 2
 const FUEL_TOP_MINUTES = 8
-/** Coal kept in each drill of a self-feeding pair when collecting its surplus. */
+/** Coal kept in each drill of a self-feeding pair when the crew takes its surplus. */
 const PAIR_KEEP = 10
-/** A pair drill's surplus is collected once it holds this much. */
-const PAIR_COLLECT_AT = 30
 /** Coal the depot should hold on top of open fuel jobs. */
 const FUEL_BUFFER = 20
 const GATHER_CHUNK = 20
 /** Most raw items in one craft job (a crew member carries them in one trip). */
 const CRAFT_CHUNK_RAW = 60
-const PRIORITY = { fuel: 100, place: 90, transfer: 60, feed: 55, craft: 50, gather: 20 }
+const PRIORITY = { fuel: 100, place: 90, feed: 55, craft: 50, gather: 20 }
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
-const EXPLORE_MAX = 3
+/** D62: bootstrap exploration stops at the home zone; past it, radar outposts explore. */
+const EXPLORE_MAX = HOME_SCANS
 /** D43: a new mining site must hold this many times the depletion lead time of ore, or it would be replaced at once. */
 const SITE_MIN_LIFE = 2
 const PRIORITY_RETIRE = 60
@@ -192,7 +199,10 @@ interface Ctx {
   tick: number
   surface: LuaSurface
   force: LuaForce
+  /** What the depot, the crew's pockets and the supply points hold. */
   stock: Record<string, number>
+  /** The depot and the crew's pockets only (ore there is fed into furnaces). */
+  depotStock: Record<string, number>
   pending: Record<string, number>
   demand: Record<string, number>
   order: string[]
@@ -203,6 +213,10 @@ interface Ctx {
   woodGathers: number
   depot?: LuaEntity
   waiting: string[]
+  /** B38: this think's shortfalls and the path `produce` took for each (copied to `brain.shortfalls`). */
+  shortfalls: Record<string, { demand: number; stock: number; pending: number; action: string }>
+  /** D61: raw materials of poles being crafted this think: gathered at the power priority. */
+  powerItems: Record<string, boolean>
 }
 
 function think(faction: FactionState, brain: BrainState, config: Config, tick: number): void {
@@ -214,10 +228,13 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
     surface: factionSurface(faction),
     force: factionForce(faction),
     stock: {},
+    depotStock: {},
     pending: {},
     demand: {},
     order: [],
+    powerItems: {},
     oreInbound: {},
+    shortfalls: {},
     gathers: 0,
     woodGathers: 0,
     depot: undefined,
@@ -231,13 +248,18 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   updateSites(ctx)
   checkDepletion(ctx)
   ctx.depot = pickDepot(ctx)
+  registerSupplies(ctx)
   countStock(ctx)
   advanceGoals(ctx)
   scanJobs(ctx)
   maintain(ctx)
   reconcile(ctx)
+  // B18: what the live orders leave of the surplus stocks the temporary cells (requests win; the refills' crew
+  // priority is its own setting).
+  topUpTempCells(ctx)
   milestones(ctx)
   brain.waiting = ctx.waiting
+  brain.shortfalls = ctx.shortfalls
   checkStall(ctx)
   if (tick - brain.lastPrune >= 3600) {
     brain.lastPrune = tick
@@ -329,6 +351,18 @@ function layout(catalog: Catalog, kind: SiteKind, c: MapPosition, direction: def
   return [drill, out]
 }
 
+/** The table-lookup part of `rectFree`: own reservations, ore under a drill, active hand-mining. */
+function rectCheap(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>): boolean {
+  for (let x = part.x1; x < part.x2; x++) {
+    for (let y = part.y1; y < part.y2; y++) {
+      if (ctx.brain.reserved[tkey(x, y)]) return false
+      if (part.onOre && !ore[tkey(x, y)]) return false
+      if (keyActive(ctx, `res:${x},${y}`)) return false
+    }
+  }
+  return true
+}
+
 /** Whether a site part fits: free, unclaimed tiles, and for a drill every tile on `resource` and no other ore in reach. */
 function rectFree(ctx: Ctx, part: PlannedPart, ore: Record<number, boolean>, resource: string): boolean {
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
@@ -399,19 +433,19 @@ function directionsToward(from: MapPosition, to: MapPosition): defines.direction
   return out
 }
 
-function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { set: Record<number, boolean>; tiles: MapPosition[] } {
+function oreTiles(ctx: Ctx, patch: Patch, near: MapPosition, half: number): { set: Record<number, boolean>; tiles: { x: number; y: number; amount: number }[] } {
   const x1 = math.max(patch.x1, near.x - half)
   const y1 = math.max(patch.y1, near.y - half)
   const x2 = math.min(patch.x2, near.x + half)
   const y2 = math.min(patch.y2, near.y + half)
   const set: Record<number, boolean> = {}
-  const tiles: MapPosition[] = []
+  const tiles: { x: number; y: number; amount: number }[] = []
   if (x1 >= x2 || y1 >= y2) return { set, tiles }
   for (const e of findEntities(ctx.surface, { name: patch.name, area: [[x1, y1], [x2, y2]] })) {
     const tx = math.floor(e.position.x)
     const ty = math.floor(e.position.y)
     set[tkey(tx, ty)] = true
-    tiles.push({ x: tx, y: ty })
+    tiles.push({ x: tx, y: ty, amount: e.amount })
   }
   return { set, tiles }
 }
@@ -428,17 +462,25 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
       return da !== db ? da - db : a.x !== b.x ? a.x - b.x : a.y - b.y
     })
     let checks = 0
+    const w = prototypes.entity[ctx.brain.catalog.drill].tile_width
+    // B15: a tile far below its share of the ore a drill needs for SITE_MIN_LIFE is worked out: skip it unscanned.
+    const r = prototypes.entity[ctx.brain.catalog.drill].mining_drill_radius ?? 1
+    const share = (SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes * drillRate(ctx.brain.catalog.drill, patch.name)) / math.max(1, (2 * r) * (2 * r))
     for (const t of tiles) {
       if (checks > 600) break
+      if (t.amount < share / 4) continue
       // The drill's top-left tile is t, so its centre is t + (w/2, h/2).
-      const w = prototypes.entity[ctx.brain.catalog.drill].tile_width
       const c = { x: t.x + w / 2, y: t.y + w / 2 }
       for (const d of directionsToward(c, hub)) {
         const parts = layout(ctx.brain.catalog, kind, c, d)
         if (!parts) continue
-        checks++
+        // B15: only spots that pass the table lookups count toward the cap (the entity scans are what costs). Near
+        // the hub a patch is often all reserved by the factory's modules or worked out: those must not use it up.
         let ok = true
-        for (const p of parts) if (!rectFree(ctx, p, set, patch.name)) ok = false
+        for (const p of parts) if (!rectCheap(ctx, p, set)) ok = false
+        if (!ok) continue
+        checks++
+        for (const p of parts) if (ok && !rectFree(ctx, p, set, patch.name)) ok = false
         // D43: enough ore under every drill that the site is not replaced right away.
         const minLife = SITE_MIN_LIFE * ctx.config.bootstrapDepletionMinutes
         for (const p of parts) if (ok && p.onOre && minLife > 0 && drillMinutes(ctx.surface, p.entity, p.position, patch.name) < minLife) ok = false
@@ -478,14 +520,14 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
   return undefined
 }
 
-function reserveParts(ctx: Ctx, parts: PlannedPart[], margin: number): number[] {
+function reserveParts(ctx: Ctx, parts: PlannedPart[], margin: number, owner: string): number[] {
   const keys: number[] = []
   for (const p of parts) {
     for (let x = p.x1 - margin; x < p.x2 + margin; x++) {
       for (let y = p.y1 - margin; y < p.y2 + margin; y++) {
         const k = tkey(x, y)
         if (!ctx.brain.reserved[k]) {
-          ctx.brain.reserved[k] = true
+          reserveWorldTile(ctx.brain, k, owner)
           keys.push(k)
         }
       }
@@ -501,12 +543,12 @@ function createSite(ctx: Ctx, kind: SiteKind, parts: PlannedPart[], resource?: s
   for (const p of parts) {
     const ghost = ctx.surface.create_entity({ name: "entity-ghost", inner_name: p.entity, position: p.position, direction: p.direction, force: ctx.faction.force })
     if (!ghost) {
-      for (const g of ghosts) if (g.valid) g.destroy()
+      for (const g of ghosts) if (g.valid) destroyEntity(g)
       return undefined
     }
     ghosts.push(ghost)
   }
-  site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1)
+  site.tiles = reserveParts(ctx, parts, kind === "depot" ? 2 : 1, siteClaim(site.id))
   if (resource !== undefined) {
     ctx.brain.oreFields ??= {}
     for (const p of parts) if (p.onOre) claimOreField(ctx.surface, ctx.brain.oreFields, resource, p.x1, p.y1)
@@ -569,7 +611,7 @@ function failSite(ctx: Ctx, site: Site, why: string): void {
   for (const part of site.parts) {
     const job = part.job !== undefined ? ctx.faction.board.jobs[part.job] : undefined
     if (job && job.status === "open") failJob(ctx.faction.board, job.id, `site-failed: ${why}`, ctx.tick)
-    if (job && job.payload.kind === "place" && job.payload.ghost.valid && !(part.built && part.built.valid)) job.payload.ghost.destroy()
+    if (job && job.payload.kind === "place" && job.payload.ghost.valid && !(part.built && part.built.valid)) destroyEntity(job.payload.ghost)
   }
   // Keep the failed spot reserved (it is bad), but count failures per patch.
   if (site.patch !== undefined) {
@@ -608,6 +650,13 @@ function checkDepletion(ctx: Ctx): void {
 /** D43: the replacement is built; the old site stops being maintained and its entities are picked up. */
 function retireSite(ctx: Ctx, site: Site): void {
   site.status = "retired"
+  // Its ground is free again: release the reservation now (the next resyncReserved would anyway; M6a.2, seed 222:
+  // retired sites 2/4/14 kept reserving their tiles and read as OWN walls for good). The standing parts are still
+  // protected by the terrain scan until the crew picks them up.
+  for (const k of site.tiles) releaseWorldTile(ctx.brain, k)
+  site.tiles = []
+  // Its ore is (nearly) worked out: planners scan that ground again before they count on it (M6a.2, seed 222).
+  for (const part of site.parts) markDirty(ctx.faction.surface, { x: part.position.x - 4, y: part.position.y - 4 }, { x: part.position.x + 4, y: part.position.y + 4 })
   log(`[rival-engineers] faction ${ctx.faction.name}: site ${site.id} (${site.kind} ${site.resource ?? ""}) retired`)
 }
 
@@ -758,6 +807,10 @@ function countStock(ctx: Ctx): void {
     addInv(own, m.character.get_main_inventory() ?? undefined)
     for (const item in own) ctx.stock[item] = math.max(ctx.stock[item] ?? 0, own[item])
   }
+  for (const item in ctx.stock) ctx.depotStock[item] = ctx.stock[item]
+  // B32: what the supply points hold is stock too: the crew takes it from there when a job needs it.
+  const supply = supplyStock(ctx.faction, ctx.config.supplyMinTake)
+  for (const item in supply) ctx.stock[item] = (ctx.stock[item] ?? 0) + supply[item]
 }
 
 function addDemand(ctx: Ctx, item: string, count: number): void {
@@ -771,6 +824,11 @@ function addDemand(ctx: Ctx, item: string, count: number): void {
 
 function addPending(ctx: Ctx, item: string, count: number): void {
   ctx.pending[item] = (ctx.pending[item] ?? 0) + count
+}
+
+/** B38: a job feeding depot ore into a bootstrap furnace (`maintain`); not furnace fuel. */
+function isOreFeed(ctx: Ctx, p: JobPayload): boolean {
+  return p.kind === "fuel" && p.item !== ctx.brain.catalog.fuel && p.target !== undefined && p.target.valid && p.target.type === "furnace" && ctx.brain.catalog.smelts[p.item] !== undefined
 }
 
 /** Demand and pending output from every active job. */
@@ -797,17 +855,14 @@ function scanJobs(ctx: Ctx): void {
         break
     }
     if (p.kind === "haul" || p.kind === "deposit" || p.kind === "transfer") continue
+    // B38: a feed moves ore the depot already holds into a furnace; as demand it sent the crew hand-mining ore for it.
+    if (isOreFeed(ctx, p)) continue
     for (const m of job.materials) addDemand(ctx, m.item, m.count)
   }
 }
 
 function keyActive(ctx: Ctx, key: string): boolean {
-  const id = ctx.brain.jobKeys[key]
-  if (id === undefined) return false
-  const job = ctx.faction.board.jobs[id]
-  if (job !== undefined && (job.status === "open" || job.status === "claimed")) return true
-  delete ctx.brain.jobKeys[key]
-  return false
+  return keyTaken(ctx.brain, ctx.faction.board.jobs, key, ctx.tick)
 }
 
 function addKeyed(ctx: Ctx, key: string, spec: JobSpec<JobPayload>): CrewJob {
@@ -861,17 +916,37 @@ function maintain(ctx: Ctx): void {
   }
   if (ctx.brain.sites.length > 0) addDemand(ctx, fuel, FUEL_BUFFER)
   if (!ctx.depot) return
-  // Ore sitting in the depot (leftovers of hand-mining) goes into furnaces of its kind.
+  // Ore sitting in the depot (leftovers of hand-mining) goes into furnaces of its kind. B38: only the ore no open feed has
+  // claimed yet (feeds beyond what the depot holds are cancelled), never into a furnace whose output is full, and a feed
+  // is no demand (it used to send the crew hand-mining ore to fill the feeds it had just over-booked).
   const catalog = ctx.brain.catalog
+  const feeds: Record<string, number[]> = {}
+  const claimedOre: Record<string, number> = {}
+  for (const id of ctx.faction.board.active) {
+    const job = ctx.faction.board.jobs[id]
+    const p = job.payload
+    if (!isOreFeed(ctx, p) || p.kind !== "fuel") continue
+    claimedOre[p.item] = (claimedOre[p.item] ?? 0) + p.count
+    if (job.status === "open") (feeds[p.item] ??= []).push(id)
+  }
   for (const ore in catalog.smelts) {
-    const inDepot = ctx.stock[ore] ?? 0
-    if (inDepot <= 0) continue
+    const inDepot = ctx.depotStock[ore] ?? 0
+    let claimed = claimedOre[ore] ?? 0
+    for (const id of [...(feeds[ore] ?? [])].reverse()) {
+      if (claimed <= inDepot) break
+      const p = ctx.faction.board.jobs[id].payload
+      if (p.kind === "fuel") claimed -= p.count
+      failJob(ctx.faction.board, id, "feed: the depot no longer holds the ore", ctx.tick)
+    }
+    const free = inDepot - claimed
+    if (free <= 0) continue
     for (const furnace of furnacesFor(ctx, ore)) {
       const key = `feed:${furnace.unit_number}`
       if (keyActive(ctx, key)) continue
+      if (furnace.status === defines.entity_status.full_output) continue
       const room = sourceRoom(furnace, ore)
       if (room < 5) continue
-      const count = math.min(room, inDepot)
+      const count = math.min(room, free)
       addKeyed(ctx, key, {
         kind: "fuel",
         pos: furnace.position,
@@ -879,7 +954,6 @@ function maintain(ctx: Ctx): void {
         priority: PRIORITY.feed,
         payload: { kind: "fuel", item: ore, count, target: furnace, partial: true },
       })
-      addDemand(ctx, ore, count)
       ctx.oreInbound[ore] = (ctx.oreInbound[ore] ?? 0) + count
       break
     }
@@ -910,59 +984,56 @@ function sourceRoom(furnace: LuaEntity, ore: string): number {
   return stack - inv.get_item_count(ore)
 }
 
-interface Source {
-  entity: LuaEntity
-  item: string
-  amount: number
-}
-
-/** Machines holding `item` (or anything collectable, if undefined) the crew may take from. */
-function collectSources(ctx: Ctx, item: string | undefined): Source[] {
-  // The factory's mall (M5) supplies buildings: its output chests come first.
-  const out: Source[] = mallSources(ctx.faction.name, item)
-  // D42 / B5: module buffer depots (the end of a smelter column) next.
-  for (const b of bufferSources(ctx.faction.force, item)) out.push(b)
+/**
+ * B32: the supply points the crew may take from when a job needs an item (`jobs/supply.ts`), registered every think:
+ * the factory's chest-out ports (mall and temporary cells), module buffer chests, then the bootstrap sites' furnace
+ * outputs, chest-site chests and pair drills' surplus coal. Only those within `supply-radius` of the hub (0 = any).
+ * Stockpiles are not listed (the crew counts them anyway). Replaces B17's collect transfers to the depot.
+ */
+function registerSupplies(ctx: Ctx): void {
+  const points: SupplyPoint[] = []
+  const seen: Record<number, boolean> = {}
+  for (const chest of ctx.faction.stockpiles) if (chest.valid) seen[chest.unit_number!] = true
+  const hub = ctx.brain.hub ?? ctx.brain.base
+  const radius = ctx.config.supplyRadius
+  const add = (entity: LuaEntity, inventory: defines.inventory, kind: SupplyKind, item?: string, keep?: number): void => {
+    if (!entity.valid || entity.unit_number === undefined || seen[entity.unit_number]) return
+    if (radius > 0 && positionDistance(entity.position, hub) > radius) return
+    seen[entity.unit_number] = true
+    points.push({ entity, inventory, item, keep, kind })
+  }
+  for (const c of supplyChests(ctx.faction.name)) add(c.entity, defines.inventory.chest, c.temp ? "temp-out" : "chest-out")
+  // B36: buffers of modules the planner stamped were never registered; register any built one that is missing.
+  repairBuffers(ctx.faction.name)
+  for (const chest of bufferChests(ctx.faction.force)) add(chest, defines.inventory.chest, "buffer")
   const fuel = ctx.brain.catalog.fuel
   for (const site of ctx.brain.sites) {
     if (site.status === "failed" || site.status === "retired") continue
     for (const part of site.parts) {
       const e = part.built
       if (!e || !e.valid) continue
-      if (site.kind === "smelt" && e.type === "furnace") {
-        const inv = e.get_inventory(defines.inventory.furnace_result)!
-        for (const c of inv.get_contents()) if (item === undefined || c.name === item) out.push({ entity: e, item: c.name, amount: c.count })
-      } else if (site.kind === "chest" && e.type === "container") {
-        for (const c of e.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: e, item: c.name, amount: c.count })
-      } else if (site.kind === "pair" && (item === undefined || item === fuel)) {
-        const n = e.get_fuel_inventory()?.get_item_count(fuel) ?? 0
-        if (n >= (item === undefined ? PAIR_COLLECT_AT : PAIR_KEEP + 5)) out.push({ entity: e, item: fuel, amount: n - PAIR_KEEP })
-      }
+      if (site.kind === "smelt" && e.type === "furnace") add(e, defines.inventory.furnace_result, "furnace")
+      else if (site.kind === "chest" && e.type === "container") add(e, defines.inventory.chest, "chest-site")
+      else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, "pair", fuel, PAIR_KEEP)
     }
   }
-  out.sort((a, b) => (a.amount !== b.amount ? b.amount - a.amount : a.entity.unit_number! - b.entity.unit_number!))
-  return out
-}
-
-function collect(ctx: Ctx, from: LuaEntity, item: string, amount: number): number {
-  if (!ctx.depot) return 0
-  const key = `collect:${from.unit_number}:${item}`
-  if (keyActive(ctx, key)) return 0
-  // Take a little more than is there now: it keeps coming while the crew member walks over.
-  const count = amount + 10
-  addKeyed(ctx, key, {
-    kind: "haul",
-    pos: from.position,
-    priority: PRIORITY.transfer,
-    payload: { kind: "transfer", item, count, from, to: ctx.depot },
-  })
-  addPending(ctx, item, amount)
-  return amount
+  // B36 (proposed, default off): smelter modules' furnace outputs, last (buffers and bootstrap furnaces first).
+  if (ctx.config.supplyModuleFurnaces) for (const e of moduleFurnaces(ctx.faction.name)) add(e, defines.inventory.furnace_result, "module-furnace")
+  setSupplies(ctx.faction, points)
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Reconcile (H4)
 
 function reconcile(ctx: Ctx): void {
+  // D61: the materials of pole crafts already on the board are power materials too (a craft job in progress counts as
+  // pending, so `craft` is not called for it again).
+  for (const id of ctx.faction.board.active) {
+    const j = ctx.faction.board.jobs[id]
+    if (j.payload.kind !== "craft" || j.payload.item === undefined) continue
+    if (prototypes.item[j.payload.item]?.place_result?.type !== "electric-pole") continue
+    for (const m of j.materials) ctx.powerItems[m.item] = true
+  }
   // Item goals among the active window are demand too.
   let active = 0
   for (const goal of ctx.brain.goals) {
@@ -979,31 +1050,37 @@ function reconcile(ctx: Ctx): void {
   for (let i = 0; i < ctx.order.length; i++) {
     const item = ctx.order[i]
     const short = ctx.demand[item] - (ctx.stock[item] ?? 0) - (ctx.pending[item] ?? 0)
-    if (short > 0) produce(ctx, item, short)
+    if (short <= 0) continue
+    ctx.shortfalls[item] = { demand: ctx.demand[item], stock: ctx.stock[item] ?? 0, pending: ctx.pending[item] ?? 0, action: "?" }
+    produce(ctx, item, short)
+  }
+  // D61: gathers already open for a pole's material move up too (they count as pending, so no new ones were added).
+  const board = ctx.faction.board
+  for (const id of board.active) {
+    const j = board.jobs[id]
+    if (j.status === "open" && j.payload.kind === "gather" && ctx.powerItems[j.payload.item]) j.priority = math.max(j.priority, gatherPriority(ctx, j.payload.item))
   }
 }
 
 function produce(ctx: Ctx, item: string, short: number): void {
-  // 1. Collect from machines.
-  for (const src of collectSources(ctx, item)) {
-    if (short <= 0) return
-    // Not worth a walk for a handful: wait until a few more have come out.
-    if (src.amount < math.min(short, 8)) continue
-    short -= collect(ctx, src.entity, src.item, src.amount)
+  const note = (action: string): void => {
+    const f = ctx.shortfalls[item]
+    if (f !== undefined) f.action = action
   }
-  if (short <= 0) return
-  // 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  // 1. B32: what the supply points hold is already in the stock (the crew takes it from there). 1b. D38: a temporary factory makes it: count what it will make within the wait, feed it what it lacks.
+  const before = short
   short = feedTempCells(ctx, item, short)
-  if (short <= 0) return
-  // 2. Hand-craft.
+  if (short <= 0) return note(`temp cells cover ${before}`)
+  // 2. Hand-craft. A locked recipe is only a fallback: Space Age's scrap-recycling also produces raw items such as
+  // coal, but a coal patch the crew can mine is a better source than an unresearched recipe.
+  let lockedRecipe: string | undefined
   const hr = handRecipe(ctx.force, item)
   if (hr) {
-    if (!hr.enabled) {
-      ctx.waiting.push(`recipe ${hr.recipe.name} locked`)
-      return
+    if (hr.enabled) {
+      craft(ctx, item, hr.recipe.name, short)
+      return note(`hand-craft ${short}`)
     }
-    craft(ctx, item, hr.recipe.name, short)
-    return
+    lockedRecipe = hr.recipe.name
   }
   // 3. Smelt: plates come from furnaces; hand-mine ore into them if what is on its way is not enough.
   const catalog = ctx.brain.catalog
@@ -1011,17 +1088,23 @@ function produce(ctx: Ctx, item: string, short: number): void {
   if (ore !== undefined) {
     let inbound = ctx.oreInbound[ore] ?? 0
     for (const f of furnacesFor(ctx, ore)) inbound += f.get_inventory(defines.inventory.furnace_source)!.get_item_count(ore)
-    inbound += ctx.stock[ore] ?? 0
+    inbound += ctx.depotStock[ore] ?? 0
     const need = short - inbound
-    if (need <= 0) return
-    const furnaces = furnacesFor(ctx, ore)
+    if (need <= 0) return note(`smelt: ${inbound} ${ore} on its way`)
+    // B38: never into a furnace whose output is full (it won't smelt until the plates are taken).
+    const furnaces = furnacesFor(ctx, ore).filter((f) => f.status !== defines.entity_status.full_output)
     const into = furnaces.length > 0 ? furnaces[0] : ctx.depot
     if (furnaces.length === 0) ctx.waiting.push(`no furnace for ${ore}`)
     gather(ctx, ore, need, into)
-    return
+    return note(`smelt: hand-mine ${need} ${ore} (${inbound} on its way)`)
   }
-  // 4. Hand-mine a resource or cut trees.
+  // 4. Hand-mine a resource or cut trees. If there is no raw source, a locked hand recipe is the only known way.
+  if (lockedRecipe !== undefined && !canGather(ctx, item)) {
+    ctx.waiting.push(`recipe ${lockedRecipe} locked`)
+    return note("recipe locked")
+  }
   gather(ctx, item, short, ctx.depot)
+  note(`gather ${short}`)
 }
 
 /**
@@ -1089,6 +1172,56 @@ function feedTempCells(ctx: Ctx, item: string, short: number): number {
   return short
 }
 
+/**
+ * B18: keep temporary cells stocked **proactively** (every think): top each built cell's input chest up to the same
+ * buffer the on-demand feed uses (`bootstrap-factory-wait-seconds` of output), from the depot's surplus, so the
+ * cell's output chest builds a buffer that serves any later request without waiting for one. Each ingredient is one
+ * keyed job - the same `tempfeed:` keys the on-demand feed uses, so the two never double-book; the configured
+ * priority decides how the refills compete with other work (0 = never stock proactively). What the cell holds and
+ * what a refill is already bringing counts, so a buffer arrives in chunks across thinks without over-reserving.
+ */
+function topUpTempCells(ctx: Ctx): void {
+  const priority = ctx.config.bootstrapTempCellFeedPriority
+  if (priority <= 0) return
+  const cells = tempCells(ctx.faction.name)
+  if (cells.length === 0) return
+  const wait = ctx.config.bootstrapFactoryWaitSeconds
+  for (const cell of cells) {
+    const m = cell.machine
+    // A cell without power makes nothing: don't stock what won't run.
+    if (m === undefined || !m.valid || m.status === defines.entity_status.no_power || m.to_be_deconstructed()) continue
+    const recipe = prototypes.recipe[cell.recipe]
+    const per = craftYield(cell.recipe, cell.item)
+    const cap = math.max(per, math.floor(cell.rate * wait))
+    const inv = m.get_inventory(defines.inventory.crafter_input)
+    // B36: the buffer is the output chest. A cell whose output already holds `cap` products is stocked: topping it up
+    // further only piles up its product and eats the ingredients other cells need (seed 11: the belt cell took every
+    // gear while 218 belts sat in its chest, and the red-science cell never got one).
+    const room = cap - cell.output.get_item_count(cell.item)
+    if (room <= 0) continue
+    const crafts = math.ceil(room / per)
+    for (const ing of recipe.ingredients) {
+      const have = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      let inflight = 0
+      const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
+      if (keyActive(ctx, key)) {
+        const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]!]
+        if (job.payload.kind === "fuel") inflight = job.payload.count
+      }
+      const add = math.max(0, math.min(crafts * ing.amount - have - inflight, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
+      if (add <= 0) continue
+      addKeyed(ctx, key, {
+        kind: "fuel",
+        pos: cell.input.position,
+        materials: [{ item: ing.name, count: add }],
+        priority,
+        payload: { kind: "fuel", item: ing.name, count: add, target: cell.input, partial: true },
+      })
+      addDemand(ctx, ing.name, add)
+    }
+  }
+}
+
 function craft(ctx: Ctx, item: string, recipeName: string, short: number): void {
   const recipe = prototypes.recipe[recipeName]
   const per = craftYield(recipeName, item)
@@ -1105,6 +1238,12 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   let affordable = math.huge
   for (const r in one.raw) affordable = math.min(affordable, math.floor(math.max(0, ctx.stock[r] ?? 0) / one.raw[r]))
   const chunk = math.max(1, math.min(math.floor(CRAFT_CHUNK_RAW / math.max(1, rawPer)), affordable))
+  // B54 (user decision 2026-10-21): poles for a power network are crafted first, like their place jobs.
+  const placed = prototypes.item[item]?.place_result
+  const power = placed?.type === "electric-pole"
+  const priority = power ? math.max(PRIORITY.craft, ctx.config.factoryPowerBuildPriority) : PRIORITY.craft
+  // ...and so is what they are made of (B54: the poles waited 25 game-min on wood gathered at priority 20).
+  if (power) for (const r in one.raw) ctx.powerItems[r] = true
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n
@@ -1120,7 +1259,7 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
         kind: "craft",
         pos: ctx.depot?.position ?? ctx.brain.hub ?? ctx.brain.base,
         materials,
-        priority: PRIORITY.craft,
+        priority,
         payload: { kind: "craft", recipe: recipeName, count: n, item, deliverTo: ctx.depot },
       },
       ctx.tick,
@@ -1183,6 +1322,16 @@ function freeResource(ctx: Ctx, name: string, near: MapPosition, count: number):
   return undefined
 }
 
+function gatherPriority(ctx: Ctx, item: string): number {
+  return ctx.powerItems[item] ? math.max(PRIORITY.gather, ctx.config.factoryPowerBuildPriority) : PRIORITY.gather
+}
+
+/** Whether the bootstrap has a raw source for `item`: an ore patch product or a tree product. */
+function canGather(ctx: Ctx, item: string): boolean {
+  for (const p of ctx.brain.patches) if (p.product === item) return true
+  return treeProduct() === item
+}
+
 function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefined): void {
   const cap = ctx.faction.crew.length
   // Which resource gives this item?
@@ -1226,7 +1375,7 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
     addKeyed(ctx, key, {
       kind: "gather",
       pos: target.position,
-      priority: PRIORITY.gather,
+      priority: gatherPriority(ctx, item),
       payload: { kind: "gather", item, count, target, deliverTo: into },
     })
     if (isWood) ctx.woodGathers++
@@ -1240,17 +1389,23 @@ function gather(ctx: Ctx, item: string, short: number, into: LuaEntity | undefin
 let woodItem: string | undefined
 function treeProduct(): string | undefined {
   if (woodItem === undefined) {
+    // Space Age trees have several products; the alphabetically first tree can yield carbon first and wood second,
+    // so pick `wood` by name across every tree (tree-products.ts).
     const trees = prototypes.get_entity_filtered([{ filter: "type", type: "tree" }])
     const names: string[] = []
     for (const [name] of pairs(trees)) names.push(name as string)
     names.sort()
+    let fallback: string | undefined
     for (const name of names) {
-      const p = trees[name].mineable_properties.products?.[0]
-      if (p && p.type === "item") {
-        woodItem = p.name
+      const item = pickTreeItem(trees[name].mineable_properties.products)
+      if (item === undefined) continue
+      if (item === "wood") {
+        woodItem = item
         break
       }
+      if (fallback === undefined) fallback = item
     }
+    if (woodItem === undefined) woodItem = fallback
   }
   return woodItem
 }
@@ -1377,8 +1532,8 @@ export function replan(ctx: Ctx): void {
       for (const part of site.parts) {
         if (part.built && part.built.valid) continue
         part.job = undefined
-        const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-        if (ghost) {
+        const ghost: LuaEntity | undefined = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+        if (ghost !== undefined) {
           const job = addJob(
             faction.board,
             {
@@ -1398,10 +1553,10 @@ export function replan(ctx: Ctx): void {
     }
     site.status = "failed"
     for (const part of site.parts) {
-      const ghost = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
-      if (ghost) ghost.destroy()
+      const ghost: LuaEntity | undefined = findEntities(ctx.surface, { type: "entity-ghost", position: part.position, force: faction.force, limit: 1 })[0]
+      if (ghost !== undefined) destroyEntity(ghost)
     }
-    for (const k of site.tiles) delete brain.reserved[k]
+    for (const k of site.tiles) releaseWorldTile(brain, k)
   }
   for (const goal of brain.goals) {
     if (goal.kind !== "site" || goal.done) continue
@@ -1428,6 +1583,9 @@ function pruneBoard(faction: FactionState, tick: number): void {
     if (needed[id] || (job.finishedTick ?? tick) > tick - 1800) continue
     delete board.jobs[id]
   }
+  if (faction.brain !== undefined) pruneFailedKeys(faction.brain, tick)
+  const f = storage.factories?.[faction.name]
+  if (f !== undefined) pruneFailedKeys(f, tick)
 }
 
 /** Telemetry view of a brain (also on the remote interface). */
@@ -1462,6 +1620,7 @@ export function brainReport(faction: FactionState) {
     stalls: brain.stalls,
     replans: brain.replans,
     waiting: brain.waiting,
+    shortfalls: brain.shortfalls,
     steps: brain.steps,
   }
 }

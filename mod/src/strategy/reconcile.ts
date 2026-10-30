@@ -42,7 +42,7 @@ export interface ReconcileParams {
   cooldownTicks: number
 }
 
-export type RemedyKind = "grow" | "repair" | "upkeep"
+export type RemedyKind = "grow" | "repair" | "upkeep" | "parallel"
 
 export interface Remedy {
   /** Root-cause key: one remedy history per key. */
@@ -52,6 +52,8 @@ export interface Remedy {
   node?: string
   edge?: string
   why: string
+  /** B102: the node whose trace found this root cause (its recovery ends the episode). */
+  for?: string
 }
 
 export interface RemedyRecord {
@@ -59,6 +61,8 @@ export interface RemedyRecord {
   last: number
   kind: RemedyKind
   why: string
+  /** B102: the node the remedies were for; once it is ok again the history is dropped. */
+  for?: string
 }
 
 /** Per-faction reconciler state (persisted with the factory). */
@@ -87,6 +91,11 @@ export interface ReconcileInput {
    * short only of such items is "expected": not reported as a problem and never remedied.
    */
   crewSupplied?: (this: void, n: LogicalNode, item: string) => boolean
+  /**
+   * B98: whether node `n` is being handed over to a replacement (D67/D55 provider handover). A depleted outpost under
+   * way to its replacement gets no deplete remedy: the handover is that remedy.
+   */
+  handingOver?: (this: void, n: LogicalNode) => boolean
 }
 
 export interface ReconcileResult {
@@ -123,12 +132,15 @@ function builtFor(g: LogicalGraph, n: LogicalNode, tick: number): number | undef
 }
 
 /** The raw status of a node from its last measurement (see the file comment), with a reason. */
-export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStatus; why: string } {
+export function classify(n: LogicalNode, p: ReconcileParams, beltPlan = 0): { status: NodeStatus; why: string } {
   const m = n.measured
   if (m === undefined || m.states === undefined || (m.machines ?? 0) === 0) return { status: "unknown", why: "not measured" }
   const s = m.states
   const pct = (x: number): string => `${math.floor(x * 100 + 0.5)}%`
   if (n.kind === "power") {
+    // B52: the shares are over boilers and engines together, and a boiler without fuel leaves its engines without steam
+    // ("starved", like no water): with any boiler unfuelled, the engines it starves count toward the fuel shortage.
+    if (s.unfuelled >= p.minActive && s.unfuelled + s.starved >= p.badShare) return { status: "unfuelled", why: `boilers without fuel ${pct(s.unfuelled)}, engines without steam ${pct(s.starved)}` }
     if (s.unfuelled >= p.badShare) return { status: "unfuelled", why: `boilers without fuel ${pct(s.unfuelled)}` }
     if (s.starved >= p.badShare) return { status: "starved", why: `boilers without water ${pct(s.starved)}` }
     return { status: "ok", why: `load ${pct(m.load ?? 0)}` }
@@ -145,7 +157,9 @@ export function classify(n: LogicalNode, p: ReconcileParams): { status: NodeStat
   }
   // Sinks (the mall) run at a fraction of their capacity by design and stop when their chests are full.
   if (n.kind === "sink" || n.item === undefined) return { status: "ok", why: "sink" }
-  const planned = rateIn(n.planned.outputs, n.item)
+  // B103 (1264816): a built node keeps the plan it was built with; the belts later planned from it say what it must make
+  // now (a shared smelter planned at 0.37/s fed belts planned for 3.4/s, and at 0.63/s it looked fine).
+  const planned = math.max(rateIn(n.planned.outputs, n.item), beltPlan)
   const out = rateIn(m.outputs, n.item)
   const rate = `${string.format("%.3g", out)}/${string.format("%.3g", planned)}/s`
   if (planned <= 0 || out >= planned * (1 - p.shortfall)) return { status: "ok", why: rate }
@@ -182,6 +196,15 @@ export function expectedShortage(n: LogicalNode, raw: { status: NodeStatus; why:
 /** What a belt edge's last flow probe says (see `trace`). */
 export type EdgeVerdict = "stale" | "full" | "intake" | "broken" | "sparse"
 
+/**
+ * B104 (1264816): how long an edge measurement stays fresh: a node window, but at least one round of probes over every
+ * probeable belt (one probe at a time: `probeTicks`, then up to `gapTicks` until the next starts). Shorter, a trace
+ * through several belts always meets a stale one and waits for a probe forever.
+ */
+export function probeMaxAgeFor(windowTicks: number, probeTicks: number, gapTicks: number, belts: number): number {
+  return math.max(windowTicks, belts * (probeTicks + gapTicks))
+}
+
 export function edgeVerdict(e: LogicalEdge, tick: number, p: ReconcileParams): EdgeVerdict {
   if (e.measuredTick === undefined || e.measuredRate === undefined || tick - e.measuredTick > p.probeMaxAge) return "stale"
   const full = e.measuredFull ?? { from: 0, to: 0 }
@@ -199,10 +222,13 @@ interface TraceCtx {
   remedies: Remedy[]
   probe: string[]
   seen: Record<string, boolean>
+  /** The node being traced (B102: remedies remember it). */
+  origin?: string
 }
 
 function remedy(t: TraceCtx, r: Remedy): void {
   for (const x of t.remedies) if (x.key === r.key) return
+  r.for = t.origin
   t.remedies.push(r)
 }
 
@@ -215,20 +241,64 @@ function label(n: LogicalNode): string {
   return `${n.id} (${n.role})`
 }
 
+/**
+ * B99: the node whose machines make `n`'s output: a node folded into a shared whole-patch mine (`alias`, D52/B78) has
+ * none of its own and is never measured; that mine's status and output are its own.
+ */
+function physicalNode(g: LogicalGraph, n: LogicalNode): LogicalNode {
+  return n.alias !== undefined ? (g.nodes[n.alias] ?? n) : n
+}
+
+/** The belts `prod`'s machines feed: its own and those of the nodes folded into it. */
+function beltsFrom(g: LogicalGraph, prod: LogicalNode): LogicalEdge[] {
+  const out = edgesFrom(g, prod.id)
+  for (const id of g.nodeOrder) if (g.nodes[id].alias === prod.id) for (const e of edgesFrom(g, id)) out.push(e)
+  return out
+}
+
+/** Whether any belt from `prod` carrying `item` is already at capacity (the group remedy owns that case). */
+function anyFull(g: LogicalGraph, prod: LogicalNode, item: string, tick: number, p: ReconcileParams): boolean {
+  for (const o of beltsFrom(g, prod)) {
+    if (o.kind !== "belt" || o.item !== item || o.from === undefined) continue
+    if (edgeVerdict(o, tick, p) === "full") return true
+  }
+  return false
+}
+
 /** A starved (or unfuelled) node: which of its inputs is short, and why. */
 function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number): RootCause {
   const p = t.input.params
+  // B87: an item no edge carries (crew-supplied, or an intermediate made inside the module, like a red line's gears) is
+  // the cause only when no belt input explains the shortage: trace the belt inputs first.
+  let external: RootCause | undefined
+  // B105 (1264816): a feed that is only filling or below plan (nothing to act on) does not end the search: another feed
+  // of the item may be broken or undersized. It is the answer only when no feed has more to say.
+  let passive: RootCause | undefined
   for (const item of items) {
     const edges = edgesInto(t.g, n.id).filter((e) => e.kind === "belt" && e.item === item)
-    if (edges.length === 0) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
+    if (edges.length === 0) {
+      external = external ?? { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
+      continue
+    }
     for (const e of edges) {
       if (e.from === undefined) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, supplied from outside the graph` }
-      const prod = t.g.nodes[e.from]
-      if (prod === undefined) continue
+      const own = t.g.nodes[e.from]
+      if (own === undefined) continue
+      const prod = physicalNode(t.g, own)
       if (prod.lifecycle !== "built") return { kind: "building", id: prod.id, what: "under construction", why: `${item} comes from ${label(prod)}, still being built` }
       const v = edgeVerdict(e, t.input.tick, p)
       if (v === "stale") return wantProbe(t, e)
-      if (v === "full") return { kind: "edge", id: e.id, what: "at-capacity", why: `${e.role} carries ${fmt(e.measuredRate)}/s, its belt's capacity (${fmt(e.capacityRate)}/s): undersized for ${fmt(e.plannedRate)}/s planned` }
+      if (v === "full") {
+        const why = `${e.role} carries ${fmt(e.measuredRate)}/s, its belt's capacity (${fmt(e.capacityRate)}/s): undersized for ${fmt(e.plannedRate)}/s planned`
+        // B60 group remedy: a shared trunk is undersized as a group. Growing one producer would not widen the belt it
+        // shares, so the group gets a parallel provider instead (the design keeps this one at its real capacity and
+        // assigns the residual consumers to a parallel role with merge side-loads). A point-to-point belt is a
+        // single-route sizing decision, which the planner's overflow choice owns; the reconciler stays out of it.
+        let shared = 0
+        for (const o of beltsFrom(t.g, prod)) if (o.kind === "belt" && o.item === item) shared++
+        if (shared > 1) remedy(t, { key: `parallel:${prod.id}`, kind: "parallel", node: prod.id, why })
+        return { kind: "edge", id: e.id, what: "at-capacity", why }
+      }
       if (v === "intake") return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
       if (v === "broken" || prod.status === "backed-up") {
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
@@ -238,17 +308,33 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       if (prod.status === "starved" || prod.status === "unfuelled" || prod.status === "unpowered") return trace(t, prod, depth + 1)
       // The producer makes more than arrives: the belt between is still filling (or losing items). Wait.
       const made = rateIn(prod.measured?.outputs ?? [], item)
-      if (made > 0 && (e.measuredRate ?? 0) < p.arrivedShare * made) {
-        return { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item} but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+      // B69 (soak vps-d66 seed 5387208): nothing at all arrives at a warmed-up starved consumer while the producer makes
+      // the item. A filling belt brings some; this route lost a piece (its splitter tap was never built, 150 game-min).
+      if (made > 0 && e.measuredRate === 0) {
+        remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${label(prod)} makes ${fmt(made)}/s of ${item} but none reaches ${label(n)}` })
+        return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: nothing arrives while ${label(prod)} makes ${fmt(made)}/s` }
+      }
+      // B96 (sweep 3e1c4d7 seed 1264816): a shared producer's other belts of this item carry the rest of its output;
+      // only what they leave is this belt's to bring (0.3/s of 0.633 reached one of three consumers: "filling" for 300
+      // game-min, no remedy).
+      let others = 0
+      for (const o of beltsFrom(t.g, prod)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
+      const forThis = math.max(0, made - others)
+      if (forThis > 0 && (e.measuredRate ?? 0) < p.arrivedShare * forThis) {
+        passive ??= { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
+        continue
       }
       if (shares(prod).working >= p.busyShare) {
-        remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
+        // Unless one of this producer's belts is already full: then the group remedy below covers it, and growing the
+        // producer would not widen a belt that is at capacity.
+        if (!anyFull(t.g, prod, item, t.input.tick, p)) remedy(t, { key: `grow:${prod.id}`, kind: "grow", node: prod.id, why: `${label(prod)} runs flat out (${fmt(rateIn(prod.measured?.outputs ?? [], prod.item ?? ""))}/s) and ${label(n)} still lacks ${item}` })
         return { kind: "node", id: prod.id, what: "undersized", why: `${label(prod)} runs flat out and ${label(n)} still lacks ${item}` }
       }
-      return { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }
+      passive ??= { kind: "node", id: prod.id, what: "below plan", why: `${label(prod)} delivers ${fmt(e.measuredRate)}/s of ${item} (${fmt(e.plannedRate)}/s planned) without being starved or blocked` }
     }
+    if (passive !== undefined) return passive
   }
-  return { kind: "node", id: n.id, what: "unknown", why: `${label(n)}: no input found short` }
+  return external ?? { kind: "node", id: n.id, what: "unknown", why: `${label(n)}: no input found short` }
 }
 
 function fmt(x: number | undefined): string {
@@ -274,7 +360,13 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
   const p = t.input.params
   if (n.status === "starved") {
     const items = missingItems(t, n)
-    if (items[0] === "depleted") return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D28: relocation is P2)` }
+    if (items[0] === "depleted") {
+      // D52/B21: a worked-out outpost expands in place over the rest of its patch (its growth area is already claimed);
+      // D55: a whole-patch mine re-claims the next free part of its patch, and with none left it is relocated.
+      if (t.input.handingOver?.(n) === true) return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up; its replacement is being connected (handover)` }
+      if (n.kind === "outpost") remedy(t, { key: `deplete:${n.id}`, kind: "grow", node: n.id, why: `${label(n)}: the ore under its drills is used up; expand over the rest of the patch, else relocate` })
+      return { kind: "node", id: n.id, what: "depleted", why: `${label(n)}: the ore under its drills is used up (D52/D55: expand or move within the patch, else relocate)` }
+    }
     if (items[0] === "water") return { kind: "node", id: n.id, what: "no water", why: `${label(n)}: boilers without water` }
     return traceInputs(t, n, items, depth)
   }
@@ -301,7 +393,7 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
     return { kind: "edge", id: pe.id, what: "not connected", why: `${label(n)} lacks power while ${label(pw)} has spare capacity` }
   }
   if (n.status === "backed-up") {
-    const outs = edgesFrom(t.g, n.id).filter((e) => e.kind === "belt")
+    const outs = beltsFrom(t.g, n).filter((e) => e.kind === "belt")
     if (outs.length === 0) return { kind: "demand", id: n.id, what: "no consumer", why: `${label(n)}: nothing in the graph takes its output` }
     for (const e of outs) {
       const c = t.g.nodes[e.to]
@@ -341,7 +433,9 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       }
       continue
     }
-    const raw = expectedShortage(n, classify(n, p), input.crewSupplied)
+    let beltPlan = 0
+    for (const e of edgesFrom(g, id)) if (e.kind === "belt" && e.item === n.item) beltPlan += e.plannedRate
+    const raw = expectedShortage(n, classify(n, p, beltPlan), input.crewSupplied)
     if (raw.status === n.status) {
       delete st.pending[id]
       n.statusReason = raw.why
@@ -358,6 +452,10 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       st.changes[raw.status] = (st.changes[raw.status] ?? 0) + 1
     } else st.pending[id] = { status: raw.status, count }
   }
+  // B102 (sweep 628fa29 seed 1264816): a root cause whose node is ok again is over; its history starts again, so its
+  // remedies can act when it fails later (cluster 2's ore belt used its repairs up before it ever worked, and later lost
+  // a belt that nothing repaired).
+  for (const [key, rec] of pairs(st.remedies)) if (rec.for !== undefined && g.nodes[rec.for]?.status === "ok") delete st.remedies[key as string]
   const t: TraceCtx = { g, input, remedies: [], probe: [], seen: {} }
   for (const id of g.nodeOrder) {
     const n = g.nodes[id]
@@ -366,6 +464,7 @@ export function reconcile(g: LogicalGraph, st: ReconcileState, input: ReconcileI
       continue
     }
     t.seen = {}
+    t.origin = n.id
     n.cause = trace(t, n, 0)
   }
   const ready: Remedy[] = []
@@ -383,6 +482,7 @@ export function recordRemedy(st: ReconcileState, r: Remedy, tick: number, result
   rec.count++
   rec.last = tick
   rec.why = r.why
+  if (r.for !== undefined) rec.for = r.for
   st.remedies[r.key] = rec
   st.log.push({ tick, key: r.key, kind: r.kind, why: r.why, result })
   while (st.log.length > LOG_KEPT) st.log.shift()

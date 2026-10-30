@@ -11,6 +11,8 @@ declare global {
   }
 
   interface RivalEngineersStorage {
+    /** Explicit save schema. Optional only so saves created before schema 1 can be adopted deterministically. */
+    schemaVersion?: number
     pathRequests: Record<number, PathRequestState>
     configOverrides: Partial<Config>
     controllers: Record<number, ControllerState>

@@ -19,6 +19,8 @@ export interface Config {
   debugInstantCraft: boolean
   /** Debug only: multiplies build, reach and resource reach. 1 = player parity. */
   debugReachMultiplier: number
+  /** Debug/soak only: after the normal research goal, repeat a hidden infinite technology to keep labs consuming packs. */
+  debugInfiniteResearch: boolean
   /** Attempts before a failing job is marked failed (Job Board). */
   jobMaxAttempts: number
   /** Back-off before a released job may be claimed again; doubles with each failed attempt. */
@@ -79,7 +81,10 @@ export interface Config {
   layoutTopology: string
   /** D25: edges are planned up to this fraction of nominal belt capacity. */
   beltUtilization: number
-  /** Planner budget: work units per tick (one placement candidate or one A* expansion each). */
+  /**
+   * Planner budget for the whole mod: work units per tick (one placement candidate or one A* expansion each), shared
+   * equally by the plans running; one plan alone gets all of it.
+   */
   plannerWorkPerTick: number
   /** Terrain model budget: chunks scanned per tick. */
   terrainChunksPerTick: number
@@ -146,6 +151,18 @@ export interface Config {
   plannerPlacementSoftClaim: number
   /** D50 / B9: router cost per tile on another module's growth area (policy router.softClaim). */
   plannerRouterSoftClaim: number
+  /** B52: the router soft-claim cost's factor per growth unit farther from the module (policy router.softClaimDecay). */
+  plannerRouterSoftClaimDecay: number
+  /** B26: placement cost per footprint tile on the near part of another module's growth area (policy placement.growthBand). */
+  plannerPlacementGrowthBand: number
+  /** B26: growth units next to a module that count as its near band (policy placement.growthBandUnits). */
+  plannerPlacementGrowthBandUnits: number
+  /** B26: placement cost per growth unit an expandable module's own band would refuse (policy placement.growthBlocked). */
+  plannerPlacementGrowthBlocked: number
+  /** D57: extra distance (tiles) a new mine pays to open a field the faction does not mine yet (policy placement.newField). */
+  plannerPlacementNewField: number
+  /** B37: placement/routing cost per pole-line tile taken; the line is evicted and re-poled (policy obstacles.poleEvict). */
+  plannerPoleEvictCost: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
   plannerRouterBundleFactor: number
   /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */
@@ -160,8 +177,41 @@ export interface Config {
   bootstrapFactories: string
   /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */
   bootstrapFactoryWaitSeconds: number
+  /** B18: priority of the crew jobs that keep temporary cells stocked proactively (0 = never stock). */
+  bootstrapTempCellFeedPriority: number
   /** D38: craft jobs a member queues in the background of a batch (0 = craft standing). */
   crewBackgroundCrafts: number
+  /** M6: the design plans every stage target times this (headroom so the measured rate reaches the target). */
+  factoryDesignMargin: number
+  /** M6: per stage (";"), the unit time labs are sized for: "mean" / "max" over the research goal, or seconds. */
+  factoryLabSizing: string
+  /** M6 (SPEC §3): game minutes the last stage's science rate must hold to count as sustained. */
+  factorySustainMinutes: number
+  /** M6: from this stage on (1-based, 0 = never), new fuel consumers share one fuel producer per cluster (splitter taps). */
+  factorySharedProviders: number
+  /** B19: research splitters before production when sharing providers saves at least this many modules (0 = never). */
+  logisticsShareMinModules: number
+  /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */
+  buildStuckRounds: number
+  /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
+  factoryPowerFuelMinutes: number
+  /** D67: any other factory mine with less than this many minutes of ore left starts its handover (0 = never). */
+  factoryMineLeadMinutes: number
+  factorySiteRetryMinutes: number
+  /** B54: Job Board priority of electric-pole place jobs in factory builds (above every other job: power first). */
+  factoryPowerBuildPriority: number
+  /** P36 (b): when a new fuel producer can't be placed, new consumers tap the nearest built one (which grows). */
+  factoryFuelFallback: boolean
+  /** D56: place one radar at the base once power is built (for realism; plans never depend on it). */
+  factoryRadar: boolean
+  /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
+  preemptFuelSeconds: number
+  /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */
+  supplyRadius: number
+  /** B32: a supply point holding fewer of an item than this is not worth the walk (stockpiles always count). */
+  supplyMinTake: number
+  /** B36 (proposed): smelter modules' furnace outputs are supply points too (may starve the module's belt). */
+  supplyModuleFurnaces: boolean
 }
 
 export type ConfigKey = keyof Config
@@ -170,99 +220,33 @@ function setting<T extends number | boolean | string>(name: string): T {
   return settings.global[name].value as T
 }
 
+// Reading every setting through `settings.global` cost ~0.9 ms a call (29 call sites, several a tick): the config is
+// built once and rebuilt after a setting or an override changes. Not saved: a loaded game rebuilds it from the same
+// settings and `storage`, so every peer sees the same values. Callers must not modify it.
+let cached: Config | undefined
+
 export function getConfig(): Config {
-  const config: Config = {
-    factionCount: setting(Settings.factionCount),
-    crewSize: setting(Settings.crewSize),
-    controllerStepsPerTick: setting(Settings.controllerStepsPerTick),
-    stuckTicks: setting(Settings.stuckTicks),
-    maxRepaths: setting(Settings.maxRepaths),
-    actionStallTicks: setting(Settings.actionStallTicks),
-    debugTeleportWhenStuck: setting(Settings.debugTeleportWhenStuck),
-    debugInstantCraft: setting(Settings.debugInstantCraft),
-    debugReachMultiplier: setting(Settings.debugReachMultiplier),
-    jobMaxAttempts: setting(Settings.jobMaxAttempts),
-    jobRetryTicks: setting(Settings.jobRetryTicks),
-    batchMaxJobs: setting(Settings.batchMaxJobs),
-    jobBlockedRetryTicks: setting(Settings.jobBlockedRetryTicks),
-    placeDelayTicks: setting(Settings.placeDelayTicks),
-    beltPlaceDelayTicks: setting(Settings.beltPlaceDelayTicks),
-    researchSciencePacks: setting(Settings.researchSciencePacks),
-    researchExcludedTriggers: setting(Settings.researchExcludedTriggers),
-    autoSpawn: setting(Settings.autoSpawn),
-    spawnMode: setting(Settings.spawnMode),
-    spawnMinDistance: setting(Settings.spawnMinDistance),
-    spawnResourceRadius: setting(Settings.spawnResourceRadius),
-    spawnFixedOffsets: setting(Settings.spawnFixedOffsets),
-    spawnStartingArea: setting(Settings.spawnStartingArea),
-    spawnWaterRadius: setting(Settings.spawnWaterRadius),
-    spawnLakeRepair: setting(Settings.spawnLakeRepair),
-    spawnLakeRepairMinTiles: setting(Settings.spawnLakeRepairMinTiles),
-    scanRadius: setting(Settings.scanRadius),
-    brainIntervalTicks: setting(Settings.brainIntervalTicks),
-    bootstrapSites: setting(Settings.bootstrapSites),
-    firstElectricityItems: setting(Settings.firstElectricityItems),
-    stallTicks: setting(Settings.stallTicks),
-    telemetryIntervalTicks: setting(Settings.telemetryIntervalTicks),
-    frameDumpIntervalTicks: setting(Settings.frameDumpIntervalTicks),
-    frameDumpRadius: setting(Settings.frameDumpRadius),
-    layoutPolicy: setting(Settings.layoutPolicy),
-    layoutCorridorMin: setting(Settings.layoutCorridorMin),
-    layoutCorridorPreferred: setting(Settings.layoutCorridorPreferred),
-    layoutTopology: setting(Settings.layoutTopology),
-    beltUtilization: setting(Settings.beltUtilization),
-    plannerWorkPerTick: setting(Settings.plannerWorkPerTick),
-    terrainChunksPerTick: setting(Settings.terrainChunksPerTick),
-    factoryEnabled: setting(Settings.factoryEnabled),
-    factoryTargets: setting(Settings.factoryTargets),
-    factoryRegionRadius: setting(Settings.factoryRegionRadius),
-    factoryEntities: setting(Settings.factoryEntities),
-    factoryResearchUnitTime: setting(Settings.factoryResearchUnitTime),
-    factoryHandFeedLabs: setting(Settings.factoryHandFeedLabs),
-    factoryBuildPriority: setting(Settings.factoryBuildPriority),
-    conflictMaxRepairs: setting(Settings.conflictMaxRepairs),
-    soakDoneMilestone: setting(Settings.soakDoneMilestone),
-    factoryMall: setting(Settings.factoryMall),
-    factoryMallUtilization: setting(Settings.factoryMallUtilization),
-    sandboxEnemies: setting(Settings.sandboxEnemies),
-    tripMaxJobs: setting(Settings.tripMaxJobs),
-    tripRadius: setting(Settings.tripRadius),
-    tripInventoryFill: setting(Settings.tripInventoryFill),
-    bootstrapDepletionMinutes: setting(Settings.bootstrapDepletionMinutes),
-    layoutSmelting: setting(Settings.layoutSmelting),
-    measureIntervalTicks: setting(Settings.measureIntervalTicks),
-    measureWindowSamples: setting(Settings.measureWindowSamples),
-    measureProbeTicks: setting(Settings.measureProbeTicks),
-    reconcileRemedies: setting(Settings.reconcileRemedies),
-    reconcileWarmupTicks: setting(Settings.reconcileWarmupTicks),
-    reconcileConfirm: setting(Settings.reconcileConfirm),
-    reconcileShortfall: setting(Settings.reconcileShortfall),
-    reconcileCooldownTicks: setting(Settings.reconcileCooldownTicks),
-    reconcileMaxRemedies: setting(Settings.reconcileMaxRemedies),
-    logisticsUndergroundMinSaving: setting(Settings.logisticsUndergroundMinSaving),
-    logisticsSplitterMinSaving: setting(Settings.logisticsSplitterMinSaving),
-    plannerCompareWorkFactor: setting(Settings.plannerCompareWorkFactor),
-    plannerPlacementSoftClaim: setting(Settings.plannerPlacementSoftClaim),
-    plannerRouterSoftClaim: setting(Settings.plannerRouterSoftClaim),
-    plannerRouterBundleFactor: setting(Settings.plannerRouterBundleFactor),
-    plannerCompareMinWork: setting(Settings.plannerCompareMinWork),
-    logisticsSplitterCompare: setting(Settings.logisticsSplitterCompare),
-    moduleBuffer: setting(Settings.moduleBuffer),
-    moduleBufferSlots: setting(Settings.moduleBufferSlots),
-    bootstrapFactories: setting(Settings.bootstrapFactories),
-    bootstrapFactoryWaitSeconds: setting(Settings.bootstrapFactoryWaitSeconds),
-    crewBackgroundCrafts: setting(Settings.crewBackgroundCrafts),
-  }
+  if (cached !== undefined) return cached
+  const config = {} as Config
   const target = config as unknown as Record<string, unknown>
-  const overrides = storage.configOverrides as Record<string, unknown>
+  for (const [key, name] of pairs(Settings)) target[key as string] = setting(name as string)
+  const overrides = (storage.configOverrides ?? {}) as Record<string, unknown>
   for (const key in overrides) target[key] = overrides[key]
+  cached = config
   return config
+}
+
+/** Drops the cached config (a runtime setting changed, the mod configuration changed, a new game). */
+export function invalidateConfig(): void {
+  cached = undefined
 }
 
 export function setConfigOverride<K extends ConfigKey>(key: K, value: Config[K] | undefined): void {
   storage.configOverrides[key] = value as never
+  cached = undefined
 }
 
 export function clearConfigOverrides(): void {
   storage.configOverrides = {}
+  cached = undefined
 }

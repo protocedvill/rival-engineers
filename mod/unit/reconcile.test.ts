@@ -1,5 +1,6 @@
 import { addEdge, addNode, LogicalEdge, LogicalGraph, LogicalNode, newGraph, StateShares } from "../src/planner/logical"
-import { classify, edgeVerdict, newReconcileState, reconcile, ReconcileParams, recordRemedy } from "../src/strategy/reconcile"
+import { classify, edgeVerdict, newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, recordRemedy } from "../src/strategy/reconcile"
+import { moduleId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 
 // T1: the reconciler (SPEC §5.8, D26): node classification from measured states and rates, the root-cause walk
@@ -29,7 +30,7 @@ function st(x: Partial<StateShares>): StateShares {
 
 function node(g: LogicalGraph, id: string, kind: LogicalNode["kind"], item: string, planned: number, states: StateShares, out: number, extra: Partial<LogicalNode> = {}): LogicalNode {
   return addNode(g, {
-    id,
+    id: moduleId(id),
     role: id,
     kind,
     item,
@@ -51,8 +52,8 @@ function belt(g: LogicalGraph, id: string, from: string | undefined, to: string,
     role: id,
     kind: "belt",
     item,
-    from,
-    to,
+    from: from !== undefined ? moduleId(from) : undefined,
+    to: moduleId(to),
     plannedRate: planned,
     physical: [`route:${id}`],
     measuredRate: measured?.rate,
@@ -95,6 +96,11 @@ test("classify: on plan is ok; below plan the dominant state decides; no power m
   eq(classify(e, P).status, "ok", "labs without research are idle, not starved")
   const f = node(g, "f", "power", "electricity", 1e6, st({ working: 0.3, unfuelled: 0.7 }), 0)
   eq(classify(f, P).status, "unfuelled", "boilers without fuel")
+  // B52 (seed 3333): 5 of 9 boilers dry starve 10 of 18 engines; over all 27 machines neither share reached badShare.
+  const f2 = node(g, "f2", "power", "electricity", 1e6, st({ working: 0.35, starved: 0.43, unfuelled: 0.22 }), 0)
+  eq(classify(f2, P).status, "unfuelled", "dry boilers and the engines they starve")
+  const f3 = node(g, "f3", "power", "electricity", 1e6, st({ working: 0.4, starved: 0.6 }), 0)
+  eq(classify(f3, P).status, "starved", "no water (no boiler dry)")
   const u = node(g, "u", "module", "x", 1, st({}), 0)
   u.measured = undefined
   eq(classify(u, P).status, "unknown", "not measured")
@@ -133,7 +139,7 @@ test("starved chain: gears ← smelter ← outpost without power: the root cause
   belt(g2, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0.2, from: 0, to: 0 })
   const pw = node(g2, "pw", "power", "electricity", 1e6, st({ working: 1 }), 2e5)
   pw.measured!.load = 0.2
-  addEdge(g2, { id: "p", role: "p", kind: "power", item: "electricity", from: "pw", to: "mine", plannedRate: 1e5, physical: ["line1"] })
+  addEdge(g2, { id: "p", role: "p", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("mine"), plannedRate: 1e5, physical: ["line1"] })
   const r2 = settle(g2).r
   eq(g2.nodes.gears.cause!.what, "not connected", g2.nodes.gears.cause!.why)
   eq(r2.remedies.length, 1, "one remedy")
@@ -157,12 +163,76 @@ test("starved by an undersized producer: the outpost runs flat out, the belt is 
   eq(r.remedies[0].node, "mine", "the outpost")
 })
 
+test("depleted outpost: the drills ran out of ore → expand in place over the rest of the patch (D52/B21)", () => {
+  const g = newGraph()
+  node(g, "mine", "outpost", "iron-ore", 1, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-ore", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { depleted: 1 }, estimated: true },
+  })
+  node(g, "smelt", "module", "iron-plate", 2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 8, states: st({ starved: 1 }), missing: { "iron-ore": 1 } },
+  })
+  belt(g, "ore", "mine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.mine.status, "starved", "outpost starved (worked out)")
+  eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
+  const grow = r.remedies.filter((x) => x.kind === "grow" && x.node === "mine")
+  eq(grow.length, 1, "a grow remedy for the depleted outpost")
+  ok(grow[0] !== undefined && grow[0].key === "deplete:mine", "keyed by the depletion")
+})
+
+test("B98: a depleted outpost whose D67 handover is under way gets no deplete remedy (the handover owns it)", () => {
+  // Seed 2034469: n32 ran out while its replacement (D67) was being built; the deplete remedy re-planned a 60-s
+  // in-patch move every measurement and threw it away ("wait" for the replacement's goal), ~190 ms/tick for hours.
+  const g = newGraph()
+  node(g, "mine", "outpost", "iron-ore", 1, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-ore", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { depleted: 1 }, estimated: true },
+  })
+  node(g, "smelt", "module", "iron-plate", 2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 8, states: st({ starved: 1 }), missing: { "iron-ore": 1 } },
+  })
+  belt(g, "ore", "mine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
+  const r = reconcile(g, newReconcileState(), { tick: TICK, params: P, isFuel, handingOver: (n) => n.id === "mine" })
+  eq(g.nodes.mine.cause!.what, "depleted", g.nodes.mine.cause!.why)
+  eq(r.remedies.filter((x) => x.node === "mine").length, 0, "no remedy: the handover replaces it")
+})
+
+test("B99: a consumer fed by a node folded into a shared mine is traced through that mine (backed up, nothing arrives → repair)", () => {
+  // Soak vps-b97b-7625436: cluster 3's coal came from n41, an alias of the power plant's whole-patch coal mine n15. n41
+  // has no machines of its own, so it was never measured ("unknown") and the unfuelled smelter never got a remedy;
+  // n15 was backed up behind a stray underground on its trunk.
+  const g = newGraph()
+  node(g, "mine", "outpost", "coal", 2, st({ working: 0.05, blocked: 0.95 }), 0)
+  node(g, "alias", "outpost", "coal", 0.2, st({}), 0, { alias: moduleId("mine"), measured: undefined })
+  node(g, "smelt", "module", "iron-plate", 1, st({ unfuelled: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0 }], machines: 4, states: st({ unfuelled: 1 }), missing: { coal: 1 } },
+  })
+  node(g, "pw", "power", "electricity", 1, st({ working: 1 }), 1)
+  belt(g, "trunk", "mine", "pw", "coal", 1.5, { rate: 0, from: 1, to: 0 })
+  belt(g, "fuel", "alias", "smelt", "coal", 0.2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g, 2)
+  eq(g.nodes.smelt.status, "unfuelled", "smelter unfuelled")
+  ok(g.nodes.smelt.cause !== undefined && g.nodes.smelt.cause.what === "broken", `traced to a broken belt: ${g.nodes.smelt.cause?.why}`)
+  ok(r.remedies.some((x) => x.kind === "repair" && x.edge === "fuel"), `the fuel belt is repaired: ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
+})
+
 test("a belt still filling: the producer makes much more than arrives → wait (no grow)", () => {
   const g = chain(st({ working: 0.97 }), 2, st({ working: 0.3, starved: 0.7 }), 0.4, st({ working: 0.95 }), 1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.4, from: 0, to: 0 })
   const { r } = settle(g)
   eq(g.nodes.smelt.cause!.what, "filling", g.nodes.smelt.cause!.why)
   eq(r.remedies.length, 0, "no remedy")
+})
+
+test("B69: nothing arrives while the producer makes the item (its other belts take it) → repair the route, not wait", () => {
+  // Soak vps-d66 seed 5387208: the mall's iron smelter ran flat out for the mall, never backed up, while the tap to a red
+  // science assembler had no splitter: the assembler starved for 150 game-min as a "filling" belt.
+  const g = chain(st({ working: 0.97 }), 2, st({ starved: 1 }), 0, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 0.2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "broken", g.nodes.smelt.cause!.why)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].kind, "repair", "repair")
+  eq(r.remedies[0].edge, "ore", "the silent edge")
 })
 
 test("broken belt: items pile up at the producer and none arrive → repair the route; the producer is backed up for the same cause", () => {
@@ -247,7 +317,7 @@ test("a feeder being grown (the steam block gaining boilers) keeps its consumers
   const g = newGraph()
   const pw = node(g, "pw", "power", "electricity", 1e6, st({ working: 1 }), 5e5, { builtTick: 0 })
   const a = node(g, "a", "module", "x", 1, st({ working: 1 }), 1)
-  addEdge(g, { id: "p", role: "p", kind: "power", item: "electricity", from: "pw", to: "a", plannedRate: 1e5, physical: [] })
+  addEdge(g, { id: "p", role: "p", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("a"), plannedRate: 1e5, physical: [] })
   pw.lifecycle = "building"
   settle(g)
   eq(a.status, "ok", "the consumer is still classified")
@@ -277,6 +347,78 @@ test("remedy limits: at most maxRemedies per root cause, cooldown between them",
   recordRemedy(s, r2[0], TICK + P.cooldownTicks, "started")
   eq(at(TICK + 3 * P.cooldownTicks).length, 0, "limit reached")
   ok(s.log.length === 2, "logged")
+})
+
+test("B102: a root cause whose node recovered starts a new history (its remedies can act again when it fails later)", () => {
+  // Sweep 628fa29 seed 1264816: cluster 2's ore belt used up its repairs at ~90 min (nothing missing then); it worked from
+  // ~125 min, lost a belt at ~150 min, and was never repaired again (300 game-min).
+  const g = chain(st({ working: 0.97 }), 1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 1, from: 0, to: 0 })
+  const s = newReconcileState()
+  const at = (tick: number) => {
+    g.edges.ore.measuredTick = tick
+    for (const id of g.nodeOrder) if (g.nodes[id].measured !== undefined) g.nodes[id].measured!.tick = tick
+    return reconcile(g, s, { tick, params: P, isFuel }).remedies
+  }
+  let t = TICK
+  for (let i = 0; i < P.maxRemedies; i++) {
+    const r = at(t)
+    eq(r.length, 1, `remedy ${i + 1}`)
+    recordRemedy(s, r[0], t, "nothing missing")
+    t += P.cooldownTicks
+  }
+  eq(at(t).length, 0, "the limit is reached")
+  // The smelter recovers (confirmed ok) ...
+  const smelt = g.nodes.smelt
+  const starved = smelt.measured!.states
+  smelt.measured!.states = st({ working: 0.95 })
+  smelt.measured!.missing = {}
+  for (let i = 0; i < P.confirm; i++) at((t += 60))
+  eq(smelt.status, "ok", "the smelter is ok again")
+  // ... and fails again later: a new episode.
+  smelt.measured!.states = starved
+  smelt.measured!.missing = { "iron-ore": 0.8 }
+  let again = 0
+  for (let i = 0; i < P.confirm + 1; i++) again += at((t += P.cooldownTicks)).length
+  ok(again > 0, "its repair can act again")
+})
+
+test("B103: a node's plan is at least what its belts are planned to carry (a shared smelter planned for one consumer)", () => {
+  // 1264816 (B102 replay): cluster 1's iron smelter kept its first plan (0.37/s) while its belts were planned for 3.4/s;
+  // making 0.63/s it was "ok", so the starved labs behind it got no remedy (science held at ~27/min of 30).
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 0.37, st({ working: 0.17, starved: 0.83 }), 0.63, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0.63 }], machines: 12, states: st({ working: 0.17, starved: 0.83 }), missing: { "iron-ore": 0.83 } },
+  })
+  node(g, "a", "module", "x", 1, st({ working: 1 }), 1)
+  node(g, "b", "module", "y", 1, st({ working: 1 }), 1)
+  belt(g, "ea", "smelt", "a", "iron-plate", 1.9)
+  belt(g, "eb", "smelt", "b", "iron-plate", 1.5)
+  settle(g, 2)
+  eq(g.nodes.smelt.status, "starved", `starved against its belts' plan: ${g.nodes.smelt.statusReason}`)
+})
+
+test("B104: an edge measurement stays fresh for a whole probe round (one probe at a time over every belt)", () => {
+  // 1264816 (B103 replay): ~38 belts at ~630 ticks a probe is a ~24000-tick round, but a measurement was fresh for 3600:
+  // the trace of a starved smelter fed by three belts always met a stale one ("measuring", 300 game-min, no remedy).
+  eq(probeMaxAgeFor(3600, 600, 30, 2), 3600, "two belts: the node window")
+  eq(probeMaxAgeFor(3600, 600, 30, 38), 38 * 630, "38 belts: one round")
+})
+
+test("B105: a passive verdict on one feed does not hide another feed of the same item that has a cause to act on", () => {
+  // 1264816 (B104 replay): cluster 1's smelter took ore from three mines into one port; the trace stopped at the first
+  // ("below plan", no remedy) and never reached the second, backed up 71% ("broken": repair).
+  const g = newGraph()
+  node(g, "m1", "outpost", "iron-ore", 0.37, st({ working: 0.8 }), 0.3)
+  node(g, "m2", "outpost", "iron-ore", 1, st({ working: 0.29, blocked: 0.71 }), 0.29)
+  node(g, "smelt", "module", "iron-plate", 3.4, st({ working: 0.17, starved: 0.83 }), 0.63, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "iron-plate", perSecond: 0.63 }], machines: 12, states: st({ working: 0.17, starved: 0.83 }), missing: { "iron-ore": 0.83 } },
+  })
+  belt(g, "a", "m1", "smelt", "iron-ore", 0.37, { rate: 0.6, from: 0, to: 0 })
+  belt(g, "b", "m2", "smelt", "iron-ore", 1, { rate: 0.6, from: 0, to: 0 })
+  const { r } = settle(g, 2)
+  eq(g.nodes.m2.status, "backed-up", "the second mine is backed up")
+  ok(r.remedies.some((x) => x.kind === "repair" && x.edge === "b"), `its belt is repaired: ${g.nodes.smelt.cause?.why} | ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
 })
 
 test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {
@@ -324,6 +466,64 @@ test("a stale edge asks for a probe instead of acting", () => {
   eq(g.nodes.smelt.cause!.kind, "measuring", "measuring")
   eq(r.probe[0], "ore", "probe the ore edge")
   eq(r.remedies.length, 0, "no remedy yet")
+})
+
+
+test("B60 group remedy: a shared trunk at capacity asks for a parallel provider, not for one producer to grow", () => {
+  const g = newGraph()
+  const busy = st({ working: 1 })
+  node(g, "p", "module", "iron-plate", 10, busy, 10)
+  // Two consumers of the same provider; the first one's belt is at capacity.
+  for (const c of ["a", "b"]) {
+    node(g, c, "module", "gears", 2, st({ starved: 1 }), 0, {
+      measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "gears", perSecond: 0 }], machines: 4, states: st({ starved: 1 }), missing: { "iron-plate": 1 } },
+    })
+  }
+  belt(g, "pa", "p", "a", "iron-plate", 10, { rate: 14, from: 0, to: 0.1, cap: 15 })
+  belt(g, "pb", "p", "b", "iron-plate", 10, { rate: 10, from: 0, to: 0.1, cap: 15 })
+  const { r } = settle(g, 3)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].kind, "parallel", "a shared trunk gets a parallel provider")
+  eq(r.remedies[0].node, "p", "the shared provider")
+})
+
+test("B87: a module short of its own intermediate is traced through its belt inputs, not called crew-supplied", () => {
+  // Soak vps-a06-r5387208: the red line (gears made inside the module) measured "missing gears" most. No edge carries
+  // gears, so the trace stopped at "no producer (crew-supplied)" and never looked at its iron belt, where nothing
+  // arrived while the smelter made 1.27/s: no remedy for 200 game-min.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 1, st({ working: 1 }), 1.27)
+  node(g, "red", "module", "automation-science-pack", 0.2, st({ starved: 1 }), 0, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "automation-science-pack", perSecond: 0 }], machines: 3, states: st({ starved: 1 }), missing: { "iron-gear-wheel": 0.67, "iron-plate": 0.33 } },
+  })
+  belt(g, "plates", "smelt", "red", "iron-plate", 0.37, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.red.cause!.what, "broken", g.nodes.red.cause!.why)
+  eq(r.remedies.length, 1, "one remedy")
+  eq(r.remedies[0].edge, "plates", "repair the silent plate belt")
+  // Short of only an item no edge carries: still the external cause (hand-fed inputs keep their meaning).
+  g.nodes.red.measured!.missing = { "iron-gear-wheel": 1 }
+  const g2 = newGraph()
+  node(g2, "red", "module", "automation-science-pack", 0.2, st({ starved: 1 }), 0, { measured: g.nodes.red.measured })
+  settle(g2)
+  eq(g2.nodes.red.cause!.kind, "external", "nothing else to trace")
+})
+
+test("B96: a shared producer's other belts carry the rest of its output: not 'filling', the producer flat out grows", () => {
+  // Sweep 3e1c4d7 seed 1264816: the iron smelter made 0.633/s for three consumers; 0.3/s reached the green assembler, the
+  // rest the others. Every evaluation called the green belt "filling" (0.3 < 0.75 x 0.633): no remedy for 300 game-min.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 0.6, st({ working: 0.97 }), 0.633)
+  node(g, "green", "module", "logistic-science-pack", 0.2, st({ working: 0.3, starved: 0.7 }), 0.06, {
+    measured: { tick: TICK, window: 3600, inputs: [], outputs: [{ item: "logistic-science-pack", perSecond: 0.06 }], machines: 2, states: st({ working: 0.3, starved: 0.7 }), missing: { "iron-plate": 0.7 } },
+  })
+  node(g, "red", "module", "automation-science-pack", 0.2, st({ working: 0.95 }), 0.2)
+  belt(g, "to-green", "smelt", "green", "iron-plate", 0.5, { rate: 0.3, from: 0, to: 0 })
+  belt(g, "to-red", "smelt", "red", "iron-plate", 0.4, { rate: 0.333, from: 0, to: 0 })
+  const { r } = settle(g)
+  ok(g.nodes.green.cause!.what !== "filling", `not filling: ${g.nodes.green.cause!.what} (${g.nodes.green.cause!.why})`)
+  eq(g.nodes.green.cause!.what, "undersized", g.nodes.green.cause!.why)
+  eq(r.remedies.length > 0 && r.remedies[0].kind === "grow" && r.remedies[0].node === "smelt", true, "grow the shared smelter")
 })
 
 run("reconcile")

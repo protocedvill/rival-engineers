@@ -1,4 +1,10 @@
-# Rival Engineers
+# Rival Engineers — read `AGENTS.md` first
+
+**Mandatory:** [`AGENTS.md`](AGENTS.md) is the tool-neutral entry point and routes each kind of change to the
+learned rules it needs. Read it before searching the code. The ledger below is intentionally retained because its
+Factorio and TSTL facts are part of the correctness model, not optional tips.
+
+# Project rules and learned engine facts
 
 Factorio 2.0 mod: AI factions whose physical character crews build factories like players do.
 
@@ -10,11 +16,16 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Work milestone by milestone on `mN-<slug>` branches, stacked on the previous milestone branch. One PR per
   milestone, with a report at `docs/reports/MN-report.md`.
 - Throwaway experiments go on `proto/<topic>` branches. No PRs for them.
+- In a git worktree, `node_modules` (and `.factorio-test/factorio`) are symlinks to the main checkout. Stage only your
+  own files (no `git add -A` / `git add .`): a committed `node_modules` link once replaced the main checkout's real one.
 - Never touch the user's `~/.factorio` (saves, mods, blueprint storage) in place. Copy inputs into
   `tools/modules/input/` first. Test runs use the isolated install under `.factorio-test/` (git-ignored).
 - Determinism rules in SPEC §5.6 are hard constraints. All persistent state goes in `storage`, use no
   `math.random`, and check `.valid` before using an entity.
 - Prefer configurable settings over constants (SPEC §5.7).
+- When a plan, placement or route misbehaves, read its dump (`REPLAY_DUMP=1` / the failure dump in
+  `out/replay-dumps/`) before running variants; sweep variants with `npm run replay:sweep`, not one replay at a time.
+  Rerun T1 with `--no-build -t <test>` after a build instead of recompiling for every run.
 - **Escalate magic numbers to the user.** Every tuning number you introduce (thresholds, distances, counts, timeouts,
   weights, margins...) is listed in the milestone report's "Magic numbers for the user" table: name, where it lives,
   current value, why that value, and whether it is already a setting. The user decides which become settings and their
@@ -43,6 +54,23 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   every argument. Declare callback types as `(this: void, ...) => ...`.
 - **`{ ...obj, field: undefined }` does not clear `field`**: TSTL drops undefined values from object literals, so the
   spread keeps the old value. Copy, then assign `copy.field = undefined` (plan.ts `altJob`).
+- **A named function passed to `Array.prototype.sort` receives a shifted comparator**: TSTL compiles `arr.sort(cmp)`
+  to `__TS__ArraySort(arr, cmp)`, and the bundled helper calls `compareFn(nil, a, b)`. Only an *inline arrow* gets the
+  injected `self` parameter, so a named `function cmp(a, b)` sees `a = nil` ("attempt to index a nil value"). Pass
+  `.sort((a, b) => cmp(a, b))`, not `.sort(cmp)`. Pinned by `mod/unit/merge.test.ts` (planner/merge.ts `byCost`).
+- **`string.match` returns a 0-based TS array of captures**: TSTL compiles `const m = string.match(s, "(.*)#%d+$")` to
+  `local m = {string.match(...)}`, so the first capture is `m[0]` (`m[1]` is the second capture; a Lua-style `m[1]`
+  reads the next return or stays nil). Do not index the Lua multi-return directly.
+- **A named import of an exported `let` is a load-time copy**: `import { x } from "./m"` compiles to `local x = ____m.x`,
+  so later reassignments in `m` are never seen (telemetry logged no `[re-profile]` lines). Import the module
+  (`import * as m`) and read `m.x`.
+- **`import type` is erased, so it cannot create a Lua `require` cycle**: a module may type-reference a module that
+  value-imports it (e.g. `claims.ts` takes `import type { LayoutState }` while `layout.ts` imports its writers). Only a
+  value import closes the cycle, and `require` cycles fail at mod load. Keep the shared *values* in a leaf module
+  (`claim-tags.ts`) instead.
+- **`${x?.y}` in a template literal crashes when it is nil**: TSTL compiles templates to `..` and wraps only values it
+  cannot prove are strings in `tostring`; an optional string field goes in raw, and `..` on nil is a Lua error that kills
+  the game (soak `vps-b68` seed 3891760, `goal grew ${node?.role}` after the node was removed). Give it a `??` fallback.
 - T1 unit tests (`mod/unit`) can only import modules that touch no Factorio globals (`game`, `defines`,
   `settings`...). Keep pure logic in such modules (e.g. `character/steering.ts`). Avoid `Math.atan2`: it becomes
   `math.atan2`, which Lua 5.3+ lacks.
@@ -172,6 +200,17 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - **Items on belts keep a `unique_id`** (`LuaTransportLine.get_detailed_contents()`) while they move from belt to belt:
   sampling one belt tile more often than an item takes to cross it and counting new ids measures its flow exactly
   (15.00/s on a full yellow belt; `strategy/measure.ts` edge probes). A belt entity's transport line covers that tile only.
+- **Built own entities read as `OWN` in the terrain scan**, whatever the layout says: a growth or plan that may take a
+  built entity's tile needs the planner view (`claimView`) to say so. B37: own pole-line poles read as free there.
+- **Factorio permits an entity ghost on top of the same live entity**, but that ghost can never be revived. When B37
+  re-lays a pole line through an unchanged live pole, `stampParts` reuses the pole instead of creating a ghost/place
+  job over it (T2 factory test B41).
+- **A radar charts nothing for a force with no players** (2.0): powered, the same radar charts and generates its
+  7×7-chunk nearby square for the `player` force and nothing for a script-created force (our factions). It still
+  sector-scans (one `on_sector_scanned` per ~33 s; nearest first in rings, no chunk twice: 53 scans in 30 game-min
+  reached ring 4); the chunk is only marked requested for charting, never charted or generated (D62 (a) uses the event). `force.chart` on such a force only requests too. (A forum post quotes a
+  developer: charting is skipped for forces without players.) Pinned by two engine-capabilities tests ("D62 finding").
+  A script-created `electric-energy-interface` makes no power until `power_production` and `electric_buffer_size` are set.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

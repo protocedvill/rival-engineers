@@ -8,6 +8,8 @@ interface UnitTest {
 
 const tests: UnitTest[] = []
 
+declare const os: { getenv(this: void, name: string): string | undefined; exit(this: void, code: number): never; clock(this: void): number }
+
 export function test(name: string, fn: (this: void) => void): void {
   tests.push({ name, fn })
 }
@@ -24,18 +26,32 @@ export function ok(condition: boolean, what = "condition"): void {
   if (!condition) error(`${what} is false`, 2)
 }
 
-/** Runs every registered test, prints results and exits non-zero on any failure. */
+/**
+ * Runs every registered test, prints results and exits non-zero on any failure. `$UNIT_TEST_FILTER` (set by
+ * `npm run test:unit -- -t <text>` and `replay:sweep`) runs only the tests whose name contains that text.
+ */
 export function run(suite: string): void {
+  // UNIT_FILTER is the older name (B26), still accepted.
+  const filter = os.getenv("UNIT_TEST_FILTER") ?? os.getenv("UNIT_FILTER")
   let failed = 0
+  let skipped = 0
   for (const t of tests) {
+    if (filter !== undefined && filter !== "" && string.find(t.name, filter, 1, true)[0] === undefined) {
+      skipped++
+      continue
+    }
+    const t0 = os.clock()
     const [success, err] = pcall(t.fn)
+    // CPU seconds, shown from 1 s: which tests make T1 slow.
+    const dt = os.clock() - t0
+    const time = dt >= 1 ? ` (${string.format("%.1f", dt)} s)` : ""
     if (success) {
-      print(`PASS ${suite} > ${t.name}`)
+      print(`PASS ${suite} > ${t.name}${time}`)
     } else {
       failed++
-      print(`FAIL ${suite} > ${t.name}\n    ${tostring(err)}`)
+      print(`FAIL ${suite} > ${t.name}${time}\n    ${tostring(err)}`)
     }
   }
-  print(`${suite}: ${tests.length - failed} passed, ${failed} failed`)
+  print(`${suite}: ${tests.length - failed - skipped} passed, ${failed} failed${skipped > 0 ? `, ${skipped} filtered out` : ""}`)
   if (failed > 0) os.exit(1)
 }

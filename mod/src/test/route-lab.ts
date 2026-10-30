@@ -1,5 +1,6 @@
 import { LuaEntity, LuaForce, LuaSurface, LuaTransportLine } from "factorio:runtime"
 import { curatedModule, generatedModule } from "../modules/library"
+import { connectionId, moduleId } from "../shared/ids"
 import { DX, DY } from "../planner/grid"
 import { checkLayout, findModule, findPort, LayoutState, portTile, Route } from "../planner/layout"
 import { ConnectionRequest, ModuleRequest } from "../planner/plan"
@@ -14,13 +15,13 @@ import { dumpEntities } from "../telemetry"
  * block on the shore. Coal (smelter, steam) and copper (red tile) come from outside the layout. */
 export function m4Modules(withSteam: boolean): { modules: ModuleRequest[]; connections: ConnectionRequest[] } {
   const modules: ModuleRequest[] = [
-    { id: "outpost", def: generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }) },
-    { id: "smelter", def: generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 }) },
-    { id: "gears", def: generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 2 }) },
-    { id: "red", def: curatedModule("red-tile-ramqvist") },
-    { id: "labs", def: generatedModule("lab-array", { labs: 2, packs: ["automation-science-pack"] }) },
+    { id: moduleId("outpost"), def: generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }) },
+    { id: moduleId("smelter"), def: generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 }) },
+    { id: moduleId("gears"), def: generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 2 }) },
+    { id: moduleId("red"), def: curatedModule("red-tile-ramqvist") },
+    { id: moduleId("labs"), def: generatedModule("lab-array", { labs: 2, packs: ["automation-science-pack"] }) },
   ]
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: moduleId(from[0]), port: from[1] } : undefined, to: { module: moduleId(to[0]), port: to[1] } })
   const connections = [
     c("ore", ["outpost", "out"], ["smelter", "in-ore"]),
     c("plates", ["smelter", "out"], ["gears", "in-iron-plate"]),
@@ -30,7 +31,7 @@ export function m4Modules(withSteam: boolean): { modules: ModuleRequest[]; conne
     c("copper", undefined, ["red", "in-copper-plate"]),
   ]
   if (withSteam) {
-    modules.push({ id: "steam", def: generatedModule("steam-block", { boilers: 1 }) })
+    modules.push({ id: moduleId("steam"), def: generatedModule("steam-block", { boilers: 1 }) })
     connections.push(c("steam-coal", undefined, ["steam", "in-fuel"]))
   }
   return { modules, connections }

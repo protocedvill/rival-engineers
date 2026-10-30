@@ -1,4 +1,6 @@
 // Job Board scheduling logic (SPEC §5.2): pure data and functions, no Factorio globals, so T1 unit tests
+import { jobId } from "../shared/ids"
+import type { JobId } from "../shared/ids"
 // can run it outside the game (mod/unit/board.test.ts). The runtime side (mod/src/jobs/crew.ts) owns the
 // entities and controller actions; it keeps them in each job's `payload`.
 //
@@ -29,7 +31,7 @@ export type JobKind = "gather" | "craft" | "haul" | "place" | "fuel" | "clear"
 export type JobStatus = "open" | "claimed" | "done" | "failed"
 
 export interface Job<P = unknown> {
-  id: number
+  id: JobId
   kind: JobKind
   /** Where the work happens: nearest-first selection and locality batching measure from here. */
   pos: Pos
@@ -38,7 +40,7 @@ export interface Job<P = unknown> {
   /** Items the crew member must carry to do the job. */
   materials: ItemCount[]
   /** Jobs that must be done first. A failed dependency fails this job too. */
-  deps: number[]
+  deps: JobId[]
   /** Higher first. */
   priority: number
   status: JobStatus
@@ -64,7 +66,7 @@ export interface JobSpec<P> {
   pos: Pos
   footprint?: Rect
   materials?: ItemCount[]
-  deps?: number[]
+  deps?: JobId[]
   priority?: number
   payload: P
 }
@@ -116,7 +118,7 @@ function logEvent(board: Board<unknown>, event: ClaimEvent): void {
 }
 
 export function addJob<P>(board: Board<P>, spec: JobSpec<P>, tick: number): Job<P> {
-  const id = board.nextId++
+  const id = jobId(board.nextId++)
   const job: Job<P> = {
     id,
     kind: spec.kind,
@@ -245,7 +247,7 @@ export function failJob(board: Board<unknown>, id: number, reason: string, tick:
   logEvent(board, { tick, job: id, member, event: "fail", reason })
   for (const other of [...board.active]) {
     const o = board.jobs[other]
-    if (o.deps.indexOf(id) >= 0) failJob(board, other, `dep-failed:${id}`, tick, member)
+    if (o.deps.indexOf(jobId(id)) >= 0) failJob(board, other, `dep-failed:${id}`, tick, member)
   }
 }
 
@@ -453,6 +455,51 @@ export function fitMaterials<P>(jobs: Job<P>[], available: Record<string, number
 }
 
 /** Items still needed for `jobs` beyond what is `held` (sorted by item name for determinism). */
+/**
+ * D66 (user, 2026-10-28): ready jobs of `kind` whose materials a member fetching for `batch` should carry as well. A far
+ * source made every batch a full round trip for what one standing spot needs (seed 8646103: ~10 belts per 500-tile
+ * walk, a stall on a 300-belt route). Candidates are nearer to the batch (`to`) than the source is (`reach`), nearest
+ * first (ties by id), and are added while the whole load fits `slots` (`slotsFor` counts inventory stacks).
+ */
+export function prefetchJobs<P>(
+  board: Board<P>,
+  batch: Job<P>[],
+  to: Pos,
+  reach: number,
+  tick: number,
+  held: Record<string, number>,
+  slots: number,
+  slotsFor: (this: void, need: ItemCount[]) => number,
+  accept?: JobFilter<P>,
+): Job<P>[] {
+  const taken: Record<number, boolean> = {}
+  for (const j of batch) taken[j.id] = true
+  const kind = batch[0]?.kind
+  const cands: Job<P>[] = []
+  for (const id of board.active) {
+    const j = board.jobs[id]
+    if (taken[j.id] || j.kind !== kind || j.materials.length === 0 || !isReady(board, j, tick)) continue
+    if (accept !== undefined && !accept(j)) continue
+    if (distance(j.pos, to) < reach) cands.push(j)
+  }
+  cands.sort((a, b) => {
+    const da = distance(a.pos, to)
+    const db = distance(b.pos, to)
+    return da !== db ? da - db : a.id - b.id
+  })
+  const out: Job<P>[] = []
+  const load = [...batch]
+  for (const j of cands) {
+    load.push(j)
+    if (slotsFor(missingMaterials(load, held)) > slots) {
+      load.pop()
+      break
+    }
+    out.push(j)
+  }
+  return out
+}
+
 export function missingMaterials(jobs: Job<unknown>[], held: Record<string, number>): ItemCount[] {
   const need: Record<string, number> = {}
   const names: string[] = []

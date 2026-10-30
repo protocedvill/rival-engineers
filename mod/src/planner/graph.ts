@@ -4,11 +4,11 @@
 // rates, node status and the solver come with M5. The whole graph is plain data, exported to JSON for tools/render
 // (D29). Pure: no Factorio globals.
 
-import { rateOf } from "../modules/rates"
 import { availableTiers, BeltTier, checkEdge, CapacityCheck, decideOverflow, OverflowDecision, tierByBelt } from "./capacity"
 import { Rect, Vec } from "./grid"
-import { findModule, findPort, LayoutState, portTile, PortRef, RouteStep } from "./layout"
+import { LayoutState, portRate, portTile, PortRef, RouteStep } from "./layout"
 import { LayoutPolicy } from "./policy"
+import type { ModuleId } from "../shared/ids"
 
 export interface PhysPort {
   id: string
@@ -23,7 +23,7 @@ export interface PhysPort {
 }
 
 export interface PhysNode {
-  id: string
+  id: ModuleId
   module: string
   generator?: string
   recipe?: string
@@ -87,16 +87,6 @@ export interface GraphOptions {
   rates?: Record<string, number>
 }
 
-function portRate(state: LayoutState, ref: PortRef, output: boolean): number | undefined {
-  const m = findModule(state, ref.module)
-  const p = m ? findPort(m, ref.port) : undefined
-  if (!m || !p || p.item === undefined) return undefined
-  const list = output ? m.def.rates.outputs : m.def.rates.inputs
-  // Several ports of a module may carry the same item: split its rate evenly.
-  let n = 0
-  for (const q of m.def.ports) if (q.item === p.item && q.kind === p.kind) n++
-  return rateOf(list, p.item) / math.max(1, n)
-}
 
 export function buildGraph(state: LayoutState, policy: LayoutPolicy, opts: GraphOptions): FactoryGraph {
   const nodes: PhysNode[] = []

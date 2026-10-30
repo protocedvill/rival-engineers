@@ -1,18 +1,23 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { destroyFaction } from "../jobs/faction"
+import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag } from "../shared/ids"
+import { createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { Vec } from "../planner/grid"
+import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
+import { dropPlannedPoles, getFactory, startFactory } from "../strategy/factory"
+import { startBootstrap } from "../strategy/bootstrap"
+import { goalId } from "../shared/ids"
+import { recentDiagnosticBuckets } from "../diagnostic-events"
 import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { stampParts } from "../planner/runtime"
+import { claimView, layoutEntityKeys, stampParts, strayUnder } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
 import { at, createLab, Lab } from "./lab"
@@ -49,7 +54,7 @@ function reviveAll(ghosts: LuaEntity[]): LuaEntity[] {
 
 function place(layout: ReturnType<typeof newLayout>, id: string, gen: Parameters<typeof generatedModule>[0], params: Record<string, unknown>, origin: Vec): PlacedModule {
   const def = generatedModule(gen, params)
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(layout, m, prototypeFacts, 2)
   return m
 }
@@ -65,10 +70,50 @@ describe("M5a power and growth", () => {
   })
   after_all(() => {
     game.speed = speed
+    // Leftover factions keep planning (and slow every later test in the shard).
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
   })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
+  })
+
+  test("M6b: a persisted adoption record survives a save and is cleared once its goal committed", () => {
+    const lab = createLab(32)
+    const faction = createFaction("m6-adopt-reload", { position: at(lab, 0, 0), crew: 1 })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    f.goals.push({ id: goalId("g1"), kind: "labs", status: "building", nodes: [], edges: [], techs: [], attempts: 1, radius: 128, createdTick: game.tick, placed: 0, rounds: 0 })
+    storage.testScratch = { faction: faction.name }
+    // A crash after the commit point leaves this record behind; it must be detected, not double-applied.
+    async(60)
+    on_tick(() => {
+      f.adoption = { goal: goalId("g1"), plan: "p-interrupted", phase: "build", tick: game.tick }
+      storage.testScratch!.record = f.adoption
+      // Paused until the reload: a factory think between here and the save would clear the record first (the test
+      // failed or passed with the tick it started on).
+      faction.paused = true
+      done()
+      return false
+    })
+  }).after_reload_script(() => {
+    const scratch = storage.testScratch!
+    const faction = storage.factions[scratch.faction as string]
+    const f = getFactory(faction.name)!
+    assert(f.adoption !== undefined, "the interrupted adoption record survives the save")
+    faction.paused = false
+    let waited = 0
+    on_tick(() => {
+      waited++
+      if (waited < 120) return
+      assert(f.adoption === undefined, "the next think clears the record once the goal is not planning")
+      const events = recentDiagnosticBuckets(faction).planner ?? []
+      assert(events.some((e) => e.decision === "adoption-intent-cleared"), "the clear is recorded as a diagnostic")
+      storage.testScratch = undefined
+      return false
+    })
   })
 
   test("power-up: steam block on a shore + planned pole line power a lab array 40 tiles away, built from ghosts", () => {
@@ -86,10 +131,10 @@ describe("M5a power and growth", () => {
     const steamDef = generatedModule("steam-block", { boilers: 1 })
     const ox = math.floor(lab.origin.x)
     const oy = math.floor(lab.origin.y)
-    const sp = placeNow({ id: "steam", def: steamDef, targets: {}, center: { x: ox - 50, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, layout, view, policy)
+    const sp = placeNow({ id: moduleId("steam"), def: steamDef, targets: {}, center: { x: ox - 50, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, layout, view, policy)
     assert(sp.phase === "done", `steam placement: ${sp.reason}`)
     commitPlacement(layout, sp.result!, prototypeFacts, policy)
-    const steam = findModule(layout, "steam")!
+    const steam = findModule(layout, moduleId("steam"))!
     place(layout, "labs", "lab-array", { labs: 2, packs: ["automation-science-pack"] }, { x: steam.rect.x + steam.rect.w + 40, y: oy })
     const poles = polesNow(layout, view, prototypeFacts, policy)
     const lines = layout.poles?.length ?? 0
@@ -144,7 +189,7 @@ describe("M5a power and growth", () => {
     const layout = newLayout()
     place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
     place(layout, "mine", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
-    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, tier, layout), view, prototypeFacts, policy)
+    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, tier, layout), view, prototypeFacts, policy)
     assert(job.phase === "done", "ore routed")
     const r = stampParts(s, force.name, job.layout, allParts(job.layout), false)
     assert(r.failed.length === 0, r.failed.join("; "))
@@ -170,7 +215,7 @@ describe("M5a power and growth", () => {
       on_tick(() => {
         fuel()
         // Sink: the column's output belt tile is emptied every tick.
-        const m = findModule(job.layout, "smelt")!
+        const m = findModule(job.layout, moduleId("smelt"))!
         for (const b of s.find_entities_filtered({ type: "transport-belt", area: [{ x: m.rect.x, y: m.rect.y - 1 }, { x: m.rect.x + m.rect.w, y: m.rect.y + 1 }] })) for (const i of [1, 2]) b.get_transport_line(i).clear()
         n++
         if (n === 3600) start = plates()
@@ -183,10 +228,10 @@ describe("M5a power and growth", () => {
     measure(3600 * 3, (before) => {
       log(`[m5] grow: 4 furnaces smelt ${string.format("%.3f", before)} plates/s`)
       render(s, "grow-before", { x: ox, y: oy }, 56)
-      const g = planGrowth(job.layout, terrainView(t), prototypeFacts, policy, tier, "smelt", 1)
+      const g = planGrowth(job.layout, terrainView(t), prototypeFacts, policy, tier, moduleId("smelt"), 1)
       assert(g.ok, `growth planned: ${g.reason}`)
       // Test equipment in the way of the growth goes (the drills keep theirs).
-      const gr = findModule(g.layout, "smelt")!.rect
+      const gr = findModule(g.layout, moduleId("smelt"))!.rect
       for (const e of equipment) {
         if (!e.valid) continue
         const p = e.position
@@ -216,7 +261,7 @@ describe("M5a power and growth", () => {
       assert(revived.length === g.add.length, `every new entity built: ${notBuilt.join("; ")}`)
       // The grown module's poles join the old ones; repower the test interfaces' neighbourhood.
       // Test power again: a pole just outside the grown module (within wire reach of its poles) with an interface.
-      const gm = findModule(g.layout, "smelt")!
+      const gm = findModule(g.layout, moduleId("smelt"))!
       const pp = gm.def.ports.filter((p) => p.kind === "power")[0]
       const outside = s.find_non_colliding_position("small-electric-pole", { x: gm.origin.x - 2.5, y: gm.origin.y + pp.pos.y }, 3, 1, true)!
       s.create_entity({ name: "small-electric-pole", position: outside, force })
@@ -242,5 +287,152 @@ describe("M5a power and growth", () => {
         done()
       })
     })
+  })
+
+  test("B37: a built smelter grows over a built pole line: the line is picked up and re-laid, the labs stay powered", () => {
+    const lab = createLab(64)
+    const force = labForce()
+    const s = lab.surface
+    const water = []
+    for (let x = -64; x < -50; x++) for (let y = -64; y < 64; y++) water.push({ name: "water", position: at(lab, x, y) })
+    s.set_tiles(water)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const policy = selectPolicy("early-compact", {})
+    const tier = beltTiers(prototypeFacts)[0]
+    const layout = newLayout()
+    const t0 = scan(lab, "b37-before", force.name)
+    const sp = placeNow({ id: moduleId("steam"), def: generatedModule("steam-block", { boilers: 1 }), targets: {}, center: { x: ox - 50, y: oy + 10 }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, layout, terrainView(t0), policy)
+    assert(sp.phase === "done", `steam placement: ${sp.reason}`)
+    commitPlacement(layout, sp.result!, prototypeFacts, policy)
+    const steam = findModule(layout, moduleId("steam"))!
+    place(layout, "labs", "lab-array", { labs: 2, packs: ["automation-science-pack"] }, { x: steam.rect.x + steam.rect.w + 60, y: steam.rect.y })
+    polesNow(layout, terrainView(t0), prototypeFacts, policy, "poles:a:")
+    const line = layout.poleLines![0].id
+    // The smelter north of the line's middle pole, its first two growth units (south) over it.
+    const mid = layout.poles!.filter((p) => p.line === line)[math.floor(layout.poles!.length / 2)]
+    place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: mid.x - 5, y: mid.y - 13 })
+    polesNow(layout, terrainView(t0), prototypeFacts, policy, "poles:b:")
+    assert(unpoweredModules(layout, prototypeFacts).length === 0, "everything joined")
+    const r = stampParts(s, force.name, layout, allParts(layout), true)
+    assert(r.failed.length === 0, `ghosts: ${r.failed.join("; ")}`)
+    const built = reviveAll(r.entities)
+    assert(built.length === r.entities.length, `revived ${built.length}/${r.entities.length}`)
+    // The built poles read as own entities in a fresh scan: growth over them used to fail here ("blocked at").
+    const t = scan(lab, "b37", force.name)
+    const raw = planGrowth(layout, terrainView(t), prototypeFacts, policy, tier, moduleId("smelt"), 2)
+    log(`[b37] growth on the raw scan: ${raw.ok ? "ok" : raw.reason}`)
+    assert(!raw.ok, "the raw scan blocks the growth at a built pole")
+    // The faction's planner view (claimView) reads its own pole-line poles as clearable ground.
+    storage.factories ??= {}
+    storage.factories["b37-test"] = { layout } as never
+    const g = planGrowth(layout, claimView("b37-test", s.name, terrainView(t), false), prototypeFacts, policy, tier, moduleId("smelt"), 2, "small-electric-pole", "poles:g:")
+    delete storage.factories["b37-test"]
+    assert(g.ok, `growth planned: ${g.reason}`)
+    let polesOut = 0
+    let polesIn = 0
+    for (const e of g.remove) if (e.name === "small-electric-pole") polesOut++
+    for (const e of g.add) if (e.name === "small-electric-pole" && string.sub(e.owner, 1, 8) === "poles:g:") polesIn++
+    log(`[b37] growth: ${g.remove.length} to pick up (${polesOut} poles), ${g.add.length} to build (${polesIn} new line poles)`)
+    assert(polesOut > 0 && polesIn > 0, "the line is picked up and re-laid")
+    // Build the diff as the crew does: pick up, then revive ghosts.
+    for (const e of g.remove) s.find_entities_filtered({ name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]?.destroy()
+    const ghosts: LuaEntity[] = []
+    for (const e of g.add) {
+      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
+      if (e.ioType !== undefined) params.type = e.ioType
+      const gh = s.create_entity(params as never)
+      assert(gh !== undefined, `ghost ${e.name} at ${e.x - ox},${e.y - oy}`)
+      ghosts.push(gh!)
+    }
+    const revived = reviveAll(ghosts)
+    assert(revived.length === g.add.length, `every new entity built (${revived.length}/${g.add.length})`)
+    const engine = s.find_entities_filtered({ type: "generator", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })[0]
+    const net = engine.electric_network_id
+    const off: string[] = []
+    for (const l of s.find_entities_filtered({ type: "lab", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })) if (l.electric_network_id !== net) off.push(`lab at ${l.position.x - ox},${l.position.y - oy}`)
+    for (const i of s.find_entities_filtered({ type: "inserter", force, area: [at(lab, -64, -64), at(lab, 64, 64)] })) if (i.name !== "burner-inserter" && i.electric_network_id !== net) off.push(`inserter at ${i.position.x - ox},${i.position.y - oy}`)
+    render(s, "b37-after", { x: ox, y: oy }, 64)
+    assert(off.length === 0, `on the engine's network: ${off.join("; ")}`)
+  })
+
+  test("B41: a re-laid pole line reuses a live pole instead of ghosting over it", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: poleId("kept"), name: "small-electric-pole", x, y, line: poleLineId("poles:b41:0") },
+      { id: poleId("new"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:b41:0") },
+    ]
+    layout.poleLines = [{ id: poleLineId("poles:b41:0"), from: "power", to: moduleId("consumer"), poles: [poleId("kept"), poleId("new")] }]
+    const built = lab.surface.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })
+    assert(built !== undefined, "the old line's pole was built")
+
+    const r = stampParts(lab.surface, force.name, layout, { modules: [], routes: [], poles: [poleId("kept"), poleId("new")] }, true)
+    assert(r.failed.length === 0, `ghost failures: ${r.failed.join("; ")}`)
+    assert(r.entities.length === 1, `only the new pole gets a ghost (${r.entities.length})`)
+    assert(r.entities[0].type === "entity-ghost" && r.entities[0].ghost_name === "small-electric-pole", "the new pole is ghosted")
+    assert(r.entities[0].position.x === x + 6.5 && r.entities[0].position.y === y + 0.5, "the ghost is at the new tile")
+    assert(built!.valid, "the re-used pole stays built")
+    const overlaid = lab.surface.find_entities_filtered({ ghost_name: "small-electric-pole", position: built!.position, force })
+    assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
+  })
+
+  test("B46: poles another plan evicted leave a building goal's own plan: its ghost stamp no longer creates them", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: poleId("evicted"), name: "small-electric-pole", x, y, line: poleLineId("poles:b46:0") },
+      { id: poleId("kept"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:b46:0") },
+    ]
+    layout.poleLines = [{ id: poleLineId("poles:b46:0"), from: "power", to: moduleId("consumer"), poles: [poleId("evicted"), poleId("kept")] }]
+    layout.occ[tkey(x, y)] = layoutClaimTag("x:poles:b46:0")
+    layout.occ[tkey(x + 6, y)] = layoutClaimTag("x:poles:b46:0")
+    const parts = { modules: [], routes: [], poles: [poleId("evicted"), poleId("kept")] }
+    // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
+    const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
+    assert(n === 1, `one pole dropped (${n})`)
+    assert(parts.poles.length === 1 && parts.poles[0] === "kept", `parts keep the other pole (${parts.poles.join(",")})`)
+    assert(layout.occ[tkey(x, y)] === undefined && layout.occ[tkey(x + 6, y)] === "x:poles:b46:0", "its tile is no longer the goal's")
+    const r = stampParts(s, force.name, layout, parts, true)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    assert(r.entities.length === 1 && r.entities[0].position.x === x + 6.5, `only the kept pole is ghosted (${r.entities.length})`)
+    assert(s.find_entities_filtered({ ghost_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 } }).length === 0, "no ghost where the other plan's belt goes")
+    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }) === 0, "idempotent")
+  })
+
+  test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {
+    const lab = createLab(16)
+    const force = labForce()
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    layout.poles = [
+      { id: poleId("blocked"), name: "small-electric-pole", x, y, line: poleLineId("poles:b42:0") },
+      { id: poleId("built"), name: "small-electric-pole", x: x + 4, y, line: poleLineId("poles:b42:0") },
+      { id: poleId("other"), name: "small-electric-pole", x: x + 8, y, line: poleLineId("poles:b42:0") },
+    ]
+    layout.poleLines = [{ id: poleLineId("poles:b42:0"), from: "power", to: moduleId("consumer"), poles: [poleId("blocked"), poleId("built"), poleId("other")] }]
+    // Report 125521: an obsolete underground belt put back on the tile of a planned pole.
+    const belt = s.create_entity({ name: "underground-belt", type: "input", position: { x: x + 0.5, y: y + 0.5 }, direction: defines.direction.south, force })!
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force })!
+    // B41: the planned pole already built under its own ghost is not a stray.
+    s.create_entity({ name: "small-electric-pole", position: { x: x + 4.5, y: y + 0.5 }, force })
+    const overBuilt = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 4.5, y: y + 0.5 }, force })!
+    // A planned entity under some other ghost is the layout's own: never picked up by this rule.
+    s.create_entity({ name: "small-electric-pole", position: { x: x + 8.5, y: y + 0.5 }, force })
+    const overPlanned = s.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: { x: x + 8.5, y: y + 0.5 }, force })!
+    const planned = layoutEntityKeys(layout)
+    const strays = strayUnder(s, force.name, planned, ghost)
+    assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
+    assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
+    assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
   })
 })

@@ -91,6 +91,17 @@ function sliceUnit(entities: ModuleEntity[], axis: "x" | "y", a: number, b: numb
   )
 }
 
+/**
+ * B25: removes the belt tile at (x, y) once the expansion unit has been sliced (the unit keeps it: between units the
+ * belt must run on). Row generators use it for the head tile of their input belt: it flows west out of the footprint
+ * with nothing picking from it, and would drop its items onto whatever belt runs past the module's west edge.
+ */
+function dropBelt(entities: ModuleEntity[], belt: string, x: number, y: number): ModuleEntity[] {
+  const out = entities.filter((e) => !(e.name === belt && e.x === x && e.y === y))
+  if (out.length !== entities.length - 1) error(`generator: no ${belt} at ${x},${y} to drop`)
+  return out
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Smelter column
 
@@ -400,6 +411,31 @@ function machineSpeed(facts: ProtoFacts, machine: string): number {
   return need(facts.entity(machine)?.craftingSpeed, `${machine} is not a crafting machine`)
 }
 
+/** D51 / B14: columns a row module's buffer head adds at its west end. */
+const ROW_BUFFER_W = 2
+
+/**
+ * D51 / B14: a buffer depot at the head (west end) of a row module (output belt on row 0 flowing west to its port):
+ * every entity and port moves ROW_BUFFER_W columns east, the output belt runs on to the new port at (0.5, 0.5), and an
+ * inserter at (1.5, 1.5) picks plates (items) off that belt (it faces north: the side it picks from) into a chest at
+ * (1.5, 2.5). A pole at (0.5, 1.5) powers it and reaches the module's own poles. Returns the buffer chest, if added.
+ */
+function rowBufferHead(facts: ProtoFacts, L: Layout, ports: Port[], buffer: string | undefined): boolean {
+  if (buffer === undefined || buffer === "" || facts.entity(L.inserter)?.electric !== true) return false
+  for (const e of L.entities) e.x += ROW_BUFFER_W
+  for (const p of ports) p.pos = { x: p.pos.x + ROW_BUFFER_W, y: p.pos.y }
+  L.beltAt(0.5, 0.5, WEST)
+  L.beltAt(1.5, 0.5, WEST)
+  L.ins(1.5, 1.5, NORTH)
+  L.add(buffer, 1.5, 2.5, undefined, { buffer: true })
+  L.poleAt(0.5, 1.5)
+  for (const p of ports) if (p.kind === "belt-out" || p.kind === "power") {
+    if (p.kind === "belt-out") p.pos = { x: 0.5, y: 0.5 }
+    else p.pos = { x: 0.5, y: 1.5 }
+  }
+  return true
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Generic assembler row
 
@@ -408,6 +444,8 @@ export interface AssemblerRowParams extends CommonParams {
   /** Assembler count, even (units of two). */
   count: number
   machine?: string
+  /** D51 / B14: buffer depot chest at the head ("" or absent: none). */
+  buffer?: string
 }
 
 /**
@@ -461,13 +499,16 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   }
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 0.5, y: 1.5 }, dir: NORTH })
+  const buffered = rowBufferHead(facts, L, ports, p.buffer)
+  const head = buffered ? ROW_BUFFER_W : 0
+  W += head
   const H = inputs.length === 1 ? 7 : 8
   // Growth cap: each input lane (two inputs) or the whole belt (one input), and the output belt.
   const lane = laneCapacity(facts, L.belt)
   let maxMachines = (2 * lane) / (crafts * product.amount)
   for (const i of recipe.ingredients) maxMachines = Math.min(maxMachines, (inputs.length === 1 ? 2 * lane : lane) / (crafts * i.amount))
   const draft: ModuleDraft = {
-    id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}`,
+    id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",
     generator: "assembler-row",
     provenance: "generator assembler-row (Rival Engineers)",
@@ -478,14 +519,16 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
     recipe: p.recipe,
     rotatable: true,
     mirrorable: true,
-    params: { recipe: p.recipe, count: p.count, machine, belt: L.belt, inserter: L.inserter },
+    params: { recipe: p.recipe, count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: buffered ? p.buffer! : "" },
     expand: {
-      unit: { footprint: { w: 6, h: H }, entities: sliceUnit(L.entities, "x", 0, 6) },
+      unit: { footprint: { w: 6, h: H }, entities: sliceUnit(L.entities, "x", head, head + 6) },
       axis: "x",
-      insertAt: xt,
+      insertAt: xt + head,
       maxUnits: Math.max(0, Math.floor(maxMachines / 2 + 1e-9) - units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
+  if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -564,6 +607,8 @@ export function redLine(facts: ProtoFacts, p: RedLineParams): ModuleDef {
       maxUnits: Math.max(0, 10 - p.units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters.
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -576,6 +621,8 @@ export interface CircuitBlockParams extends CommonParams {
   /** Product (electronic-circuit) and the intermediate it takes (copper-cable). */
   recipe?: string
   intermediate?: string
+  /** D51 / B14: buffer depot chest at the head ("" or absent: none). */
+  buffer?: string
 }
 
 /**
@@ -635,28 +682,32 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
   const ports = rowTail(L, xt, inputs, 6)
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 3.5, y: 3.5 }, dir: NORTH })
+  const buffered = rowBufferHead(facts, L, ports, p.buffer)
+  const head = buffered ? ROW_BUFFER_W : 0
   const lane = laneCapacity(facts, L.belt)
   const draft: ModuleDraft = {
-    id: `circuit-block/${recipeName}/${p.units}/${machine}/${L.belt}/${L.inserter}`,
+    id: `circuit-block/${recipeName}/${p.units}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",
     generator: "circuit-block",
     provenance: "generator circuit-block (Rival Engineers)",
     description: `${3 * p.units} ${midName} : ${2 * p.units} ${recipeName} assemblers, direct insertion`,
-    footprint: { w: xt + 1, h: 8 },
+    footprint: { w: xt + 1 + head, h: 8 },
     entities: L.entities,
     ports,
     recipe: recipeName,
     rotatable: true,
     mirrorable: true,
-    params: { recipe: recipeName, intermediate: midName, units: p.units, machine, belt: L.belt, inserter: L.inserter },
+    params: { recipe: recipeName, intermediate: midName, units: p.units, machine, belt: L.belt, inserter: L.inserter, buffer: buffered ? p.buffer! : "" },
     expand: {
-      unit: { footprint: { w: 20, h: 8 }, entities: sliceUnit(L.entities, "x", 0, 20) },
+      unit: { footprint: { w: 20, h: 8 }, entities: sliceUnit(L.entities, "x", head, head + 20) },
       axis: "x",
-      insertAt: xt,
+      insertAt: xt + head,
       // Copper is the limiting lane: 3 cable assemblers × their ingredient rate per unit.
       maxUnits: Math.max(0, Math.floor(lane / ((3 * machineSpeed(facts, machine)) / mid.energy) + 1e-9) - p.units),
     },
   }
+  // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
+  if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
   return finalizeModule(draft, facts)
 }
 
@@ -713,6 +764,8 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
       maxUnits: Math.max(0, 10 - units),
     },
   }
+  // B25: the pack belt ends at the first lab's inserter.
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 4.5)
   return finalizeModule(draft, facts)
 }
 
@@ -769,9 +822,38 @@ export function chestCell(facts: ProtoFacts, p: ChestCellParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Radar (D56: placed for realism; plans never depend on what it charts)
+
+export interface RadarParams extends CommonParams {
+  radar?: string
+}
+
+/** D56: one radar (3×3) with a small pole beside it: a 4×3 powered module, no belts. */
+export function radarCell(facts: ProtoFacts, p: RadarParams): ModuleDef {
+  const radar = p.radar ?? "radar"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  L.add(radar, 1.5, 1.5)
+  L.poleAt(3.5, 1.5)
+  const draft: ModuleDraft = {
+    id: `radar/${radar}/${L.pole}`,
+    source: "generated",
+    generator: "radar",
+    provenance: "generator radar (Rival Engineers)",
+    description: `one ${radar} (D56)`,
+    footprint: { w: 4, h: 3 },
+    entities: L.entities,
+    ports: [{ id: "power", kind: "power", pos: { x: 3.5, y: 1.5 }, dir: EAST }],
+    rotatable: true,
+    mirrorable: true,
+    params: { radar },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Registry
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -784,7 +866,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "circuit-block") return circuitBlock(facts, P)
   if (name === "lab-array") return labArray(facts, P)
   if (name === "chest-cell") return chestCell(facts, P)
+  if (name === "radar") return radarCell(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar"]

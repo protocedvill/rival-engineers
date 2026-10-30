@@ -1,33 +1,52 @@
 import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
+import { keyTaken } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, getJob, JobSpec } from "../jobs/board"
 import { resetMember } from "../jobs/crew"
-import { addClearJob, addPlaceJob, factionForce, factionSurface } from "../jobs/faction"
+import { addClearJob, addPlaceJob, clearJobFor, factionForce, factionSurface } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { curatedModule, generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
-import { BuildParts, EntitySpec, partTiles } from "../planner/build-list"
-import { planGrowth } from "../planner/grow"
-import { markDirty, scanChunk, terrainView } from "../planner/terrain"
-import { buildGraph, FactoryGraph } from "../planner/graph"
+import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
+import * as GROW from "../planner/grow"
+import { destroyEntity, scanChunk, terrainView } from "../planner/terrain"
 import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
-import { findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
-import { addEdge, addNode, edgeByRole, edgesInto, LogicalGraph, LogicalNode, newGraph, nodeByRole, nodesOf, rateIn, removeEdge, removeNode } from "../planner/logical"
-import { abandonParts, applyDiff } from "../planner/conflicts"
+import * as LO from "../planner/layout"
+import type { LayoutState, PlacedModule, PlannedPole } from "../planner/layout"
+import { preparePlanDelta } from "../planner/plan-delta"
+import type { PlanDelta } from "../planner/plan-delta"
+import { recordDiagnostic } from "../diagnostic-events"
+import * as IDS from "../shared/ids"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, obstaclesFor } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
-import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanRequest } from "../planner/plan"
-import { powerRoles } from "../planner/power"
-import { claimView, entryPolicy, exportGraph, exportPlanInput, getPlannerEntry, removePlan, startBuild, startPlan, tiers } from "../planner/runtime"
+import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest, portFedByOther } from "../planner/plan"
+import { sealedInputs } from "../planner/placement"
+import * as PW from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
 import { newTerrain } from "../planner/terrain"
-import { Design, design, DesignContext, ModuleKind, DesignEdge, DesignNode, diffDesign, GoalKind, goalsFrom, GoalSpec, isPowerRole } from "./design"
-import { meanUnitTime, researchGoal, startResearch } from "./research-queue"
-import { MeterState, newMeter, probeTick, requestProbes, sampleNodes, startProbe } from "./measure"
-import { newReconcileState, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy, statusCounts } from "./reconcile"
-import { checkBuild } from "../planner/conflicts"
+import { researchGoal, startResearch } from "./research-queue"
+import { newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
 import { countWork, findEntities } from "../work"
-import { registerBuffer } from "../modules/buffers"
+import { evictSites, isSitePart, resyncReserved } from "./evict"
+import * as FU from "./fuel"
+import type { HandoverRecord } from "./handover"
+import * as LG from "../planner/logical"
+import type { LogicalGraph, LogicalNode } from "../planner/logical"
+import * as RT from "../planner/runtime"
+import * as ST from "./stage"
+import * as MS from "./measure"
+import type { MeterState } from "./measure"
+import * as DS from "./design"
+import type { Design, DesignContext, ModuleKind, DesignEdge, DesignNode, GoalKind, GoalSpec } from "./design"
+import { GoalSelectionSpec, GoalSelectionState, selectGoals } from "./goal-selection"
+import * as GLC from "./goal-lifecycle"
+import type { GoalStatus } from "./goal-lifecycle"
+import * as REL from "./relocation"
+import * as AR from "./adoption-runtime"
+import * as EX from "./explore"
+export { parseStages } from "./stage"
+export type { GoalStatus } from "./goal-lifecycle"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
 // are gathered, and drives the faction toward staged science targets (D27) with the recipe-graph planner.
@@ -49,13 +68,11 @@ import { registerBuffer } from "../modules/buffers"
 // active job, the factory's place jobs included, and collects, hand-crafts or hand-mines them. The curated mall
 // (a later stage goal) feeds that loop from its output chests once built; see docs/reports/M5-report.md.
 
-export type GoalStatus = "planning" | "building" | "done" | "failed"
-
 /** A design node a goal builds, as plain data (the module is regenerated from generator + params). */
 export interface GoalNode {
   role: string
   /** Graph node id = module instance id. */
-  id: string
+  id: IDS.ModuleId
   kind: DesignNode["kind"]
   generator: ModuleKind
   params: Record<string, unknown>
@@ -64,10 +81,12 @@ export interface GoalNode {
   capacity: number
   inputs: DesignNode["inputs"]
   powerW: number
+  /** Route-reassignment provider: the planner must choose an independent site. */
+  newSite?: boolean
 }
 
 export interface FactoryGoal {
-  id: string
+  id: IDS.GoalId
   kind: GoalKind
   status: GoalStatus
   nodes: GoalNode[]
@@ -87,37 +106,55 @@ export interface FactoryGoal {
   rounds: number
   lastRound?: number
   /** Clear jobs for trees/rocks found under leftover ghosts, by obstacle position. */
-  clearing?: Record<string, number>
+  clearing?: Record<string, IDS.JobId>
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
-  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: number[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: number[] }
+  growBuild?: { phase: "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
   deferred?: boolean
-  rework?: { clearJobs: number[]; add: EntitySpec[] }
+  rework?: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean }
+  /** B20: leftover-ghost rounds in a row that placed nothing, and the leftover count of the last round. */
+  stuck?: number
+  lastLeft?: number
+  /** D62: a radar outpost goal: where its radar goes, on which arm, and the strip the crew explores to get there. */
+  site?: { x: number; y: number; arm: number; step: number; strip: Rect }
 }
 
 export interface FactoryState {
   faction: string
+  /** B53: goal kinds whose last goal failed for want of a site, and the tick they may plan again. */
+  siteRetry?: Partial<Record<GoalKind, number>>
   terrain: string
   center: Vec
   layout: LayoutState
   graph: LogicalGraph
   stage: number
   goals: FactoryGoal[]
+  /** Last failed in-place growth plan by layout node, for diagnostics and the growth overlay. */
+  growthDiagnostics?: Record<string, { tick: number; reason: string; units: number }>
+  /** B98: node → the node still being built that its last growth plan had to wait for (B52); no replan until it is built. */
+  growWaits?: Record<string, string>
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
-  design?: { stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
+  design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
   /** Why no goal is being worked on right now. */
   waiting: string[]
   jobKeys: Record<string, number>
+  /** B82: keys whose job failed, with the tick (jobs/keys.ts). */
+  failedKeys?: Record<string, number>
   research: { current?: string; reason?: string; started: Record<string, string> }
   /** Automated science check: research units done since hand-feeding stopped, and what was left in the labs then. */
   verify?: { tick: number; leftover: number; units: number; tech?: string; progress: number; made: number }
   progressSteps: number
   progressTick: number
   lastUpkeep: number
+  /**
+   * A plan adoption that has begun but not committed (the goal is not yet `building`). Persisted so a Lua error
+   * part-way is detected on the next tick and the idempotent adoption resumes; cleared at the commit point.
+   */
+  adoption?: AR.AdoptionIntent
   /**
    * D36: the technology that unlocks undergrounds is a prerequisite of production and mall goals, researched with
    * hand-fed packs like the other unblocking techs: a plan with undergrounds was at least `logistics-underground-min-saving`
@@ -131,9 +168,78 @@ export interface FactoryState {
   compares?: { goal: string; tick: number; research: boolean; why: string[] }[]
   /** D38: temporary factory cells built so far per product (never rebuilt once retired), and retired cells. */
   temp?: { built: Record<string, number>; retired: number }
+  /**
+   * M6 (SPEC §3): science packs made and consumed (force item statistics, cumulative) once per game minute, for the
+   * sustained-throughput check and the scorecard; `best` = the best window so far (each pack's rate / its target, min).
+   */
+  science?: { samples: { tick: number; made: Record<string, number>; used: Record<string, number> }[]; best: number; bestTick?: number; rates?: Record<string, number> }
+  /** M6: the final stage is built and the research goal done: no planner progress is expected (not a stall). */
+  idle?: boolean
+  /**
+   * P36 (b, proposed): items whose new producer could not be placed (`factory-fuel-fallback`): new consumers tap the
+   * nearest built producer of it, which grows (stage.ts `fallbackProducers`).
+   */
+  fallback?: Record<string, boolean>
+  /** P36 (a, proposed): steam-block fuel producers replaced because their ore ran low (telemetry). */
+  fuelRelocations?: number
+  /** D55/P36: roles whose old module is being deconstructed, with the clear jobs a replacement goal waits for. */
+  relocation?: Record<string, IDS.JobId[]>
+  /** B19: built producers whose routes could not take a tap: new consumers don't share them. */
+  noTap?: Record<string, boolean>
+  /** D57 (c): ore patches (`patchKey`) a mine found no room on, with the terrain stamp then; skipped until it changes. */
+  deadPatches?: Record<string, string>
+  /** M6: cluster-1 roles that can't grow far enough → the share of the stage target cluster 1 can still serve. */
+  cluster1Caps?: Record<string, number>
+  /** M6: failed expansions per role this stage (a grow that keeps failing no longer holds the stage). */
+  growFails?: Record<string, number>
+  /**
+   * B60 provider groups: built providers that cannot expand. The design keeps serving their consumers at the real
+   * capacity and assigns the residual to a parallel role; it never relocates them.
+   */
+  providerShort?: Record<string, boolean>
+  /**
+   * B61/B60: a shared provider role whose planned site could not reach every consumer. The next design gives each
+   * consumer its own parallel provider instead of sharing one infeasible route group.
+   */
+  providerSplit?: Record<string, boolean>
+  /** B61: exact provider→consumer feeds whose route failed; the design reassigns just that consumer. */
+  providerNoTap?: Record<string, boolean>
+  /**
+   * B63: consumers whose own input port the seal check proved boxed in (`role.port`). Plans that feed them run with a
+   * wider route window: seed 1376111 routes at margin 72 for 265k work after failing at margin 24 for 50k, while
+   * widening only the failing connection rescues nothing (the blockage is built by the plan's other routes).
+   */
+  wideJoin?: Record<string, boolean>
+  /** B71: consumer ports (`role.port`) whose route offers no side-load or splitter merge: the design splits no demand there. */
+  noMerge?: Record<string, boolean>
+  /** B72: provider roles (see DesignContext.ownSite). */
+  ownSite?: Record<string, boolean>
+  /** B63 diagnostics: orphan claim tiles seen (`orphanEvents` = plans rejected for them), and the last log tick. */
+  orphanClaims?: number
+  orphanEvents?: number
+  orphanLogTick?: number
+  /**
+   * Goalpost 1 (provider handover): providers being retired. Their consumers get a replacement (a parallel role) and
+   * the old provider is deconstructed only once that replacement feeds every port it served.
+   */
+  handover?: Record<string, HandoverRecord>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
+  /**
+   * D62: a search for ore past the home zone. `kind` goals wait while an outpost is built (`outpost`) and its radar's
+   * nearby square is charted (`scan`), then plan again (`retry`); a plan of that kind ends the search.
+   */
+  explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number; need?: "required" | "extra capacity" }
+  /** D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. */
+  arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
+  /** P43 (a): chunks the faction's radars scanned (sector scans, and powered outposts' nearby squares), by `tkey`. */
+  radarChunks?: Record<number, boolean>
+}
+
+/** The only legal status mutation boundary for an existing goal. Constructors set their initial status directly. */
+function transitionGoal(g: FactoryGoal, to: GoalStatus): void {
+  g.status = GLC.nextGoalStatus(g.status, to, g.id)
 }
 
 declare global {
@@ -145,10 +251,8 @@ declare global {
 const designCache: Record<string, { key: string; design: Design }> = {}
 
 const UPKEEP_INTERVAL = 300
-const FUEL_LOW_MINUTES = 2
-const FUEL_TOP_MINUTES = 8
-const LAB_LOW = 2
-const LAB_FEED = 5
+const FUEL_MINUTES = { low: 2, top: 8 }
+const LAB = { low: 2, feed: 5 }
 const MAX_PLAN_ATTEMPTS = 4
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
 const TEMP_CLEARANCE = 6
@@ -162,17 +266,6 @@ function parsePairs(value: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of string.gmatch(value, "([^=,;%s]+)%s*=%s*([^,;%s]+)")) out[k] = v
   return out
-}
-
-/** Stages of `factory-targets`: per stage, item → packs per minute. */
-export function parseStages(value: string): { item: string; perMinute: number }[][] {
-  const stages: { item: string; perMinute: number }[][] = []
-  for (const [part] of string.gmatch(value, "[^;]+")) {
-    const stage: { item: string; perMinute: number }[] = []
-    for (const [item, n] of string.gmatch(part, "([^=,%s]+)%s*=%s*([%d%.]+)")) stage.push({ item, perMinute: tonumber(n)! })
-    if (stage.length > 0) stages.push(stage)
-  }
-  return stages
 }
 
 export function getFactory(name: string): FactoryState | undefined {
@@ -194,8 +287,8 @@ export function startFactory(faction: FactionState): FactoryState {
     faction: faction.name,
     terrain: t.id,
     center,
-    layout: newLayout(),
-    graph: newGraph(),
+    layout: LO.newLayout(),
+    graph: LG.newGraph(),
     stage: 0,
     goals: [],
     nextGoal: 1,
@@ -253,6 +346,7 @@ interface Ctx {
 }
 
 function think(faction: FactionState, f: FactoryState, config: Config): void {
+  AR.reconcile(faction, f)
   const ctx: Ctx = {
     faction,
     f,
@@ -264,9 +358,14 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
+  FU.serviceHandovers({ faction, f, config, surface: factionSurface(faction), tick: game.tick })
+  if (FU.checkMineOre(ctx, planning(f) !== undefined) === undefined) FU.replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
   measureAndReconcile(ctx)
   const d = designNow(ctx)
   tempFactories(ctx)
+  const hooks: EX.ExploreHooks = { busy: () => (planning(f) !== undefined ? "the current plan" : !GLC.everDone(f.goals, "power") ? "power" : undefined), startRadar: (role, site) => startRadar(ctx, role, site) }
+  EX.baseRadar(ctx, hooks)
+  EX.exploreStep(ctx, hooks)
   advanceGoals(ctx, d)
   research(ctx, d)
   handFeed(ctx)
@@ -275,6 +374,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     upkeep(ctx)
   }
   milestones(ctx)
+  ST.sampleScience(ctx, packsAutomated(f), (name) => mark(faction, name))
   f.waiting = ctx.waiting
   checkStall(ctx)
 }
@@ -299,7 +399,7 @@ function makeModule(this: void, gen: ModuleKind, params: Record<string, unknown>
   return generatedModule(gen, params)
 }
 
-export function designContext(ctx: { faction: FactionState; force: LuaForce; config: Config; entities: Record<string, string> }): DesignContext {
+export function designContext(ctx: { faction: FactionState; force: LuaForce; config: Config; entities: Record<string, string> }, stage = 0, forceSharing = false): DesignContext {
   const brain = ctx.faction.brain!
   const researched = researchedTechs(ctx.force)
   const plannable: Record<string, boolean> = {}
@@ -327,41 +427,80 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     boiler: e.boiler ?? "boiler",
     engine: e.engine ?? "steam-engine",
     packs,
-    researchUnitTime: ctx.config.factoryResearchUnitTime > 0 ? ctx.config.factoryResearchUnitTime : meanUnitTime(),
-    tiers: tiers(),
+    researchUnitTime: ST.labUnitTime(ctx.config, stage),
+    tiers: RT.tiers(),
     policy: policyFor(ctx.config),
     taps: getFactory(ctx.faction.name)?.taps,
+    curated: ST.curatedProducers(),
+    sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
+    handover: ST.handoverRoles(getFactory(ctx.faction.name)),
+    providerShort: ST.providerShort(getFactory(ctx.faction.name)),
+    noMerge: getFactory(ctx.faction.name)?.noMerge,
+    ownSite: getFactory(ctx.faction.name)?.ownSite,
+    providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
+    providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
+    powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
+    cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
   }
 }
 
 function policyFor(config: Config) {
   // The same policy the planner entries use (config overrides applied).
-  return entryPolicy({ request: { modules: [], connections: [], center: { x: 0, y: 0 }, region: { x: 0, y: 0, w: 0, h: 0 } }, policy: config.layoutPolicy } as never)
+  return RT.entryPolicy({ request: { modules: [], connections: [], center: { x: 0, y: 0 }, region: { x: 0, y: 0, w: 0, h: 0 } }, policy: config.layoutPolicy } as never)
 }
 
-/** The design of the current stage (v1: one pack item per stage drives the lab sink). */
+/** The design of the current stage: the labs consume every pack of the stage target (times the design margin). */
 function designNow(ctx: Ctx): Design | undefined {
   const f = ctx.f
-  const stages = parseStages(ctx.config.factoryTargets)
-  const stage = stages[math.min(f.stage, stages.length - 1)]
+  const stages = ST.parseStages(ctx.config.factoryTargets)
+  const stageIndex = math.min(f.stage, stages.length - 1)
+  const stage = stages[stageIndex]
   if (stage === undefined || stage.length === 0) return undefined
-  const target = stage[0]
+  const margin = ctx.config.factoryDesignMargin
+  const items = stage.map((t) => ({ item: t.item, perSecond: (t.perMinute / 60) * margin }))
+  const targetKey = items.map((t) => `${t.item}=${string.format("%.6g", t.perSecond)}`).join(",")
   // The design is a pure function of the target, the force's tech and the graph: recompute it only when they change
   // (a session cache: rebuilt after load, same result, so it is deterministic).
   let researchedCount = 0
   for (const [, t] of pairs(ctx.force.technologies)) if (t.researched) researchedCount++
-  let built = 0
-  for (const n of nodesOf(f.graph)) if (n.lifecycle === "built") built++
   let taps = 0
   for (const [, list] of pairs(f.taps ?? {})) taps += (list as string[]).length
-  const key = `${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${target.item}=${target.perMinute}|${researchedCount}|${f.graph.nodeOrder.length}|${built}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  let blocked = ""
+  for (const [role, n] of pairs(f.growFails ?? {})) if ((n as number) >= ST.GROW_MAX_FAILS) blocked += `${role as string};`
+  let noTap = 0
+  for (const [,] of pairs(f.noTap ?? {})) noTap++
+  let short = ""
+  const caps = ST.providerCaps(f)
+  for (const [role] of pairs(f.providerShort ?? {})) short += `${role as string}:${string.format("%.6g", caps[role as string] ?? 0)};`
+  let split = ""
+  for (const [role] of pairs(f.providerSplit ?? {})) split += `${role as string};`
+  let providerNoTap = ""
+  for (const [key] of pairs(f.providerNoTap ?? {})) providerNoTap += `${key as string};`
+  let handover = ""
+  for (const [role] of pairs(f.handover ?? {})) handover += `${role as string};`
+  for (const [port] of pairs(f.noMerge ?? {})) handover += `!${port as string};`
+  for (const [role] of pairs(f.ownSite ?? {})) handover += `@${role as string};`
+  const key = `${next(f.fallback ?? {})[0] ?? ""}|${noTap}|${blocked}|${short}|${split}|${providerNoTap}|${handover}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
   const mallId = ctx.config.factoryMall
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
-  const d = design(designContext(ctx), { item: target.item, perSecond: target.perMinute / 60, mall })
-  const diff = diffDesign(d, f.graph, (node) => findModule(f.layout, node)?.canonical)
+  const dctx = designContext(ctx, stageIndex)
+  const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
+  const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
+  // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
+  // residual as a parallel provider; it never relocates this one.
+  for (const gr of diff.grow) {
+    if (gr.units >= 1 || gr.node === undefined) continue
+    const node = f.graph.nodes[gr.node]
+    if (node === undefined || (node.kind !== "module" && node.kind !== "outpost")) continue
+    f.providerShort ??= {}
+    if (f.providerShort[gr.role] !== true) {
+      f.providerShort[gr.role] = true
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} is an unexpandable provider (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}); keeping it and planning a parallel provider`)
+    }
+  }
   f.design = {
     stage: f.stage,
     nodes: d.nodes.length,
@@ -373,9 +512,26 @@ function designNow(ctx: Ctx): Design | undefined {
     clusters: d.clusters,
     missing: diff.missing.length,
     grow: diff.grow.length,
+    cluster1Share: DS.clusterFraction(dctx, 1, d.clusters),
   }
   const researched = researchedTechs(ctx.force)
-  const goals = goalsFrom(diff, researched)
+  // B19 (like D36): splitters first when sharing providers saves at least `logistics-share-min-modules` modules.
+  const spTech = unresearchedTech(ctx, "splitter")
+  if (f.needSplitters === undefined && spTech !== undefined && ctx.config.logisticsShareMinModules > 0) {
+    const sc = designContext(ctx, stageIndex, true)
+    if (sc.sharing !== undefined) {
+      const alt = DS.design(sc, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
+      const altDiff = DS.diffDesign(alt, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
+      let fresh = 0
+      for (const n of diff.missing) if (n.kind !== "power" && n.kind !== "labs" && !DS.isPowerRole(n.role)) fresh++
+      const saved = diff.missing.length - altDiff.missing.length
+      if (fresh > 0 && saved >= ctx.config.logisticsShareMinModules) {
+        f.needSplitters = spTech
+        log(`[rival-engineers] faction ${ctx.faction.name}: B19 sharing providers saves ${saved} modules: ${spTech} is now a prerequisite of production`)
+      }
+    }
+  }
+  const goals = DS.goalsFrom(diff, researched)
   for (const tech of [f.needUndergrounds, f.needSplitters]) {
     if (tech === undefined || researched[tech]) continue
     if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]
@@ -409,7 +565,7 @@ function lastOf(f: FactoryState, kind: GoalKind): FactoryGoal | undefined {
 function goalNodes(g: GoalSpec, f: FactoryState): GoalNode[] {
   const out: GoalNode[] = []
   for (const n of g.nodes) {
-    out.push({ role: n.role, id: `n${f.graph.nextId++}`, kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW })
+    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW, newSite: n.newSite })
   }
   return out
 }
@@ -420,6 +576,64 @@ function built(f: FactoryState, kind: GoalKind): boolean {
   return g !== undefined && g.status === "done"
 }
 
+export interface FactoryGoalSelectionSnapshot {
+  version: 1
+  faction: string
+  stage: number
+  specs: GoalSelectionSpec[]
+  state: GoalSelectionState
+}
+
+/**
+ * Plain-data input to the goal scheduler. Capture this through the remote interface when a live game chooses the
+ * wrong next goal, then paste it into a T1 fixture: replay does not need the save or any Factorio object.
+ */
+function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
+  const active: Partial<Record<GoalKind, boolean>> = {}
+  const completed: Partial<Record<GoalKind, boolean>> = {}
+  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar"] as GoalKind[]) {
+    active[kind] = activeGoal(f, kind) !== undefined
+    completed[kind] = built(f, kind)
+  }
+  const activeGrowth = activeGoal(f, "grow")
+  return {
+    version: 1,
+    faction,
+    stage: f.stage,
+    specs: specs.map((spec) => ({
+      kind: spec.kind,
+      cluster: spec.cluster,
+      techs: spec.techs,
+      growth: spec.growth === undefined ? undefined : {
+        role: spec.growth.role,
+        have: spec.growth.have,
+        need: spec.growth.need,
+        units: spec.growth.units,
+        power: DS.isPowerRole(spec.growth.role),
+        failed: f.growFails?.[spec.growth.role] ?? 0,
+      },
+    })),
+    state: {
+      active,
+      built: completed,
+      planning: planning(f) !== undefined,
+      powerNodeExists: LG.nodeByRole(f.graph, "power") !== undefined,
+      growingPower: DS.isPowerRole(f.graph.nodes[activeGrowth?.growth?.node ?? ""]?.role ?? ""),
+      researched,
+      growMaxFails: ST.GROW_MAX_FAILS,
+    },
+  }
+}
+
+/** Latest live scheduler input, for turning a Factorio-only failure into a cheap deterministic replay. */
+export function factoryGoalSelectionSnapshot(name: string): FactoryGoalSelectionSnapshot | undefined {
+  const faction = storage.factions[name]
+  const f = storage.factories?.[name]
+  const design = designCache[name]?.design as (Design & { goals?: GoalSpec[] }) | undefined
+  if (faction === undefined || f === undefined || design === undefined) return undefined
+  return selectionSnapshot(name, f, design.goals ?? [], researchedTechs(factionForce(faction)))
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {
@@ -428,53 +642,71 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   }
   const specs = (d as Design & { goals?: GoalSpec[] }).goals ?? []
   if (d.errors.length > 0) ctx.waiting.push(`design: ${d.errors.join("; ")}`)
-  if (specs.length === 0) {
+  const snapshot = selectionSnapshot(ctx.faction.name, f, specs, researchedTechs(ctx.force))
+  const selection = selectGoals(snapshot.specs, snapshot.state)
+  for (const reason of selection.waiting) ctx.waiting.push(reason)
+  f.idle = false
+  if (selection.pending === 0) {
     // The stage is fully planned: once everything is built, move to the next stage.
     let allBuilt = true
-    for (const n of nodesOf(f.graph)) if (n.lifecycle !== "built") allBuilt = false
-    const stages = parseStages(ctx.config.factoryTargets)
+    for (const n of LG.nodesOf(f.graph)) if (n.lifecycle !== "built") allBuilt = false
+    const stages = ST.parseStages(ctx.config.factoryTargets)
+    // B64: with the debug/soak infinite sink on, research is never finished: the labs still want packs, so the
+    // factory must keep growing and repairing to sustain them (otherwise it idles and the sink only drains stockpiles).
+    if (allBuilt && f.stage + 1 >= stages.length && activeGoal(f, "grow") === undefined && activeGoal(f, "repair") === undefined) f.idle = ST.researchDone(ctx.force) && !ctx.config.debugInfiniteResearch
     if (allBuilt && f.stage + 1 < stages.length) {
       f.stage++
+      f.growFails = undefined
+      f.providerShort = undefined
+      f.providerSplit = undefined
+      f.providerNoTap = undefined
+      f.cluster1Caps = undefined
+      mark(ctx.faction, `stage-${f.stage + 1}`)
       log(`[rival-engineers] faction ${ctx.faction.name}: stage ${f.stage + 1} of ${stages.length}`)
     }
     return
   }
-  if (planning(f) !== undefined) return
-  for (const spec of specs) {
-    if (activeGoal(f, spec.kind) !== undefined) continue
-    // Order: power, labs, then production (it needs research the labs do), then growth.
-    if (spec.kind === "labs" && !built(f, "power") && activeGoal(f, "power") === undefined && nodeByRole(f.graph, "power") === undefined) {
-      ctx.waiting.push("labs wait for power")
-      continue
+  for (const decision of selection.decisions) {
+    if (decision.waiting !== undefined) ctx.waiting.push(decision.waiting)
+    if (decision.action === "skip") continue
+    const spec = specs[decision.index]
+    const retry = f.siteRetry?.[spec.kind]
+    if (retry !== undefined) {
+      if (ctx.tick < retry) {
+        ctx.waiting.push(`${spec.kind}: paused, no site found (B53); planning again at tick ${retry}`)
+        continue
+      }
+      f.siteRetry![spec.kind] = undefined
+      log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53) over: planning ${spec.kind} goals again`)
     }
-    if (spec.kind === "production" || spec.kind === "grow" || spec.kind === "mall") {
-      const blocked: string[] = []
-      const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : ["power", "labs", "production"]
-      for (const k of before) if (activeGoal(f, k) !== undefined) blocked.push(k)
-      if (blocked.length > 0) {
-        ctx.waiting.push(`${spec.kind} waits for ${blocked.join(", ")}`)
-        continue
-      }
-      const researched = researchedTechs(ctx.force)
-      const missing = spec.techs.filter((t) => !researched[t])
-      if (missing.length > 0) {
-        ctx.waiting.push(`${spec.kind} waits for research: ${missing.join(", ")}`)
-        continue
-      }
+    const held = EX.exploreHolds(ctx, spec.kind)
+    if (held !== undefined) {
+      ctx.waiting.push(held)
+      continue
     }
     if (spec.kind === "grow") {
-      if (startGrow(ctx, spec)) return
+      if (startGrow(ctx, spec) === true) return
       continue
     }
-    startGoal(ctx, spec)
-    return
+    if (startGoal(ctx, spec)) return
   }
 }
 
-function startGoal(ctx: Ctx, spec: GoalSpec): void {
+function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): boolean {
   const f = ctx.f
+  // D55/P36: don't plan a replacement while the old module's clear jobs are still on the board. Its footprint is still
+  // `OWN` in the terrain view, so the only free part of the patch would fail placement and the goal would burn every
+  // attempt in a few game-seconds (seed 3333: coal>power, 266 entities, 8 plan failures in a row).
+  if (f.relocation !== undefined && !REL.pruneRelocations(f.relocation, ctx.faction.board.active)) f.relocation = undefined
+  const roles: string[] = []
+  for (const n of spec.nodes) roles.push(n.role)
+  const held = REL.pendingRelocation(f.relocation, roles, ctx.faction.board.active)
+  if (held !== undefined) {
+    ctx.waiting.push(`${held}: waits for its old module to be deconstructed`)
+    return false
+  }
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: spec.kind,
     status: "planning",
     nodes: goalNodes(spec, f),
@@ -485,9 +717,11 @@ function startGoal(ctx: Ctx, spec: GoalSpec): void {
     createdTick: ctx.tick,
     placed: 0,
     rounds: 0,
+    site,
   }
   f.goals.push(g)
   planGoal(ctx, g)
+  return true
 }
 
 /**
@@ -496,7 +730,7 @@ function startGoal(ctx: Ctx, spec: GoalSpec): void {
  * When it can't grow (no room, at its cap), the shortfall stays visible as a waiting reason (D24: a new producer
  * cluster is the remedy, M5b/M6).
  */
-function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
+function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   const f = ctx.f
   const gr = spec.growth!
   const node = f.graph.nodes[gr.node]
@@ -504,17 +738,74 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
     ctx.waiting.push(`${gr.role} short (${string.format("%.3g", gr.have)}/${string.format("%.3g", gr.need)}): cannot expand`)
     return false
   }
+  // B98 (seed 2034469): a growth plan can take a minute of game time to compute (a whole-patch mine's move); one that
+  // had to wait for a goal still building is not planned again until that goal is done.
+  const blocker = f.growWaits?.[gr.node]
+  if (blocker !== undefined) {
+    if (f.graph.nodes[blocker]?.lifecycle === "building") {
+      ctx.waiting.push(`${gr.role} growth waits for ${f.graph.nodes[blocker].goal ?? blocker} to finish building`)
+      return "wait"
+    }
+    delete f.growWaits![gr.node]
+  }
   const t = storage.terrains?.[f.terrain]
   if (t === undefined) return false
+  // M6a.2 (seed 222): ore under a mining module's growth may be worked out since the last scan: look again.
+  const gm = LO.findModule(f.layout, gr.node)
+  if (gm?.canonical.anchor?.resource !== undefined) {
+    const ga = LO.growthArea(gm) ?? gm.rect
+    for (let cx = math.floor(math.min(gm.rect.x, ga.x) / 32); cx <= math.floor((math.max(gm.rect.x + gm.rect.w, ga.x + ga.w) + 2) / 32); cx++) {
+      for (let cy = math.floor(math.min(gm.rect.y, ga.y) / 32); cy <= math.floor((math.max(gm.rect.y + gm.rect.h, ga.y + ga.h) + 2) / 32); cy++) if (ctx.surface.is_chunk_generated({ x: cx, y: cy })) scanChunk(t, ctx.surface, cx, cy)
+    }
+  }
   const policy = policyFor(ctx.config)
-  const tier = tiers()[0]
-  const plan = planGrowth(f.layout, claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units)
+  // B58 follow-up / 7718665: growth must obey the same underground cap as a normal plan. Before `logistics` that is 1
+  // (no undergrounds); otherwise a growth can ghost underground belts with no craftable recipe and deadlock research.
+  const tier = GROW.limitUnderground(RT.tiers()[0], maxUndergroundNow(ctx))
+  const plan = GROW.planGrowth(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policy, tier, gr.node, gr.units, ctx.entities.pole ?? "small-electric-pole", `poles:g${f.nextGoal}:`, gr.reclaim === true)
   if (!plan.ok) {
+    f.growthDiagnostics ??= {}
+    f.growthDiagnostics[gr.node] = { tick: ctx.tick, reason: plan.reason ?? "unknown", units: gr.units }
+    recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", decision: "growth-rejected", reason: plan.reason, data: { node: gr.node, role: gr.role, units: gr.units } })
     ctx.waiting.push(`${gr.role} short: expansion failed (${plan.reason})`)
+    // D55: a re-claim that finds no better part of the patch is no growth failure (the mine is relocated instead).
+    if (gr.reclaim === true) return false
+    f.growFails ??= {}
+    f.growFails[gr.role] = (f.growFails[gr.role] ?? 0) + 1
+    // B60: after its growth attempts are spent, this provider is a fixed-capacity member of its group. The design
+    // keeps it and adds a parallel provider for the residual; it is never deconstructed.
+    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS) {
+      f.providerShort ??= {}
+      if (f.providerShort[gr.role] !== true) {
+        f.providerShort[gr.role] = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} stays at its current capacity; planning a parallel provider`)
+      }
+    }
+    // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
+    if (f.growFails[gr.role] >= ST.GROW_MAX_FAILS && !DS.isPowerRole(gr.role) && string.find(gr.role, "#", 1, true)[0] === undefined && !DS.isParallelRole(gr.role) && gr.need > 0) {
+      f.cluster1Caps ??= {}
+      f.cluster1Caps[gr.role] = math.max(0.05, math.min(1, gr.have / gr.need)) * (f.design?.cluster1Share ?? 1)
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} can't grow: production cluster 1 takes at most ${string.format("%.3f", f.cluster1Caps[gr.role])} of the target`)
+    }
+    log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow by ${gr.units} units (failure ${f.growFails[gr.role]}): ${plan.reason}`)
     return false
   }
+  // B52 (seed 3333): a growth that reroutes a connection still being built (its producer or consumer under
+  // construction) leaves that goal placing its old copy of the route. Wait for it; no growth failure.
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind !== "belt" || plan.rerouted.indexOf(e.role) < 0) continue
+    for (const end of [e.from, e.to]) {
+      const other = end !== undefined && end !== gr.node ? f.graph.nodes[end] : undefined
+      if (other === undefined || other.lifecycle !== "building") continue
+      ctx.waiting.push(`${gr.role} growth waits for ${other.goal ?? other.id} to finish building (it reroutes ${e.role})`)
+      f.growWaits ??= {}
+      f.growWaits[gr.node] = other.id
+      return "wait"
+    }
+  }
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "grow",
     status: "building",
     nodes: [],
@@ -530,27 +821,71 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean {
   }
   f.goals.push(g)
   f.layout = plan.layout
-  const m = findModule(f.layout, gr.node)!
+  // B37: the evicted poles are in `plan.remove`; the new lines join the power edges.
+  f.layout.evictedPoles = undefined
+  powerEdges(f)
+  const m = LO.findModule(f.layout, gr.node)!
   node.capacity = { inputs: m.canonical.rates.inputs, outputs: m.canonical.rates.outputs }
+  // B52: a power node's supply grows with it (graph power balance, measured load).
+  if (node.kind === "power") node.powerW = LG.rateIn(node.capacity.outputs, "electricity")
   node.module = m.canonical.id
   node.lifecycle = "building"
   node.goal = g.id
   for (const id of f.graph.edgeOrder) {
     const e = f.graph.edges[id]
-    if (e.kind === "belt" && plan.rerouted.indexOf(e.role) >= 0) e.physical = [`route:${e.role}`]
+    if (e.kind !== "belt" || plan.rerouted.indexOf(e.role) < 0) continue
+    // Its new route (a splitter tap: its root's too).
+    const physical: string[] = []
+    for (const rid of f.layout.routeOrder) {
+      const r = f.layout.routes[rid]
+      if (r.conn !== e.role) continue
+      if (r.tapOf !== undefined) physical.push(r.tapOf)
+      physical.push(rid)
+    }
+    e.physical = physical.length > 0 ? physical : [`route:${e.role}`]
   }
-  const clearJobs: number[] = []
+  const clearJobs: IDS.JobId[] = []
+  const taken: Record<number, boolean> = {}
+  for (const e of plan.add) {
+    const p = prototypes.entity[e.name]
+    const sideways = e.dir === defines.direction.east || e.dir === defines.direction.west
+    const w = p !== undefined ? (sideways ? p.tile_height : p.tile_width) : 1
+    const h = p !== undefined ? (sideways ? p.tile_width : p.tile_height) : 1
+    const x1 = math.floor(e.x - w / 2 + 0.01)
+    const y1 = math.floor(e.y - h / 2 + 0.01)
+    for (let x = x1; x < x1 + w; x++) for (let y = y1; y < y1 + h; y++) taken[tkey(x, y)] = true
+  }
+  for (const e of evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (grow ${gr.role})`)) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
   for (const e of plan.remove) {
     const found = findEntities(ctx.surface, { name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
     if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
+    // B37: an evicted pole line may still be a ghost.
+    else for (const gh of findEntities(ctx.surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
   }
   const reserved = ctx.faction.brain!.reserved
   for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
   claimModuleFields(ctx, m)
-  for (const c of plan.rerouted) for (const k of f.layout.routes[`route:${c}`]?.tiles ?? []) reserved[k] = true
+  for (const rid of f.layout.routeOrder) if (plan.rerouted.indexOf(f.layout.routes[rid].conn) >= 0) for (const k of f.layout.routes[rid].tiles) reserved[k] = true
+  // M6a.2: the tiles the growth gave up (old route tiles, the old footprint's margin) are free again.
+  resyncReserved(ctx.faction, f.layout)
   g.growBuild = { phase: "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [] }
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
   return true
+}
+
+/**
+ * B101 (sweep 628fa29 seed 7718665): before placing `w.add`, trees and rocks in their way are cleared, once (a tree from
+ * the next tile reached into a repair's belt tile and its ghost never revived). Returns whether it queued clear jobs.
+ */
+function clearObstacles(ctx: Ctx, w: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean }): boolean {
+  if (w.obstacles === true) return false
+  w.obstacles = true
+  let queued = false
+  for (const o of obstaclesFor(ctx.surface, w.add)) {
+    w.clearJobs.push((clearJobFor(ctx.faction, o) as IDS.JobId | undefined) ?? addClearJob(ctx.faction, o, ctx.config.factoryBuildPriority))
+    queued = true
+  }
+  return queued
 }
 
 function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
@@ -561,18 +896,12 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       const j = getJob(board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
-    for (const e of b.add) {
-      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force: ctx.faction.force }
-      if (e.ioType !== undefined) params.type = e.ioType
-      if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
-      const gh = ctx.surface.create_entity(params as never)
-      if (gh === undefined) continue
-      if (e.buffer) registerBuffer(ctx.surface, ctx.faction.force, gh)
-      b.ghosts.push(gh)
-      markDirty(ctx.faction.surface, gh.bounding_box.left_top, gh.bounding_box.right_bottom)
-      const id = addPlaceJob(ctx.faction, gh, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
-      if (id !== undefined) b.placeJobs.push(id)
-    }
+    if (clearObstacles(ctx, b)) return
+    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+    for (const gh of d.ghosts) b.ghosts.push(gh)
+    for (const id of d.placeJobs) b.placeJobs.push(id)
+    // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
+    if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
     b.phase = "place"
     return
   }
@@ -594,13 +923,28 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     g.lastRound = ctx.tick
     g.rounds++
     g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
-    const fake = { placeJobs: [] as number[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
-    replanGhosts(ctx, g, fake as never, left)
+    if (stuckRound(ctx, g, left.length)) {
+      // B20: a growth that keeps failing to place is abandoned: its leftover ghosts go, the module counts as built with
+      // what stands, and it is not grown again this stage.
+      for (const gh of left) if (gh.valid) destroyEntity(gh)
+      b.phase = "done"
+      transitionGoal(g, "failed")
+      const node = ctx.f.graph.nodes[g.growth?.node ?? ""]
+      if (node !== undefined) {
+        node.lifecycle = "built"
+        node.builtTick = ctx.tick
+        ctx.f.growFails ??= {}
+        ctx.f.growFails[node.role] = ST.GROW_MAX_FAILS
+      }
+      return
+    }
+    const fake = { placeJobs: [] as IDS.JobId[], fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, phase: "place" }
+    replanGhosts(ctx, g, fake as never, left, ctx.f.layout)
     b.placeJobs = fake.placeJobs
     return
   }
   b.phase = "done"
-  g.status = "done"
+  transitionGoal(g, "done")
   g.builtTick = ctx.tick
   if (g.growth === undefined) {
     // A reconciler repair: its pieces are back.
@@ -614,12 +958,16 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     node.builtTick = ctx.tick
   }
   mark(ctx.faction, "grow-built")
-  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role} at tick ${ctx.tick}`)
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grew ${node?.role ?? `${g.growth.node} (no longer in the graph)`} at tick ${ctx.tick}`)
 }
 
-function roleToId(f: FactoryState, g: FactoryGoal, role: string): string | undefined {
+function roleToId(f: FactoryState, g: FactoryGoal, role: string): IDS.ModuleId | undefined {
   for (const n of g.nodes) if (n.role === role) return n.id
-  return nodeByRole(f.graph, role)?.id
+  return LG.nodeByRole(f.graph, role)?.id
+}
+
+function nodeByRoleIn(f: FactoryState, role: string) {
+  return LG.nodeByRole(f.graph, role)
 }
 
 function failedBefore(f: FactoryState, kind: GoalKind): number {
@@ -632,40 +980,73 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
   g.attempts++
   const modules: ModuleRequest[] = []
-  for (const n of g.nodes) modules.push({ id: n.id, def: makeModule(n.generator, n.params) })
+  for (const n of g.nodes) modules.push({ id: n.id, def: makeModule(n.generator, n.params), newSite: n.newSite })
   const connections: ConnectionRequest[] = []
+  // B78: a node folded into another module (a shared mine) connects through that module's ports. New nodes of this
+  // goal are not in the layout yet: they keep their own ids.
+  const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined || g.nodes.some((n) => n.id === id)
   for (const e of g.edges) {
-    const from = roleToId(f, g, e.from)
-    const to = roleToId(f, g, e.to)
+    const fromNode = roleToId(f, g, e.from)
+    const toNode = roleToId(f, g, e.to)
+    const from = fromNode !== undefined ? LG.connectModule(f.graph, fromNode, inLayout) ?? fromNode : undefined
+    const to = toNode !== undefined ? LG.connectModule(f.graph, toNode, inLayout) ?? toNode : undefined
     if (from === undefined || to === undefined) continue
-    connections.push({ id: e.role, from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt })
+    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt, merge: e.merge === true })
   }
-  const r = g.radius
-  const region: Rect = { x: f.center.x - r, y: f.center.y - r, w: 2 * r, h: 2 * r }
+  // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
+  // with a mine every outpost's radar reach and strip.
+  // A mine's candidate patches are cheap to enumerate (no placement scan), so a mine goal always searches all known
+  // ground: the radius ladder only exists to bound the expensive scan, and spending attempts to widen it three times
+  // before looking at a patch that was already known just costs plans (1376111: "1 of 1 patches tried", four times).
+  const mine = modules.some((m) => m.def.site === "resource-patch")
+  const r = mine ? EX.homeRadius(ctx) : math.min(g.radius, EX.homeRadius(ctx))
+  const region = EX.planRegion(ctx, g, r)
   // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
   // retry is not the same plan again: the hub, then 24 tiles off it in turn (deterministic).
   const tries = g.attempts - 1 + MAX_PLAN_ATTEMPTS * failedBefore(f, g.kind)
   const offsets = [[0, 0], [24, 0], [0, 24], [-24, 0], [0, -24], [24, 24], [-24, -24], [24, -24], [-24, 24]]
   const off = offsets[tries % offsets.length]
-  const center = { x: f.center.x + off[0], y: f.center.y + off[1] }
+  // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
+  const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // B63: a consumer whose input port boxed a plan in gets a wider window for this whole plan (see wideJoin).
+  for (const e of g.edges) if (f.wideJoin?.[`${e.to}.${e.toPort}`] === true) request.windowScale = 3
+  // D57 (c): patches earlier plans' mines found no room on.
+  if (f.deadPatches !== undefined) request.deadPatches = { ...f.deadPatches }
   // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
   // factory still has to connect (seed 11: cells next to the labs' pack input made production unroutable).
   if (g.kind === "temp") request.avoid = f.layout.modules.map((m) => ({ x: m.rect.x - TEMP_CLEARANCE, y: m.rect.y - TEMP_CLEARANCE, w: m.rect.w + 2 * TEMP_CLEARANCE, h: m.rect.h + 2 * TEMP_CLEARANCE }))
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
-  if (getPlannerEntry(id) !== undefined) removePlan(id)
+  if (RT.getPlannerEntry(id) !== undefined) RT.removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)
   request.compare = compareOptions(ctx, g, maxUnderground)
-  const topology = f.taps !== undefined && next(f.taps)[0] !== undefined ? "splitter-tap" : undefined
-  startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology })
+  // P44 (b): whole-patch mines join several drill rows only with splitters.
+  request.splitters = unresearchedTech(ctx, "splitter") === undefined
+  // Splitter taps: recorded B2 taps, or a shared fuel producer (M6) feeding several consumers.
+  let sharedProducer = false
+  const fromCount: Record<string, number> = {}
+  for (const e of g.edges) fromCount[e.from] = (fromCount[e.from] ?? 0) + 1
+  for (const [, n] of pairs(fromCount)) if ((n as number) > 1) sharedProducer = true
+  // B19: a new consumer of a built producer taps its route.
+  for (const e of g.edges) {
+    const p = LG.nodeByRole(f.graph, e.from)
+    if (p === undefined) continue
+    for (const id of f.graph.edgeOrder) if (f.graph.edges[id].kind === "belt" && f.graph.edges[id].from === p.id) sharedProducer = true
+  }
+  // B84: or a connection whose source port already starts a route in the layout, whatever node owns that route (a mine
+  // another role was folded into, B78): point-to-point cannot start a second route there (vps-b77/eecca19 2229258:
+  // 8 failures "port n6.out already feeds a route").
+  if (!sharedProducer) for (const c of connections) if (c.from !== undefined && LO.portFeedsRoute(f.layout, c.from)) sharedProducer = true
+  const topology = (f.taps !== undefined && next(f.taps)[0] !== undefined) || sharedProducer ? "splitter-tap" : undefined
+  RT.startPlan({ id, surface: ctx.faction.surface, force: ctx.faction.force, faction: ctx.faction.name, request, terrain: f.terrain, baseFaction: ctx.faction.name, maxUnderground, topology, known: EX.knownGround(ctx, g) })
   g.plan = id
-  g.status = "planning"
+  transitionGoal(g, "planning")
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) attempt ${g.attempts}: ${g.nodes.length} modules, ${connections.length} connections, region radius ${r}`)
 }
 
 /** The technology that unlocks a belt tier's underground (`what` = "underground") or splitter, if not researched yet. */
 function unresearchedTech(ctx: Ctx, what: "underground" | "splitter"): string | undefined {
-  const entity = tiers()[0]?.[what]
+  const entity = RT.tiers()[0]?.[what]
   if (entity === undefined) return undefined
   const tech = prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(entity) ?? entity)
   return tech !== undefined && !ctx.force.technologies[tech]?.researched ? tech : undefined
@@ -683,7 +1064,7 @@ function compareOptions(ctx: Ctx, g: FactoryGoal, maxUnderground: number | undef
   if (g.kind !== "production" && g.kind !== "mall") return undefined
   const opts: CompareOptions = { workFactor: c.plannerCompareWorkFactor, minWork: c.plannerCompareMinWork }
   if (c.logisticsUndergroundMinSaving > 0 && maxUnderground !== undefined && f.needUndergrounds === undefined && unresearchedTech(ctx, "underground") !== undefined) {
-    opts.undergrounds = { tiers: tiers() }
+    opts.undergrounds = { tiers: RT.tiers() }
   }
   if (c.logisticsSplitterCompare && c.logisticsSplitterMinSaving > 0 && f.needSplitters === undefined && policyFor(c).topology !== "splitter-tap" && unresearchedTech(ctx, "splitter") !== undefined) {
     const count: Record<string, number> = {}
@@ -692,7 +1073,7 @@ function compareOptions(ctx: Ctx, g: FactoryGoal, maxUnderground: number | undef
     for (const n of g.nodes) {
       if (count[n.item] < 2 || items.indexOf(n.item) >= 0) continue
       let earlier = false
-      for (const other of nodesOf(f.graph)) if (other.item === n.item && !isPowerRole(other.role)) earlier = true
+      for (const other of LG.nodesOf(f.graph)) if (other.item === n.item && !DS.isPowerRole(other.role)) earlier = true
       if (!earlier) items.push(n.item)
     }
     if (items.length > 0) opts.splitters = { items }
@@ -702,7 +1083,7 @@ function compareOptions(ctx: Ctx, g: FactoryGoal, maxUnderground: number | undef
 
 /** Undergrounds only once they can be crafted (`logistics`): 1 (none) before. */
 function maxUndergroundNow(ctx: Ctx): number | undefined {
-  const ug = tiers()[0]?.underground
+  const ug = RT.tiers()[0]?.underground
   const ugRecipe = ug !== undefined ? (prototypeFacts.recipeForItem(ug) ?? ug) : undefined
   return ugRecipe !== undefined && ctx.force.recipes[ugRecipe]?.enabled ? undefined : 1
 }
@@ -718,40 +1099,199 @@ function updateGoals(ctx: Ctx): void {
 
 function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
-  const entry = g.plan !== undefined ? getPlannerEntry(g.plan) : undefined
+  const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
   if (entry === undefined) {
-    g.status = "failed"
+    transitionGoal(g, "failed")
     g.reason = "plan lost"
     return
   }
   if (entry.phase === "scan" || entry.phase === "plan") return
+  for (const [k, v] of pairs(entry.job?.deadPatches ?? {})) {
+    f.deadPatches ??= {}
+    f.deadPatches[k as string] = v as string
+  }
   // Planned against a terrain scan: another faction (or a player) may have claimed or built on its ground since.
   const contest = entry.phase === "done" ? contested(ctx, entry) : undefined
   // D36: a finished plan, or one that failed to route without undergrounds but routes with them (infinitely shorter).
   if ((entry.phase === "done" || entry.phase === "failed") && contest === undefined && deferForLogistics(ctx, g, entry)) return
   if (entry.phase === "failed" || contest !== undefined) {
     const why: string[] = []
+    let newNoTap = false
+    let newSplit = false
+    let newNoMerge = false
+    let newOwnSite = false
     const roles: Record<string, string> = {}
     for (const n of g.nodes) roles[n.id] = n.role
     for (const [k, v] of pairs(entry.job?.failures ?? {})) {
       const m = string.match(k as string, "^module:(.*)$")[0]
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
+      // B60/B61: a new shared provider whose one site cannot reach several consumers. Do not retry the same
+      // infeasible route group: mark the role so the next design gives each consumer its own parallel provider.
+      for (const e of g.edges) {
+        if (e.role !== k) continue
+        let outgoing = 0
+        for (const other of g.edges) if (other.from === e.from) outgoing++
+        if (outgoing < 2) continue
+        let provider: string | undefined
+        for (const n of g.nodes) if (n.role === e.from) provider = n.id
+        if (provider === undefined) continue
+        const built = nodeByRoleIn(f, e.from)
+        if (built !== undefined && built.lifecycle === "built") continue
+        f.providerSplit ??= {}
+        if (f.providerSplit[e.from] !== true) {
+          f.providerSplit[e.from] = true
+          newSplit = true
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${e.from} cannot reach every consumer from one site; planning parallel providers per consumer`)
+        }
+      }
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
+        f.providerNoTap ??= {}
+        const feed = `${e.from}=>${e.to}.${e.toPort}`
+        if (f.providerNoTap[feed] !== true) {
+          f.providerNoTap[feed] = true
+          newNoTap = true
+        }
+      }
+      // D68 (user, 2026-10-28: "tap first is best as long as there is capacity", for every item; replaces P36 (b)'s
+      // fuel-only, second-failure rule): a new producer that cannot be placed makes its consumers tap a built producer of
+      // the same item that has capacity (`ST.hasCapacity`), at once and before D62 explores (vps-b80d 1264816: an hour of
+      // radar outposts for ~0.1 coal/s while built coal mines had 0.1-0.96/s spare). Without one, D62 explores.
+      for (const n of g.nodes) {
+        if (n.id !== m || n.item === undefined || !ctx.config.factoryFuelFallback || f.fallback?.[n.item]) continue
+        if ((ST.fallbackProducers({ ...f, fallback: { [n.item]: true } })?.[n.item]?.length ?? 0) === 0) continue
+        f.fallback ??= {}
+        f.fallback[n.item] = true
+        newNoTap = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: D68 ${n.role} can't be placed (${v}): new ${n.item} consumers tap a built producer with capacity`)
+      }
+      // B71 (soak vps-b69 seed 7718665): a residual edge found no side-load or splitter spot on the consumer's route, and
+      // the same design failed 8 plans in a row. The design no longer splits demand on that port.
+      // B80 (vps-b79-r1459426): a route into a port another belt already feeds can only merge (B79); when it found no
+      // way onto that belt (tightly bundled trunks), the port takes no merge either.
+      const noMergeTarget = string.find(v, "no merge target", 1, true)[0] !== undefined
+      for (const e of g.edges) {
+        if (e.role !== k) continue
+        const id = roleToId(f, g, e.to)
+        if (!noMergeTarget && (id === undefined || !portFedByOther(f.layout, { module: id, port: e.toPort }, e.role))) continue
+        const port = `${e.to}.${e.toPort}`
+        f.noMerge ??= {}
+        if (f.noMerge[port] === true) continue
+        f.noMerge[port] = true
+        newNoMerge = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${port} takes no merge (${v}); its provider keeps it whole`)
+      }
+      // B72 (soak vps-d67 seed 7718665): a new mine that the plan folded into a shared whole-patch mine starts its route
+      // from that mine's boxed-in output, and every replan folds it again (8 failures). Give the role a site of its own.
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) !== undefined) continue
+        for (const n of g.nodes) {
+          if (n.role !== e.from || entry.job?.alias[n.id] === undefined) continue
+          f.ownSite ??= {}
+          if (f.ownSite[n.role] === true) continue
+          f.ownSite[n.role] = true
+          newOwnSite = true
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} shared mine ${entry.job!.alias[n.id]} has no route (${v}); it gets a site of its own`)
+        }
+      }
+      // B19: a connection from a built producer that failed (its route has no room for a tap): don't tap it again.
+      for (const e of g.edges) {
+        if (e.role !== k || nodeByRoleIn(f, e.from) === undefined) continue
+        f.noTap ??= {}
+        if (!f.noTap[e.from]) {
+          log(`[rival-engineers] faction ${ctx.faction.name}: ${e.from} is not tapped again (${v})`)
+          newNoTap = true
+        }
+        f.noTap[e.from] = true
+      }
     }
     if (contest !== undefined) why.push(contest)
     g.reason = why.join("; ")
+    if (newNoTap || newSplit || newNoMerge || newOwnSite) {
+      // Planned again at once without that tap / with one provider per consumer / without that merge.
+      RT.removePlan(entry.id)
+      transitionGoal(g, "failed")
+      g.deferred = true
+      g.reason = `${newSplit ? "replan with parallel providers" : newNoMerge ? "replan without that merge" : newOwnSite ? "replan with a mine of its own" : "replan without taps"} for ${g.reason}`
+      return
+    }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
     // With frame dumps on (soaks), keep the failed layout for tools/render (--graph over the nearest frame).
     // The plan's input too (for a T1 replay: mod/unit/fixtures).
     if (ctx.config.frameDumpIntervalTicks > 0) {
       const name = `rival-engineers/failed-plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}`
-      exportGraph(entry, `${name}.graph.json`)
-      exportPlanInput(entry, `${name}.input.lua`)
+      RT.exportGraph(entry, `${name}.graph.json`)
+      // Region radius 384 plans (a far mine or a late cluster) are 768 tiles across: export those up to 800 tiles a side
+      // too, or a failure there leaves nothing to replay (B85 and 1376111 needed capture runs).
+      RT.exportPlanInput(entry, `${name}.input.lua`, 800)
     }
-    removePlan(entry.id)
+    RT.removePlan(entry.id)
+    // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route
+    // window first: the blockage was built by the plan's other routes under the narrow window, so widening a single
+    // connection rescues nothing while the wider plan routes (seed 1376111: 265k work, vs 50k spent failing).
+    if (contest === undefined) {
+      let widened = false
+      for (const ev of entry.job?.evidence ?? []) {
+        if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
+        const n = f.graph.nodes[ev.sealed.port.module]
+        if (n === undefined) continue
+        const key = `${n.role}.${ev.sealed.port.port}`
+        f.wideJoin ??= {}
+        if (f.wideJoin[key] === true) continue
+        f.wideJoin[key] = true
+        widened = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${ev.sealed.port.port} port boxed in (goal ${g.id}); its plans will use a wider route window`)
+      }
+      if (widened) {
+        transitionGoal(g, "failed")
+        g.deferred = true
+        g.reason = `replan with a wider route window: ${g.reason}`
+        return
+      }
+    }
+    // B57: a built module's open input proved walled in: no plan can feed it, so it moves and the goal plans again.
+    const moved = contest === undefined ? relocateSealed(ctx, g, entry.job?.evidence ?? []) : undefined
+    if (moved !== undefined) {
+      transitionGoal(g, "failed")
+      g.deferred = true
+      g.reason = `replan after relocating ${moved}: ${g.reason}`
+      return
+    }
+    // A plan can prove that the faction's *known* ground is exhausted (no free ore patch in the region, every known
+    // patch full, no site for this kind). Retrying cannot help; only more world or a different place can. That is a
+    // knowledge failure, not a design failure, so it acts on the FIRST attempt rather than burning MAX_PLAN_ATTEMPTS
+    // plans on the search-radius ladder (seed 1376111 died one attempt short of its first exploration), it keeps the
+    // goal (`deferred`, attempts intact) instead of replacing it with a freshly minted id, and it pauses its kind (or
+    // the ore search) so one exhausted site cannot become a run of failures on new goals.
+    const gone = contest === undefined && g.site === undefined ? EX.exhausted(g.reason) : undefined
+    if (gone !== undefined) {
+      transitionGoal(g, "failed")
+      g.deferred = true
+      if (gone.kind === "site") {
+        // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while.
+        if (ctx.config.factorySiteRetryMinutes > 0) {
+          f.siteRetry ??= {}
+          f.siteRetry[g.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+          log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53): ${g.kind} goal ${g.id} found no ${gone.what} site (${g.reason}); no ${g.kind} goal plans for ${ctx.config.factorySiteRetryMinutes} game-min, until tick ${f.siteRetry[g.kind]} (setting factory-site-retry-minutes)`)
+        }
+        g.reason = `paused: ${g.reason}`
+        return
+      }
+      g.reason = `exploring for ${gone.what}: ${g.reason}`
+      EX.exploreFor(ctx, g, gone.what)
+      return
+    }
     if (g.attempts >= MAX_PLAN_ATTEMPTS) {
-      g.status = "failed"
+      transitionGoal(g, "failed")
+      // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
+      // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.
+      if (string.find(g.reason ?? "", "no %S+ site in the region")[0] !== undefined && ctx.config.factorySiteRetryMinutes > 0) {
+        f.siteRetry ??= {}
+        f.siteRetry[g.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+        log(`[rival-engineers] faction ${ctx.faction.name}: SITE RETRY PAUSE (B53): ${g.kind} goal ${g.id} failed all ${g.attempts} plans (${g.reason}; region radius up to ${g.radius}); no ${g.kind} goal plans for ${ctx.config.factorySiteRetryMinutes} game-min, until tick ${f.siteRetry[g.kind]} (setting factory-site-retry-minutes)`)
+      }
       // Planned without undergrounds and boxed in: research them before the next try (see needUndergrounds).
-      const ug = tiers()[0]?.underground
+      const ug = RT.tiers()[0]?.underground
       const tech = ug !== undefined ? prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(ug) ?? ug) : undefined
       if ((g.kind === "production" || g.kind === "mall") && f.needUndergrounds === undefined && tech !== undefined && !ctx.force.technologies[tech]?.researched && entry.maxUnderground !== undefined) {
         f.needUndergrounds = tech
@@ -764,7 +1304,31 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     planGoal(ctx, g)
     return
   }
-  adoptPlan(ctx, g)
+  const prepared = preparePlanDelta({
+    sourceRevision: entry.job!.sourceRevision,
+    layout: entry.job!.layout,
+    baseModules: entry.job!.baseModules,
+    baseRoutes: entry.job!.baseRoutes,
+    addedPoles: entry.job!.poleJob?.added,
+    expanded: entry.job!.expanded,
+  }, f.layout)
+  if (prepared.status === "rejected") {
+    const decision = prepared.code === "stale-base-revision" ? "stale-plan-rejected" : "invalid-plan-delta"
+    recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", goal: g.id, plan: entry.id, decision, reason: prepared.detail })
+    if (prepared.code === "invalid-layout-claims") reportOrphanClaims(ctx, g, prepared.problems)
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} discards plan ${entry.id} (${prepared.code}): ${prepared.detail}`)
+    RT.removePlan(entry.id)
+    g.plan = undefined
+    g.reason = `${prepared.code}: ${prepared.detail}`
+    if (prepared.code === "stale-base-revision") g.attempts-- // A concurrent logical change is not a failed planning attempt.
+    else if (g.attempts >= MAX_PLAN_ATTEMPTS) {
+      transitionGoal(g, "failed")
+      return
+    }
+    planGoal(ctx, g)
+    return
+  }
+  adoptPlan(ctx, g, prepared.delta)
 }
 
 /**
@@ -773,7 +1337,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
  * production and mall goals; the next design plans the same goal again once it is researched (with splitter taps for
  * the recorded consumers). Returns true when deferred.
  */
-function deferForLogistics(ctx: Ctx, g: FactoryGoal, entry: NonNullable<ReturnType<typeof getPlannerEntry>>): boolean {
+function deferForLogistics(ctx: Ctx, g: FactoryGoal, entry: NonNullable<ReturnType<typeof RT.getPlannerEntry>>): boolean {
   const results: CompareResult[] = entry.job?.compare?.results ?? []
   if (results.length === 0) return false
   const f = ctx.f
@@ -801,9 +1365,9 @@ function deferForLogistics(ctx: Ctx, g: FactoryGoal, entry: NonNullable<ReturnTy
       f.taps[item as string] = list
     }
   }
-  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}-deferred.input.lua`)
-  removePlan(entry.id)
-  g.status = "failed"
+  if (ctx.config.frameDumpIntervalTicks > 0) RT.exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}-deferred.input.lua`)
+  RT.removePlan(entry.id)
+  transitionGoal(g, "failed")
   g.deferred = true
   g.reason = `research first: ${[ugTech, spTech].filter((t) => t !== undefined).join(", ")} (${d.why.join("; ")})`
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} deferred: ${g.reason}`)
@@ -811,7 +1375,7 @@ function deferForLogistics(ctx: Ctx, g: FactoryGoal, entry: NonNullable<ReturnTy
 }
 
 /** The new parts of a finished plan on ground another faction claimed or something foreign stands on, if any. */
-function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof getPlannerEntry>>): string | undefined {
+function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof RT.getPlannerEntry>>): string | undefined {
   const job = entry.job!
   const parts: BuildParts = { modules: [], routes: [], poles: [] }
   for (const m of job.layout.modules) if (!job.baseModules[m.id]) parts.modules.push(m.id)
@@ -834,21 +1398,57 @@ function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof getPlannerEntr
   return `contested: ${who.join(", ")}`
 }
 
-/** A finished plan becomes the faction's layout; its new parts become graph nodes and edges and are built. */
-function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
+/** B46: removes the poles at `gone` (`name@x,y`) from a building goal's own layout and parts; returns how many. */
+export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefined, gone: Record<string, boolean>): number {
+  const drop: Record<string, boolean> = {}
+  const kept: PlannedPole[] = []
+  for (const p of layout.poles ?? []) {
+    if (!gone[`${p.name}@${p.x},${p.y}`]) {
+      kept.push(p)
+      continue
+    }
+    drop[p.id] = true
+    LO.releasePoleTile(layout, tkey(p.x, p.y), p.line)
+  }
+  const n = (layout.poles?.length ?? 0) - kept.length
+  if (n === 0) return 0
+  layout.poles = kept
+  if (parts !== undefined) parts.poles = parts.poles.filter((id) => !drop[id])
+  LO.bumpLayout(layout)
+  return n
+}
+
+/**
+ * A validated plan delta becomes the faction's layout; its new parts become graph nodes and edges and are built.
+ *
+ * The phases run in this fixed order. Everything before `f.layout = layout` is pure or diagnostic; after that the
+ * function creates Factorio entities and jobs, which cannot be rolled back. The delta is already prepared and
+ * validated (revision, indexes, claim owners, logical and claim evidence) by `updatePlanning`, so no decision is made
+ * here that the prepared evidence does not already carry:
+ *   1. explore bookkeeping and the plan-input frame dump (reads only);
+ *   2. swap the persistent layout and add the logical nodes, belt edges and power edges from the delta;
+ *   3. pick up bootstrap sites and pole lines the plan's ground evicts (world effects);
+ *   4. reserve the taken ground for the bootstrap and claim the new mines' ore fields;
+ *   5. start the build job from the delta's physical parts, then add the completed mines' entities.
+ * The record in `f.adoption` (adoption-intent.ts) marks the phases. A Lua error part-way leaves it persisted; the next
+ * tick sees the goal still planning and re-runs adoption, whose phases are made safe to repeat (idempotent graph adds,
+ * evictions and reservations; `entry.build` is reused; completed-mine entities are deduped). The record is cleared at
+ * the commit point (the goal becoming `building`).
+ */
+function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   const f = ctx.f
-  const entry = getPlannerEntry(g.plan!)!
+  const entry = RT.getPlannerEntry(g.plan!)!
   const job = entry.job!
+  const layout = delta.layout
+  const intent = AR.begin(ctx.faction, f, g, entry.id, ctx.tick)
+  EX.exploreDone(ctx, g)
   // With frame dumps on (soaks), every adopted plan's input too (before its layout becomes the base): plan-replay
   // fixtures for planner changes (D36 / B2).
-  if (ctx.config.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
-  f.layout = job.layout
-  const parts: BuildParts = { modules: [], routes: [], poles: [] }
-  for (const m of job.layout.modules) if (!job.baseModules[m.id]) parts.modules.push(m.id)
-  for (const id of job.layout.routeOrder) if (!job.baseRoutes[id]) parts.routes.push(id)
-  for (const id of job.poleJob?.added ?? []) parts.poles.push(id)
+  if (ctx.config.frameDumpIntervalTicks > 0) RT.exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
+  f.layout = layout
+  const parts = delta.add
   for (const n of g.nodes) {
-    const m = findModule(job.layout, n.id)
+    const m = LO.findModule(layout, n.id)
     const def = m?.canonical ?? makeModule(n.generator, n.params)
     const util = n.capacity > 0 ? math.min(1, n.need / n.capacity) : 1
     const node: LogicalNode = {
@@ -856,6 +1456,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
       role: n.role,
       kind: n.kind,
       module: def.id,
+      alias: m === undefined && job.alias[n.id] !== undefined ? IDS.moduleId(job.alias[n.id]) : undefined,
       generator: n.generator,
       recipe: def.recipe,
       item: n.item,
@@ -870,34 +1471,112 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal): void {
       goal: g.id,
       createdTick: ctx.tick,
     }
-    addNode(f.graph, node)
+    LG.addNode(f.graph, node)
   }
   for (const e of g.edges) {
     const from = roleToId(f, g, e.from)
     const to = roleToId(f, g, e.to)
     if (from === undefined || to === undefined) continue
-    const physical: string[] = []
-    for (const rid of job.layout.routeOrder) {
-      const r = job.layout.routes[rid]
-      if (r.conn === e.role) {
-        if (r.tapOf !== undefined) physical.push(r.tapOf)
-        physical.push(rid)
-      }
-    }
-    addEdge(f.graph, { id: `e:${e.role}`, role: e.role, kind: "belt", item: e.item, from, fromPort: e.fromPort, to, toPort: e.toPort, plannedRate: e.rate, headroomRate: e.headroomRate, physical, belt: e.belt, overflow: e.decision.action !== "none" ? e.decision.action : undefined })
+    const physical = [...(delta.logical.routesByConn[e.role] ?? [])]
+    LG.addEdge(f.graph, { id: `e:${e.role}`, role: e.role, kind: "belt", item: e.item, from, fromPort: e.fromPort, to, toPort: e.toPort, plannedRate: e.rate, headroomRate: e.headroomRate, physical, belt: e.belt, overflow: e.decision.action !== "none" ? e.decision.action : undefined })
   }
-  powerEdges(f)
+  powerEdges(f, delta.logical.poleLines)
+  AR.advance(intent, "state")
+  // B15 / D51: bootstrap mining sites on the plan's ground make way (picked up first, rebuilt elsewhere).
+  // B23 / D52: a whole-patch mine's claim covers its unbuilt footprint too; a site standing on it would block the
+  // mine's completion (m6a2-b21l, seed 222: the mall's iron line found the patch full of retired sites). The delta
+  // prepared the new parts' tiles and those claims together.
+  const taken: Record<number, boolean> = {}
+  for (const k of delta.claims.takenTiles) taken[k] = true
+  const evicted = evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (${g.kind})`)
+  // B37: pole lines the plan's modules and routes took are picked up first (ghosts cancelled); the plan's pole step
+  // joined what they powered again. A pole the new lines place at the same spot stays.
+  const relaid: Record<string, boolean> = {}
+  for (const p of layout.poles ?? []) relaid[`${p.name}@${p.x},${p.y}`] = true
+  const queued: Record<number, boolean> = {}
+  for (const e of evicted) if (e.valid && e.unit_number !== undefined) queued[e.unit_number] = true
+  for (const p of layout.evictedPoles ?? []) {
+    if (relaid[`${p.name}@${p.x},${p.y}`]) continue
+    const at = { x: p.x + 0.5, y: p.y + 0.5 }
+    const built = findEntities(ctx.surface, { name: p.name, position: at, force: ctx.faction.force, limit: 1 })[0]
+    if (built !== undefined && !queued[built.unit_number!]) {
+      queued[built.unit_number!] = true
+      evicted.push(built)
+    }
+    for (const gh of findEntities(ctx.surface, { ghost_name: p.name, position: at, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
+  }
+  // B46: a goal still building may have planned some of these poles. Its own copy of its plan drops them, so it neither
+  // ghosts them once its clearing is done nor re-places them in a leftover round (seed 11: g10's route evicted the
+  // mall's pole line while the mall was still clearing; the mall then ghosted a pole onto g10's built belt).
+  const gone: Record<string, boolean> = {}
+  for (const p of layout.evictedPoles ?? []) if (!relaid[`${p.name}@${p.x},${p.y}`]) gone[`${p.name}@${p.x},${p.y}`] = true
+  for (const other of f.goals) {
+    if (other === g || other.status !== "building" || other.plan === undefined) continue
+    const oe = RT.getPlannerEntry(other.plan)
+    if (oe?.job === undefined) continue
+    const n = dropPlannedPoles(oe.job.layout, oe.build?.parts, gone)
+    if (n > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${n} poles goal ${other.id} has not built yet (B46)`)
+  }
+  if ((layout.evictedPoles?.length ?? 0) > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${layout.evictedPoles!.length} poles (B37)`)
+  f.layout.evictedPoles = undefined
+  AR.advance(intent, "world")
   // The bootstrap keeps its sites and hand-mining off the planned tiles.
   const reserved = ctx.faction.brain!.reserved
-  for (const k of partTiles(job.layout, parts)) reserved[k] = true
+  for (const k of partTiles(layout, parts)) reserved[k] = true
   for (const id of parts.modules) {
-    const m = findModule(job.layout, id)!
+    const m = LO.findModule(layout, id)!
     for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) reserved[tkey(x, y)] = true
     claimModuleFields(ctx, m)
   }
+  resyncReserved(ctx.faction, layout)
+  AR.advance(intent, "build")
   const fuel = ctx.faction.brain!.catalog.fuel
-  startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts })
-  g.status = "building"
+  // A resumed adoption reuses the build job this plan already started instead of duplicating its clear targets.
+  const b = entry.build ?? RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted })
+  // B23: a request that completed a built whole-patch mine (wholePatchCandidate): the mine is a base module, so its
+  // new entities are not in `parts`. Build them the growth way: evict and clear what stands on the new ground, then
+  // ghost and place (`stepBuild` stamps `extraAdd` once the clear is done). The out port of a completed mine is the
+  // partial mine's, so no routes move. A resumed adoption skips entities it already queued in `extraAdd`.
+  const alreadyAdded: Record<string, boolean> = {}
+  for (const s of b.extraAdd ?? []) alreadyAdded[`${s.name}@${s.x},${s.y}`] = true
+  for (const completion of delta.mineCompletions) {
+    const add: EntitySpec[] = []
+    for (const s of completion.entities) {
+      if (alreadyAdded[`${s.name}@${s.x},${s.y}`]) continue
+      const found = findEntities(ctx.surface, { name: s.name, position: { x: s.x, y: s.y }, force: ctx.faction.force, limit: 1 })
+      if (found.length > 0) continue
+      add.push(s)
+    }
+    if (add.length === 0) continue
+    const mineTaken: Record<number, boolean> = {}
+    for (const s of add) mineTaken[tkey(math.floor(s.x), math.floor(s.y))] = true
+    for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+    for (const e of RT.obstaclesUnder(ctx.surface, layout, { modules: [completion.module], routes: [], poles: [] })) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+    // B25: the completion's new entities replace the faction's own earlier structures on their tiles (pole lines
+    // and routes placed before the mine's claim): pick them up first, then ghost. The reconcile layer turns the
+    // broken edge into a repair goal.
+    // B66 (5387208): the entity's whole footprint, not its centre tile: a completed drill's outer rows kept a later
+    // route's belts and its ghost could never be placed.
+    for (const s of add) {
+      const p = prototypes.entity[s.name]
+      const side = s.dir === defines.direction.east || s.dir === defines.direction.west
+      const w = p !== undefined ? (side ? p.tile_height : p.tile_width) : 1
+      const h = p !== undefined ? (side ? p.tile_width : p.tile_height) : 1
+      const r = { x: math.floor(s.x - w / 2 + 0.01), y: math.floor(s.y - h / 2 + 0.01), w, h }
+      for (const e of findEntities(ctx.surface, { type: ["electric-pole", "transport-belt", "underground-belt"], force: ctx.faction.force, area: { left_top: { x: r.x + 0.05, y: r.y + 0.05 }, right_bottom: { x: r.x + r.w - 0.05, y: r.y + r.h - 0.05 } } })) {
+        // B37: an evicted pole is already queued.
+        if (e.unit_number !== undefined && queued[e.unit_number]) continue
+        if (e.unit_number !== undefined) queued[e.unit_number] = true
+        AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+      }
+    }
+    // B47: one plan can complete several shared mines; each one's entities join the list (seed 3333: g14 completed n6
+    // and n18, n18's list replaced n6's, and n6's poles, the only link to two new modules, were never built).
+    b.extraAdd = [...(b.extraAdd ?? []), ...add]
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${completion.module}: ${add.length} entities to build`)
+  }
+  transitionGoal(g, "building")
+  if (f.adoption === intent) f.adoption = undefined
   g.plannedTick = ctx.tick
   const s = job.stats
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) planned in ${entry.scanTicks + entry.planTicks} ticks (work ${s.work}, ${s.searches} searches, ${s.ripups} rip-ups): ${parts.modules.length} modules, ${parts.routes.length} routes, ${parts.poles.length} poles`)
@@ -921,27 +1600,32 @@ function claimModuleFields(ctx: Ctx, m: PlacedModule): void {
   }
 }
 
-function powerEdges(f: FactoryState): void {
-  const power = nodesOf(f.graph, "power")[0]
+function powerEdges(f: FactoryState, poleLines?: { id: string; to: string; from: string }[]): void {
+  const power = LG.nodesOf(f.graph, "power")[0]
   if (power === undefined) return
-  const roles = powerRoles(f.layout, prototypeFacts)
+  const roles = PW.powerRoles(f.layout, prototypeFacts)
   for (const id of roles.consumers) {
     const n = f.graph.nodes[id]
     if (n === undefined) continue
     const role = `power=>${n.role}`
-    if (edgeByRole(f.graph, role) !== undefined) continue
     const lines: string[] = []
-    for (const l of f.layout.poleLines ?? []) if (l.to === id) lines.push(l.id)
-    addEdge(f.graph, { id: `e:${role}`, role, kind: "power", item: "electricity", from: power.id, to: id, plannedRate: n.powerW, physical: lines })
+    for (const l of poleLines ?? f.layout.poleLines ?? []) if (l.to === id) lines.push(l.id)
+    // B37: evicted lines are gone from the layout and new lines may have joined the consumer: keep `physical` current.
+    const existing = LG.edgeByRole(f.graph, role)
+    if (existing !== undefined) {
+      existing.physical = lines
+      continue
+    }
+    LG.addEdge(f.graph, { id: `e:${role}`, role, kind: "power", item: "electricity", from: power.id, to: id, plannedRate: n.powerW, physical: lines })
   }
 }
 
 function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   const f = ctx.f
-  const entry = g.plan !== undefined ? getPlannerEntry(g.plan) : undefined
+  const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
   const b = entry?.build
   if (entry === undefined || b === undefined) {
-    g.status = "failed"
+    transitionGoal(g, "failed")
     g.reason = "build lost"
     return
   }
@@ -964,15 +1648,21 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     return
   }
   if (left.length > 0) {
-    // Never give up on a build (its nodes are in the graph): retry the leftovers every BUILD_ROUND_TICKS, saying why.
+    // Retry the leftovers every BUILD_ROUND_TICKS, saying why. B20: after `build-stuck-rounds` rounds in a row that
+    // placed nothing, the goal gives up its location (as a conflict repair would) so the design plans it elsewhere.
     g.lastRound = ctx.tick
     g.rounds++
     g.reason = `${left.length} ghosts left (round ${g.rounds}): ${failureReasons(ctx, b.placeJobs)}`
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
-    replanGhosts(ctx, g, b, left)
+    if (stuckRound(ctx, g, left.length) && (g.repairs ?? 0) < ctx.config.conflictMaxRepairs && planning(ctx.f) === undefined) {
+      g.repairs = (g.repairs ?? 0) + 1
+      relocateGoal(ctx, g, entry, `build stuck: ${g.reason}`)
+      return
+    }
+    replanGhosts(ctx, g, b, left, entry.job?.layout ?? ctx.f.layout)
     return
   }
-  g.status = "done"
+  transitionGoal(g, "done")
   g.builtTick = ctx.tick
   for (const n of g.nodes) {
     const node = f.graph.nodes[n.id]
@@ -981,7 +1671,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
       node.builtTick = ctx.tick
     }
   }
-  removePlan(entry.id)
+  RT.removePlan(entry.id)
   ctx.faction.brain!.steps++
   mark(ctx.faction, `${g.kind}-built`)
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) built at tick ${ctx.tick} (${g.placed} placements, ${g.rounds} extra rounds)`)
@@ -990,7 +1680,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
 // ---------------------------------------------------------------------------------------------------------
 // Conflicts (M5a.2): parts of a build blocked by something the faction doesn't own
 
-type Entry = NonNullable<ReturnType<typeof getPlannerEntry>>
+type Entry = NonNullable<ReturnType<typeof RT.getPlannerEntry>>
 
 /**
  * Checks a goal's build against the world (planner/conflicts.ts). Blocked routes are rerouted around the blocker (the
@@ -1015,10 +1705,10 @@ function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
   }
   g.repairs = (g.repairs ?? 0) + 1
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} conflict (repair ${g.repairs}): ${what}`)
-  const routes: string[] = []
+  const routes: IDS.RouteId[] = []
   let relocate = false
   for (const c of check.conflicts) {
-    if (c.kind === "route") routes.push(c.id)
+    if (c.kind === "route") routes.push(IDS.routeId(c.id))
     else relocate = true
   }
   if (!relocate && reroute(ctx, g, entry, routes)) return true
@@ -1026,7 +1716,7 @@ function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
   return true
 }
 
-function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): boolean {
+function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[]): boolean {
   const f = ctx.f
   const b = entry.build!
   const t = storage.terrains?.[f.terrain]
@@ -1043,11 +1733,11 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): bool
       scanChunk(t, ctx.surface, cx, cy)
     }
   }
-  let all = tiers()
+  let all = RT.tiers()
   const maxUg = maxUndergroundNow(ctx)
   if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
   const region: Rect = { x: f.center.x - g.radius, y: f.center.y - g.radius, w: 2 * g.radius, h: 2 * g.radius }
-  const plan = planReroute(f.layout, claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, entryPolicy(entry), all[0], routes, region)
+  const plan = planReroute(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, RT.entryPolicy(entry), all[0], routes, region)
   if (!plan.ok) {
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${plan.reason}`)
     return false
@@ -1062,6 +1752,7 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: string[]): bool
   b.parts!.routes = kept
   const reserved = ctx.faction.brain!.reserved
   for (const k of partTiles(plan.layout, { modules: [], routes: plan.routes, poles: [] })) reserved[k] = true
+  resyncReserved(ctx.faction, plan.layout)
   // Graph edges: their physical routes.
   for (const id of f.graph.edgeOrder) {
     const e = f.graph.edges[id]
@@ -1091,6 +1782,7 @@ function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boole
     const j = getJob(ctx.faction.board, id)
     if (j !== undefined && j.status !== "done" && j.status !== "failed") return false
   }
+  if (clearObstacles(ctx, w)) return false
   const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority })
   for (const gh of d.ghosts) b.ghosts!.push(gh)
   for (const id of d.placeJobs) b.placeJobs.push(id)
@@ -1105,19 +1797,76 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
   const f = ctx.f
   const b = entry.build!
   const r = abandonParts(ctx.surface, ctx.faction, f.layout, b.parts!, b.priority)
+  // D55/P36: its roles' replacement goals wait for the same clear jobs (the old footprint is still `OWN`).
+  if (r.clearJobs.length > 0) {
+    f.relocation ??= {}
+    for (const n of g.nodes) f.relocation[n.role] = r.clearJobs
+  }
   const reserved = ctx.faction.brain!.reserved
   for (const k of r.tiles) delete reserved[k]
   for (const id of b.parts!.modules) {
     // Module margins were reserved with the module (adoptPlan).
-    const m = findModule(entry.job!.layout, id)
+    const m = LO.findModule(entry.job!.layout, id)
     if (m !== undefined) for (let x = m.rect.x - 1; x <= m.rect.x + m.rect.w; x++) for (let y = m.rect.y - 1; y <= m.rect.y + m.rect.h; y++) delete reserved[tkey(x, y)]
   }
-  for (const n of g.nodes) removeNode(f.graph, n.id)
-  for (const e of g.edges) removeEdge(f.graph, `e:${e.role}`)
-  g.status = "failed"
+  resyncReserved(ctx.faction, f.layout)
+  for (const n of g.nodes) LG.removeNode(f.graph, n.id)
+  for (const e of g.edges) LG.removeEdge(f.graph, `e:${e.role}`)
+  transitionGoal(g, "failed")
   g.reason = `relocating: ${what}`
-  removePlan(entry.id)
-  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) gives up its location: ${r.clearJobs.length} built entities to deconstruct, ${r.routes.length} routes dropped; the design plans it again elsewhere`)
+  RT.removePlan(entry.id)
+  const kept = r.keptPoles > 0 ? `, ${r.keptPoles} pole(s) kept as a power bridge` : ""
+  log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) gives up its location: ${r.clearJobs.length} built entities to deconstruct, ${r.routes.length} routes dropped${kept}; the design plans it again elsewhere`)
+}
+
+/**
+ * B63 diagnostics: a plan was discarded because the layout carries claims whose owner module is gone. Counting is O(1)
+ * per event; the summary (kinds, the owner ids that leaked and their counts) is built and logged at most once a game
+ * minute per faction, so a claim loop cannot flood the log or cost anything on the hot path.
+ */
+const ORPHAN_LOG_TICKS = 3600
+
+function reportOrphanClaims(ctx: Ctx, g: FactoryGoal, problems: string[]): void {
+  const f = ctx.f
+  f.orphanClaims = (f.orphanClaims ?? 0) + problems.length
+  f.orphanEvents = (f.orphanEvents ?? 0) + 1
+  if (ctx.tick - (f.orphanLogTick ?? -ORPHAN_LOG_TICKS) < ORPHAN_LOG_TICKS) return
+  f.orphanLogTick = ctx.tick
+  const kinds: Record<string, number> = {}
+  const owners: Record<string, number> = {}
+  const order: string[] = []
+  for (const p of problems) {
+    const [kind] = string.match(p, "names missing (%S+)")
+    if (kind !== undefined) kinds[kind] = (kinds[kind] ?? 0) + 1
+    const [owner] = string.match(p, "names missing %S+ (%S+)$")
+    if (owner === undefined) continue
+    if (owners[owner] === undefined) order.push(owner)
+    owners[owner] = (owners[owner] ?? 0) + 1
+  }
+  let kk = ""
+  for (const k in kinds) kk += `${k}:${kinds[k]} `
+  let oo = ""
+  let n = 0
+  for (const o of order) {
+    if (n++ >= 4) break
+    oo += `${o}x${owners[o]} `
+  }
+  const detail = `${problems.length} tile(s), kinds ${kk.trim()}, owners ${oo.trim()}`
+  log(`[rival-engineers] faction ${ctx.faction.name}: ORPHAN CLAIMS in plan ${g.id}: ${detail} (running total ${f.orphanClaims} tiles in ${f.orphanEvents} plan(s); first ${problems[0] ?? ""})`)
+  recordDiagnostic(ctx.faction, { tick: ctx.tick, kind: "planner", goal: g.id, decision: "orphan-claims", reason: detail })
+}
+
+/**
+ * B20: counts leftover-ghost rounds that placed nothing; true (and a BUILD STUCK log line) once `build-stuck-rounds` are
+ * reached (0 = never escalate).
+ */
+function stuckRound(ctx: Ctx, g: FactoryGoal, left: number): boolean {
+  const r = DS.stuckRounds(g.stuck, g.lastLeft, left, ctx.config.buildStuckRounds)
+  g.stuck = r.stuck
+  g.lastLeft = left
+  if (!r.escalate) return false
+  log(`[rival-engineers] faction ${ctx.faction.name}: BUILD STUCK goal ${g.id} (${g.kind}): ${ctx.config.buildStuckRounds} rounds placed nothing: ${g.reason}`)
+  return true
 }
 
 function failureReasons(ctx: Ctx, ids: number[]): string {
@@ -1134,15 +1883,32 @@ function failureReasons(ctx: Ctx, ids: number[]): string {
   return out.join("; ")
 }
 
-function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof getPlannerEntry>>["build"], left: LuaEntity[]): void {
+/** Re-places leftover ghosts, after clearing what blocks them; `layout` is what the build realizes. */
+function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof RT.getPlannerEntry>>["build"], left: LuaEntity[], layout: LayoutState): void {
   const faction = ctx.faction
   b!.placeJobs = []
+  // B15: a bootstrap site built after the plan's terrain scan may stand under a leftover ghost: evict it.
+  const under: Record<number, boolean> = {}
   for (const gh of left) {
-    // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
-    // blocks the placement for good: clear it again.
     if (!gh.valid) continue
     const box = gh.bounding_box
-    const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
+    for (let x = math.floor(box.left_top.x + 0.05); x < math.ceil(box.right_bottom.x - 0.05); x++) for (let y = math.floor(box.left_top.y + 0.05); y < math.ceil(box.right_bottom.y - 0.05); y++) under[tkey(x, y)] = true
+  }
+  // B21/D52: a whole-patch mine is materialized after its small seed placement, so its internal collector can reveal
+  // a collision with a D38 temporary cell on already-depleted ore. The accepted permanent plan wins: retire only the
+  // temporary cells actually under leftover ghosts. `modulesOnTiles` cannot rely on `occ`, because the mine's later
+  // exact claim may already own those keys.
+  for (const m of LO.modulesOnTiles(ctx.f.layout, under)) {
+    const n = ctx.f.graph.nodes[m.id]
+    if (n !== undefined && n.lifecycle === "built" && ST.isTempRole(n.role)) retireTemp(ctx, n)
+  }
+  for (const e of evictSites(faction, ctx.surface, under, `goal ${g.id}'s leftover ghosts`)) addClearJob(faction, e, b!.priority)
+  for (const gh of left) {
+    // A tree or rock under a leftover ghost (its clear job failed, or it overlaps the footprint only at the box edge)
+    // blocks the placement for good: clear it again. B101: the ghost's whole box (any overlap blocks; seed 7718665's
+    // tree reached ~0.05 into a belt's box and was missed by a 0.05 inset).
+    if (!gh.valid) continue
+    const area = gh.bounding_box
     for (const e of findEntities(ctx.surface, { area, type: ["tree", "simple-entity"] })) {
       const k = `${e.position.x},${e.position.y}`
       g.clearing ??= {}
@@ -1151,6 +1917,23 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
       if (j !== undefined && j.status !== "done" && j.status !== "failed") continue
       g.clearing[k] = addClearJob(faction, e, b!.priority)
       log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: clearing ${e.name} at ${k} under a leftover ${gh.ghost_name} ghost${j !== undefined ? ` (last clear job ${j.status}: ${j.reason ?? "?"})` : ""}`)
+    }
+  }
+  // B42: one of the faction's own entities the layout no longer plans (an obsolete route piece put back) blocks a
+  // leftover ghost for good: pick it up. Stockpiles and bootstrap sites (evicted above) stay, and an entity already
+  // being cleared is not cleared twice.
+  let planned: Record<string, boolean> | undefined
+  for (const gh of left) {
+    if (!gh.valid) continue
+    if (planned === undefined) {
+      // A plan's layout copied the base when it was planned: what the faction's layout gained since is planned too.
+      planned = RT.layoutEntityKeys(layout)
+      if (layout !== ctx.f.layout) for (const [k] of pairs(RT.layoutEntityKeys(ctx.f.layout))) planned[k as string] = true
+    }
+    for (const e of RT.strayUnder(ctx.surface, faction.force, planned, gh)) {
+      if (faction.stockpiles.indexOf(e) >= 0 || isSitePart(faction.brain, e) || clearJobFor(faction, e) !== undefined) continue
+      addClearJob(faction, e, b!.priority)
+      log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: picking up ${e.name} at ${e.position.x},${e.position.y} under a leftover ${gh.ghost_name} ghost (not in the layout)`)
     }
   }
   for (const gh of left) {
@@ -1205,24 +1988,27 @@ function isFuel(this: void, item: string): boolean {
 
 function measureAndReconcile(ctx: Ctx): void {
   const f = ctx.f
-  f.meter ??= newMeter()
+  f.meter ??= MS.newMeter()
   const meter = f.meter
   if (ctx.tick - meter.lastSample >= ctx.config.measureIntervalTicks) {
     meter.lastSample = ctx.tick
-    sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
+    MS.sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
     f.reconciler ??= newReconcileState()
     // D49: labs are hand-fed by the crew until a built producer belts their pack in.
     const crewSupplied = (n: LogicalNode, item: string): boolean => {
       if (n.kind !== "labs") return false
-      for (const e of edgesInto(f.graph, n.id)) if (e.kind === "belt" && e.item === item && e.from !== undefined && f.graph.nodes[e.from]?.lifecycle === "built") return false
+      for (const e of LG.edgesInto(f.graph, n.id)) if (e.kind === "belt" && e.item === item && e.from !== undefined && f.graph.nodes[e.from]?.lifecycle === "built") return false
       return true
     }
-    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params: reconcileParams(ctx.config), isFuel, crewSupplied })
+    const handingOver = (n: LogicalNode): boolean => f.handover?.[n.role]?.node === n.id
+    const params = reconcileParams(ctx.config)
+    params.probeMaxAge = probeMaxAgeFor(params.probeMaxAge, ctx.config.measureProbeTicks, ctx.config.brainIntervalTicks, MS.probeableCount(f.graph))
+    const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params, isFuel, crewSupplied, handingOver })
     countWork("reconcilerEvaluations", f.graph.nodeOrder.length)
-    requestProbes(meter, r.probe)
+    MS.requestProbes(meter, r.probe)
     if (ctx.config.reconcileRemedies) for (const rem of r.remedies) applyRemedy(ctx, rem)
   }
-  if (meter.probe === undefined) startProbe(meter, f.graph, f.layout, ctx.surface, ctx.tick, ctx.config.measureProbeTicks)
+  if (meter.probe === undefined) MS.startProbe(meter, f.graph, f.layout, ctx.surface, ctx.tick, ctx.config.measureProbeTicks)
 }
 
 /** Every tick: the running edge probes sample when due (cheap when none is due). */
@@ -1232,7 +2018,7 @@ export function onFactoryMeterTick(): void {
   const tick = game.tick
   for (const name of storage.factionOrder) {
     const f = all[name]
-    if (f?.meter?.probe !== undefined) probeTick(f.meter, f.graph, tick)
+    if (f?.meter?.probe !== undefined) MS.probeTick(f.meter, f.graph, tick)
   }
 }
 
@@ -1240,10 +2026,89 @@ export function onFactoryMeterTick(): void {
 export function reconcileNow(faction: FactionState, f: FactoryState, config: Config = getConfig()): void {
   const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities), waiting: [] }
   updateGoals(ctx)
-  f.meter ??= newMeter()
+  f.meter ??= MS.newMeter()
   f.meter.lastSample = -math.huge
   measureAndReconcile(ctx)
   if (ctx.waiting.length > 0) f.waiting = ctx.waiting
+}
+
+/** For tests (B98): one `startGrow` outside the reconciler. */
+export function growNow(faction: FactionState, f: FactoryState, growth: NonNullable<GoalSpec["growth"]>): boolean | "wait" {
+  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities), waiting: [] }
+  const r = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth })
+  f.waiting = ctx.waiting
+  return r
+}
+
+/**
+ * B57 (seed 555555): the plan's seal check proved the goal end of a connection walled in, and that end is a built
+ * module's unconnected input (the labs' green-science input in a pocket). No plan can feed it there: relocate the module
+ * (as P36 / B51: deconstructed, out of the layout and graph; the design plans it again). Checked again on the faction's
+ * own layout first (the failed plan's own modules may be what walled it in), and not while another goal builds a
+ * connection to or from it. Returns the relocated role.
+ */
+function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): string | undefined {
+  const f = ctx.f
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return undefined
+  const escape = policyFor(ctx.config).placement.portEscape ?? 0
+  const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
+  // B63: trust the router's proof. It names the *consumer's own input port* in every measured join failure
+  // (3891760 n1.in-fuel, 1376111 n8.in-ore, 6752307 n23.in-iron-plate). The old second opinion here (`sealedInputs`,
+  // a 32-tile lane-escape check) disagreed in all three and vetoed the only cheap remedy. A flood that hit the window
+  // edge (`edge`) is not enclosure: the wider-window replan above answers that first.
+  for (const { port, subject } of LO.sealedGoalPorts(f.layout, evidence)) {
+    const id = port.module
+    const n = f.graph.nodes[id]
+    if (n === undefined) continue
+    let busy: string | undefined
+    for (const o of f.goals) {
+      if (o === g || (o.status !== "building" && o.status !== "planning")) continue
+      for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
+    }
+    if (busy !== undefined) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B57 ${n.role} (${id}) has its ${port.port} lane walled in; relocation waits for goal ${busy}`)
+      continue
+    }
+    FU.relocate(ctx, n, `B57 ${n.role}`, `has its ${port.port} lane walled in (goal ${g.id}: ${subject})`)
+    return n.role
+  }
+  // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
+  // evidence may name the start, so the B57 loop above never sees the real walled-in consumer. Inspect the goal module of
+  // every failed route, and relocate that consumer when its own input lane cannot lead out.
+  if (escape <= 0) return undefined
+  for (const ev of evidence) {
+    if (ev.kind !== "route" || ev.sealed?.edge === true) continue
+    const [role] = string.match(ev.subject, "=>([^%.]+)%.")
+    if (role === undefined) continue
+    let n: LogicalNode | undefined
+    for (const x of g.nodes) if (x.role === role) n = f.graph.nodes[x.id]
+    if (n === undefined || LO.findModule(f.layout, n.id) === undefined) continue
+    if (sealedInputs(f.layout, view, n.id, {}, escape).length === 0) continue
+    let busy: string | undefined
+    for (const o of f.goals) {
+      if (o === g || (o.status !== "building" && o.status !== "planning")) continue
+      for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
+    }
+    if (busy !== undefined) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B61 ${n.role} (${n.id}) has a sealed input lane; relocation waits for goal ${busy}`)
+      continue
+    }
+    FU.relocate(ctx, n, `B61 ${n.role}`, `has a sealed input lane (goal ${g.id}: ${ev.subject})`)
+    return n.role
+  }
+  return undefined
+}
+
+/**
+ * D55: gives up a worked-out mine (P36's relocation: deconstructed, out of the layout and graph); the design plans its
+ * producer again on fresh ore. Not while a plan works on a copy of the layout, nor while a goal builds a connection from it.
+ */
+function relocateDepleted(ctx: Ctx, n: LogicalNode, why: string, say: (this: void, result: string) => void): void {
+  // Goalpost 1: nothing is deconstructed here. The provider is marked as retiring and the design plans a replacement
+  // for its consumers; `serviceHandovers` retires it once that replacement is built and feeds every port.
+  FU.beginHandover(ctx, n, `D55 ${n.role}`, `is worked out (${why})`)
+  say("handing over: the replacement is connected before deconstruction (D55)")
 }
 
 function applyRemedy(ctx: Ctx, r: Remedy): void {
@@ -1253,6 +2118,80 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     recordRemedy(st, r, ctx.tick, result)
     log(`[rival-engineers] faction ${ctx.faction.name}: reconciler ${r.kind} ${r.node ?? r.edge}: ${r.why} -> ${result}`)
   }
+  /**
+   * B88: routes `routes` (and every route tapping them) again in place, to their ports as they are now, as a repair goal:
+   * the old pieces the new routes don't reuse are picked up first, then the new ones placed. The graph keeps its edges;
+   * their physical routes follow. Returns false when no reroute was found.
+   */
+  const rerouteInPlace = (routes: IDS.RouteId[], why: string): boolean => {
+    const t = storage.terrains?.[f.terrain]
+    if (t === undefined || routes.length === 0) return false
+    const tree = LO.dependentRoutes(f.layout, routes)
+    let all = RT.tiers()
+    const maxUg = maxUndergroundNow(ctx)
+    if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
+    // The whole factory, with the router's detour room around it.
+    const base = policyFor(ctx.config)
+    const policy = tree.length > routes.length ? { ...base, topology: "splitter-tap" as const } : base
+    let x1 = math.huge
+    let y1 = math.huge
+    let x2 = -math.huge
+    let y2 = -math.huge
+    for (const m of f.layout.modules) {
+      x1 = math.min(x1, m.rect.x); y1 = math.min(y1, m.rect.y)
+      x2 = math.max(x2, m.rect.x + m.rect.w); y2 = math.max(y2, m.rect.y + m.rect.h)
+    }
+    for (const rid of f.layout.routeOrder) {
+      for (const k of f.layout.routes[rid].tiles) {
+        x1 = math.min(x1, keyX(k)); y1 = math.min(y1, keyY(k))
+        x2 = math.max(x2, keyX(k) + 1); y2 = math.max(y2, keyY(k) + 1)
+      }
+    }
+    const pad = policy.router.margin
+    const region: Rect = { x: x1 - pad, y: y1 - pad, w: x2 - x1 + 2 * pad, h: y2 - y1 + 2 * pad }
+    const plan = planReroute(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, policy, all[0], tree, region)
+    if (!plan.ok) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: B88 reroute of ${tree.join(", ")} failed: ${plan.reason}`)
+      return false
+    }
+    f.layout = plan.layout
+    const reserved = ctx.faction.brain!.reserved
+    for (const k of partTiles(plan.layout, { modules: [], routes: plan.routes, poles: [] })) reserved[k] = true
+    resyncReserved(ctx.faction, plan.layout)
+    for (const id of f.graph.edgeOrder) {
+      const e = f.graph.edges[id]
+      if (e.kind !== "belt") continue
+      const physical: string[] = []
+      for (const rid of plan.layout.routeOrder) {
+        const r = plan.layout.routes[rid]
+        if (r.conn !== e.role) continue
+        if (r.tapOf !== undefined) physical.push(r.tapOf)
+        physical.push(rid)
+      }
+      if (physical.length > 0) e.physical = physical
+    }
+    // Old pieces first (picked up, items kept), then the new ones: a ghost can't go where a belt stands.
+    const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: ctx.config.factoryBuildPriority })
+    const g: FactoryGoal = {
+      id: IDS.goalId(`g${f.nextGoal++}`),
+      kind: "repair",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 0,
+      createdTick: ctx.tick,
+      plannedTick: ctx.tick,
+      placed: 0,
+      rounds: 0,
+      reason: why,
+      growBuild: { phase: d.clearJobs.length > 0 ? "clear" : "place", clearJobs: d.clearJobs, add: plan.add, ghosts: [], placeJobs: [] },
+    }
+    f.goals.push(g)
+    say(`its routes do not reach their port in the layout: goal ${g.id} reroutes ${tree.length} routes in place (${plan.remove.length} entities to pick up, ${plan.add.length} to build) (B83, B88)`)
+    return true
+  }
   if (r.kind === "upkeep") {
     f.lastUpkeep = -math.huge
     upkeep(ctx)
@@ -1260,19 +2199,93 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     say("upkeep pass")
     return
   }
-  if (r.kind === "grow") {
-    // A plan in flight works on a copy of the layout and replaces it when adopted: grow after it.
-    if (planning(f) !== undefined || activeGoal(f, "grow") !== undefined) return
+  // B60 group remedy: a shared trunk at capacity. The provider keeps every consumer it serves; the design caps it at
+  // its real capacity and gives the residual demand a parallel role (with merge side-loads), instead of asking this
+  // one to grow into a belt that is already full.
+  if (r.kind === "parallel") {
     const n = f.graph.nodes[r.node!]
-    const m = n !== undefined ? findModule(f.layout, n.id) : undefined
-    if (n === undefined || m === undefined || m.canonical.expand === undefined) {
+    if (n === undefined) {
+      say("cannot split: the node left the graph")
+      return
+    }
+    f.providerShort ??= {}
+    if (f.providerShort[n.role] === true) {
+      say("group remedy: already split")
+      return
+    }
+    f.providerShort[n.role] = true
+    say(`group remedy: ${n.role} keeps its consumers and the rest go to a parallel provider`)
+    return
+  }
+  if (r.kind === "grow") {
+    // A plan in flight works on a copy of the layout and replaces it when adopted: normally grow after it. But a
+    // depletion (key `deplete:`) must expand now — the worked-out outpost is starving the line — so it is only blocked
+    // by a growth of the SAME node (D52: a depleted outpost expands even while other goals plan or grow).
+    const busyGrow = activeGoal(f, "grow")
+    const blockedByPlan = planning(f) !== undefined && !r.key.startsWith("deplete:")
+    if (blockedByPlan || (busyGrow !== undefined && busyGrow.growth?.node === r.node)) return
+    const n = f.graph.nodes[r.node!]
+    const m = n !== undefined ? LO.findModule(f.layout, n.id) : undefined
+    // D55 (user, 2026-10-20): a worked-out mine that can't expand in place (a completed whole-patch mine, or a partial one
+    // with no `expand`) first moves to the next free part of its own patch; with nothing better left there, it is given
+    // up and planned again elsewhere.
+    if (r.key.startsWith("deplete:") && n !== undefined && m !== undefined && (m.minePlan?.complete === true || (m.minePlan !== undefined && m.canonical.expand === undefined))) {
+      const before = f.goals.length
+      const moved = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: 0, have: 0, reclaim: true } })
+      // B52: it reroutes a connection still being built: try again later.
+      if (moved === "wait") return
+      if (moved === true && f.goals.length > before) {
+        say(`goal ${f.goals[f.goals.length - 1].id} moves it to the next part of its patch (D55)`)
+        return
+      }
+      relocateDepleted(ctx, n, ctx.waiting[ctx.waiting.length - 1] ?? "its patch is used up", say)
+      return
+    }
+    if (n === undefined || m === undefined) {
       say("cannot grow: no expandable module")
       return
     }
-    const have = rateIn(n.capacity.outputs, n.item ?? "")
+    if (m.canonical.expand === undefined) {
+      // D55: a depleted mine with neither an in-place `expand` nor a whole-patch plan (a shared mine) is given up and
+      // planned again elsewhere. Without this it repeats "cannot grow" every check while its consumers starve
+      // (B59, seed 3333: n39, logistic science).
+      if (r.key.startsWith("deplete:")) {
+        relocateDepleted(ctx, n, ctx.waiting[ctx.waiting.length - 1] ?? "its ore is used up", say)
+        return
+      }
+      say("cannot grow: no expandable module")
+      return
+    }
+    const have = LG.rateIn(n.capacity.outputs, n.item ?? "")
+    // D52/B21: a mining outpost expands in place over the rest of its patch; other modules grow by one unit at a time.
+    // The patch is usually smaller than the belt limit, so grow only as far as the ore runs (a full-size expansion
+    // would land the far drills off-ore and fail outright).
+    const t = storage.terrains?.[f.terrain]
+    let units = 1
+    if (n.kind === "outpost" && t !== undefined) {
+      units = GROW.maxExpandable(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t), false), prototypeFacts, policyFor(ctx.config), n.id)
+      // D55: nothing left to expand over: the mine is planned again elsewhere.
+      if (units < 1) {
+        if (r.key.startsWith("deplete:")) relocateDepleted(ctx, n, "no ore in its growth area", say)
+        else say("cannot grow: no ore in the growth area")
+        return
+      }
+    }
+    if (units < 1) { say("cannot grow: at its expansion limit"); return }
     const before = f.goals.length
-    const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units: 1, need: have, have } })
-    say(ok && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by 1 unit` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    const failsBefore = f.growFails?.[n.role] ?? 0
+    const ok = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth: { role: n.role, node: n.id, units, need: have, have } })
+    // B52: waiting for a goal still building is no attempt (it doesn't use up the remedy's tries).
+    if (ok === "wait") return
+    say(ok === true && f.goals.length > before ? `goal ${f.goals[f.goals.length - 1].id} grows it by ${units} unit(s)` : `grow failed: ${ctx.waiting[ctx.waiting.length - 1] ?? "?"}`)
+    // B52: the remedy's tries (earlier successful growths count) can run out before GROW_MAX_FAILS expansion failures:
+    // its last failed try marks the growth blocked, so the design's fallback (a second steam block, other producers)
+    // takes over instead of nothing.
+    const fails = f.growFails?.[n.role] ?? 0
+    if (ok === false && fails > failsBefore && fails < ST.GROW_MAX_FAILS && (st.remedies[r.key]?.count ?? 0) >= ctx.config.reconcileMaxRemedies) {
+      f.growFails![n.role] = ST.GROW_MAX_FAILS
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} growth blocked: the reconciler's ${ctx.config.reconcileMaxRemedies} tries are used up (${fails} expansion failures)`)
+    }
     return
   }
   // Repair: re-place the missing pieces of the edge's route (belt) or pole lines (power).
@@ -1281,15 +2294,80 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
   const parts: BuildParts = { modules: [], routes: [], poles: [] }
   if (e.kind === "power") {
     for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
-  } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(rid)
+  } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
   const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
-  if (check.missing.length === 0) {
-    say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : "nothing missing")
-    return
+  let clogged: { spec: EntitySpec; entity: LuaEntity }[] = []
+  if (e.kind === "power") {
+    // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing
+    // ones are re-placed like line poles. Never their machines (D49).
+    const built: BuildParts = { modules: [], routes: [], poles: [] }
+    for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && LO.findModule(f.layout, n.id) !== undefined) built.modules.push(n.id)
+    const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
+    for (const s of own.missing) check.missing.push(s)
   }
-  const d = applyDiff(ctx.surface, ctx.faction, [], check.missing, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+  if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0 && check.intruders.length === 0) {
+    // B83: every entity stands, but the edge's routes do not bring items to the consumer's port in the layout (a
+    // side-load stub onto a trunk that is gone). Its own routes are dropped (belts picked up) with the edge, and the
+    // design plans the connection again.
+    if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
+      const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
+      const to = LG.connectModule(f.graph, e.to, inLayout) ?? e.to
+      if (!LO.routesLand(f.layout, e.physical, { module: to, port: e.toPort })) {
+        const own: IDS.RouteId[] = []
+        for (const rid of e.physical) {
+          const r = f.layout.routes[rid]
+          if (r !== undefined && r.conn === e.role) own.push(IDS.routeId(rid))
+        }
+        // B88 (soak vps-b85-r1264816): the routes are routed again in place, with the taps hanging off them, to the
+        // ports as they are now (the edges stay: the design need not plan anything again; dropping them left the power
+        // plant crew-fuelled for 400 game-min). A plan in progress works on a copy of the layout: wait for it.
+        if (planning(f) !== undefined) {
+          say(`its routes do not reach ${e.to}.${e.toPort} in the layout: rerouted after the current plan (B83)`)
+          return
+        }
+        if (rerouteInPlace(own, r.why)) return
+        // The reroute failed. A kept tapped route still bore the connection's id, and planned again the new route
+        // replaced it in place (ripping its taps) while tapping one of them: an orphan tap. Its taps go with it, and
+        // their edges are planned again too.
+        const tree = LO.tapTree(f.layout, own)
+        const inTree: Record<string, boolean> = {}
+        for (const rid of tree) inTree[rid] = true
+        const edges: string[] = [e.id]
+        for (const id of f.graph.edgeOrder) {
+          const o = f.graph.edges[id]
+          if (o === undefined || o.id === e.id || o.kind !== "belt") continue
+          if (o.physical.some((rid) => inTree[rid] && f.layout.routes[rid]?.conn === o.role)) edges.push(o.id)
+        }
+        const dropped = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [], routes: tree, poles: [] }, ctx.config.factoryBuildPriority)
+        for (const id of edges) LG.removeEdge(f.graph, id)
+        resyncReserved(ctx.faction, f.layout)
+        say(`its routes do not reach ${e.to}.${e.toPort} in the layout: ${tree.length} routes dropped (${dropped.clearJobs.length} entities to pick up), the design plans ${edges.length === 1 ? "the connection" : `${edges.length} connections`} again (B83, B88)`)
+        return
+      }
+    }
+    // B67: with every planned pole standing, say whether the plan itself leaves the consumer off the network (a layout
+    // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
+    const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0
+    // B107: every piece stands, but another input fills both lanes of the consumer's belts past this port: they are
+    // picked up (emptied) and placed again.
+    if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
+      const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
+      clogged = cloggedBelts(ctx.surface, ctx.faction.force, f.layout, LG.connectModule(f.graph, e.to, inLayout) ?? e.to, e.toPort)
+    }
+    if (clogged.length === 0) {
+      say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
+      return
+    }
+  }
+  // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
+  // B56: so are the faction's own stale belt pieces standing where a missing route piece goes.
+  const clearJobs: IDS.JobId[] = []
+  for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
+  for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+  for (const e of check.intruders) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
+  for (const c of clogged) if (clearJobFor(ctx.faction, c.entity) === undefined) clearJobs.push(addClearJob(ctx.faction, c.entity, ctx.config.factoryBuildPriority))
   const g: FactoryGoal = {
-    id: `g${f.nextGoal++}`,
+    id: IDS.goalId(`g${f.nextGoal++}`),
     kind: "repair",
     status: "building",
     nodes: [],
@@ -1302,10 +2380,15 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
     placed: 0,
     rounds: 0,
     reason: r.why,
-    growBuild: { phase: "place", clearJobs: [], add: [], ghosts: d.ghosts, placeJobs: d.placeJobs },
+    // B101: the missing pieces too go through the clear phase (trees in their way are cleared before their ghosts).
+    growBuild: { phase: "clear", clearJobs, add: [...check.misdirected.map((w) => w.spec), ...check.stale.map((s) => s.spec), ...check.missing, ...clogged.map((c) => c.spec)], ghosts: [], placeJobs: [] },
   }
   f.goals.push(g)
-  say(`goal ${g.id} re-places ${check.missing.length} entities${d.failed.length > 0 ? ` (${d.failed.length} ghosts failed)` : ""}`)
+  let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
+  if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
+  if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
+  if (clogged.length > 0) turned += `, empties ${clogged.length} belt(s) of ${clogged[0].spec.owner} where another input fills both lanes (first at ${clogged[0].spec.x},${clogged[0].spec.y}) (B107)`
+  say(`goal ${g.id} re-places ${check.missing.length} entities${turned}`)
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1313,7 +2396,7 @@ function applyRemedy(ctx: Ctx, r: Remedy): void {
 
 function packsAutomated(f: FactoryState): Record<string, boolean> {
   const out: Record<string, boolean> = {}
-  for (const n of nodesOf(f.graph)) if (n.lifecycle === "built" && n.kind === "module" && n.item !== undefined && edgesToLabs(f, n.id)) out[n.item] = true
+  for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && n.kind === "module" && n.item !== undefined && edgesToLabs(f, n.id)) out[n.item] = true
   return out
 }
 
@@ -1326,7 +2409,7 @@ function edgesToLabs(f: FactoryState, node: string): boolean {
 }
 
 function labsBuilt(f: FactoryState): LogicalNode[] {
-  return nodesOf(f.graph, "labs").filter((n) => n.lifecycle === "built")
+  return LG.nodesOf(f.graph, "labs").filter((n) => n.lifecycle === "built")
 }
 
 /** Packs the labs get: automated ones, plus hand-fed (craftable) ones while hand-feeding is on. */
@@ -1348,7 +2431,7 @@ function research(ctx: Ctx, d: Design | undefined): void {
   if (cur !== undefined) return
   if (labsBuilt(f).length === 0) return
   const wanted = d?.techs ?? []
-  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx), packsAutomated(f))
+  const pick = startResearch(ctx.force, wanted, packsAvailable(ctx), packsAutomated(f), ctx.config.debugInfiniteResearch)
   if (pick !== undefined) {
     f.research.current = pick.tech
     f.research.reason = pick.reason
@@ -1358,21 +2441,12 @@ function research(ctx: Ctx, d: Design | undefined): void {
 }
 
 function labEntities(ctx: Ctx, node: LogicalNode): LuaEntity[] {
-  const m = findModule(ctx.f.layout, node.id)
+  const m = LO.findModule(ctx.f.layout, node.id)
   if (m === undefined) return []
   return findEntities(ctx.surface, { type: "lab", force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
 
-function keyActive(ctx: Ctx, key: string): boolean {
-  const id = ctx.f.jobKeys[key]
-  if (id === undefined) return false
-  const job = ctx.faction.board.jobs[id]
-  if (job !== undefined && (job.status === "open" || job.status === "claimed")) return true
-  delete ctx.f.jobKeys[key]
-  return false
-}
-
-function addKeyed(ctx: Ctx, key: string, spec: JobSpec<JobPayload>): void {
+function addKeyed(ctx: Pick<Ctx, "faction" | "f" | "tick">, key: string, spec: JobSpec<JobPayload>): void {
   const job = addJob(ctx.faction.board, spec, ctx.tick)
   ctx.f.jobKeys[key] = job.id
 }
@@ -1397,13 +2471,13 @@ function handFeed(ctx: Ctx): void {
           if (job !== undefined && job.status === "open") failJob(ctx.faction.board, id!, "automated", ctx.tick)
           continue
         }
-        if (inv.get_item_count(ing.name) >= LAB_LOW || keyActive(ctx, key)) continue
+        if (inv.get_item_count(ing.name) >= LAB.low || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
         addKeyed(ctx, key, {
           kind: "fuel",
           pos: lab.position,
-          materials: [{ item: ing.name, count: LAB_FEED }],
+          materials: [{ item: ing.name, count: LAB.feed }],
           priority: 95,
-          payload: { kind: "fuel", item: ing.name, count: LAB_FEED, target: lab, partial: true },
+          payload: { kind: "fuel", item: ing.name, count: LAB.feed, target: lab, partial: true },
         })
       }
     }
@@ -1419,13 +2493,9 @@ function handFeed(ctx: Ctx): void {
 // cell is deconstructed once the real factory covers its product: the mall's chest for buildings and intermediates,
 // automated science for packs. Its small poles stay (later pole lines may run through them).
 
-const TEMP_PREFIX = "temp:"
 /** A temp goal that failed this many plans is not tried again. */
 const TEMP_MAX_FAILED = 2
 
-export function isTempRole(role: string): boolean {
-  return string.sub(role, 1, TEMP_PREFIX.length) === TEMP_PREFIX
-}
 
 function parseCounts(value: string): { item: string; count: number }[] {
   const out: { item: string; count: number }[] = []
@@ -1436,9 +2506,9 @@ function parseCounts(value: string): { item: string; count: number }[] {
 /** Whether the real factory makes `item` now: a built mall chest of it, or (packs) automated science. */
 function tempCovered(f: FactoryState, item: string): boolean {
   if (packsAutomated(f)[item]) return true
-  for (const n of nodesOf(f.graph, "sink")) {
-    if (n.lifecycle !== "built" || isTempRole(n.role)) continue
-    const m = findModule(f.layout, n.id)
+  for (const n of LG.nodesOf(f.graph, "sink")) {
+    if (n.lifecycle !== "built" || ST.isTempRole(n.role)) continue
+    const m = LO.findModule(f.layout, n.id)
     if (m === undefined) continue
     for (const p of m.def.ports) if (p.kind === "chest-out" && p.item === item) return true
   }
@@ -1451,9 +2521,9 @@ function tempFactories(ctx: Ctx): void {
   if (want.length === 0) return
   f.temp ??= { built: {}, retired: 0 }
   // Retire the cells whose product the real factory covers now.
-  for (const n of nodesOf(f.graph, "sink")) if (isTempRole(n.role) && n.lifecycle === "built" && tempCovered(f, n.item!)) retireTemp(ctx, n)
+  for (const n of LG.nodesOf(f.graph, "sink")) if (ST.isTempRole(n.role) && n.lifecycle === "built" && tempCovered(f, n.item!)) retireTemp(ctx, n)
   if (planning(f) !== undefined || activeGoal(f, "temp") !== undefined) return
-  if (!built(f, "power")) return
+  if (!GLC.everDone(f.goals, "power")) return
   let failed = 0
   for (const g of f.goals) if (g.kind === "temp" && g.status === "failed") failed++
   if (failed >= TEMP_MAX_FAILED) return
@@ -1469,9 +2539,9 @@ function tempFactories(ctx: Ctx): void {
     for (let k = (f.temp.built[w.item] ?? 0) + 1; k <= w.count; k++) {
       const params = { recipe, machine, chest }
       const def = makeModule("chest-cell", params)
-      const cap = rateIn(def.rates.outputs, w.item)
+      const cap = LG.rateIn(def.rates.outputs, w.item)
       const inputs = def.rates.inputs.filter((r) => r.item !== "electricity").map((r) => ({ item: r.item, rate: r.perSecond, port: `in-${r.item}` }))
-      nodes.push({ role: `${TEMP_PREFIX}${w.item}#${k}`, kind: "sink", generator: "chest-cell", params, def, item: w.item, need: cap, capacity: cap, inputs: inputs as never, powerW: rateIn(def.rates.inputs, "electricity"), cluster: 1 })
+      nodes.push({ role: `${ST.TEMP_PREFIX}${w.item}#${k}`, kind: "sink", generator: "chest-cell", params, def, item: w.item, need: cap, capacity: cap, inputs: inputs as never, powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 })
     }
   }
   if (nodes.length === 0) return
@@ -1483,62 +2553,31 @@ function tempFactories(ctx: Ctx): void {
   startGoal(ctx, { kind: "temp", nodes, edges: [], techs: [] })
 }
 
+/** D56 / D62: starts a radar goal (the base radar, or an outpost at `site`); returns its id. */
+function startRadar(ctx: Ctx, role: string, site?: FactoryGoal["site"]): string {
+  const radar = ctx.entities.radar ?? "radar"
+  const params = { radar }
+  const def = makeModule("radar", params)
+  const node: DesignNode = { role, kind: "sink", generator: "radar", params, def, item: radar, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
+  startGoal(ctx, { kind: "radar", nodes: [node], edges: [], techs: [] }, site)
+  return `g${ctx.f.nextGoal - 1}`
+}
+
 /** Deconstructs a temporary cell (its small poles stay) and drops its node; its layout footprint stays reserved. */
 function retireTemp(ctx: Ctx, n: LogicalNode): void {
   const f = ctx.f
-  const m = findModule(f.layout, n.id)
+  const m = LO.findModule(f.layout, n.id)
   let jobs = 0
   if (m !== undefined) {
-    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
-    for (const e of findEntities(ctx.surface, { area, force: ctx.faction.force })) {
-      if (e.type === "electric-pole" || e.type === "entity-ghost") continue
-      addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority)
-      jobs++
-    }
-    for (const gh of findEntities(ctx.surface, { area, force: ctx.faction.force, type: "entity-ghost" })) gh.destroy()
+    // Exact specs matter when a permanent whole-patch mine overlaps this disposable cell: clearing the rectangle
+    // would also destroy the mine's waiting belt ghosts, making the build look complete with a gap in its collector.
+    const own = partEntities(f.layout, { modules: [m.id], routes: [], poles: [] }).filter((e) => prototypeFacts.entity(e.name)?.type !== "electric-pole")
+    jobs = applyDiff(ctx.surface, ctx.faction, own, [], { priority: ctx.config.factoryBuildPriority }).clearJobs.length
   }
-  removeNode(f.graph, n.id)
+  LG.removeNode(f.graph, n.id)
   f.temp!.retired++
   mark(ctx.faction, "temp-retired")
   log(`[rival-engineers] faction ${ctx.faction.name}: D38 temporary factory ${n.role} retired (the factory covers ${n.item}): ${jobs} entities to deconstruct`)
-}
-
-/** A built temporary cell of `item`: its input and output chests and the assembler, for the economy (bootstrap.ts). */
-export interface TempCell {
-  node: string
-  recipe: string
-  input: LuaEntity
-  output: LuaEntity
-  machine?: LuaEntity
-  /** Products per second at full speed. */
-  rate: number
-}
-
-export function tempCells(factionName: string, item: string): TempCell[] {
-  const out: TempCell[] = []
-  const f = getFactory(factionName)
-  if (f === undefined) return out
-  const faction = storage.factions[factionName]
-  const surface = game.surfaces[faction.surface]
-  for (const n of nodesOf(f.graph, "sink")) {
-    if (!isTempRole(n.role) || n.item !== item || n.lifecycle !== "built" || n.recipe === undefined) continue
-    const m = findModule(f.layout, n.id)
-    if (m === undefined) continue
-    let inPos: Vec | undefined
-    let outPos: Vec | undefined
-    for (const p of m.def.ports) {
-      if (p.kind === "chest-in") inPos = p.pos
-      if (p.kind === "chest-out") outPos = p.pos
-    }
-    if (inPos === undefined || outPos === undefined) continue
-    const input = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + inPos.x, y: m.origin.y + inPos.y }, limit: 1 })[0]
-    const output = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + outPos.x, y: m.origin.y + outPos.y }, limit: 1 })[0]
-    if (input === undefined || output === undefined) continue
-    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
-    const machine = findEntities(surface, { type: "assembling-machine", force: faction.force, area, limit: 1 })[0]
-    out.push({ node: n.id, recipe: n.recipe, input, output, machine, rate: rateIn(n.capacity.outputs, item) })
-  }
-  return out
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1551,8 +2590,11 @@ function upkeep(ctx: Ctx): void {
   if (fuelValue <= 0) return
   for (const id of f.graph.nodeOrder) {
     const n = f.graph.nodes[id]
+    // D54: a steam block's boilers are hand-fed whatever feeds them, also while it grows: before electric drills it
+    // has no coal belt at all, and later an outage stops the electric coal mine that would refuel it.
+    if (n.kind === "power" && n.lifecycle !== "planned") refuelBoilers(ctx, id, fuel)
     if (n.lifecycle !== "built") continue
-    const m = findModule(f.layout, id)
+    const m = LO.findModule(f.layout, id)
     const names = m?.canonical.upkeep?.fuel.map((x) => x.name) ?? []
     if (m === undefined || names.length === 0) continue
     const found = findEntities(ctx.surface, { name: names, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
@@ -1560,14 +2602,29 @@ function upkeep(ctx: Ctx): void {
       const inv = e.get_fuel_inventory()
       if (inv === undefined) continue
       const perTick = e.prototype.get_max_energy_usage() ?? 0
-      const low = math.max(1, math.ceil((FUEL_LOW_MINUTES * 3600 * perTick) / fuelValue))
+      const low = math.max(1, math.ceil((FUEL_MINUTES.low * 3600 * perTick) / fuelValue))
       const have = inv.get_item_count(fuel)
       const key = `upkeep:${e.unit_number}`
-      if (have >= low || keyActive(ctx, key)) continue
-      const top = math.max(low + 1, math.ceil((FUEL_TOP_MINUTES * 3600 * perTick) / fuelValue))
+      if (have >= low || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
+      const top = math.max(low + 1, math.ceil((FUEL_MINUTES.top * 3600 * perTick) / fuelValue))
       const count = math.min(top - have, prototypes.item[fuel].stack_size)
       addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
     }
+  }
+}
+
+/** D54 (user, 2026-10-19): a boiler whose fuel slot is empty gets a whole stack of fuel by hand. */
+export function refuelBoilers(ctx: Pick<Ctx, "faction" | "f" | "surface" | "tick" | "entities">, id: string, fuel: string): void {
+  const m = LO.findModule(ctx.f.layout, id)
+  if (m === undefined) return
+  const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+  const count = prototypes.item[fuel].stack_size
+  for (const e of findEntities(ctx.surface, { name: ctx.entities.boiler ?? "boiler", force: ctx.faction.force, area })) {
+    const inv = e.get_fuel_inventory()
+    if (inv === undefined || inv.get_item_count(fuel) > 0) continue
+    const key = `upkeep:${e.unit_number}`
+    if (keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
+    addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
   }
 }
 
@@ -1575,7 +2632,7 @@ function upkeep(ctx: Ctx): void {
 // Milestones
 
 function moduleEntities(ctx: Ctx, node: LogicalNode, type: string): LuaEntity[] {
-  const m = findModule(ctx.f.layout, node.id)
+  const m = LO.findModule(ctx.f.layout, node.id)
   if (m === undefined) return []
   return findEntities(ctx.surface, { type, force: ctx.faction.force, area: { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } } })
 }
@@ -1612,7 +2669,7 @@ function milestones(ctx: Ctx): void {
   // than the packs left in them, while the producer made packs.
   const automated = packsAutomated(f)
   let producer: LogicalNode | undefined
-  for (const n of nodesOf(f.graph)) if (n.lifecycle === "built" && n.kind === "module" && n.item !== undefined && automated[n.item]) producer = n
+  for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && n.kind === "module" && n.item !== undefined && automated[n.item]) producer = n
   if (producer === undefined || brain.milestones["automated-science"] !== undefined) return
   if (f.verify === undefined) {
     let leftover = 0
@@ -1649,6 +2706,8 @@ function checkStall(ctx: Ctx): void {
     if (last !== undefined && last.recoveredTick === undefined && brain.done) last.recoveredTick = ctx.tick
     return
   }
+  // Nothing left to do by design (final stage built, research goal done): idle, not stalled.
+  if (f.idle) f.progressTick = ctx.tick
   if (!brain.done || ctx.tick - f.progressTick < ctx.config.stallTicks) return
   const goals: string[] = []
   for (const g of f.goals) if (g.status === "planning" || g.status === "building") goals.push(`${g.id} ${g.kind} ${g.status} (placed ${g.placed})`)
@@ -1674,95 +2733,13 @@ function recover(ctx: Ctx): void {
   faction.brain!.jobKeys = {}
   for (const g of ctx.f.goals) {
     if (g.status !== "building") continue
-    const b = g.plan !== undefined ? getPlannerEntry(g.plan)?.build : undefined
+    const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
+    const b = entry?.build
     if (b === undefined) continue
     const left: LuaEntity[] = []
     for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
-    if (left.length > 0) replanGhosts(ctx, g, b, left)
+    if (left.length > 0) replanGhosts(ctx, g, b, left, entry!.job?.layout ?? ctx.f.layout)
   }
   faction.brain!.replans++
 }
 
-// ---------------------------------------------------------------------------------------------------------
-// Material supply: the mall's output chests are a source for the bootstrap economy (H4 collect before hand-craft).
-
-/** Built mall chests holding `item` (or anything, if undefined), with amounts. */
-export function mallSources(factionName: string, item: string | undefined): { entity: LuaEntity; item: string; amount: number }[] {
-  const out: { entity: LuaEntity; item: string; amount: number }[] = []
-  const f = getFactory(factionName)
-  if (f === undefined) return out
-  const faction = storage.factions[factionName]
-  const surface = game.surfaces[faction.surface]
-  for (const n of nodesOf(f.graph, "sink")) {
-    if (n.lifecycle !== "built") continue
-    const m = findModule(f.layout, n.id)
-    if (m === undefined) continue
-    for (const p of m.def.ports) {
-      if (p.kind !== "chest-out" || (item !== undefined && p.item !== item)) continue
-      const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
-      if (chest === undefined) continue
-      for (const c of chest.get_inventory(defines.inventory.chest)!.get_contents()) if (item === undefined || c.name === item) out.push({ entity: chest, item: c.name, amount: c.count })
-    }
-  }
-  return out
-}
-
-// ---------------------------------------------------------------------------------------------------------
-// Reports
-
-export function factoryReport(name: string) {
-  const f = getFactory(name)
-  if (f === undefined) return undefined
-  const nodes: Record<string, number> = {}
-  for (const n of nodesOf(f.graph)) nodes[n.lifecycle] = (nodes[n.lifecycle] ?? 0) + 1
-  return {
-    stage: f.stage,
-    goals: f.goals.map((g) => ({ id: g.id, kind: g.kind, status: g.deferred ? "deferred" : g.status, modules: g.nodes.length, flows: g.edges.length, attempts: g.attempts, placed: g.placed, rounds: g.rounds, created: g.createdTick, planned: g.plannedTick, built: g.builtTick, reason: g.reason })),
-    nodes,
-    edges: f.graph.edgeOrder.length,
-    design: f.design,
-    research: f.research,
-    waiting: f.waiting,
-    verify: f.verify,
-    reconciler: reconcilerReport(f),
-    logistics: { undergrounds: f.needUndergrounds, splitters: f.needSplitters, taps: f.taps, compares: f.compares },
-  }
-}
-
-/** M5b telemetry: statuses, root causes of nodes that are not ok, remedies so far, probes. */
-function reconcilerReport(f: FactoryState) {
-  const st = f.reconciler
-  if (st === undefined) return undefined
-  const causes: string[] = []
-  for (const id of f.graph.nodeOrder) {
-    const n = f.graph.nodes[id]
-    if (n.cause !== undefined) causes.push(`${n.id} ${n.role} ${n.status}: ${n.cause.kind}${n.cause.id !== undefined ? ` ${n.cause.id}` : ""} ${n.cause.what} (${n.cause.why})`)
-  }
-  const remedies: Record<string, number> = {}
-  for (const [, r] of pairs(st.remedies)) remedies[r.kind] = (remedies[r.kind] ?? 0) + r.count
-  return { evaluations: st.evaluations, statuses: statusCounts(f.graph), changes: st.changes, causes, remedies, log: st.log, probes: f.meter?.probes ?? 0 }
-}
-
-/** Both graph layers for tools/render and the soak report (D29): the physical layer of the faction's layout plus the logical graph. */
-export function factoryGraph(name: string): FactoryGraph | undefined {
-  const f = getFactory(name)
-  if (f === undefined) return undefined
-  const faction = storage.factions[name]
-  const force = game.forces[faction.force]
-  const researched = force !== undefined ? researchedTechs(force) : {}
-  const policy = policyFor(getConfig())
-  const g = buildGraph(f.layout, policy, { tiers: tiers(), researched })
-  g.faction = name
-  g.tick = game.tick
-  const out = g as FactoryGraph & { nodes?: unknown; flows?: unknown; poles?: unknown }
-  out.logical = { nodes: nodesOf(f.graph).map((n) => ({ ...n, recipe: n.recipe })) as never, edges: f.graph.edgeOrder.map((id) => f.graph.edges[id]) as never }
-  out.poles = f.layout.poles ?? []
-  return g
-}
-
-export function exportFactoryGraph(name: string, file: string): boolean {
-  const g = factoryGraph(name)
-  if (g === undefined) return false
-  helpers.write_file(file, helpers.table_to_json(g as never), false)
-  return true
-}

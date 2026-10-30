@@ -8,8 +8,8 @@ import { hasWater, repairStartingLake } from "../world/spawn"
 // M5a.2: every faction spawned with a starting area (D32) has water near its spawn, like a player's starting lake.
 
 function newSurface(name: string, seed: number, startingPoints?: MapPosition[]): LuaSurface {
-  const existing = game.surfaces[name]
-  if (existing) game.delete_surface(existing)
+  const existing: LuaSurface | undefined = game.surfaces[name]
+  if (existing !== undefined) game.delete_surface(existing)
   const settings: Record<string, unknown> = { seed, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } }
   if (startingPoints) settings.starting_points = startingPoints
   return game.create_surface(name, settings as never)
@@ -22,6 +22,10 @@ function addStartingPoint(surface: LuaSurface, p: MapPosition): void {
 }
 
 describe("starting water", () => {
+  // Leftover factions keep planning (and slow every later test in the shard).
+  after_all(() => {
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
+  })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()

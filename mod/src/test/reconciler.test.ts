@@ -1,12 +1,14 @@
 import { LuaForce, LuaSurface } from "factorio:runtime"
-import { clearConfigOverrides, setConfigOverride } from "../config"
+import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
+import { moduleId, connectionId, routeId } from "../shared/ids"
+import type { ModuleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { EAST, ModuleDef, NORTH, SOUTH } from "../modules/types"
 import { beltTiers } from "../planner/capacity"
-import { Vec } from "../planner/grid"
+import { tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { addEdge, addNode, LogicalGraph, LogicalNode, NodeKind } from "../planner/logical"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -14,8 +16,9 @@ import { selectPolicy } from "../planner/policy"
 import { stampParts } from "../planner/runtime"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { startBootstrap } from "../strategy/bootstrap"
-import { FactoryState, getFactory, reconcileNow, startFactory } from "../strategy/factory"
-import { describeMachines } from "../strategy/measure"
+import { beginHandover, checkMineOre, powerFuelled, serviceHandovers } from "../strategy/fuel"
+import { FactoryGoal, FactoryState, getFactory, growNow, reconcileNow, refuelBoilers, startFactory } from "../strategy/factory"
+import { describeMachines, newMeter, sampleNodes } from "../strategy/measure"
 import { at, createLab, Lab } from "./lab"
 import { feed, followRoute } from "./route-lab"
 
@@ -27,6 +30,9 @@ import { feed, followRoute } from "./route-lab"
 const SPEED = 100
 let speed = 1
 let seq = 0
+// Faction names restart each test: a destroyed faction's force is never freed (the engine has 64), so the next test
+// reuses it instead of creating another (the T2 shard holding this file ran out of forces).
+let factionSeq = 0
 
 /** Test cadence: measure every second, a 10 s window, 5 s probes, no warm-up, 2 confirmations. */
 function fastReconciler(): void {
@@ -41,7 +47,7 @@ function fastReconciler(): void {
 
 /** A faction whose bootstrap brain never thinks (the test drives the reconciler), with a factory state. */
 function testFaction(lab: Lab, dx: number, dy: number): { faction: FactionState; f: FactoryState } {
-  const faction = createFaction(`rec-${++seq}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
+  const faction = createFaction(`rec-${++factionSeq}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
   const brain = startBootstrap(faction, at(lab, dx, dy))
   brain.nextThink = math.huge
   const f = startFactory(faction)
@@ -59,7 +65,7 @@ function scan(lab: Lab, force: string) {
 }
 
 function placeDef(layout: LayoutState, id: string, def: ModuleDef, origin: Vec): PlacedModule {
-  const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+  const m: PlacedModule = { id: moduleId(id), canonical: def, def, transform: { rot: 0, mirror: false }, origin, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(layout, m, prototypeFacts, 2)
   return m
 }
@@ -83,7 +89,7 @@ function node(g: LogicalGraph, m: PlacedModule, kind: NodeKind, item: string, pl
   })
 }
 
-function edge(g: LogicalGraph, id: string, from: string, fromPort: string, to: string, toPort: string, item: string, rate: number): void {
+function edge(g: LogicalGraph, id: string, from: ModuleId, fromPort: string, to: ModuleId, toPort: string, item: string, rate: number): void {
   addEdge(g, { id, role: id, kind: "belt", item, from, fromPort, to, toPort, plannedRate: rate, physical: [`route:${id}`], belt: "transport-belt" })
 }
 
@@ -128,22 +134,22 @@ function chainLab(): Chain {
   const smelt = placeDef(layout, "smelt", generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 }), { x: ox - 5, y: oy - 8 })
   const gears = placeDef(layout, "gears", generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 2 }), { x: ox + 14, y: oy - 30 })
   const conns = [
-    { id: "ore", from: { module: "mine", port: "out" }, to: { module: "smelt", port: "in-ore" } },
-    { id: "plates", from: { module: "smelt", port: "out" }, to: { module: "gears", port: "in-iron-plate" } },
+    { id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } },
+    { id: connectionId("plates"), from: { module: moduleId("smelt"), port: "out" }, to: { module: moduleId("gears"), port: "in-iron-plate" } },
   ]
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: ox, y: oy }, region: { x: ox - 48, y: oy - 48, w: 96, h: 96 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
   assert(job.phase === "done", "routed")
-  const r = stampParts(s, faction.force, job.layout, { modules: ["mine", "smelt", "gears"], routes: ["route:ore", "route:plates"], poles: [] }, false)
+  const r = stampParts(s, faction.force, job.layout, { modules: [moduleId("mine"), moduleId("smelt"), moduleId("gears")], routes: [routeId("route:ore"), routeId("route:plates")], poles: [] }, false)
   assert(r.failed.length === 0, r.failed.join("; "))
   f.layout = job.layout
   const tick = game.tick
   const mineRate = rateOut(mine.def, "iron-ore")
-  node(f.graph, findModule(job.layout, "mine")!, "outpost", "iron-ore", mineRate, tick)
-  node(f.graph, findModule(job.layout, "smelt")!, "module", "iron-plate", math.min(mineRate, rateOut(smelt.def, "iron-plate")), tick)
-  node(f.graph, findModule(job.layout, "gears")!, "module", "iron-gear-wheel", rateOut(gears.def, "iron-gear-wheel") * 0.5, tick)
-  edge(f.graph, "ore", "mine", "out", "smelt", "in-ore", "iron-ore", mineRate)
-  edge(f.graph, "plates", "smelt", "out", "gears", "in-iron-plate", "iron-plate", rateOut(smelt.def, "iron-plate"))
-  return { lab, faction, f, mine: findModule(job.layout, "mine")!, smelt: findModule(job.layout, "smelt")!, gears: findModule(job.layout, "gears")! }
+  node(f.graph, findModule(job.layout, moduleId("mine"))!, "outpost", "iron-ore", mineRate, tick)
+  node(f.graph, findModule(job.layout, moduleId("smelt"))!, "module", "iron-plate", math.min(mineRate, rateOut(smelt.def, "iron-plate")), tick)
+  node(f.graph, findModule(job.layout, moduleId("gears"))!, "module", "iron-gear-wheel", rateOut(gears.def, "iron-gear-wheel") * 0.5, tick)
+  edge(f.graph, "ore", moduleId("mine"), "out", moduleId("smelt"), "in-ore", "iron-ore", mineRate)
+  edge(f.graph, "plates", moduleId("smelt"), "out", moduleId("gears"), "in-iron-plate", "iron-plate", rateOut(smelt.def, "iron-plate"))
+  return { lab, faction, f, mine: findModule(job.layout, moduleId("mine"))!, smelt: findModule(job.layout, moduleId("smelt"))!, gears: findModule(job.layout, moduleId("gears"))! }
 }
 
 function rateOut(def: ModuleDef, item: string): number {
@@ -200,11 +206,14 @@ describe("M5b reconciler", () => {
   })
   after_all(() => {
     game.speed = speed
+    // Leftover factions keep planning (and slow every later test in the shard).
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
   })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     fastReconciler()
+    factionSeq = 0
   })
 
   test("a deliberately starved module: gears ← smelter ← unpowered outpost is starved, root cause the outpost", () => {
@@ -310,18 +319,18 @@ describe("M5b reconciler", () => {
     const labs = placeDef(layout, "labs", labDef, { x: ox, y: oy - 4 })
     const src = placeDef(layout, "src", srcDef, { x: ox - 12, y: oy })
     const t = scan(lab, faction.force)
-    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: "packs", from: { module: "src", port: "out" }, to: { module: "labs", port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("packs"), from: { module: moduleId("src"), port: "out" }, to: { module: moduleId("labs"), port: "in" } }], center: { x: ox, y: oy }, region: { x: ox - 40, y: oy - 40, w: 80, h: 80 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
     assert(job.phase === "done", "routed")
-    const built = stampParts(s, faction.force, job.layout, { modules: ["labs", "src"], routes: ["route:packs"], poles: [] }, false)
+    const built = stampParts(s, faction.force, job.layout, { modules: [moduleId("labs"), moduleId("src")], routes: [routeId("route:packs")], poles: [] }, false)
     assert(built.failed.length === 0, built.failed.join("; "))
-    power(s, force, findModule(job.layout, "labs")!)
+    power(s, force, findModule(job.layout, moduleId("labs"))!)
     f.layout = job.layout
     const g = f.graph
     const tick = game.tick
     node(g, src, "source", RED, 25, tick)
     node(g, labs, "labs", "research-unit", 25, tick)
     g.nodes.labs.planned.inputs = [{ item: RED, perSecond: 25 }]
-    edge(g, "packs", "src", "out", "labs", "in", RED, 25)
+    edge(g, "packs", moduleId("src"), "out", moduleId("labs"), "in", RED, 25)
     const belt = s.find_entities_filtered({ position: { x: src.origin.x + 0.5, y: src.origin.y + 0.5 }, type: "transport-belt" })[0]
     const fs = [{ item: RED, lines: [belt.get_transport_line(1), belt.get_transport_line(2)], perTick: 25 / 60, credit: 0, next: 0 }]
     // Research that never ends: automation again whenever it finishes.
@@ -377,5 +386,228 @@ describe("M5b reconciler", () => {
       assert(getFactory(c.faction.name) === c.f, "same factory")
       done()
     })
+  })
+
+  test("B101: a repair whose belt tile a tree from the next tile overlaps clears the tree first, then places the belt", () => {
+    // Sweep 628fa29 seed 7718665: lab cluster 3's coal belt missed one piece; every repair (and an earlier growth) got
+    // stuck "cannot-place": a tree centred in the next tile reached 0.15 into it, and repairs and growths placed their
+    // ghosts without clearing trees (only a new plan's build did).
+    const c = chainLab()
+    power(c.lab.surface, c.faction.force, c.mine)
+    power(c.lab.surface, c.faction.force, c.gears)
+    power(c.lab.surface, c.faction.force, c.smelt)
+    const s = c.lab.surface
+    const route = c.f.layout.routes["route:ore"]
+    const step = route.steps[math.floor(route.steps.length / 2)]
+    const cut = s.find_entities_filtered({ position: { x: step.x + 0.5, y: step.y + 0.5 }, type: "transport-belt" })[0]
+    assert(cut !== undefined, "a belt to cut")
+    cut.destroy()
+    // tree-01's box is ~0.8 wide: centred 0.27 past the tile's edge, across the route, it reaches ~0.03 into the belt's
+    // box (the soak's tree: ~0.05, under the old leftover-ghost search's 0.05 inset).
+    const across = step.dir === 1 || step.dir === 3
+    const tree = s.create_entity({ name: "tree-01", position: across ? { x: step.x + 0.5, y: step.y - 0.27 } : { x: step.x - 0.27, y: step.y + 0.5 } })!
+    assert(!s.can_place_entity({ name: "transport-belt", position: { x: step.x + 0.5, y: step.y + 0.5 }, force: c.faction.force }), "the tree blocks the belt")
+    const chest = s.create_entity({ name: "iron-chest", position: at(c.lab, 30, 26), force: c.faction.force })!
+    chest.insert({ name: "transport-belt", count: 20 })
+    chest.insert({ name: "coal", count: 50 })
+    // Wood in stock: the brain has no reason to gather this tree for wood.
+    chest.insert({ name: "wood", count: 100 })
+    addStockpile(c.faction, chest)
+    const g = c.f.graph
+    async(60 * 60 * 15)
+    reconcileUntil(c.faction, c.f, 60 * 60 * 14, () => fuelFurnaces(c), () => g.nodes.smelt.status === "ok" && !tree.valid, (ok) => {
+      log(`[b101] goals ${serpent.line(c.f.goals.map((x) => `${x.id} ${x.kind} ${x.status} ${x.reason ?? ""}`))}`)
+      assert(ok, `tree ${tree.valid ? "still there" : "cleared"}, smelter ${g.nodes.smelt.status}`)
+      assert(s.find_entities_filtered({ position: { x: step.x + 0.5, y: step.y + 0.5 }, type: "transport-belt" }).length === 1, "the belt is back")
+      done()
+    })
+  })
+
+  test("P36 (a): a steam block's coal outpost with little ore left hands over (nothing deconstructed until the replacement feeds its port); one with plenty is kept", () => {
+    const lab = createLab(48)
+    const { faction, f } = testFaction(lab, 30, 30)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // Two coal patches: a poor one (1 per tile) and a rich one.
+    for (let x = -20; x < 0; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 1 })
+    for (let x = 10; x < 30; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "coal", position: at(lab, x + 0.5, y + 0.5), amount: 1000000 })
+    scan(lab, faction.force)
+    const layout = newLayout()
+    const poor = placeDef(layout, "poor", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox - 15, y: oy + 24 })
+    const rich = placeDef(layout, "rich", generatedModule("mining-outpost", { resource: "coal", rows: 2, sides: 2 }), { x: ox + 15, y: oy + 24 })
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("poor"), moduleId("rich")], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const tick = game.tick
+    // B70: mines are outpost nodes (the check once took only `module` nodes and never fired).
+    node(f.graph, poor, "outpost", "coal", 1, tick)
+    node(f.graph, rich, "outpost", "coal", 1, tick)
+    addNode(f.graph, { id: moduleId("pw"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addNode(f.graph, { id: moduleId("pw2"), role: "power#2", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    edge(f.graph, "coal>power=>power.in-fuel", moduleId("poor"), "out", moduleId("pw"), "in-fuel", "coal", 1)
+    edge(f.graph, "coal>power#2=>power#2.in-fuel", moduleId("rich"), "out", moduleId("pw2"), "in-fuel", "coal", 1)
+    for (let x = poor.rect.x; x < poor.rect.x + poor.rect.w; x++) for (let y = poor.rect.y; y < poor.rect.y + poor.rect.h; y++) faction.brain!.reserved[tkey(x, y)] = true
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
+    assert(checkMineOre(ctx, true) === undefined, "not while a plan works on a copy of the layout")
+    assert(checkMineOre({ ...ctx, tick: 3600 * 100 + 1800 }, false) === undefined, "only once a minute")
+    // Goalpost 1: the poor outpost is marked as retiring, not deconstructed.
+    const gone = checkMineOre(ctx, false)
+    assert(gone === "poor", `the poor outpost starts handing over (${gone})`)
+    assert(f.handover?.["poor"] !== undefined, "it is recorded as handing over")
+    assert(f.graph.nodes["poor"] !== undefined && f.graph.edges["coal>power=>power.in-fuel"] !== undefined, "its node and edge stay in the graph while the replacement is planned")
+    assert(findModule(f.layout, moduleId("poor")) !== undefined, "the module stays in the layout")
+    assert(f.fuelRelocations === undefined || f.fuelRelocations === 0, "nothing deconstructed yet")
+    let clears = 0
+    for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
+    assert(clears === 0, `no clear jobs before the replacement is connected (${clears})`)
+    assert(checkMineOre(ctx, false) === undefined, "a handover already under way is not started twice")
+    // A built replacement feeds the same consumer port: the gate opens and the old outpost is retired.
+    node(f.graph, rich, "outpost", "coal", 1, tick)
+    addNode(f.graph, { id: moduleId("poor2"), role: "coal>power#3", kind: "module", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, powerW: 0, lifecycle: "built", status: "ok", createdTick: tick, builtTick: tick })
+    edge(f.graph, "coal>power#3=>power.in-fuel", moduleId("poor2"), "out", moduleId("pw"), "in-fuel", "coal", 1)
+    serviceHandovers(ctx)
+    assert(f.handover?.["poor"] === undefined, "the handover is finished")
+    assert(f.graph.nodes["poor"] === undefined && f.graph.edges["coal>power=>power.in-fuel"] === undefined, "its node and edge leave the graph")
+    assert(findModule(f.layout, moduleId("poor")) === undefined && findModule(f.layout, moduleId("rich")) !== undefined, "it leaves the layout, the rich one stays")
+    assert(powerFuelled(f.graph, f.graph.nodes["pw"]), "the replacement feeds the first steam block")
+    assert(powerFuelled(f.graph, f.graph.nodes["pw2"]), "the rich outpost is untouched")
+    clears = 0
+    for (const id of faction.board.active) if (faction.board.jobs[id].payload.kind === "clear") clears++
+    assert(clears > 0, `its entities get clear jobs (${clears})`)
+    assert(faction.brain!.reserved[tkey(poor.rect.x + 1, poor.rect.y + 1)] === undefined, "its tiles are no longer reserved")
+    assert(f.fuelRelocations === 1, "counted")
+    assert(checkMineOre(ctx, false) === undefined, "the rich one is kept")
+  })
+
+  test("D67: a science chain's mine with less than factory-mine-lead-minutes of ore left hands over; 0 turns it off", () => {
+    const lab = createLab(48)
+    const { faction, f } = testFaction(lab, 30, 30)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    for (let x = -20; x < 0; x++) for (let y = 22; y < 40; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 1 })
+    scan(lab, faction.force)
+    const layout = newLayout()
+    const mine = placeDef(layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }), { x: ox - 15, y: oy + 24 })
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("mine")], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const tick = game.tick
+    node(f.graph, mine, "outpost", "iron-ore", 1, tick)
+    addNode(f.graph, { id: moduleId("smelt"), role: "iron-plate>labs", kind: "module", item: "iron-plate", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    edge(f.graph, "iron-ore>iron-plate>labs=>iron-plate>labs.in-ore", moduleId("mine"), "out", moduleId("smelt"), "in-ore", "iron-ore", 1)
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: 3600 * 100 }
+    setConfigOverride("factoryMineLeadMinutes", 0)
+    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === undefined, "0 = never")
+    setConfigOverride("factoryMineLeadMinutes", 30)
+    assert(checkMineOre({ ...ctx, config: getConfig() }, false) === "mine", "the mine starts handing over")
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "recorded; the module stays until its replacement feeds the smelter")
+    // No replacement within the 10-min valve: a mine handed over ahead still has ore, so it is not retired yet.
+    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled handover keeps a mine that still has ore")
+    // B73: a D55 handover (the mine is short, one drill dry) is kept the same way while any drill still finds ore.
+    delete f.handover!["mine"]
+    assert(beginHandover(ctx, f.graph.nodes["mine"], "D55 mine", "is worked out (test)"), "a D55 handover starts")
+    serviceHandovers({ ...ctx, tick: ctx.tick + 3600 * 11 })
+    assert(f.handover?.["mine"] !== undefined && findModule(f.layout, moduleId("mine")) !== undefined, "a stalled D55 handover keeps a mine that still has ore")
+    setConfigOverride("factoryMineLeadMinutes", undefined)
+  })
+  test("B98: a growth that waited for a goal still building is not planned again until that goal's node is built", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const tick = game.tick
+    node(f.graph, placeDef(f.layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2 }), { x: math.floor(lab.origin.x) - 10, y: math.floor(lab.origin.y) }), "outpost", "iron-ore", 1, tick)
+    addNode(f.graph, { id: moduleId("rep"), role: "rep", kind: "module", item: "iron-plate", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "building", status: "unknown", createdTick: tick })
+    f.growWaits = { mine: "rep" }
+    const goals = f.goals.length
+    const growth = { role: f.graph.nodes["mine"].role, node: "mine", units: 1, need: 0, have: 0, reclaim: true }
+    assert(growNow(faction, f, growth) === "wait", "still waiting: no plan")
+    assert(f.goals.length === goals && f.growthDiagnostics?.["mine"] === undefined, "nothing planned")
+    f.graph.nodes["rep"].lifecycle = "built"
+    growNow(faction, f, growth)
+    assert(f.growWaits["mine"] === undefined, "built: the wait is over and the growth is planned again")
+  })
+
+  test("D54: an empty boiler gets a whole stack of coal by hand, once; a boiler with any coal does not", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const s = lab.surface
+    const layout = newLayout()
+    const steam = placeDef(layout, "pw", generatedModule("steam-block", { boilers: 2 }), { x: math.floor(lab.origin.x) - 10, y: math.floor(lab.origin.y) - 10 })
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("pw")], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    const boilers = s.find_entities_filtered({ name: "boiler", force: faction.force, area: [{ x: steam.rect.x, y: steam.rect.y }, { x: steam.rect.x + steam.rect.w, y: steam.rect.y + steam.rect.h }] })
+    assert(boilers.length === 2, `two boilers (${boilers.length})`)
+    boilers[1].insert({ name: "coal", count: 1 })
+    const ctx = { faction, f, surface: s, tick: game.tick, entities: {} }
+    const fuelJobs = () => {
+      const out: { count: number; target: unknown }[] = []
+      for (const id of faction.board.active) {
+        const p = faction.board.jobs[id].payload
+        if (p.kind === "fuel") out.push({ count: p.count, target: p.target })
+      }
+      return out
+    }
+    refuelBoilers(ctx, "pw", "coal")
+    const jobs = fuelJobs()
+    assert(jobs.length === 1, `one fuel job (${jobs.length})`)
+    assert(jobs[0].target === boilers[0] && jobs[0].count === prototypes.item["coal"].stack_size, `a whole stack for the empty boiler (${jobs[0].count})`)
+    refuelBoilers(ctx, "pw", "coal")
+    assert(fuelJobs().length === 1, "not queued twice")
+  })
+  test("B47: a module whose own pole is gone is repaired through its power edge (the pole is re-placed, not its machines)", () => {
+    const c = chainLab()
+    const s = c.lab.surface
+    const g = c.f.graph
+    const tick = game.tick
+    addNode(g, { id: moduleId("pw"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: tick, builtTick: tick })
+    addEdge(g, { id: "e:power=>gears", role: "power=>gears", kind: "power", item: "electricity", from: moduleId("pw"), to: moduleId("gears"), plannedRate: 0, physical: [] })
+    const m = c.gears
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    const poles = s.find_entities_filtered({ area, type: "electric-pole" })
+    assert(poles.length > 0, "the gear row has its own poles")
+    const gone = poles[0].position
+    poles[0].destroy()
+    let goal: FactoryGoal | undefined
+    async(60 * 60 * 6)
+    reconcileUntil(c.faction, c.f, 60 * 60 * 5, () => undefined, () => {
+      goal = c.f.goals.filter((x) => x.kind === "repair")[0]
+      // B101: a repair's ghosts follow its clear phase (trees in the way first).
+      return goal !== undefined && goal.growBuild?.phase !== "clear"
+    }, (ok) => {
+      log(`[b47] ${describe_(g, c.f)}\n  remedies ${serpent.line(c.f.reconciler?.log)}`)
+      assert(ok, `a repair goal (gears ${g.nodes.gears.status}, cause ${g.nodes.gears.cause?.why})`)
+      const ghosts = s.find_entities_filtered({ ghost_name: "small-electric-pole", position: gone })
+      assert(ghosts.length === 1, `the module's pole is ghosted again (${ghosts.length})`)
+      assert(s.find_entities_filtered({ area, type: "entity-ghost" }).length === 1, "nothing else of the module")
+      done()
+    })
+  })
+
+  test("B48: drills built into a built mine later (same builtTick) join its measurement", () => {
+    const lab = createLab(32)
+    const { faction, f } = testFaction(lab, 20, 20)
+    const s = lab.surface
+    for (let x = -12; x < 12; x++) for (let y = -12; y < 12; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
+    const layout = newLayout()
+    const mine = placeDef(layout, "mine", generatedModule("mining-outpost", { resource: "iron-ore", rows: 2, sides: 2, drill: "electric-mining-drill" }), { x: math.floor(lab.origin.x) - 4, y: math.floor(lab.origin.y) - 6 })
+    const r = stampParts(s, faction.force, layout, { modules: [moduleId("mine")], routes: [], poles: [] }, false)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    f.layout = layout
+    node(f.graph, mine, "outpost", "iron-ore", 1, game.tick)
+    const area = { left_top: { x: mine.rect.x, y: mine.rect.y }, right_bottom: { x: mine.rect.x + mine.rect.w, y: mine.rect.y + mine.rect.h } }
+    const drills = s.find_entities_filtered({ area, type: "mining-drill" })
+    assert(drills.length === 4, `four drills planned and built (${drills.length})`)
+    // Two of them are built later, as a shared mine's completion is: the node keeps its builtTick.
+    const later = drills.slice(2).map((d) => ({ name: d.name, position: d.position, direction: d.direction }))
+    for (const d of drills.slice(2)) d.destroy()
+    const meter = newMeter()
+    sampleNodes(meter, f.graph, layout, s, faction.force, game.tick, 5)
+    assert(meter.nodes["mine"].machines.length === 2, `two drills measured first (${meter.nodes["mine"].machines.length})`)
+    for (const d of later) s.create_entity({ ...d, force: faction.force })
+    sampleNodes(meter, f.graph, layout, s, faction.force, game.tick + 60, 5)
+    assert(meter.nodes["mine"].machines.length === 4, `all four measured once built (${meter.nodes["mine"].machines.length})`)
   })
 })

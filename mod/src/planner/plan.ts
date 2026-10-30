@@ -6,18 +6,26 @@
 
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
+import { releaseLaneReservation, reserveFreeTile } from "./claims"
 import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
-import { commitRoute, findModule, findPort, LayoutState, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, newPlacement, PlacementSearch, stepPlacement, tryExpand } from "./placement"
+import { mergeGoals } from "./merge"
+import type { MergeGoal } from "./merge"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, tapTree, unmarkModule } from "./layout"
+import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
+import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
+import { moduleId, routeId } from "../shared/ids"
+import type { ConnectionId, RouteId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
   /** Canonical module. */
   def: ModuleDef
+  /** Route-reassignment provider: place an independent module instead of completing another logical provider's mine. */
+  newSite?: boolean
   /**
    * With an expand-first policy: satisfy this request by growing a compatible placed module (same generator, recipe
    * and resource) by this many units, if there is room, instead of placing a new one.
@@ -26,7 +34,7 @@ export interface ModuleRequest {
 }
 
 export interface ConnectionRequest {
-  id: string
+  id: ConnectionId
   /** Producer (a belt-out port). Absent: the input is fed from outside the layout (a one-tile stub is planned). */
   from?: PortRef
   /** Consumer (a belt-in port). */
@@ -35,6 +43,11 @@ export interface ConnectionRequest {
   rate?: number
   /** Belt tier for this connection (D24 upgrade-tier); default: the job's tier. */
   belt?: string
+  /**
+   * B60 provider groups: another provider already feeds this consumer. Join that route with a side-load instead of
+   * routing a second belt into the input port.
+   */
+  merge?: boolean
 }
 
 export interface PlanRequest {
@@ -44,6 +57,11 @@ export interface PlanRequest {
   center: Vec
   /** The scanned region the layout must stay in. */
   region: Rect
+  /**
+   * P44 (b): the force can build splitters. Whole-patch mines then join their drill rows with splitter merges (several
+   * rows); without them a whole-patch mine is one row, which fills both lanes of its belt without side-loads.
+   */
+  splitters?: boolean
   /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
   poles?: string
   /**
@@ -53,6 +71,10 @@ export interface PlanRequest {
   compare?: CompareOptions
   /** Rectangles no module of this request may overlap (D38: temporary factories keep clear of the core's modules). */
   avoid?: Rect[]
+  /** D57 (c): ore patches a mine found no room on before (`patchKey` → terrain stamp); skipped while unchanged. */
+  deadPatches?: Record<string, string>
+  /** B63: multiply every route window's margin (1 = policy default; 3 for a plan feeding a boxed-in consumer). */
+  windowScale?: number
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -105,7 +127,25 @@ export interface PlanStats {
   maxStepWork: number
 }
 
+export type PlanEvidence =
+  | { kind: "placement"; subject: string; reason: string; candidates: number; rejections: Record<string, { count: number; sample: Vec }> }
+  | {
+      kind: "route"
+      subject: string
+      reason: string
+      rip: boolean
+      windowScale: number
+      expansions: number
+      /**
+       * B57/B63: the seal check ran out at this end: its port, resolved. `edge` says the window boundary cut the flood,
+       * i.e. the proof is only "no path *inside this window*".
+       */
+      sealed?: { side: "start" | "goal"; port: PortRef; edge?: boolean }
+    }
+
 export interface PlanJob {
+  /** Revision of the base layout this plan copied. Old saved jobs omit it and retain legacy adoption behaviour. */
+  sourceRevision?: number
   request: PlanRequest
   tier: BeltTier
   /** Tiers by belt name for per-connection tiers. */
@@ -124,12 +164,20 @@ export interface PlanJob {
   placement?: PlacementSearch
   /** Request id → placed module id (an expanded module answers for the request). */
   alias: Record<string, string>
+  /** D57 (c): patches this plan's mines found no room on (the strategy remembers them for later plans). */
+  deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
   failures: Record<string, string>
+  /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
+  evidence?: PlanEvidence[]
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
   expanded: Record<string, { module: string; units: number }>
+  /** B23: a shared whole-patch mine that could not be expanded for the request: request id → reason. */
+  wholeFail?: Record<string, string>
+  /** B28: comparison branch probe: fail no-path edges the cheap way (the branches cap their work to compare). */
+  compareProbe?: boolean
   /** Modules taken out after a connection could not be routed, to be placed again elsewhere (then routing resumes). */
   replaceQueue: string[]
   replaced: Record<string, number>
@@ -140,6 +188,17 @@ export interface PlanJob {
   compare?: { queue: CompareResult["kind"][]; current?: { kind: CompareResult["kind"]; job: PlanJob; cap: number; base: number; merged?: Record<string, string[]>; dropped?: string[] }; results: CompareResult[] }
   /** D36: routing failed; the underground comparison still runs (the infinite case), then the plan fails. */
   routingFailed?: boolean
+  /**
+   * B57: the base's unconnected port lanes that led out when the plan started (port tag, lane end, way out), and the base
+   * layout to plan again from if the plan walls one in (`guardLanes`). Undefined until the first step.
+   */
+  lanes?: { tag: string; module: string; port: string; path: Vec[] }[]
+  laneBase?: LayoutState
+  /** B57: tiles the plan, planned again, keeps clear for those lanes (reserved `lane:<port>`, dropped when it ends). */
+  laneKeep?: number[]
+  /** B85: this plan's new modules' port lanes it already re-routed around (once each), and the tiles it keeps clear. */
+  newLaneTried?: Record<string, boolean>
+  newLaneKeep?: number[]
 }
 
 function connectionsOf(req: PlanRequest, id: string): ConnectionRequest[] {
@@ -232,19 +291,26 @@ export function cloneLayout(l: LayoutState): LayoutState {
   for (const [k, list] of pairs(l.spans)) spans[k as string] = [...(list as LayoutState["spans"][string])]
   const routes: Record<string, Route> = {}
   for (const [k, r] of pairs(l.routes)) routes[k as string] = { ...(r as Route) }
-  return {
-    modules: l.modules.map((m) => ({ ...m })),
+  const out: LayoutState = {
+    revision: l.revision,
+    modules: l.modules.map((m) => ({ ...m, minePlan: m.minePlan !== undefined ? { ...m.minePlan, claim: [...m.minePlan.claim], occupied: [...m.minePlan.occupied] } : undefined })),
     occ: copy(l.occ),
     reserved: copy(l.reserved),
     routeOcc: copy(l.routeOcc),
     corridor: copy(l.corridor),
     soft: l.soft !== undefined ? copy(l.soft) : undefined,
+    softUnit: l.softUnit !== undefined ? copy(l.softUnit) : {},
+    mine: l.mine !== undefined ? copy(l.mine) : undefined,
     spans,
     routes,
     routeOrder: [...l.routeOrder],
     poles: l.poles !== undefined ? l.poles.map((p) => ({ ...p })) : undefined,
     poleLines: l.poleLines !== undefined ? l.poleLines.map((x) => ({ ...x, poles: [...x.poles] })) : undefined,
+    evictedPoles: l.evictedPoles !== undefined ? l.evictedPoles.map((p) => ({ ...p })) : undefined,
   }
+  // B52: soft claims marked before growth units were recorded (older saves and captures) get theirs.
+  fillSoftUnits(out)
+  return out
 }
 
 /**
@@ -266,6 +332,7 @@ export function newPlanJob(request: PlanRequest, tier: BeltTier, base?: LayoutSt
     baseRoutes[id] = true
   }
   return {
+    sourceRevision: base !== undefined ? layoutRevision(base) : 0,
     request,
     tier,
     tiers,
@@ -292,8 +359,25 @@ function moduleRequest(job: PlanJob, id: string): ModuleRequest {
   error(`unknown module request ${id}`)
 }
 
+function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): void {
+  job.evidence ??= []
+  job.evidence.push({ kind: "placement", subject: id, reason: search.reason ?? "placement failed", candidates: search.candidates, rejections: placementFailureCertificate(search) })
+}
+
+function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
+  job.evidence ??= []
+  const sl = search.sealed
+  let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
+  if (sl !== undefined) {
+    const c = connection(job, conn)
+    const ref = sl.side === "goal" ? c.to : c.from
+    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref), edge: sl.edge }
+  }
+  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
+}
+
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
-  return { module: job.alias[ref.module] ?? ref.module, port: ref.port }
+  return { module: moduleId(job.alias[ref.module] ?? ref.module), port: ref.port }
 }
 
 /** D50: the modules `id` connects to (placed or not): their soft claims don't push it away. */
@@ -332,8 +416,12 @@ function startRouting(job: PlanJob): void {
     if (!ma || !mb) return 0
     return manhattan({ x: ma.rect.x, y: ma.rect.y }, { x: mb.rect.x, y: mb.rect.y })
   }
-  // Short connections first (they have the fewest alternatives); ids break ties.
+  // Short connections first (they have the fewest alternatives); ids break ties. B75: a provider-group merge goes
+  // after every plain connection: it ends on another route's belt, which must be routed first.
   conns.sort((a, b) => {
+    const ma = a.merge === true ? 1 : 0
+    const mb = b.merge === true ? 1 : 0
+    if (ma !== mb) return ma - mb
     const la = len(a)
     const lb = len(b)
     if (la !== lb) return la - lb
@@ -348,26 +436,49 @@ function connection(job: PlanJob, id: string): ConnectionRequest {
   error(`unknown connection ${id}`)
 }
 
-/** Routes already serving the same producer port (splitter taps branch off them). */
-function sameSource(job: PlanJob, c: ConnectionRequest): string[] {
+/** Routes already serving the same producer port (splitter taps branch off them). B23: compared against the
+ * alias-resolved source — a request aliased onto a whole-patch base mine feeds from the base route's port. */
+function sameSource(job: PlanJob, from: PortRef, conn: string): string[] {
   const out: string[] = []
-  if (c.from === undefined) return out
+  // B88: never the connection's own route (in the base when it is planned again) or what taps it: committing the new
+  // route replaces that route in place and rips its taps, so a tap of them would be left tapping nothing.
+  const own: Record<string, boolean> = {}
+  for (const id of tapTree(job.layout, [routeId(`route:${conn}`)])) own[id] = true
   for (const id of job.layout.routeOrder) {
+    if (own[id]) continue
     // Routes of the base layout belong to earlier requests: compare the route's own source.
     const r = job.layout.routes[id]
-    const from = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
-    if (from !== undefined && from.module === c.from.module && from.port === c.from.port) out.push(id)
+    const src = r.tapOf === undefined ? r.from : job.layout.routes[r.tapOf]?.from
+    if (src !== undefined && src.module === from.module && src.port === from.port) out.push(id)
   }
   return out
 }
 
-function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>): RouteRequest | string {
+/**
+ * B79: whether a route other than connection `conn`'s (not a crew-fed stub) already brings items to port `to`. B86: not
+ * a dangling one (`routeDangles`): a side-load stub whose trunk was ripped (a growth rerouting the trunk) does not feed the
+ * port, and treating it as a feed made the trunk itself a merge onto that stub (vps eecca19 2229258: the steam block's
+ * coal route became a 15-step side-load that landed nowhere).
+ */
+export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): boolean {
+  for (const rid of layout.routeOrder) {
+    const r = layout.routes[rid]
+    if (r === undefined || r.external === true || r.to.module !== to.module || r.to.port !== to.port || routeDangles(layout, rid)) continue
+    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. A route a handover kept
+    // (D55/D67 adoption) carries the replacement connection's name but is a feed the replacement joins; skipping it by
+    // name routed the replacement into the port it holds ("no path" every plan).
+    if (rid !== `route:${conn}`) return true
+  }
+  return false
+}
+
+function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
   const tp = tm ? findPort(tm, to.port) : undefined
   if (!tm || !tp || tp.kind !== "belt-in") return `no belt-in port ${to.module}.${to.port}`
   const goalTile = portTile(tm, tp)
-  const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true }
+  const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true, [laneTag(portTag(tm.id, tp.id))]: true }
   const req: RouteRequest = {
     id: `route:${c.id}`,
     conn: c.id,
@@ -377,6 +488,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     tier: (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier,
     own,
     avoid,
+    windowMargin: winScale,
   }
   if (c.from !== undefined) {
     const from = resolve(job, c.from)
@@ -386,7 +498,8 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return `item mismatch ${fp.item} → ${tp.item}`
     req.from = from
     own[portTag(fm.id, fp.id)] = true
-    const taps = sameSource(job, c)
+    own[laneTag(portTag(fm.id, fp.id))] = true
+    const taps = sameSource(job, from, c.id)
     if (taps.length > 0) {
       if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
       req.taps = taps
@@ -395,7 +508,36 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
       req.start = { x: o.x, y: o.y, dir: dirIndex(fp.dir) }
     }
   }
+  // B79: a port tile takes one belt. A plain connection into a port another route already ends at can never route
+  // there (every plan "no path": vps-b78-r2034469, a parallel smelter given whole consumers its short sibling still
+  // feeds); it joins that route like a provider-group merge (B60).
+  if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
+    const share = policy.router.sideLoadLaneShare
+    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined)
+    if (goals.length > 0) {
+      req.mergeGoals = goals
+      applyMergeGoal(req, goals[0])
+    } else if (portFedByOther(job.layout, to, c.id)) return `no merge target for ${to.module}.${to.port}`
+    // B89 (vps-b88b-r1264816-m60): a merge whose trunk is gone (ripped, or never landing) has nothing to join; the port
+    // is free, so it routes there itself (the B88 in-place reroute of power's coal trunk failed "no merge target").
+  }
   return req
+}
+
+/**
+ * Points the request at merge goal `g`: a side-load ends on the trunk belt from the requested side, a splitter merge
+ * ends on the tile beside the trunk, parallel to it, and appends the splitter.
+ */
+function applyMergeGoal(req: RouteRequest, g: MergeGoal): void {
+  if (g.x2 !== undefined && g.y2 !== undefined) {
+    req.merge = false
+    req.mergeSplitter = { x: g.x, y: g.y, dir: g.dir, x2: g.x2, y2: g.y2 }
+    req.goal = { x: g.x2, y: g.y2, dir: g.dir }
+    return
+  }
+  req.merge = true
+  req.mergeSplitter = undefined
+  req.goal = { x: g.x, y: g.y, dir: g.dir, side: g.side ?? "left" }
 }
 
 /** An external input: a one-tile belt stub on the port's outside tile, fed from outside the layout. */
@@ -406,7 +548,7 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
   if (tileCost(job.layout, terrain, policy, req, false, o.x, o.y) < 0) return `external input ${req.to.module}.${req.to.port}: outside tile blocked`
   const dir = dirIndex(tp.dir)
   return {
-    id: req.id,
+    id: routeId(req.id),
     conn: c.id,
     item: req.item,
     to: req.to,
@@ -426,19 +568,27 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
 }
 
 function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
-  const id = job.replaceQueue[0]
+  const id = moduleId(job.replaceQueue[0])
   if (job.placement === undefined) {
     const mreq = moduleRequest(job, id)
-    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done" || s.phase === "failed") {
-    if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
-    else job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+    if (s.phase === "done") {
+      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
+      commitPlacement(job.layout, s.result!, facts, policy)
+    }
+    else {
+      placementEvidence(job, id, s)
+      job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
+    }
     job.placement = undefined
     job.replaceQueue.shift()
     if (job.replaceQueue.length === 0) job.phase = "route"
@@ -447,17 +597,32 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
 }
 
 /**
- * A connection that rip-up could not route: take out one of its modules (the consumer first; never a site-anchored,
- * built or expanded one, at most twice each) with every route touching it, and place it again away from its old
- * footprint. Returns false if no module can move.
+ * B28: the ground a re-placed module must leave. The old footprint alone is not enough: a candidate just beside it can
+ * sit in the same pocket, so the failed feed repeats. Pad by the route margin, which is the distance at which a
+ * detour would have been found if one existed.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts): boolean {
+export function replacementAvoid(rect: Rect, margin: number): Rect {
+  return { x: rect.x - margin, y: rect.y - margin, w: rect.w + 2 * margin, h: rect.h + 2 * margin }
+}
+
+/**
+ * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
+ * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
+ * route touching it, and place it again away from its old footprint. Returns false if no module can move.
+ */
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, search?: Search): boolean {
   const ids = [c.to.module]
   if (c.from !== undefined) ids.push(c.from.module)
+  // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
+  if (search?.sealed !== undefined && !search.sealed.edge && search.sealed.side === "start" && c.from !== undefined) ids.reverse()
   for (const mid of ids) {
     if (job.alias[mid] !== undefined) continue
     const m = findModule(job.layout, mid)
-    if (m === undefined || m.fixed || m.canonical.site !== undefined || (job.replaced[mid] ?? 0) >= 2) continue
+    // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
+    // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
+    // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
+    const provenSealed = search?.sealed !== undefined && !search.sealed.edge && (search.sealed.side === "start" ? c.from?.module : c.to.module) === mid
+    if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
     for (const rid of [...job.layout.routeOrder]) {
       const r = job.layout.routes[rid]
       if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
@@ -469,8 +634,12 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts): bool
     unmarkModule(job.layout, m, facts)
     job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
     job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
-    job.avoid[mid] = [...(job.avoid[mid] ?? []), m.rect]
+    // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
+    // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
+    const pad = search?.sealed !== undefined ? policy.router.margin : 0
+    job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
     job.replaceQueue.push(mid)
+    if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
     if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
     job.stats.replacements++
     job.phase = "place"
@@ -489,14 +658,36 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.ordered = true
     if (policy.smelting === "near-ore") job.order = nearOreOrder(job.request, job.order, facts)
   }
-  const id = job.order[job.placeIdx]
+  const id = moduleId(job.order[job.placeIdx])
   const mreq = moduleRequest(job, id)
   if (job.placement === undefined) {
+    // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to
+    // squeeze another independent strip into its reserved footprint. B23: a built (fixed) mine that is not complete
+    // yet counts too; the plan's adoption builds its completion.
+    // B33: only a splitter-tap plan can share the mine's one output; a point-to-point request places its own mine on
+    // the part of the field no other mine claims.
+    const whole = policy.topology === "splitter-tap" && mreq.newSite !== true ? wholePatchCandidate(job.layout, mreq.def) : undefined
+    if (whole !== undefined) {
+      const r = tryExpand(job.layout, terrain, facts, policy, whole.id, 1)
+      if (r.ok) {
+        if (planTrace.sink !== undefined) traceEvent(`module ${id}: completes the shared whole-patch mine ${whole.id}`)
+        delete (job.wholeFail ?? {})[id]
+        job.alias[id] = whole.id
+        job.expanded[id] = { module: whole.id, units: 1 }
+        job.placeIdx++
+        return 1
+      }
+      // B23: remember why, so the module's failure names the shared mine instead of the misleading new placement.
+      job.wholeFail ??= {}
+      job.wholeFail[id] = `${whole.id}: ${r.reason ?? "expansion failed"}`
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: shared mine ${job.wholeFail[id]}`)
+    }
     // Expand-first: grow a compatible module when there is room.
     if (mreq.expandUnits !== undefined && policy.expansion === "expand-first") {
       const cand = expansionCandidate(job.layout, mreq.def, mreq.expandUnits)
       if (cand !== undefined) {
         const r = tryExpand(job.layout, terrain, facts, policy, cand.id, mreq.expandUnits)
+        if (planTrace.sink !== undefined) traceEvent(`module ${id}: expand ${cand.id} by ${mreq.expandUnits}: ${r.ok ? "ok" : r.reason ?? "failed"}`)
         if (r.ok) {
           job.alias[id] = cand.id
           job.expanded[id] = { module: cand.id, units: mreq.expandUnits }
@@ -516,14 +707,17 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         if (t !== undefined) center = { x: t.x, y: t.y }
       }
     }
-    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id) })
+    job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
   const c0 = s.candidates ?? 0
   const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
   job.stats.placeWork += used
   job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
   if (s.phase === "done") {
+    delete (job.wholeFail ?? {})[id]
+    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined
     job.placeIdx++
@@ -539,13 +733,171 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       }
     }
     if (!grown) {
-      job.failures[`module:${id}`] = s.reason ?? "placement failed"
+      placementEvidence(job, id, s)
+      // B23: a request that wanted the shared mine says so in its failure.
+      const wf = job.wholeFail?.[id]
+      job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      if (planTrace.sink !== undefined) traceEvent(`module ${id}: ${job.failures[`module:${id}`]}`)
       job.phase = "failed"
     }
     job.placement = undefined
     job.placeIdx++
   }
   return used
+}
+
+/** B57: the base's unconnected belt ports whose lane leads `portEscape` steps out, with that way out. */
+function openLanes(layout: LayoutState, terrain: TerrainView, need: number): { tag: string; module: string; port: string; path: Vec[] }[] {
+  const out: { tag: string; module: string; port: string; path: Vec[] }[] = []
+  for (const m of layout.modules) {
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      if (layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+      const tag = portTag(m.id, p.id)
+      const a = portLaneEnd(m, p)
+      if (layout.reserved[tkey(a.x, a.y)] !== tag) continue
+      const g = layoutLaneGround(layout, terrain, tag)
+      const path = laneWayOut(a, g.free, need, g.hop)
+      if (path !== undefined) out.push({ tag, module: m.id, port: p.id, path })
+    }
+  }
+  return out
+}
+
+/**
+ * B57 (seed 555555): a plan must not wall in an unconnected port lane of the base that led out before it (the labs'
+ * green-science input, walled in by a red-science plan's modules and routes; every green plan then failed on "no
+ * path"). Placement checks its modules (B45), but routes are only known now. When the routed plan seals such a lane,
+ * it is planned again, once, from the base with each sealed lane's way out reserved (`lane:<port>`: only routes to that
+ * port may use it; undergrounds pass under it). Returns true when it restarts.
+ */
+function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): boolean {
+  const need = policy.placement.portEscape ?? 0
+  if (need <= 0 || job.lanes === undefined || job.laneBase === undefined || job.laneKeep !== undefined) return false
+  const sealed: { tag: string; path: Vec[] }[] = []
+  for (const lane of job.lanes) {
+    const m = findModule(job.layout, lane.module)
+    const p = m !== undefined ? findPort(m, lane.port) : undefined
+    if (m === undefined || p === undefined) continue
+    const end = portLaneEnd(m, p)
+    // Fed by this plan: no longer an open lane.
+    const o = portOutside(m, p)
+    if (job.layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+    const g = layoutLaneGround(job.layout, terrain, lane.tag)
+    if (laneWayOut(end, g.free, need, g.hop) === undefined) sealed.push(lane)
+  }
+  if (sealed.length === 0) return false
+  const stats = job.stats
+  const evidence = job.evidence
+  const dead = job.deadPatches
+  const fresh = newPlanJob(job.request, job.tier, job.laneBase, job.tiers)
+  const keep: number[] = []
+  for (const lane of sealed) {
+    for (const t of lane.path) {
+      const k = tkey(t.x, t.y)
+      if (reserveFreeTile(fresh.layout, k, laneTag(lane.tag))) keep.push(k)
+    }
+  }
+  if (planTrace.sink !== undefined) traceEvent(`B57: the plan walls in ${sealed.map((l) => l.tag).join(", ")}: planned again with ${keep.length} lane tiles kept clear`)
+  job.layout = fresh.layout
+  job.phase = "place"
+  job.poleJob = undefined
+  job.order = fresh.order
+  job.ordered = undefined
+  job.placeIdx = 0
+  job.placement = undefined
+  job.alias = {}
+  job.queue = []
+  job.ripCount = {}
+  job.current = undefined
+  job.failures = {}
+  job.expanded = {}
+  job.wholeFail = undefined
+  job.replaceQueue = []
+  job.replaced = fresh.replaced
+  job.avoid = {}
+  job.compare = undefined
+  job.routingFailed = undefined
+  job.stats = stats
+  job.evidence = evidence
+  job.deadPatches = dead
+  job.laneKeep = keep
+  job.newLaneTried = undefined
+  job.newLaneKeep = undefined
+  job.evidence ??= []
+  job.evidence.push({ kind: "route", subject: sealed.map((l) => l.tag).join(","), reason: "B57: walled in an open port lane; planned again keeping it clear", rip: false, windowScale: 1, expansions: 0 })
+  return true
+}
+
+/**
+ * B85 (soak vps-b83-r5480563, goal g27): a plan must not wall in an unconnected port lane of a module it places itself
+ * (lab cluster 3's red assembler output, whose labs come in a later goal: the same plan's copper routes ran up its only
+ * way out and under its mouth, and every later route to it found no path). B57 plans again from the base, which can't keep a lane of a module the
+ * new plan may put elsewhere. Here the module stays: when its lane no longer leads out but would with this plan's own
+ * routes lifted, those routes are ripped, the way out is kept clear (`lane:<port>`), and they are routed again. Once per
+ * lane. Returns true when routing continues.
+ */
+function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): boolean {
+  const need = policy.placement.portEscape ?? 0
+  if (need <= 0 || job.compareProbe === true) return false
+  const layout = job.layout
+  const tried = (job.newLaneTried ??= {})
+  const ripped: string[] = []
+  const tags: string[] = []
+  for (const m of layout.modules) {
+    if (m.fixed === true) continue
+    for (const p of m.def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const o = portOutside(m, p)
+      if (layout.routeOcc[tkey(o.x, o.y)] !== undefined) continue
+      const tag = portTag(m.id, p.id)
+      if (tried[tag] === true) continue
+      const a = portLaneEnd(m, p)
+      const g = layoutLaneGround(layout, terrain, tag)
+      if (laneWayOut(a, g.free, need, g.hop) !== undefined) continue
+      const margins = layoutMargins(layout)
+      // The plan's own (unbuilt) routes lifted: the tiles they hold would be ground again.
+      const lifted = (x: number, y: number): boolean => {
+        if (g.free(x, y)) return true
+        const k = tkey(x, y)
+        const r = layout.routeOcc[k]
+        if (r === undefined || layout.routes[r]?.fixed === true) return false
+        const occ = layout.occ[k]
+        if (occ !== undefined && string.sub(occ, 1, 2) === "m:") return false
+        const res = layout.reserved[k]
+        if (res === tag || res === laneTag(tag)) return true
+        return res === undefined && !margins[k]
+      }
+      tried[tag] = true
+      const path = laneWayOut(a, lifted, need, g.hop)
+      if (path === undefined) continue
+      const victims: RouteId[] = []
+      for (const t of path) {
+        const r = layout.routeOcc[tkey(t.x, t.y)]
+        if (r !== undefined && victims.indexOf(r) < 0) victims.push(r)
+      }
+      for (const v of victims) {
+        for (const removed of ripRoute(layout, v)) {
+          const conn = removed.substring("route:".length)
+          job.stats.ripups++
+          if (ripped.indexOf(conn) < 0) ripped.push(conn)
+          if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
+        }
+      }
+      const keep = (job.newLaneKeep ??= [])
+      for (const t of path) {
+        const k = tkey(t.x, t.y)
+        if (layout.routeOcc[k] === undefined && reserveFreeTile(layout, k, laneTag(tag))) keep.push(k)
+      }
+      tags.push(tag)
+    }
+  }
+  if (ripped.length === 0) return false
+  if (planTrace.sink !== undefined) traceEvent(`B85: the plan walls in its own ${tags.join(", ")}: re-routing ${ripped.join(", ")} around the lane`)
+  job.evidence ??= []
+  job.evidence.push({ kind: "route", subject: tags.join(","), reason: `B85: walled in a new module's open port lane; re-routing ${ripped.join(", ")}`, rip: true, windowScale: 1, expansions: 0 })
+  return true
 }
 
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
@@ -556,6 +908,8 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
       // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
       if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
+      else if (guardLanes(job, terrain, policy)) return 1
+      else if (guardNewLanes(job, terrain, policy)) return 1
       else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
       if (failed) job.routingFailed = true
       return 0
@@ -564,15 +918,18 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     const req = routeRequest(job, c, policy, {})
     if (typeof req === "string") {
       job.failures[id] = req
+      traceRouteFailure(job.layout, terrain, policy, id, req, job.compareProbe ? "compare" : "plan")
       return 1
     }
     if (c.from === undefined) {
       const stub = externalStub(job, terrain, policy, c, req)
-      if (typeof stub === "string") job.failures[id] = stub
-      else commitRoute(job.layout, stub)
+      if (typeof stub === "string") {
+        job.failures[id] = stub
+        traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
+      } else commitRoute(job.layout, stub)
       return 1
     }
-    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0 }
+    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
     job.stats.searches++
   }
   const cur = job.current
@@ -582,50 +939,109 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   const st = cur.search.status
   if (st === "running") return used
   const c = connection(job, cur.conn)
-  const restart = (rip: boolean): void => {
-    const req = routeRequest(job, c, policy, cur.avoid)
+  const restart = (rip: boolean, retry = false): void => {
+    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
     if (typeof req === "string") {
       job.failures[cur.conn] = req
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, req, job.compareProbe ? "compare" : "plan")
       job.current = undefined
       return
     }
     cur.rip = rip
-    cur.search = newSearch(job.layout, terrain, policy, req, rip)
+    cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
     job.stats.searches++
   }
   if (st === "failed") {
-    if (!cur.rip) restart(true)
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
+    // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
+    // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
+    if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
+      cur.mergeTry = (cur.mergeTry ?? 0) + 1
+      const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
+      if (typeof req !== "string" && req.mergeGoals !== undefined) {
+        applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
+        cur.rip = false
+        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+        job.stats.searches++
+        return used
+      }
+    }
+    // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
+    // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
+    // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
+    // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
+    // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
+    const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
+    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
+      cur.winScale = (cur.winScale ?? 1) * 3
+      cur.rip = false
+      const req = routeRequest(job, c, policy, {}, cur.winScale)
+      if (typeof req !== "string") {
+        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+        job.stats.searches++
+        return used
+      }
+    }
+    if (!cur.rip) restart(true, cur.search.reason === "no path")
     else {
-      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = cur.search.reason ?? "no path"
+      const reason = cur.search.reason ?? "no path"
+      // Traced before tryReplace changes the layout; a re-placement only retries the connection.
+      const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
+      if (!tryReplace(job, c, facts, policy, cur.search)) job.failures[cur.conn] = reason
+      else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
       job.current = undefined
     }
     return used
   }
   const res = searchResult(cur.search, job.layout, policy)
   if (res.selfCross !== undefined) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `route crosses itself at ${res.selfCross}`)
     if (cur.retries < 3) {
       cur.retries++
       cur.avoid[res.selfCross] = true
       restart(cur.rip)
     } else {
       job.failures[cur.conn] = "route crosses itself"
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, "route crosses itself", job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
     return used
   }
   const route = res.route!
+  // B58: a splitter tap that would rip up its own trunk is not a valid branch. The tap search saw the old trunk,
+  // chose a splitter on it and then used a tile of that trunk, so the trunk was ripped; the tap is committed, the
+  // trunk re-routes (without ripping the not-yet-existing tap), and its new underground span can cover the splitter's
+  // input. Retry with the old trunk and this tap path avoided; another tap spot on the same trunk is safe.
+  const trunk = route.tapOf
+  if (trunk !== undefined && res.victims.indexOf(trunk) >= 0) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, "splitter tap would rip its own route")
+    if (cur.retries < 3) {
+      cur.retries++
+      for (const k of route.tiles) cur.avoid[k] = true
+      restart(cur.rip)
+    } else {
+      job.failures[cur.conn] = "splitter tap would rip its own route"
+      traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+      job.current = undefined
+    }
+    return used
+  }
   for (const v of res.victims) {
     const vr = job.layout.routes[v]
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
     if (n >= policy.router.maxRipups) {
-      if (!tryReplace(job, c, facts)) job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
+      if (!tryReplace(job, c, facts, policy)) {
+        job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+        traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+      }
       job.current = undefined
       return used
     }
   }
   for (const v of res.victims) {
-    for (const removed of ripRoute(job.layout, v)) {
+    for (const removed of ripRoute(job.layout, routeId(v))) {
       const conn = removed.substring("route:".length)
       job.ripCount[conn] = (job.ripCount[conn] ?? 0) + 1
       job.stats.ripups++
@@ -666,6 +1082,14 @@ function portItem(job: PlanJob, ref: PortRef): string | undefined {
   return m !== undefined ? findPort(m, ref.port)?.item : undefined
 }
 
+/** D57 (c): the patches a placement found no room on, for the strategy to remember. */
+function keepDeadPatches(job: PlanJob, s: PlacementSearch): void {
+  for (const [k, v] of pairs(s.deadFound ?? {})) {
+    job.deadPatches ??= {}
+    job.deadPatches[k as string] = v as string
+  }
+}
+
 /** A routing-only job over `layout` for `request` (aliases of expanded requests carried over). */
 function altJob(job: PlanJob, request: PlanRequest, tier: BeltTier, tiers: BeltTier[] | undefined, layout: LayoutState): PlanJob {
   // Not `{ ...request, compare: undefined }`: TSTL drops undefined fields from object literals, so the spread keeps them.
@@ -674,6 +1098,9 @@ function altJob(job: PlanJob, request: PlanRequest, tier: BeltTier, tiers: BeltT
   r.poles = undefined
   const alt = newRoutingJob(r, tier, layout)
   alt.tiers = tiers
+  // B28: comparison branches stay cheap: the loop-capped branches measure work against each other, so the widened
+  // no-path retries (a real plan's last resort) are off here and the branches fail fast like before.
+  alt.compareProbe = true
   for (const [k, v] of pairs(job.alias)) alt.alias[k as string] = v as string
   alt.baseRoutes = job.baseRoutes
   return alt
@@ -889,6 +1316,13 @@ function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
 /** Advances the job by about `budget` work units. Returns true when it has finished (done or failed). */
 export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): boolean {
   let used = 0
+  // B57: the base's open lanes, before the plan changes anything (comparison branches route on a copy: not theirs).
+  if (job.lanes === undefined && job.phase === "place" && job.placeIdx === 0 && job.compareProbe !== true) {
+    const need = policy.placement.portEscape ?? 0
+    job.lanes = need > 0 && job.layout.modules.length > 0 ? openLanes(job.layout, terrain, need) : []
+    if (job.lanes.length > 0) job.laneBase = cloneLayout(job.layout)
+    used += job.lanes.length
+  }
   while (used < budget && (job.phase === "place" || job.phase === "route" || job.phase === "compare" || job.phase === "poles")) {
     const before = used
     if (job.phase === "place") used += placeStep(job, terrain, facts, policy, budget - used)
@@ -900,7 +1334,17 @@ export function stepPlan(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
   job.stats.steps++
   job.stats.work += used
   job.stats.maxStepWork = math.max(job.stats.maxStepWork, used)
-  return job.phase === "done" || job.phase === "failed"
+  const finished = job.phase === "done" || job.phase === "failed"
+  if (finished && job.laneBase !== undefined) {
+    // B57: the lane reservations only bind this plan; the base copy is no longer needed.
+    for (const k of job.laneKeep ?? []) releaseLaneReservation(job.layout, k)
+    job.laneBase = undefined
+  }
+  if (finished && job.newLaneKeep !== undefined) {
+    for (const k of job.newLaneKeep) releaseLaneReservation(job.layout, k)
+    job.newLaneKeep = undefined
+  }
+  return finished
 }
 
 /** Runs a plan to completion (tests, tools). */

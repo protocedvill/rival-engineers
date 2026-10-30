@@ -1,14 +1,18 @@
 import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
+import { connectionId, moduleId, routeId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from "../src/planner/capacity"
+import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
-import { placeNow } from "../src/planner/placement"
-import { ConnectionRequest, newRoutingJob, planNow, PlanRequest, runJob } from "../src/planner/plan"
-import { EARLY_COMPACT, LayoutPolicy, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
+import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
+import { preparePlanDelta } from "../src/planner/plan-delta"
+import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
+import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
+import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -45,15 +49,20 @@ function sink(id: string, dir: number, item = "iron-plate", side?: "left" | "rig
   return box(id, 1, 1, [{ id: "in", kind: "belt-in", pos: { x: 0.5, y: 0.5 }, dir: dir as 0, item, side }])
 }
 
+/** A 1×1 module holding one entity, so a prepared build list has something to place. */
+function machine(id: string, name = "burner-mining-drill"): ModuleDef {
+  return { ...box(id, 1, 1, []), entities: [{ name, x: 0.5, y: 0.5 }] }
+}
+
 function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  const m: PlacedModule = { id: moduleId(def.id), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
   commitModule(state, m, F, 0)
   return m
 }
 
 function conn(id: string, from: string | undefined, to: string, toPort = "in"): ConnectionRequest {
-  return { id, from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: toPort } }
+  return { id: connectionId(id), from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: toPort } }
 }
 
 function request(modules: ModuleDef[], connections: ConnectionRequest[], w = 60, h = 60): PlanRequest {
@@ -65,9 +74,229 @@ function maxUg(this: void, name: string): number {
 }
 
 function noProblems(state: LayoutState, terrain: TerrainView, what: string): void {
+  const claims = checkClaimOwners(state)
+  if (claims.length > 0) error(`${what} claims: ${claims.join("; ")}`, 2)
+  const indexes = checkLayoutIndexes(state)
+  if (indexes.problems.length > 0) error(`${what} indexes: ${indexes.problems.join("; ")}`, 2)
   const c = checkLayout(state, terrain, maxUg)
   if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
 }
+
+test("layout revisions survive clones and structural index drift is reported", () => {
+  const state = newLayout()
+  eq(layoutRevision(state), 0)
+  place(state, source("source", EAST), 2, 2)
+  eq(layoutRevision(state), 1)
+  const copy = cloneLayout(state)
+  eq(layoutRevision(copy), 1)
+  eq(checkLayoutIndexes(copy).problems.length, 0)
+
+  const tile = tkey(2, 2)
+  copy.occ[tile] = layoutClaimTag("m:some-other-module")
+  const problems = checkLayoutIndexes(copy).problems
+  ok(problems.some((p) => p.indexOf("module source tile 2,2 indexed as m:some-other-module") >= 0), problems.join("; "))
+})
+
+test("plan delta is prepared once from a current base and rejects a stale interleaving", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  place(job.layout, source("added", EAST), 4, 2)
+
+  const ready = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(ready.status, "ready")
+  if (ready.status === "ready") {
+    eq(ready.delta.baseRevision, 1)
+    eq(ready.delta.candidateRevision, 2)
+    eq(ready.delta.add.modules.join(","), "added")
+    eq(ready.delta.remove.modules.length, 0)
+  }
+
+  const removal = newPlanJob(request([], []), YELLOW, base)
+  const removed = findModule(removal.layout, "base")!
+  unmarkModule(removal.layout, removed, F)
+  removal.layout.modules = []
+  const removedDelta = preparePlanDelta({
+    sourceRevision: removal.sourceRevision,
+    layout: removal.layout,
+    baseModules: removal.baseModules,
+    baseRoutes: removal.baseRoutes,
+  }, base)
+  eq(removedDelta.status, "ready")
+  if (removedDelta.status === "ready") eq(removedDelta.delta.remove.modules.join(","), "base")
+
+  // Model the interleaving: plan A copied revision 1, then another logical change B committed before A adopted.
+  bumpLayout(base)
+  const stale = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(stale.status, "rejected")
+  if (stale.status === "rejected") eq(stale.code, "stale-base-revision")
+})
+
+test("plan delta refuses a candidate whose derived indexes drifted", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  job.layout.occ[tkey(2, 2)] = layoutClaimTag("m:wrong")
+  const result = preparePlanDelta({
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+  }, base)
+  eq(result.status, "rejected")
+  if (result.status === "rejected") {
+    eq(result.code, "invalid-layout-indexes")
+    ok(result.detail.indexOf("module base tile 2,2 indexed as m:wrong") >= 0, result.detail)
+  }
+
+  const orphaned = newPlanJob(request([], []), YELLOW, base)
+  orphaned.layout.occ[tkey(8, 8)] = layoutClaimTag("m:missing")
+  const orphanResult = preparePlanDelta({
+    sourceRevision: orphaned.sourceRevision,
+    layout: orphaned.layout,
+    baseModules: orphaned.baseModules,
+    baseRoutes: orphaned.baseRoutes,
+  }, base)
+  eq(orphanResult.status, "rejected")
+  if (orphanResult.status === "rejected") eq(orphanResult.code, "invalid-layout-claims")
+})
+
+test("plan delta derives logical and claim evidence once, in deterministic order", () => {
+  const base = newLayout()
+  place(base, source("base", EAST), 2, 2)
+  const job = newPlanJob(request([], []), YELLOW, base)
+  place(job.layout, source("added", EAST), 4, 2)
+  const mine = place(job.layout, source("mine", EAST), 10, 2)
+  // A whole-patch mine's claim is part of the ground the adapter must reserve (B23 / D52). Its unbuilt plan has an
+  // empty `occupied`, so its own footprint contributes nothing until it completes; the claim covers the ground.
+  mine.minePlan = { full: mine.canonical, claim: [tkey(6, 2), tkey(7, 2)], occupied: [], complete: false }
+  // A tap's base route is listed before the tap itself, in routeOrder.
+  const route = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "iron-plate",
+    to: { module: "added", port: "in" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  commitRoute(job.layout, route("r1", "a"))
+  commitRoute(job.layout, route("r2", "b", "r1"))
+  claimPoleTile(job.layout, tkey(8, 2), "poles:g1:0")
+  job.layout.poles = [{ id: poleId("p1"), name: "small-electric-pole", x: 8, y: 2, line: poleLineId("poles:g1:0") }]
+  job.layout.poleLines = [{ id: poleLineId("poles:g1:0"), to: moduleId("added"), from: "?", poles: [poleId("p1")] }]
+
+  const input = {
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+    addedPoles: [poleId("p1")],
+  }
+  const result = preparePlanDelta(input, base)
+  eq(result.status, "ready")
+  if (result.status !== "ready") return
+  eq(result.delta.add.modules.join(","), "added,mine")
+  eq((result.delta.logical.routesByConn["a"] ?? []).join(","), "r1")
+  eq((result.delta.logical.routesByConn["b"] ?? []).join(","), "r1,r2", "a tap's base route comes first")
+  eq(result.delta.logical.poleLines.map((l) => `${l.id}->${l.to}`).join(","), "poles:g1:0->added")
+  eq(result.delta.claims.mineClaims.length, 1)
+  eq(result.delta.claims.mineClaims[0].module, "mine")
+  eq(result.delta.claims.mineClaims[0].tiles.join(","), `${tkey(6, 2)},${tkey(7, 2)}`)
+  const taken = result.delta.claims.takenTiles
+  ok(taken.indexOf(tkey(4, 2)) >= 0, "the new module's footprint")
+  ok(taken.indexOf(tkey(8, 2)) >= 0, "the new pole's tile")
+  ok(taken.indexOf(tkey(6, 2)) >= 0 && taken.indexOf(tkey(7, 2)) >= 0, "the mine's claim")
+  ok(taken.indexOf(tkey(2, 2)) < 0, "not the base module's ground")
+  const seen: Record<number, boolean> = {}
+  let dupes = 0
+  for (const k of taken) {
+    if (seen[k]) dupes++
+    seen[k] = true
+  }
+  eq(dupes, 0, "deduped")
+
+  const again = preparePlanDelta(input, base)
+  eq(again.status, "ready")
+  if (again.status === "ready") eq(again.delta.claims.takenTiles.join(","), taken.join(","), "deterministic")
+})
+
+test("plan delta prepares the entities a completed base mine adds (B23)", () => {
+  const base = newLayout()
+  const n6 = place(base, machine("n6"), 2, 2)
+  // The mine was planned earlier; this plan completes it. `occupied` is the mine's built footprint (moduleTiles).
+  n6.minePlan = { full: n6.canonical, claim: [tkey(2, 2)], occupied: [tkey(2, 2)], complete: true }
+  const job = newPlanJob(request([], []), YELLOW, base)
+  const input = {
+    sourceRevision: job.sourceRevision,
+    layout: job.layout,
+    baseModules: job.baseModules,
+    baseRoutes: job.baseRoutes,
+    // req2 names a module that is not in the base: it must not produce a completion.
+    expanded: { req1: { module: "n6", units: 1 }, req2: { module: "nope", units: 1 } },
+  }
+  const result = preparePlanDelta(input, base)
+  eq(result.status, "ready")
+  if (result.status !== "ready") return
+  eq(result.delta.mineCompletions.length, 1, "only the built mine")
+  eq(result.delta.mineCompletions[0].module, "n6")
+  eq(result.delta.mineCompletions[0].entities.length, 1)
+  eq(result.delta.mineCompletions[0].entities[0].name, "burner-mining-drill")
+  near(result.delta.mineCompletions[0].entities[0].x, 2.5)
+  near(result.delta.mineCompletions[0].entities[0].y, 2.5)
+
+  const candidate = findModule(job.layout, "n6")!
+  candidate.minePlan!.complete = false
+  const incomplete = preparePlanDelta(input, base)
+  eq(incomplete.status, "ready")
+  if (incomplete.status === "ready") eq(incomplete.delta.mineCompletions.length, 0, "an incomplete mine adds nothing")
+})
+
+// --- Router primitives --------------------------------------------------------------------------------------
+
+// B28: a route's window is the endpoints ± `router.margin` (24); an obstacle filling that whole band walls the
+// pair off even when a detour exists just past it (m6a2-accept2 seed 3333: every feed into the mall failed at
+// every region radius, because placement retries widen the region, never these windows). The route ladder now
+// widens the window (×3, then ×9) before giving up.
+test("router: a wall filling the margin band is detoured with a widened window", () => {
+  const rows = field(80, 200)
+  for (let x = 18; x <= 24; x++) setCol(rows, x, 80, 120, "~")
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 2, 100)
+  place(state, b, 60, 100)
+  const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 200), YELLOW, state), terrain, F, policy())
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  // The path must have left the ±24 band: its tiles pass the water's rows (80..120) somewhere.
+  let detoured = false
+  for (const [, r] of pairs(job.layout.routes)) {
+    for (const t of r.tiles) {
+      const y = keyY(t)
+      if (y < 80 || y > 120) detoured = true
+    }
+  }
+  ok(detoured, "the route detoured around the band")
+})
 
 function field(w: number, h: number, ch = "."): string[] {
   const rows: string[] = []
@@ -99,6 +328,92 @@ test("router: straight route from an out port to an in port", () => {
   eq(r.length, 17, "belt tiles 3..19")
   eq(r.undergrounds, 0, "undergrounds")
   noProblems(state, terrain, "straight")
+})
+
+/** A long field with staggered walls (gaps alternate top and bottom) between x 2 and x 200. */
+function longMaze(): string[] {
+  const rows = field(220, 80)
+  for (let wx = 30; wx < 190; wx += 30) {
+    const gapTop = (wx / 30) % 2 === 0
+    for (let y = 0; y < 80; y++) if (gapTop ? y > 12 : y < 66) rows[y] = rows[y].substring(0, wx) + "#" + rows[y].substring(wx + 1)
+  }
+  return rows
+}
+
+test("router: two-level routing finds a long route with far fewer expansions, about as short", () => {
+  const terrain = asciiTerrain(longMaze())
+  const run1 = (longRoute: number) => {
+    const state = newLayout()
+    const a = source("a", EAST)
+    const b = sink("b", EAST)
+    place(state, a, 2, 40)
+    place(state, b, 205, 40)
+    const p = policy()
+    const job = routeOne(state, terrain, { ...p, router: { ...p.router, longRoute } }, conn("c", "a", "b"), [a, b])
+    return { job, route: state.routes["route:c"] }
+  }
+  const two = run1(64)
+  const one = run1(0)
+  eq(two.job.phase, "done", `two-level (${two.job.failures})`)
+  eq(one.job.phase, "done", "one-level")
+  ok(two.job.stats.expansions * 2 < one.job.stats.expansions, `expansions ${two.job.stats.expansions} vs ${one.job.stats.expansions}`)
+  ok(two.route.cost <= one.route.cost * 1.1, `cost ${two.route.cost} vs ${one.route.cost}`)
+})
+
+test("router: two-level routing falls back to the whole window when its corridor has no way through", () => {
+  // An unknown-ground wall (no underground passes it) at x 100 with its one gap at y 62, outside the straight corridor.
+  const rows = field(220, 80)
+  for (let y = 0; y < 80; y++) if (y !== 62) rows[y] = rows[y].substring(0, 100) + "?" + rows[y].substring(101)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 2, 40)
+  place(state, b, 205, 40)
+  const job = routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b])
+  eq(job.phase, "done", `routed (${job.failures})`)
+  let through = false
+  for (const k of state.routes["route:c"].tiles) if (keyX(k) === 100 && keyY(k) === 62) through = true
+  ok(through, "through the gap")
+})
+
+/** A 160×80 field with a ring of unknown ground (no underground passes it) around (120, 40), with an optional gap. */
+function ringed(gap: boolean): string[] {
+  const rows = field(160, 80)
+  for (let y = 33; y <= 47; y++) {
+    for (let x = 113; x <= 127; x++) {
+      const edge = x === 113 || x === 127 || y === 33 || y === 47
+      if (!edge || (gap && x === 113 && y === 40)) continue
+      rows[y] = rows[y].substring(0, x) + "?" + rows[y].substring(x + 1)
+    }
+  }
+  return rows
+}
+
+// Seal check (user, 2026-10-20): a boxed-in port proves "no path" from its side's few tiles instead of the search
+// exhausting the window and every retry (seed11-green-boxed replay: 1.76M routing work, 20 searches → 19k, 8).
+test("router: the seal check proves a boxed-in port unreachable cheaply, and changes nothing when a way exists", () => {
+  const run1 = (gap: boolean, sealCheck: number) => {
+    const state = newLayout()
+    const a = source("a", EAST)
+    const b = sink("b", EAST)
+    place(state, a, 2, 40)
+    place(state, b, 120, 40)
+    const p = policy()
+    const job = routeOne(state, asciiTerrain(ringed(gap)), { ...p, router: { ...p.router, sealCheck } }, conn("c", "a", "b"), [a, b])
+    return { job, route: state.routes["route:c"] }
+  }
+  const sealed = run1(false, 2000)
+  const plain = run1(false, 0)
+  eq(sealed.job.phase, "failed", "boxed in: fails with the check")
+  eq(plain.job.phase, "failed", "boxed in: fails without it")
+  ok(sealed.job.stats.routeWork * 20 < plain.job.stats.routeWork, `routing work ${sealed.job.stats.routeWork} vs ${plain.job.stats.routeWork}`)
+  ok(sealed.job.stats.searches < plain.job.stats.searches, `searches ${sealed.job.stats.searches} vs ${plain.job.stats.searches} (no window widening)`)
+  const open = run1(true, 2000)
+  const openPlain = run1(true, 0)
+  eq(open.job.phase, "done", "with a gap: routed")
+  eq(openPlain.job.phase, "done", "with a gap: routed without the check")
+  eq(open.route.cost, openPlain.route.cost, "same route cost")
 })
 
 test("router: turns to reach a port that faces another way, arriving with the port's direction", () => {
@@ -165,6 +480,76 @@ test("router: never enters a module footprint, goes around (or under, when allow
   pol.router = { ...pol.router, underModules: true }
   routeOne(s2, terrain, pol, conn("c", "a", "b"), [a, b, wall])
   eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
+})
+
+test("router: B60 merge side-loads a second provider into an existing route without a blocker", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, a, 2, 5)
+  place(state, b, 20, 5)
+  eq(routeOne(state, terrain, policy(), conn("primary", "a", "b"), [a, b]).phase, "done", "primary route")
+  place(state, c, 2, 15)
+  const primary = state.routes["route:primary"]
+  const primaryTiles = [...primary.tiles]
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  // The side-load mechanism itself: the pre-P44 order (side-loads first, no lane check).
+  const sideFirst = policy()
+  sideFirst.router = { ...sideFirst.router }
+  sideFirst.router.sideLoadLaneShare = undefined
+  const job = routeOne(state, terrain, sideFirst, merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `merge route (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.merge !== undefined, "the route records its merge target")
+  eq(r.blocker, undefined, "a merge has no blocker belt")
+  eq(state.routes["route:primary"].tiles.join(","), primaryTiles.join(","), "the existing route is preserved")
+  eq(state.routeOcc[tkey(r.merge!.x, r.merge!.y)], "route:primary", "the merge ends on the existing route")
+  noProblems(state, terrain, "merge")
+})
+
+test("router: P44 a second provider joins an existing route with a splitter by default (user: avoid side-loading)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, a, 2, 5)
+  place(state, b, 20, 5)
+  eq(routeOne(state, terrain, policy(), conn("primary", "a", "b"), [a, b]).phase, "done", "primary route")
+  place(state, c, 2, 15)
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  const job = routeOne(state, terrain, policy(), merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `merge route (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.mergeSplitter !== undefined && r.merge === undefined, "a splitter merge, not a side-load")
+  noProblems(state, terrain, "splitter merge")
+})
+
+test("router: B89 a merge whose trunk is gone routes into the free port itself (vps-b88b-r1264816-m60)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const b = sink("b", EAST)
+  const c = source("c", EAST)
+  place(state, b, 20, 5)
+  place(state, c, 2, 15)
+  // A reroute keeps the connection's merge flag, but the trunk it joined is no longer there.
+  const merge = conn("merge", "c", "b")
+  merge.merge = true
+  const job = routeOne(state, terrain, policy(), merge, [c])
+  let why = ""
+  for (const [k, v] of pairs(job.failures)) why += `${k as string}: ${v as string}; `
+  eq(job.phase, "done", `routed (${why})`)
+  const r = state.routes["route:merge"]
+  ok(r.merge === undefined && r.mergeSplitter === undefined, "a plain route into the port")
+  noProblems(state, terrain, "plain")
 })
 
 test("router: side constraint: arrives from the required side over an unfed blocker belt", () => {
@@ -351,6 +736,35 @@ test("placement: compact next to the partner, at least the minimum corridor away
   ok(math.abs(px - target.x) + math.abs(py - target.y) <= 20, `input port near the smelter's output (${px},${py} vs ${target.x},${target.y})`)
 })
 
+test("placement trace: same decision with the trace on; score terms sum to the score; rejections name their blocker", () => {
+  const rows = field(50, 50)
+  for (let y = 15; y < 35; y++) rows[y] = string.rep(".", 15) + string.rep("i", 20) + string.rep(".", 15)
+  const terrain = asciiTerrain(rows)
+  const def = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  const req = { id: "g", def, targets: {}, center: { x: 25, y: 25 }, region: { x: 0, y: 0, w: 50, h: 50 } }
+  const off = placeNow(req, newLayout(), terrain, policy())
+  planTrace.sink = newTraceSink()
+  const on = placeNow(req, newLayout(), terrain, policy())
+  const sink = planTrace.sink
+  planTrace.sink = undefined
+  eq(on.candidates, off.candidates, "candidates scored")
+  eq(on.result!.rect.x, off.result!.rect.x, "x")
+  eq(on.result!.rect.y, off.result!.rect.y, "y")
+  eq(on.trace, undefined, "the accumulator leaves the search when it ends")
+  eq(sink.placements.length, 1, "one placement traced")
+  const p = sink.placements[0]
+  const c = p.chosen!
+  eq(c.origin.x, on.result!.rect.x, "chosen x")
+  let total = 0
+  for (const [, v] of pairs(placementTerms(c.features, policy()))) total += v as number
+  near(total, c.score, 1e-6, "terms sum to the score")
+  near(packingScorer("compact-cluster")(c.features, policy()), c.score, 1e-6, "the scorer agrees")
+  ok(p.top.length > 1 && p.top[0].score <= p.top[1].score, "runners-up sorted by score")
+  const ore = p.rejected["ore"]
+  ok(ore !== undefined && ore.count > 0, "ore rejections counted")
+  ok(string.find(ore.examples[0].blocker, "ore iron-ore", 1, true)[0] !== undefined, `the blocker names the ore (${ore.examples[0].blocker})`)
+})
+
 test("placement: keeps off water, cliffs, structures and ore; corridor min is configurable", () => {
   const rows = field(50, 50)
   for (let y = 15; y < 35; y++) rows[y] = string.rep(".", 15) + string.rep("i", 20) + string.rep(".", 15)
@@ -404,6 +818,74 @@ test("placement: mining outpost lands on its patch with its drills over ore", ()
   }
 })
 
+/** A thin iron strip (2 rows: no drill area gets enough ore) near the centre and a full patch at x 320..339. */
+function deadAndFarRows(): string[] {
+  const rows = field(360, 40)
+  for (let y = 19; y < 21; y++) rows[y] = string.rep(".", 12) + string.rep("i", 40) + rows[y].substring(52)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 320) + string.rep("i", 20) + rows[y].substring(340)
+  return rows
+}
+
+test("placement B50 / D57: a mine whose nearest patch has no room goes on to the next patch (seed 3333)", () => {
+  const terrain = asciiTerrain(deadAndFarRows())
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const s = placeNow({ id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }, newLayout(), terrain, policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 310, `on the far patch (x ${s.result!.origin.x})`)
+  eq(s.patches?.length, 2, "two patches with enough free ore")
+  eq(s.patchesTried, 2, "the strip first, then the far patch")
+})
+
+test("placement D57 (b): a patch with too little free ore for the drill areas is never searched", () => {
+  const rows = field(80, 40)
+  for (let y = 18; y < 21; y++) rows[y] = string.rep(".", 12) + "iii" + rows[y].substring(15)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 50) + string.rep("i", 20) + rows[y].substring(70)
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const s = placeNow({ id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 80, h: 40 } }, newLayout(), asciiTerrain(rows), policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  eq(s.patches?.length, 1, "the 3×3 remnant is no patch")
+  eq(s.patchesTried, 1, "one window search")
+})
+
+test("placement D57 (c): a patch remembered as full under the same terrain stamp is skipped", () => {
+  const base = asciiTerrain(deadAndFarRows())
+  const terrain = { block: base.block, ore: base.ore, stamp: () => "s1" }
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }
+  const first = placeNow(req, newLayout(), terrain, policy())
+  eq(first.phase, "done", `placed (${first.reason})`)
+  let dead = 0
+  for (const [k] of pairs(first.deadFound ?? {})) if (string.find(k as string, "iron-ore:12,", 1, true)[0] !== undefined) dead++
+  eq(dead, 1, "the strip is remembered")
+  const again = placeNow({ ...req, dead: first.deadFound }, newLayout(), terrain, policy())
+  eq(again.phase, "done", `placed again (${again.reason})`)
+  eq(again.result!.origin.x, first.result!.origin.x, "same place")
+  ok(again.candidates < first.candidates, `fewer candidates (${again.candidates} < ${first.candidates})`)
+  const changed = placeNow({ ...req, dead: first.deadFound }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
+  eq(changed.candidates, first.candidates, "searched again once the terrain changed")
+})
+
+test("placement D57: a fresh field counts `newField` tiles farther than a field the faction already mines", () => {
+  // Fresh patch A at x 160..179 (60 tiles from the centre); patch B at x 200..239 holds an existing mine (100 tiles).
+  const rows = field(260, 40)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 160) + string.rep("i", 20) + rows[y].substring(180, 200) + string.rep("i", 40) + rows[y].substring(240)
+  const terrain = asciiTerrain(rows)
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 100, y: 20 }, region: { x: 0, y: 0, w: 260, h: 40 } }
+  const layout = (): LayoutState => {
+    const st = newLayout()
+    const old = place(st, { ...def, id: "old" }, 228, 11)
+    old.fixed = true
+    return st
+  }
+  const s = placeNow(req, layout(), terrain, policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 195, `on the field already mined (x ${s.result!.origin.x})`)
+  const p0 = policy()
+  const s0 = placeNow(req, layout(), terrain, { ...p0, placement: { ...p0.placement, newField: 0 } })
+  ok(s0.result!.origin.x < 185, `newField 0: the nearer fresh field (x ${s0.result!.origin.x})`)
+})
+
 test("placement: mining outpost on a mixed patch keeps every drill area free of the second ore (B6)", () => {
   // Iron with copper specks every 6 tiles, except a pure corner: only the corner may take the outpost.
   const rows = field(80, 80)
@@ -434,6 +916,8 @@ test("placement: mining outpost on a mixed patch keeps every drill area free of 
   }
   const none = placeNow({ id: "mine", def, targets: {}, center: { x: 20, y: 20 }, region: { x: 0, y: 0, w: 80, h: 80 } }, newLayout(), asciiTerrain(mixed), policy())
   eq(none.phase, "failed", "no pure spot on an all-mixed patch")
+  ok((none.rejections?.["foreign-ore"]?.count ?? 0) > 0, "failure certificate identifies mixed ore")
+  ok(none.rejections?.["foreign-ore"]?.sample !== undefined, "failure certificate retains a representative tile")
 })
 
 test("policy: expand-first grows an existing module when there is room, places a new one when blocked", () => {
@@ -468,8 +952,13 @@ test("policy: expand-first grows an existing module when there is room, places a
     const o = { x: s1.origin.x + math.floor(p.pos.x), y: s1.origin.y + math.floor(p.pos.y) + (p.kind === "belt-in" ? 1 : -1) }
     rows[o.y] = rows[o.y].substring(0, o.x) + "." + rows[o.y].substring(o.x + 1)
   }
-  const walled = planNow(req, YELLOW, asciiTerrain(rows), F, pol)
+  // Without B26's own-band check s1 takes the walled-in spot again (it is still the best one by distance).
+  const walled = planNow(req, YELLOW, asciiTerrain(rows), F, { ...pol, placement: { ...pol.placement, growthBlocked: 0 } })
   eq(walled.layout.modules.length, 2, "blocked growth → a new module")
+  // B26: weighted enough, s1 avoids the spot where it could not grow, and grows. (At the default 3 per blocked near
+  // unit the walled spot still wins: moving costs more than the 6 the two blocked near units add.)
+  const b26 = planNow(req, YELLOW, asciiTerrain(rows), F, { ...pol, placement: { ...pol.placement, growthBlocked: 20 } })
+  eq(b26.layout.modules.length, 1, "B26: s1 is placed where it can grow, and grows")
 })
 
 test("policy: selection by config and by applies(); new policies register without touching the planner", () => {
@@ -536,7 +1025,7 @@ export function m4Set(): { modules: ModuleDef[]; connections: ConnectionRequest[
   const gears = { ...assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), id: "gears" }
   const red = { ...assemblerRow(F, { recipe: "automation-science-pack", count: 2 }), id: "red" }
   const labs = { ...labArray(F, { labs: 2, packs: ["automation-science-pack"] }), id: "labs" }
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
   return {
     modules: [outpost, smelter, gears, red, labs],
     connections: [
@@ -558,7 +1047,7 @@ test("policy D35: near-ore smelting puts the smelter next to its ore outpost; co
   const outpost = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 }), id: "outpost" }
   const smelter = { ...smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), id: "smelter" }
   const gears = { ...assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }), id: "gears" }
-  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id, from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
+  const c = (id: string, from: [string, string] | undefined, to: [string, string]): ConnectionRequest => ({ id: connectionId(id), from: from ? { module: from[0], port: from[1] } : undefined, to: { module: to[0], port: to[1] } })
   const req = (): PlanRequest => ({
     modules: [gears, smelter, outpost].map((def) => ({ id: def.id, def })),
     connections: [c("ore", ["outpost", "out"], ["smelter", "in-ore"]), c("plates", ["smelter", "out"], ["gears", "in-iron-plate"]), c("coal", undefined, ["smelter", "in-fuel"])],
@@ -645,6 +1134,142 @@ test("grid: tile keys round-trip negative and large coordinates", () => {
     eq(keyX(k), x, "x")
     eq(keyY(k), y, "y")
   }
+})
+
+// B57: the lane test (placement.ts `laneWayOut`): farthest-first, undergrounds as the router has them. Grid: '.' ground,
+// '=' a belt (not ground, an underground may go under it), '#' a module (neither); off the grid is open ground.
+function laneGrid(rows: string[]): { free: (this: void, x: number, y: number) => boolean; under: (this: void, x: number, y: number) => boolean; calls: { n: number } } {
+  const calls = { n: 0 }
+  const at = (x: number, y: number): string => {
+    const r = rows[y]
+    if (r === undefined || x < 0 || x >= r.length) return "."
+    return string.sub(r, x + 1, x + 1)
+  }
+  return {
+    free: (x, y) => {
+      calls.n++
+      return at(x, y) === "."
+    },
+    under: (x, y) => at(x, y) !== "#",
+    calls,
+  }
+}
+
+test("B57: a lane in a pocket walled by modules is sealed; one walled by a belt leads out under it", () => {
+  const boxed = laneGrid(["#######", "#.....#", "#.....#", "#.....#", "#######"])
+  ok(laneWayOut({ x: 3, y: 2 }, boxed.free, 32, { under: boxed.under, max: LANE_HOP }) === undefined, "a module-walled pocket is sealed")
+  ok(laneWayOut({ x: 3, y: 2 }, boxed.free, 2, { under: boxed.under, max: LANE_HOP }) !== undefined, "it does reach 2 steps (the old test's blind spot)")
+  const belted = laneGrid(["=======", "=.....=", "=.....=", "=.....=", "======="])
+  ok(laneWayOut({ x: 3, y: 2 }, belted.free, 32) === undefined, "without undergrounds a belt ring seals it")
+  const path = laneWayOut({ x: 3, y: 2 }, belted.free, 32, { under: belted.under, max: LANE_HOP })
+  ok(path !== undefined, "with undergrounds it leads out under the belt")
+})
+
+test("B57: an underground is entered straight and its exit feeds the tile straight on", () => {
+  // The only gap is under the belt at x 3; the tile behind the entrance (3,2) and past the exit (3,6) decide.
+  const ok1 = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###.###", "###.###", "#######"])
+  ok(laneWayOut({ x: 3, y: 1 }, ok1.free, 32, { under: ok1.under, max: LANE_HOP }) === undefined, "an exit into a dead end leads nowhere")
+  const open = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###...#", "###.###", "###.###"])
+  ok(laneWayOut({ x: 3, y: 1 }, open.free, 32, { under: open.under, max: LANE_HOP }) !== undefined, "an exit with ground straight on leads out")
+  const side = laneGrid(["#######", "#.#####", "#.....#", "###=###", "###.###", "###.###", "###.###"])
+  // (3,2) is entered from the west only: an underground south from it would need (3,1) behind it.
+  ok(laneWayOut({ x: 1, y: 1 }, side.free, 32, { under: side.under, max: LANE_HOP }) === undefined, "no underground entered from the side")
+})
+
+test("B57: a hop may not overlap another underground on its line", () => {
+  const g = laneGrid(["#######", "#.....#", "#.....#", "###=###", "###.###", "###.###", "###.###"])
+  const state = newLayout()
+  state.spans["v3"] = [{ a: 2, b: 6, route: "r" }]
+  ok(laneWayOut({ x: 3, y: 1 }, g.free, 32, { under: g.under, max: LANE_HOP }) !== undefined, "without the span it leads out")
+  ok(laneWayOut({ x: 3, y: 1 }, g.free, 32, { under: g.under, max: LANE_HOP, state }) === undefined, "a route's span on x 3 blocks it")
+})
+
+test("B57: on open ground the lane test walks about `need` tiles, not the whole diamond", () => {
+  const g = laneGrid([])
+  const path = laneWayOut({ x: 0, y: 0 }, g.free, 32, { under: g.under, max: LANE_HOP })
+  ok(path !== undefined && path.length <= 34, `a short way out (${path?.length})`)
+  ok(g.calls.n < 400, `${g.calls.n} tiles looked at`)
+})
+
+
+test("B58: replacing a route rips its splitter taps", () => {
+  const layout = newLayout()
+  const route = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "coal",
+    to: { module: "n37", port: "in-fuel" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  const root = route("root", "coal-root")
+  root.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }]
+  root.tiles = [tkey(5, 5)]
+  commitRoute(layout, root)
+  const tap = route("tap", "coal-tap", "root")
+  tap.steps = [{ kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 }]
+  tap.tiles = [tkey(5, 5), tkey(5, 6)]
+  commitRoute(layout, tap)
+  const replacement = route("root", "coal-root")
+  replacement.steps = [{ kind: "ug-in", x: 5, y: 5, dir: 1 }, { kind: "ug-out", x: 7, y: 5, dir: 1 }]
+  replacement.tiles = [tkey(5, 5), tkey(7, 5)]
+  replacement.spans = [{ line: "h5", span: { a: 5, b: 7, route: "root" } }]
+  commitRoute(layout, replacement)
+  ok(layout.routes["tap"] === undefined, "the stale tap is ripped with the replaced route")
+})
+
+// B28 part 2: a sealed replacement must leave the old footprint's route margin. Without the padding the search
+// re-places the module a few tiles away (8,29 in this scenario), still inside the band the failed route had to cross.
+test("B28: a sealed replacement leaves the route margin around the old footprint", () => {
+  const rows = field(60, 60)
+  // A one-tile UNKNOWN wall: surface routes cannot enter and undergrounds cannot pass it.
+  for (let x = 24; x <= 36; x++) {
+    rows[24] = rows[24].substring(0, x) + "?" + rows[24].substring(x + 1)
+    rows[36] = rows[36].substring(0, x) + "?" + rows[36].substring(x + 1)
+  }
+  for (let y = 25; y < 36; y++) {
+    rows[y] = rows[y].substring(0, 24) + "?" + rows[y].substring(25)
+    rows[y] = rows[y].substring(0, 36) + "?" + rows[y].substring(37)
+  }
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  place(state, a, 5, 30)
+  place(state, b, 30, 30)
+  const job = newRoutingJob(request([a, b], [conn("c", "a", "b")], 60, 60), YELLOW, state)
+  job.replaced = {} // planned by this job: allowed to move
+  runJob(job, terrain, F, policy())
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  eq(job.stats.replacements, 1, "one re-placement")
+  const moved = findModule(state, "b")!
+  const away = replacementAvoid({ x: 30, y: 30, w: 1, h: 1 }, policy().router.margin)
+  ok(
+    moved.rect.x < away.x || moved.rect.x >= away.x + away.w || moved.rect.y < away.y || moved.rect.y >= away.y + away.h,
+    `b left the padded old pocket (${moved.rect.x},${moved.rect.y})`,
+  )
+  noProblems(state, terrain, "sealed re-placement")
+})
+
+test("B28: a re-placed module leaves its old footprint plus the route margin", () => {
+  const old = { x: 10, y: 20, w: 5, h: 4 }
+  const away = replacementAvoid(old, 24)
+  eq(away.x, -14, "left")
+  eq(away.y, -4, "top")
+  eq(away.w, 53, "width")
+  eq(away.h, 52, "height")
+  // A candidate just outside the old rectangle is still excluded: that is the same pocket that failed.
+  ok(away.x <= old.x + old.w && old.x + old.w <= away.x + away.w, "the old right edge is inside")
+  ok(away.y <= old.y + old.h && old.y + old.h <= away.y + away.h, "the old bottom edge is inside")
 })
 
 run("planner")

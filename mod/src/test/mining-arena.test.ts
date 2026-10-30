@@ -265,8 +265,8 @@ function add(p: MapPosition, dx: number, dy: number): MapPosition {
 }
 
 function realSurface(name: string, seed: number): LuaSurface {
-  const existing = game.surfaces[name]
-  if (existing) return existing
+  const existing: LuaSurface | undefined = game.surfaces[name]
+  if (existing !== undefined) return existing
   return game.create_surface(name, { seed, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
 }
 
@@ -345,8 +345,8 @@ describe("mining arena (B1)", () => {
         const pos = { x: ox + 0.5 + rng() * 7, y: oy + 0.5 + rng() * 7 }
         const tree = lab.surface.create_entity({ name, position: pos })!
         if (n % 2 === 0) {
-          const ore = lab.surface.find_entities_filtered({ type: "resource", position: { x: math.floor(pos.x) + 0.5, y: math.floor(pos.y) + 0.5 } })[0]
-          if (ore) ores.push({ entity: ore, count: 3, item: "iron-ore", label: `ore under ${name}` })
+          const ore: LuaEntity | undefined = lab.surface.find_entities_filtered({ type: "resource", position: { x: math.floor(pos.x) + 0.5, y: math.floor(pos.y) + 0.5 } })[0]
+          if (ore !== undefined) ores.push({ entity: ore, count: 3, item: "iron-ore", label: `ore under ${name}` })
         }
         clears.push(clearTarget(tree, `${name} on ore`))
       }
@@ -513,6 +513,10 @@ function logCrewRun(label: string, run: CrewRun): void {
 }
 
 describe("mining arena: crew (B1, B3)", () => {
+  // Leftover factions keep planning (and slow every later test in the shard).
+  after_all(() => {
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
+  })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()

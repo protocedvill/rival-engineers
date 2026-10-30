@@ -1,4 +1,4 @@
-import { LuaEntity, LuaInventory } from "factorio:runtime"
+import { BoundingBoxArray, LuaEntity, LuaInventory } from "factorio:runtime"
 import { cancel, cancelAll, enqueue, getAction } from "../character/controller"
 import { ActionRecord, ActionStatus } from "../character/types"
 import { Config, getConfig } from "../config"
@@ -9,6 +9,7 @@ import {
   depsDone,
   distance,
   failJob,
+  getJob,
   fitMaterials,
   ItemCount,
   Job,
@@ -16,20 +17,32 @@ import {
   planBatch,
   planTrip,
   Pos,
+  prefetchJobs,
   Rect,
+  isReady,
   release,
   releaseAllOf,
   selectJob,
   addJob,
 } from "./board"
-import { factionSurface } from "./faction"
+import { addPlaceJob, clearJobFor, factionSurface } from "./faction"
+import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
+import { recordCrewPlan, recordCrewSupply } from "./crew-diagnostics"
+
+declare global {
+  interface RivalEngineersStorage {
+    /** M6: entities boxed-in crew members picked up, to re-place from ghosts once gone. */
+    unboxGhosts?: { faction: string; params: Record<string, unknown>; tick: number }[]
+  }
+}
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { countWork, findEntities } from "../work"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
 // job (nearest first) plus every same-kind job it can reach from one standing spot, hauls the missing
-// materials from the faction's stockpiles, walks to the spot and works through the batch.
+// materials from the faction's stockpiles and supply points (B32: straight from furnace outputs, buffers, the mall...),
+// walks to the spot and works through the batch.
 //
 // Factions never share anything: each has its own board, stockpiles and crew, and a member only ever
 // looks at its own faction.
@@ -60,6 +73,122 @@ export function onCrewTick(): void {
     config ??= getConfig()
     stepFaction(faction, config, tick)
   }
+  if (tick % 60 === 0) {
+    placeUnboxGhosts(tick)
+    placePendingGhosts()
+  }
+}
+
+/**
+ * B17: like a player who abandons their ore trip to fetch the plates a furnace has been holding out, a member
+ * with work in flight preempts itself for a *strictly higher-priority* ready job (B17 did it for the brain's
+ * collect transfers; since B31 only for urgent refuels), drops the whole batch — `resetMember` releases the claims without
+ * penalty — and plans again at once, with the preempting job as its anchor. Only a ready job can do it: a back-off
+ * or claimed one never pulls a member off work it has already started.
+ *
+ * B30: only a job the member had no chance to take when it planned (not in `planSeen`: it became ready since)
+ * and whose materials it can get. A job that was ready at plan time and not chosen (no coal for a fuel job, say)
+ * would be passed over again by the next plan, and preempting for it every tick livelocked the crew.
+ *
+ * B31: preemption is for emergencies only, and one member per job:
+ * - the job must be an urgent refuel (`isUrgent`): a running burner about to run out of fuel. Routine refuels, ore
+ *   feeds and collect transfers (moving a furnace's plates to the depot) wait for the next normal plan: walking off
+ *   work to shuffle part stacks to the depot wastes the walk (user, in-session 2026-10-19).
+ * - no preemption while a member is idle (idle members plan every tick: one would take the job, or none can).
+ * - only the nearest eligible busy member preempts, and its re-plan takes the job (`preemptFor`), so the others
+ *   keep working.
+ * - the re-plan skips the deposit brain factions do between jobs (the pocket goes along and is deposited after),
+ *   so an interrupted trip goes straight to the job. Only a member with a free inventory slot is eligible.
+ */
+function preemptForUrgent(faction: FactionState, config: Config, tick: number): void {
+  const board = faction.board
+  const busy: CrewMember[] = []
+  for (const id of faction.crew) {
+    const m = storage.crew[id]
+    if (m.dead || !m.character.valid) continue
+    if (m.actions.length === 0) return
+    busy.push(m)
+  }
+  if (busy.length === 0) return
+  let jobs: CrewJob[] | undefined
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (!canPreempt(job) || !isReady(board, job, tick) || !isUrgent(faction, job, config)) continue
+    jobs ??= []
+    jobs.push(job)
+  }
+  if (jobs === undefined) return
+  for (const job of jobs) {
+    if (!isReady(board, job, tick)) continue
+    let best: CrewMember | undefined
+    let bestD = 0
+    for (const m of busy) {
+      if (m.actions.length === 0 || !canPreemptMember(faction, m, job, config)) continue
+      const d = distance(m.character.position, job.pos)
+      if (best === undefined || d < bestD) {
+        best = m
+        bestD = d
+      }
+    }
+    if (best === undefined) continue
+    resetMember(faction, best, tick)
+    best.stats.preemptions = (best.stats.preemptions ?? 0) + 1
+    best.preemptFor = job.id
+    planNext(faction, best, config, tick)
+  }
+}
+
+/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
+function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
+  const board = faction.board
+  const anchor = board.jobs[member.claims[0] ?? -1]
+  if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return false
+  if (!isPreemptable(anchor, job) || (member.planSeen ?? []).indexOf(job.id) >= 0) return false
+  const inv = member.character.get_main_inventory()
+  if (!inv || inv.count_empty_stacks() < 1) return false
+  if (!hasMaterials(job, availableItems(faction, heldItems(member.character), config))) return false
+  return job.kind !== "fuel" || fuelTarget(faction, job) !== undefined
+}
+
+/**
+ * B31: a refuel worth pulling a member off its work for: its running target has less than `preemptFuelSeconds` of
+ * fuel left. A machine already out of fuel has stopped (no moment left to save; the job keeps its priority for the
+ * next plan). Ore and lab feeds (fuel jobs of non-fuel items) never are.
+ */
+function isUrgent(faction: FactionState, job: CrewJob, config: Config): boolean {
+  const p = job.payload
+  if (p.kind !== "fuel" || (prototypes.item[p.item]?.fuel_value ?? 0) <= 0) return false
+  const target = fuelTarget(faction, job)
+  const burner = target?.burner
+  if (target === undefined || burner === undefined) return false
+  const perTick = target.prototype.get_max_energy_usage() ?? 0
+  if (perTick <= 0) return false
+  let energy = burner.remaining_burning_fuel
+  for (const c of burner.inventory.get_contents()) energy += c.count * (prototypes.item[c.name]?.fuel_value ?? 0)
+  return energy > 0 && energy < config.preemptFuelSeconds * 60 * perTick
+}
+
+/** Jobs that could ever preempt a batch, whatever its priority (B31: refuels only, never collect transfers). */
+function canPreempt(job: CrewJob): boolean {
+  return job.kind === "fuel" && job.payload.kind === "fuel"
+}
+
+/** Which jobs are worth abandoning a member's current batch for. */
+function isPreemptable(anchor: CrewJob, job: CrewJob): boolean {
+  // A strictly higher priority.
+  if (job.priority <= anchor.priority) return false
+  return canPreempt(job)
+}
+
+/** B30: remembers the ready jobs that could preempt, so only ones that become ready after this plan do. */
+function notePlanSeen(faction: FactionState, member: CrewMember, tick: number): void {
+  const board = faction.board
+  const seen: number[] = []
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (canPreempt(job) && isReady(board, job, tick)) seen.push(id)
+  }
+  member.planSeen = seen
 }
 
 function stepFaction(faction: FactionState, config: Config, tick: number): void {
@@ -85,6 +214,7 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       if (!faction.paused) planNext(faction, member, config, tick)
     }
   }
+  if (!faction.paused) preemptForUrgent(faction, config, tick)
   // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
   const ready = countReady(faction.board, tick)
   for (const id of faction.crew) {
@@ -144,6 +274,26 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     if (status === "queued" || status === "running") break
     member.actions.shift()
     unreserve(faction, ca.reserve)
+    if (ca.src !== undefined && action !== undefined && action.stats.items > 0) {
+      const takes = (member.stats.takes ??= {})
+      takes[ca.src] = (takes[ca.src] ?? 0) + action.stats.items
+    }
+    // M6/B22: a member that cannot get anywhere is boxed in. A "pathfinder found no path" walk counts, and so do
+    // the stuck/unreachable re-path failures members used to loop in forever. Only a finished *walk* action resets
+    // the count: a successful craft or transfer happens standing in one spot and says nothing about mobility.
+    const reason = action?.reason
+    if (
+      reason === "no-path" ? action!.detail === "pathfinder found no path" : reason === "stuck" || reason === "unreachable"
+    ) {
+      member.noPaths = (member.noPaths ?? 0) + 1
+    } else if (status === "succeeded" && ca.job === undefined) {
+      member.noPaths = 0
+    }
+    if ((member.noPaths ?? 0) >= TRAPPED_NO_PATHS) {
+      member.noPaths = 0
+      unbox(faction, member, tick)
+      return
+    }
     if (ca.job === undefined) continue // the walk to the standing spot
     const job = board.jobs[ca.job]
     if (job.status !== "claimed" || job.claimedBy !== member.id) continue
@@ -167,6 +317,161 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     }
     member.actions = rest
     jobFailed(faction, member, job, action, status, config, tick)
+  }
+}
+
+/** Walk failures in a row after which a member counts as boxed in (M6, seed 222): no-path walks, and stuck/unreachable loops (B22: a member that re-paths forever in place is just as stuck). */
+const TRAPPED_NO_PATHS = 3
+/** How far around a boxed-in member to look for own entities it may pick up. */
+const UNBOX_RADIUS = 3
+/** B22: how far around it to look for neutral trees and rocks to mine through. */
+const UNBOX_TREE_RADIUS = 3
+/** B22: most trees or rocks one escape mines before it gets back to work (the walk re-checks the rest). */
+const UNBOX_TREES_PER_ESCAPE = 16
+/** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
+const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
+/** B22: own structures big enough to trap a member (walls, machines); picked up like the small ones, last. */
+const UNBOX_BIG_TYPES = ["wall", "furnace", "boiler", "lab", "mining-drill", "burner-generator", "steam-engine", "assembling-machine", "storage-tank", "radar"]
+/** B22: after an escape attempt that found nothing the member could clear, wait this long before trying again. */
+const UNBOX_RETRY_TICKS = 600
+
+/** B22: one thing near a boxed-in member that blocks it: an own structure to pick up, or a neutral tree/rock to mine. */
+interface EscapeTarget {
+  entity: LuaEntity
+  act: "pickUp" | "mine"
+  rank: number
+}
+
+/**
+ * B22: what a boxed-in member clears to get out. Own structures go one at a time (cheap first: small, then big;
+ * a ghost re-places each once the member is out); if none stands in the way, it mines the trees and rocks in its
+ * reach — all of them, up to `UNBOX_TREES_PER_ESCAPE`, so a ring of them actually opens. Only what the member can
+ * *reach* counts — a walk out of the enclosure is exactly the thing that fails. Empty: nothing in reach at all.
+ */
+function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
+  const c = member.character
+  const p = c.position
+  const area: BoundingBoxArray = [[p.x - UNBOX_RADIUS, p.y - UNBOX_RADIUS], [p.x + UNBOX_RADIUS, p.y + UNBOX_RADIUS]]
+  const surface = factionSurface(faction)
+  let best: EscapeTarget | undefined
+  const offer = (e: LuaEntity, slot: number): void => {
+    if (!c.can_reach_entity(e)) return
+    const d = (e.position.x - p.x) ** 2 + (e.position.y - p.y) ** 2
+    const rank = slot * 100 + d
+    if (best === undefined || rank < best.rank || (rank === best.rank && (e.unit_number ?? 0) < (best.entity.unit_number ?? 0))) {
+      best = { entity: e, act: "pickUp", rank }
+    }
+  }
+  for (const e of findEntities(surface, { force: faction.force, type: UNBOX_TYPES, area })) offer(e, UNBOX_TYPES.indexOf(e.type))
+  for (const e of findEntities(surface, { force: faction.force, type: UNBOX_BIG_TYPES, area })) offer(e, UNBOX_TYPES.length + UNBOX_BIG_TYPES.indexOf(e.type))
+  // Its own structures stand between it and the way out: open a hole one pick-up at a time.
+  if (best !== undefined) return [best]
+  const treeArea: BoundingBoxArray = [[p.x - UNBOX_TREE_RADIUS, p.y - UNBOX_TREE_RADIUS], [p.x + UNBOX_TREE_RADIUS, p.y + UNBOX_TREE_RADIUS]]
+  const found = findEntities(surface, { type: ["tree", "simple-entity"], area: treeArea })
+  const trees: EscapeTarget[] = []
+  for (const e of found) {
+    if (!e.minable || !e.prototype.mineable_properties.minable || !c.can_reach_entity(e)) continue
+    trees.push({ entity: e, act: "mine", rank: (e.position.x - p.x) ** 2 + (e.position.y - p.y) ** 2 })
+  }
+  trees.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : (a.entity.unit_number ?? 0) - (b.entity.unit_number ?? 0)))
+  while (trees.length > UNBOX_TREES_PER_ESCAPE) trees.pop()
+  return trees
+}
+
+/**
+ * M6/B22: like a player walled in by their own build, a boxed-in member clears a way out — picks up an own entity
+ * around it, or mines the trees and rocks it reaches — then walks on; its dropped jobs go back to the board, so it
+ * resumes after the escape. With nothing nearby it can clear, it drops nothing: the failed walk keeps running
+ * through the board's own failure handling, and after `UNBOX_RETRY_TICKS` the escape is tried again.
+ */
+function unbox(faction: FactionState, member: CrewMember, tick: number): void {
+  if (!member.character.valid) return
+  const plan = escapePlan(faction, member)
+  const p = member.character.position
+  if (plan.length === 0) {
+    if (tick < (member.unboxRetryAt ?? 0)) return
+    member.unboxRetryAt = tick + UNBOX_RETRY_TICKS
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is stuck at ${math.floor(p.x)},${math.floor(p.y)} and nothing in reach to clear; retrying in ${UNBOX_RETRY_TICKS} ticks`)
+    return
+  }
+  resetMember(faction, member, tick)
+  member.stats.unboxed = (member.stats.unboxed ?? 0) + 1
+  if (plan.length > 1 || (plan.length === 1 && plan[0].act === "mine")) {
+    for (const t of plan) {
+      member.actions.push({ action: enqueue(member.controller, { kind: "mine", target: t.entity }) })
+    }
+    const e = plan[0].entity
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: mines ${plan.length} tree/rock around it (${e.name} at ${e.position.x},${e.position.y} first) to get out`)
+    return
+  }
+  const e = plan[0].entity
+  // B42: an entity the planner already wants gone (an obsolete route piece, a growth's pick-up) is not re-placed: the
+  // pick-up does its clear job — claimed here when it is open, so it ends done — and no ghost brings it back.
+  const clearId = clearJobFor(faction, e)
+  if (clearId !== undefined) {
+    const board = faction.board
+    const job = board.jobs[clearId]
+    const ownJob = job.status === "open" && claim(board, [clearId], member.id, tick)
+    if (ownJob) member.claims.push(clearId)
+    member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: e }), job: ownJob ? clearId : undefined })
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (cleared for job ${clearId}, not re-placed)`)
+    return
+  }
+  const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: e.position, direction: e.direction, force: faction.force }
+  if (e.type === "underground-belt") params.type = e.belt_to_ground_type
+  if (e.type === "assembling-machine") params.recipe = e.get_recipe()[0]?.name
+  member.actions.push({ action: enqueue(member.controller, { kind: "pickUp", entity: e }) })
+  // The ghost goes in once the entity is gone (a ghost can't overlap it): the next poll makes it.
+  storage.unboxGhosts ??= []
+  storage.unboxGhosts.push({ faction: faction.name, params, tick })
+  log(`[rival-engineers] faction ${faction.name}: member ${member.id} is boxed in at ${math.floor(p.x)},${math.floor(p.y)}: picks up ${e.name} at ${e.position.x},${e.position.y} (re-placed from a ghost)`)
+}
+
+/** M6: ghosts for what boxed-in members picked up, once the entity is gone; each gets a place job. */
+export function placeUnboxGhosts(tick: number): void {
+  const list = storage.unboxGhosts
+  if (list === undefined || list.length === 0) return
+  const keep: typeof list = []
+  for (const g of list) {
+    const faction = storage.factions[g.faction]
+    if (faction === undefined) continue
+    const surface = factionSurface(faction)
+    const pos = g.params.position as { x: number; y: number }
+    const still = findEntities(surface, { name: g.params.inner_name as string, position: pos, force: faction.force, limit: 1 })[0]
+    if (still !== undefined) {
+      if (tick - g.tick < 3600) keep.push(g)
+      continue
+    }
+    const ghost = surface.create_entity(g.params as never)
+    if (ghost !== undefined) addPlaceJob(faction, ghost, { priority: 90 })
+  }
+  storage.unboxGhosts = keep
+}
+
+/** B102: each faction's `pendingGhosts` whose clear jobs are over get their ghost and place job. */
+export function placePendingGhosts(): void {
+  for (const name of storage.factionOrder) {
+    const faction = storage.factions[name]
+    const list = faction.pendingGhosts
+    if (list === undefined || list.length === 0) continue
+    const left: typeof list = []
+    for (const p of list) {
+      let waiting = false
+      for (const id of p.after) {
+        const j = getJob(faction.board, id)
+        if (j !== undefined && j.status !== "done" && j.status !== "failed") waiting = true
+      }
+      if (waiting) {
+        left.push(p)
+        continue
+      }
+      const params: Record<string, unknown> = { name: "entity-ghost", inner_name: p.name, position: { x: p.x, y: p.y }, direction: p.dir, force: faction.force }
+      if (p.ioType !== undefined) params.type = p.ioType
+      const ghost = factionSurface(faction).create_entity(params as never)
+      log(`[rival-engineers] faction ${faction.name}: B102 puts ${p.name} back at ${p.x},${p.y} under a picked-up splitter${ghost === undefined ? ": ghost failed" : ""}`)
+      if (ghost !== undefined) addPlaceJob(faction, ghost, { priority: p.priority })
+    }
+    faction.pendingGhosts = left
   }
 }
 
@@ -240,6 +545,19 @@ function jobFailed(
     failJob(board, job.id, "ghost-removed", tick, member.id)
     return
   }
+  // B66 (5387208): Factorio accepts a ghost on top of the same live entity, and that ghost can never be revived. The
+  // entity it asks for already stands, so the job is done: drop the ghost instead of retrying it forever.
+  if (payload.kind === "place" && action?.reason === "cannot-place") {
+    const g = payload.ghost
+    const twin = findEntities(factionSurface(faction), { name: g.ghost_name, position: g.position, force: faction.force, limit: 1 })[0]
+    if (twin !== undefined && twin.direction === g.direction) {
+      g.destroy()
+      delete faction.ghostJobs[payload.ghostKey]
+      payload.built = twin
+      complete(board, job.id, member.id, tick)
+      return
+    }
+  }
   // A character standing on the spot is temporary: retry soon, without spending an attempt.
   const blocked = payload.kind === "place" && action?.reason === "cannot-place" && charactersIn(faction, job.footprint)
   const penalize = !blocked || (job.deferrals ?? 0) >= MAX_DEFERRALS
@@ -273,11 +591,16 @@ function validStockpiles(faction: FactionState): LuaEntity[] {
   return valid
 }
 
-/** What the member can work with: its own inventory plus the stockpiles minus what others are about to take. */
-function availableItems(faction: FactionState, held: Record<string, number>): Record<string, number> {
+/**
+ * What the member can work with: its own inventory plus what the stockpiles and supply points hold (B32), minus what
+ * others are about to take from each source.
+ */
+function availableItems(faction: FactionState, held: Record<string, number>, config: Config): Record<string, number> {
   const avail: Record<string, number> = {}
   for (const item in held) avail[item] = held[item]
-  for (const chest of validStockpiles(faction)) addContents(avail, chest.get_inventory(defines.inventory.chest) ?? undefined, 1)
+  validStockpiles(faction)
+  for (const h of takeable(faction, config.supplyMinTake)) avail[h.item] = (avail[h.item] ?? 0) + h.amount
+  // Reservations from before B32 carry no source.
   for (const item in faction.reserved) avail[item] = (avail[item] ?? 0) - faction.reserved[item]
   return avail
 }
@@ -287,12 +610,12 @@ function hasMaterials(job: CrewJob, avail: Record<string, number>): boolean {
   return true
 }
 
-function reserve(faction: FactionState, item: ItemCount): void {
-  faction.reserved[item.item] = (faction.reserved[item.item] ?? 0) + item.count
-}
-
-function unreserve(faction: FactionState, item: ItemCount | undefined): void {
+function unreserve(faction: FactionState, item: (ItemCount & { from?: number }) | undefined): void {
   if (!item) return
+  if (item.from !== undefined) {
+    unreserveAt(faction, item.from, item.item, item.count)
+    return
+  }
   const left = (faction.reserved[item.item] ?? 0) - item.count
   if (left > 0) faction.reserved[item.item] = left
   else delete faction.reserved[item.item]
@@ -340,14 +663,15 @@ function otherSpots(faction: FactionState, member: CrewMember): Rect[] {
   return rects
 }
 
-function nearestStockpile(faction: FactionState, from: Pos, item: string): LuaEntity | undefined {
+/** The nearest stockpile or supply point the crew can take `item` from (B32). */
+function nearestSource(faction: FactionState, from: Pos, item: string, config: Config): LuaEntity | undefined {
   let best: LuaEntity | undefined
   let bestD = 0
-  for (const chest of validStockpiles(faction)) {
-    if (chest.get_item_count(item) <= 0) continue
-    const d = distance(from, chest.position)
+  for (const h of takeable(faction, config.supplyMinTake)) {
+    if (h.item !== item) continue
+    const d = distance(from, h.entity.position)
     if (best === undefined || d < bestD) {
-      best = chest
+      best = h.entity
       bestD = d
     }
   }
@@ -359,17 +683,33 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const character = member.character
   const pos = character.position
   dropDeadJobs(faction, tick)
+  notePlanSeen(faction, member, tick)
   const held = heldItems(character)
-  let avail = availableItems(faction, held)
+  let avail = availableItems(faction, held, config)
+  // B31: the urgent job this member just dropped its batch for (taken first, without depositing first).
+  const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
+  member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if ((faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  const rejected: Record<number, string> = {}
   const accept = (job: CrewJob): boolean => {
-    if (isSelfJob(job) || !hasMaterials(job, avail)) return false
-    if (job.kind === "fuel") return fuelTarget(faction, job) !== undefined
+    if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
+    if (!hasMaterials(job, avail)) { rejected[job.id] = "materials"; return false }
+    if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) { rejected[job.id] = "fuel-target"; return false }
     return true
   }
-  let anchor = selectJob(board, pos, tick, accept)
-  if (!anchor) return
+  let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)
+  if (!anchor) {
+    let claimed = 0
+    let waiting = 0
+    for (const id of board.active) {
+      const job = board.jobs[id]
+      if (job.status === "claimed") claimed++
+      else if (!isReady(board, job, tick)) waiting++
+    }
+    recordCrewPlan(faction, member, tick, "idle", rejected, { forced: forced?.id, active: board.active.length, claimed, waiting })
+    return
+  }
   member.stats.plans++
   // D38 opportunistic crafting: a craft job is queued and runs while the member does other work, like a player who
   // queues crafts and walks on. A craft anchor takes the next other work along; other work takes open crafts along
@@ -393,7 +733,7 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     // materials first, since that is where it will walk from.
     let from: Pos = pos
     const missing = missingMaterials([anchor], held)
-    if (missing.length > 0) from = nearestStockpile(faction, pos, missing[0].item)?.position ?? pos
+    if (missing.length > 0) from = nearestSource(faction, pos, missing[0].item, config)?.position ?? pos
     const reach = (anchor.kind === "place" ? character.build_distance : character.reach_distance) - 1.5
     const surface = character.surface
     const batch = planBatch(board, anchor, from, tick, {
@@ -437,9 +777,23 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (!claim(board, ids, member.id, tick)) return
   member.claims = ids
   member.stats.batches++
+  if (forced !== undefined && ids.indexOf(forced.id) >= 0) member.stats.preemptTaken = (member.stats.preemptTaken ?? 0) + 1
 
-  const missing = missingMaterials([...jobs, ...crafts], held)
-  if (missing.length > 0) haul(faction, member, missing, tick)
+  let missing = missingMaterials([...jobs, ...crafts], held)
+  // D66: a place batch whose source is far also brings what the ready place jobs nearer than that source need, so the
+  // next batches there start from the member's inventory instead of another round trip (8646103: 10 belts a 500-tile walk).
+  if (anchor.kind === "place" && missing.length > 0) {
+    const source = nearestSource(faction, pos, missing[0].item, config)
+    const to = spot ?? anchor.pos
+    if (source !== undefined) {
+      const slots = character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill
+      const extra = prefetchJobs(board, jobs, to, distance(source.position, to), tick, held, slots, stacksFor, accept)
+      if (extra.length > 0) missing = missingMaterials([...jobs, ...extra, ...crafts], held)
+    }
+  }
+  recordCrewPlan(faction, member, tick, "batch", rejected, { forced: forced?.id, anchor: anchor.id, jobs: ids, missing })
+  // B32: the haul's sources are chosen for the detour on the way to where the batch is worked (a craft: anywhere).
+  if (missing.length > 0) haul(faction, member, missing, spot ?? (anchor.kind === "craft" ? pos : anchor.pos), config, tick)
   for (const c of crafts) startCraft(member, c)
   if (spot && distance(pos, spot) > 0.5) {
     member.spot = spot
@@ -448,6 +802,13 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
   else for (const job of jobs) enqueueWork(faction, member, job)
   for (const c of crafts) finishCraft(member, c)
+}
+
+/** Inventory stacks `need` takes (D66). */
+function stacksFor(this: void, need: ItemCount[]): number {
+  let n = 0
+  for (const m of need) n += math.ceil(m.count / (prototypes.item[m.item]?.stack_size ?? 1))
+  return n
 }
 
 function withoutMaterials(avail: Record<string, number>, materials: ItemCount[]): Record<string, number> {
@@ -569,34 +930,84 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
   return true
 }
 
-function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], tick: number): void {
+/**
+ * B32: takes the batch's missing materials straight from wherever the faction holds them (stockpiles and supply
+ * points), possibly from several sources in one trip. Sources are picked greedily from where the member is: first
+ * one that holds the whole remaining need of an item it has (one stop beats several), the smallest detour on the way
+ * to `toward` among those (or among all, if none covers a whole need); ties by unit number. Each take is reserved at
+ * its source until it finishes, so other members don't count the same stack.
+ */
+function haul(faction: FactionState, member: CrewMember, missing: ItemCount[], toward: Pos, config: Config, tick: number): void {
   const board = faction.board
-  const from = member.character.position
-  const first = nearestStockpile(faction, from, missing[0].item)
-  const job = addJob(board, { kind: "haul", pos: first?.position ?? from, payload: { kind: "haul", forMember: member.id } }, tick)
-  claim(board, [job.id], member.id, tick)
-  member.claims.push(job.id)
-  member.stats.hauls++
-  const piles = validStockpiles(faction)
-  for (const need of missing) {
-    let left = need.count
-    for (const chest of piles) {
-      if (left <= 0) break
-      const there = chest.get_item_count(need.item)
-      if (there <= 0) continue
-      const count = math.min(there, left)
-      left -= count
-      const take = { item: need.item, count }
-      reserve(faction, take)
-      // Partial: grab what is there when we arrive, like a player.
-      const action = enqueue(member.controller, { kind: "take", entity: chest, item: need.item, count, allowPartial: true })
-      member.actions.push({ action, job: job.id, reserve: take })
+  const left: Record<string, number> = {}
+  for (const need of missing) left[need.item] = (left[need.item] ?? 0) + need.count
+  // Sources by entity, in the deterministic holdings order.
+  const groups: { entity: LuaEntity; items: Holding[] }[] = []
+  const byId: Record<number, number> = {}
+  for (const h of takeable(faction, config.supplyMinTake)) {
+    if ((left[h.item] ?? 0) <= 0) continue
+    const id = h.entity.unit_number ?? -1
+    let g = byId[id]
+    if (g === undefined) {
+      g = groups.length
+      byId[id] = g
+      groups.push({ entity: h.entity, items: [] })
     }
+    groups[g].items.push(h)
   }
-  if (!hasMoreActionsFor(member, job.id)) {
-    complete(board, job.id, member.id, tick)
-    removeClaim(member, job.id)
+  let cur: Pos = member.character.position
+  const used: Record<number, boolean> = {}
+  const selected: { unit: number; depot: boolean; item: string; available: number; taken: number; detour: number }[] = []
+  let job: CrewJob | undefined
+  for (;;) {
+    let best = -1
+    let bestFull = false
+    let bestCost = 0
+    for (let i = 0; i < groups.length; i++) {
+      if (used[i]) continue
+      const g = groups[i]
+      let covers = false
+      let full = false
+      for (const h of g.items) {
+        const want = left[h.item] ?? 0
+        if (want <= 0) continue
+        covers = true
+        if (h.amount >= want) full = true
+      }
+      if (!covers) continue
+      const p = g.entity.position
+      const cost = distance(cur, p) + distance(p, toward) - distance(cur, toward)
+      if (best < 0 || (full && !bestFull) || (full === bestFull && cost < bestCost - 1e-9)) {
+        best = i
+        bestFull = full
+        bestCost = cost
+      }
+    }
+    if (best < 0) break
+    used[best] = true
+    const g = groups[best]
+    if (job === undefined) {
+      job = addJob(board, { kind: "haul", pos: g.entity.position, payload: { kind: "haul", forMember: member.id } }, tick)
+      claim(board, [job.id], member.id, tick)
+      member.claims.push(job.id)
+      member.stats.hauls++
+    }
+    for (const h of g.items) {
+      const want = left[h.item] ?? 0
+      if (want <= 0) continue
+      const count = math.min(h.amount, want)
+      left[h.item] = want - count
+      reserveAt(faction, g.entity, h.item, count)
+      // Partial: grab what is there when we arrive, like a player.
+      const action = enqueue(member.controller, { kind: "take", entity: g.entity, item: h.item, count, allowPartial: true })
+      member.actions.push({ action, job: job.id, reserve: { item: h.item, count, from: g.entity.unit_number }, src: h.kind })
+      selected.push({ unit: g.entity.unit_number ?? -1, depot: h.depot, item: h.item, available: h.amount, taken: count, detour: bestCost })
+    }
+    cur = g.entity.position
   }
+  const unfilled: Record<string, number> = {}
+  for (const [item, count] of pairs(left)) if ((count as number) > 0) unfilled[item as string] = count as number
+  recordCrewSupply(faction, member, tick, { missing, candidateSources: groups.length, selected, unfilled, toward })
 }
 
 function enqueueWork(faction: FactionState, member: CrewMember, job: CrewJob): void {

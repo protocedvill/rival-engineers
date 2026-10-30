@@ -4,7 +4,8 @@
 
 import { worldEntity } from "./world-entity"
 import { dirValue, tkey } from "./grid"
-import { LayoutState } from "./layout"
+import { LayoutState, moduleMargin, moduleTiles } from "./layout"
+import type { PoleId, RouteId } from "../shared/ids"
 
 export interface EntitySpec {
   name: string
@@ -19,11 +20,30 @@ export interface EntitySpec {
   owner: string
   /** D42: a module buffer chest (its slots are limited when built). */
   buffer?: boolean
+  /**
+   * B100: what the entity carries, for rebuild diffs: a route's item, or `module:<id>` for a module's entities. A belt
+   * that carries something else after a rebuild is picked up and placed again, so its old items go with it.
+   */
+  carries?: string
+}
+
+/** Diff key: an entity stands unchanged only with the same name, place, direction, underground end and carried item. */
+function diffKey(e: EntitySpec): string {
+  return string.format("%s@%g,%g:%g:%s:%s", e.name, e.x, e.y, e.dir, e.ioType ?? "", e.carries ?? "")
+}
+
+/** What a rebuild from `before` to `after` picks up and builds (an entity in both, unchanged, stays). */
+export function entityDiff(before: EntitySpec[], after: EntitySpec[]): { remove: EntitySpec[]; add: EntitySpec[] } {
+  const had: Record<string, boolean> = {}
+  for (const e of before) had[diffKey(e)] = true
+  const has: Record<string, boolean> = {}
+  for (const e of after) has[diffKey(e)] = true
+  return { remove: before.filter((e) => !has[diffKey(e)]), add: after.filter((e) => !had[diffKey(e)]) }
 }
 
 export function moduleEntities(layout: LayoutState): EntitySpec[] {
   const out: EntitySpec[] = []
-  for (const m of layout.modules) for (const e of m.def.entities) out.push(worldEntity(e, m.origin, m.id))
+  for (const m of layout.modules) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
   return out
 }
 
@@ -36,11 +56,11 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
     const steps = r.blocker ? [...r.steps, r.blocker] : r.steps
     for (const s of steps) {
       if (s.kind === "splitter") {
-        splitters.push({ name: r.splitter, x: (s.x + s.x2!) / 2 + 0.5, y: (s.y + s.y2!) / 2 + 0.5, dir: dirValue(s.dir), owner: id })
+        splitters.push({ name: r.splitter, x: (s.x + s.x2!) / 2 + 0.5, y: (s.y + s.y2!) / 2 + 0.5, dir: dirValue(s.dir), owner: id, carries: r.item })
         replaced[tkey(s.x, s.y)] = true
         continue
       }
-      const spec: EntitySpec = { name: s.kind === "belt" ? r.belt : r.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: id }
+      const spec: EntitySpec = { name: s.kind === "belt" ? r.belt : r.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: id, carries: r.item }
       if (s.kind === "ug-in") spec.ioType = "input"
       if (s.kind === "ug-out") spec.ioType = "output"
       out.push(spec)
@@ -55,9 +75,9 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
 /** Which parts of a layout to build (a plan on top of an existing base builds only what it added). */
 export interface BuildParts {
   modules: string[]
-  routes: string[]
+  routes: RouteId[]
   /** Planned pole ids (layout.poles). */
-  poles: string[]
+  poles: PoleId[]
 }
 
 /** Every part of a layout. */
@@ -70,7 +90,7 @@ export function partEntities(layout: LayoutState, parts: BuildParts): EntitySpec
   const out: EntitySpec[] = []
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  for (const m of layout.modules) if (mods[m.id]) for (const e of m.def.entities) out.push(worldEntity(e, m.origin, m.id))
+  for (const m of layout.modules) if (mods[m.id]) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
   const routes: Record<string, boolean> = {}
   for (const id of parts.routes) routes[id] = true
   for (const e of routeEntities(layout)) if (routes[e.owner]) out.push(e)
@@ -91,11 +111,37 @@ export function partTiles(layout: LayoutState, parts: BuildParts): number[] {
   }
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  for (const m of layout.modules) if (mods[m.id]) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
+  for (const m of layout.modules) if (mods[m.id]) for (const k of moduleTiles(m)) add(k)
   for (const id of parts.routes) for (const k of layout.routes[id]?.tiles ?? []) add(k)
   const poles: Record<string, boolean> = {}
   for (const id of parts.poles) poles[id] = true
   for (const p of layout.poles ?? []) if (poles[p.id]) add(tkey(p.x, p.y))
+  return out
+}
+
+/**
+ * What the factory keeps the bootstrap off (`brain.reserved`): every tile the layout builds on plus a one-tile margin
+ * around each module. Recomputed from the layout whenever the layout gives up ground (M6a.2: a growth that rerouted a
+ * route left its old tiles reserved, and later plans saw them as the faction's own entities; seed 11's labs port was
+ * walled in by them).
+ */
+export function factoryReserveTiles(layout: LayoutState): number[] {
+  const out = layoutTiles(layout)
+  const seen: Record<number, boolean> = {}
+  for (const k of out) seen[k] = true
+  // D52 (3): mining outposts' room to grow too (the bootstrap and other factions keep off it).
+  for (const [k] of pairs(layout.mine ?? {})) {
+    if (seen[k as number]) continue
+    seen[k as number] = true
+    out.push(k as number)
+  }
+  for (const m of layout.modules) {
+    for (const k of moduleMargin(m)) {
+      if (seen[k]) continue
+      seen[k] = true
+      out.push(k)
+    }
+  }
   return out
 }
 
@@ -108,7 +154,7 @@ export function layoutTiles(layout: LayoutState): number[] {
     seen[k] = true
     out.push(k)
   }
-  for (const m of layout.modules) for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) add(tkey(x, y))
+  for (const m of layout.modules) for (const k of moduleTiles(m)) add(k)
   for (const id of layout.routeOrder) for (const k of layout.routes[id].tiles) add(k)
   for (const p of layout.poles ?? []) add(tkey(p.x, p.y))
   return out

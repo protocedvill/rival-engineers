@@ -3,7 +3,7 @@
 // `ModuleDef.expand` semantics. Pure: no Factorio globals.
 
 import { ProtoFacts } from "./facts"
-import { occupancy, outsideFootprint } from "./geometry"
+import { beltLeaks, occupancy, outsideFootprint } from "./geometry"
 import { computeRates, RateOptions } from "./rates"
 import { MachineCount, ModuleDef, ModuleEntity, ModuleExpand, ModuleRates, Port, Rate, Rect } from "./types"
 
@@ -125,10 +125,17 @@ export function requiredTech(entities: ModuleEntity[], facts: ProtoFacts): strin
   return out
 }
 
-export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts): ModuleDef {
+/**
+ * `checkBelts` (B25): refuse a layout whose belts run out of the footprint with no belt-out port. Only growth of a
+ * module that already leaks turns it off (a module planned before the B25 fix and kept in an old save's storage).
+ */
+export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts, checkBelts = true): ModuleDef {
   occupancy(draft.entities, facts) // errors on overlaps
   const outside = outsideFootprint(draft, facts)
   if (outside !== undefined) error(`module ${draft.id}: ${outside} is outside the ${draft.footprint.w}×${draft.footprint.h} footprint`)
+  // B25: no belt may spill items out of the module except through a belt-out port.
+  const leaks = checkBelts ? beltLeaks(draft, facts) : []
+  if (leaks.length > 0) error(`module ${draft.id}: ${leaks.join("; ")}`)
   const opts = rateOptionsOf(draft.params)
   const report = computeRates(draft.entities, draft.ports, facts, opts)
   const recipes: Record<string, boolean> = {}
@@ -174,6 +181,52 @@ export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts): ModuleDef
 }
 
 /**
+ * The module grown by `k` units at the HEAD (0 ≤ k ≤ maxUnits): the k new units fill the space before 0 on the
+ * axis and every existing entity/ port shifts by +k × unit size. Mirror image of `expandModule` (which grows the
+ * tail). Used for "grow in any direction" (D52/OutpostPlanner): a mine on the edge of an irregular patch grows back
+ * toward the ore, not just away from it.
+ *
+ * B25: undefined when growing at the head would leave a belt pointing out of the module with no port there (row
+ * modules and outposts keep a port or a closed belt end at the head: the new head units' belts would run off the edge).
+ */
+export function expandHeadModule(def: ModuleDef, k: number, facts: ProtoFacts): ModuleDef | undefined {
+  const spec = def.expand
+  if (!spec) error(`module ${def.id} has no expand`)
+  if (k < 0 || k > spec.maxUnits) error(`module ${def.id}: can grow by 0..${spec.maxUnits} units, not ${k}`)
+  if (k === 0) return def
+  const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
+  const d = k * size
+  const entities: ModuleEntity[] = []
+  for (const e of def.entities) entities.push(shiftEntity(e, spec.axis, d))
+  for (let i = 0; i < k; i++) for (const e of spec.unit.entities) entities.push(shiftEntity(e, spec.axis, i * size))
+  const ports = def.ports.map((p) => (spec.axis === "x" ? { ...p, pos: { x: p.pos.x + d, y: p.pos.y } } : { ...p, pos: { x: p.pos.x, y: p.pos.y + d } }))
+  const footprint = spec.axis === "x" ? { w: def.footprint.w + d, h: def.footprint.h } : { w: def.footprint.w, h: def.footprint.h + d }
+  if (beltLeaks({ footprint, entities, ports }, facts).length > 0) return undefined
+  const params = { ...(def.params ?? {}), expandedBy: ((def.params?.expandedBy as number | undefined) ?? 0) + k }
+  return finalizeModule(
+    {
+      id: `${def.id}+h${k}`,
+      source: def.source,
+      generator: def.generator,
+      provenance: def.provenance,
+      description: def.description,
+      footprint,
+      entities,
+      ports,
+      recipe: def.recipe,
+      rotatable: def.rotatable,
+      mirrorable: def.mirrorable,
+      site: def.site,
+      anchor: def.anchor,
+      params,
+      notes: def.notes?.filter((n) => !n.startsWith("rates:")),
+      expand: { unit: spec.unit, axis: spec.axis, insertAt: spec.insertAt + d, maxUnits: spec.maxUnits - k },
+    },
+    facts,
+  )
+}
+
+/**
  * The module grown by `k` units (0 ≤ k ≤ maxUnits), as a complete ModuleDef with recomputed rates. The result's
  * `expand` allows maxUnits − k more. Entities at or beyond `insertAt` (the "tail") move: when growing a module that
  * is already built, the planner removes and re-places exactly those (see `expandTail`).
@@ -206,6 +259,7 @@ export function expandModule(def: ModuleDef, k: number, facts: ProtoFacts): Modu
       expand: { unit: spec.unit, axis: spec.axis, insertAt: spec.insertAt + k * size, maxUnits: spec.maxUnits - k },
     },
     facts,
+    beltLeaks(def, facts).length === 0,
   )
 }
 

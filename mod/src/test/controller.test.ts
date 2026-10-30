@@ -338,6 +338,23 @@ describe("character controller", () => {
     })
   })
 
+  test("B99: picking up an own entity a tree's selection box covers walks to the tree out of reach, clears it, then picks up", () => {
+    // Soak vps-b97b-7625436: a stray underground on the power plant's coal trunk was never picked up: every clear job
+    // failed "tree-08 in front of it is out of reach" (stepMine walks to such a tree since B1; the pick-up did not).
+    const lab = createLab(24)
+    const character = spawnEngineer(lab)
+    const ug = lab.surface.create_entity({ name: "underground-belt", position: at(lab, 18.5, 0.5), direction: defines.direction.west, type: "input", force: "player" })!
+    // Trees just south of it: their tall selection boxes cover the belt from every side the character can stand on.
+    for (const dx of [-0.6, 0, 0.6]) lab.surface.create_entity({ name: "tree-08", position: at(lab, 18.5 + dx, 1.3) })
+    const ctrl = createController(character)
+    const pick = enqueue(ctrl, { kind: "pickUp", entity: ug })
+    awaitAction(pick, 3600, (a) => {
+      assert(a.status === "succeeded", describeAction(a))
+      assert(!ug.valid, "underground picked up")
+      assert(itemCount(character, "underground-belt") === 1, "returned to the inventory")
+    })
+  })
+
   test("take with allowPartial grabs what is there; strict take still fails", () => {
     const lab = createLab(16)
     const character = spawnEngineer(lab)

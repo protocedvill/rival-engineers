@@ -2,9 +2,11 @@
 // "research logistics first when it saves N tiles" comparisons).
 
 import { smelterColumn } from "../src/modules/generators"
+import { connectionId, moduleId } from "../src/shared/ids"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
 import { beltTiers } from "../src/planner/capacity"
+import { checkClaimOwners } from "../src/planner/claims"
 import { asciiTerrain, keyX, keyY, rectContains, TerrainView, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, findModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { placeNow, tryExpand } from "../src/planner/placement"
@@ -32,12 +34,12 @@ function sink(id: string, dir: number, item = "iron-plate"): ModuleDef {
 }
 function place(state: LayoutState, def: ModuleDef, x: number, y: number, t: Transform = IDENTITY, corridor = 0): PlacedModule {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
-  const m: PlacedModule = { id: def.id, canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
+  const m: PlacedModule = { id: moduleId(def.id), canonical: def, def: d, transform: t, origin: { x, y }, rect: { x, y, w: d.footprint.w, h: d.footprint.h } }
   commitModule(state, m, F, corridor)
   return m
 }
 function conn(id: string, from: string | undefined, to: string): ConnectionRequest {
-  return { id, from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: "in" } }
+  return { id: connectionId(id), from: from !== undefined ? { module: from, port: "out" } : undefined, to: { module: to, port: "in" } }
 }
 function request(modules: ModuleDef[], connections: ConnectionRequest[], w: number, h: number): PlanRequest {
   return { modules: modules.map((def) => ({ id: def.id, def })), connections, center: { x: math.floor(w / 2), y: math.floor(h / 2) }, region: { x: 0, y: 0, w, h } }
@@ -51,6 +53,8 @@ function maxUg(this: void, name: string): number {
   return name === "underground-belt" ? 5 : 7
 }
 function noProblems(state: LayoutState, terrain: TerrainView, what: string): void {
+  const claims = checkClaimOwners(state)
+  if (claims.length > 0) error(`${what} claims: ${claims.join("; ")}`, 2)
   const c = checkLayout(state, terrain, maxUg)
   if (c.problems.length > 0) error(`${what}: ${c.problems.join("; ")}`, 2)
 }
@@ -209,6 +213,91 @@ test("D50: a module's own partners are exempt from its soft claim at placement (
   ok(overlaps(partner.result!.rect), "the smelter's partner may sit at its growing end")
 })
 
+// --- B26: growth bands stay clear -------------------------------------------------------------------------------
+
+/** The old (pre-B26) placement: no near-band weight, no own-band check. */
+const OLD_B26 = { growthBand: 0, growthBlocked: 0 }
+
+function overlapsRect(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+test("B26 (a): a module is not placed in the near part of an expandable module's growth band while an alternative exists", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  const terrain = asciiTerrain(field(120, 120))
+  const state = newLayout()
+  const m = place(state, { ...def, id: "s" }, 50, 30, IDENTITY, 2)
+  const area = growthArea(m)!
+  const units = policy().placement.growthBandUnits!
+  ok(units >= 1, "a near band")
+  const unit = def.expand!.unit.footprint.h
+  // IDENTITY: the column grows south; its near band is the first `units` units below it.
+  const near = { x: area.x, y: area.y, w: area.w, h: units * unit }
+  // An unrelated module (not a partner: partners stay exempt, P28) pulled into the first growth unit by its cluster
+  // centre and by its input's source just there: at 0.5 per tile the soft claim alone loses to that pull.
+  const mid = { x: area.x + math.floor(area.w / 2), y: area.y + 2 }
+  const def4: ModuleDef = box("o", 4, 4, [{ id: "in", kind: "belt-in", pos: { x: 1.5, y: 0.5 }, dir: SOUTH as 0, item: "iron-plate" }])
+  const req = { id: "o", def: def4, targets: { in: mid }, center: mid, region: { x: 0, y: 0, w: 120, h: 120 } }
+  const old = placeNow(req, state, terrain, policy({}, OLD_B26))
+  eq(old.phase, "done", "placed (old)")
+  ok(overlapsRect(old.result!.rect, near), `old placement: it sits in the near band and blocks the growth (${old.result!.rect.x},${old.result!.rect.y})`)
+  const now = placeNow(req, state, terrain, policy())
+  eq(now.phase, "done", "placed")
+  ok(!overlapsRect(now.result!.rect, near), `it keeps off the near band (${now.result!.rect.x},${now.result!.rect.y})`)
+  // Nothing else fits (cliffs everywhere but the column and its near band): placed there anyway, and the later growth
+  // failure names the blocker.
+  const rows = field(120, 120)
+  for (let y = 0; y < 120; y++) {
+    let r = ""
+    for (let x = 0; x < 120; x++) r += rectContains(near, x, y) || rectContains(m.rect, x, y) ? "." : "C"
+    rows[y] = r
+  }
+  const walled = asciiTerrain(rows)
+  const forced = placeNow(req, state, walled, policy())
+  eq(forced.phase, "done", "still placeable in the near band when nothing else is free")
+  const after = newLayout()
+  place(after, { ...def, id: "s" }, 50, 30, IDENTITY, 2)
+  place(after, def4, forced.result!.rect.x, forced.result!.rect.y, IDENTITY, 2)
+  const r = tryExpand(after, walled, F, policy(), "s", units)
+  ok(!r.ok && string.sub(r.reason ?? "", 1, 11) === "occupied at", `growth fails naming the blocker (${r.reason})`)
+})
+
+test("B26 (b): a 4-furnace smelter beside ore and a neighbour's growth band takes the site whose own near band is clear", () => {
+  const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
+  // The near band (B26 checks the units growth needs first, `growthBandUnits`).
+  const units = policy().placement.growthBandUnits!
+  // Iron ore south of the cluster centre; a neighbouring column north of it, growing south toward the centre.
+  const rows = field(140, 140)
+  for (let y = 74; y < 120; y++) rows[y] = string.rep(".", 30) + string.rep("i", 80) + string.rep(".", 30)
+  const terrain = asciiTerrain(rows)
+  const build = (pol: LayoutPolicy): { state: LayoutState; m: PlacedModule } => {
+    const state = newLayout()
+    place(state, { ...def, id: "n" }, 64, 20, IDENTITY, 2)
+    const req = { id: "s", def: { ...def, id: "s" }, targets: {}, center: { x: 70, y: 66 }, region: { x: 0, y: 0, w: 140, h: 140 } }
+    const p = placeNow(req, state, terrain, pol)
+    eq(p.phase, "done", "placed")
+    commitModule(state, p.result!, F, 2)
+    return { state, m: p.result! }
+  }
+  const grows = (state: LayoutState, id: string): string | undefined => {
+    const r = tryExpand(state, terrain, F, policy(), id, units)
+    return r.ok ? undefined : r.reason
+  }
+  const old = build(policy({}, OLD_B26))
+  const oldWhy = grows(old.state, "s")
+  print(string.format("    [b26] old placement at %d,%d rot %d: near growth %s", old.m.origin.x, old.m.origin.y, old.m.transform.rot, oldWhy ?? "ok"))
+  ok(oldWhy !== undefined, "old placement: the smelter's own band is blocked (ore or the neighbour's claim)")
+  const now = build(policy())
+  const why = grows(now.state, "s")
+  print(string.format("    [b26] new placement at %d,%d rot %d", now.m.origin.x, now.m.origin.y, now.m.transform.rot))
+  eq(why, undefined, `the smelter can grow by its ${units} near units`)
+  const nState = newLayout()
+  place(nState, { ...def, id: "n" }, 64, 20, IDENTITY, 2)
+  commitModule(nState, now.m, F, 2)
+  const nWhy = tryExpand(nState, terrain, F, policy(), "n", units)
+  ok(nWhy.ok, `and the neighbour still can (${nWhy.reason})`)
+})
+
 test("B9: routes detour around a growth area when the detour is short", () => {
   const def = smelterColumn(F, { recipe: "iron-plate", furnaces: 4 })
   const terrain = asciiTerrain(field(80, 80))
@@ -222,7 +311,8 @@ test("B9: routes detour around a growth area when the detour is short", () => {
     const b = sink("b", EAST)
     place(state, a, area.x - 6, y)
     place(state, b, area.x + area.w + 6, y)
-    const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 80), YELLOW, state), terrain, F, policy({ softClaim: soft }))
+    // D59: a flat weight (no decay per growth unit); the flow crosses the area's far end, which the decay makes cheap.
+    const job = runJob(newRoutingJob(request([a, b], [conn("c", "a", "b")], 80, 80), YELLOW, state), terrain, F, policy({ softClaim: soft, softClaimDecay: 1 }))
     eq(job.phase, "done", "routed")
     return state
   }

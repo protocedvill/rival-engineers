@@ -4,36 +4,44 @@
 // ghost is selected), then ghosts on the faction's force with place (and fuel) jobs, so the crew build it physically.
 // The Factory Graph of a plan is exported to JSON for tools/render (D29).
 
+import { evictableTiles } from "../strategy/evict"
+import type { JobId } from "../shared/ids"
+import { staleUnderRoutes } from "./conflicts"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
-import { getConfig } from "../config"
+import { Config, getConfig } from "../config"
 import { getJob } from "../jobs/board"
-import { addClearJob, addPlaceJob, getFaction } from "../jobs/faction"
+import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { stampModule } from "../modules/stamp"
 import { registerBuffer } from "../modules/buffers"
-import { BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
+import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
 import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
-import { LayoutState } from "./layout"
+import { isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
+import { chunkKnown, KnownGround } from "../strategy/arms"
 import { countWork, findEntities } from "../work"
 
 export interface BuildState {
   phase: "clear" | "place" | "done"
   faction: string
-  clearJobs: number[]
-  placeJobs: number[]
+  clearJobs: JobId[]
+  placeJobs: JobId[]
   fuel?: { item: string; count: number }
   priority?: number
   failed: string[]
   /** Build only these parts (a plan on top of a base); absent: everything in the layout. */
   parts?: BuildParts
+  /** B23: entities of a completed shared mine (a base module not in `parts`); ghosted after the clear. */
+  extraAdd?: EntitySpec[]
   /** Ghosts created (for re-planning their place jobs if jobs get dropped). */
   ghosts?: LuaEntity[]
+  /** B69: tapped belts (unit numbers) picked up after another build finished them. */
+  tapCleared?: Record<number, boolean>
 }
 
 export interface PlannerEntry {
@@ -79,6 +87,13 @@ export function getPlannerEntry(id: string): PlannerEntry | undefined {
 
 export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
   const c = getConfig()
+  const p = basePolicy(entry, c)
+  const k = entry.request.windowScale ?? 1
+  if (k !== 1) p.router = { ...p.router, margin: math.floor(p.router.margin * k) }
+  return p
+}
+
+function basePolicy(entry: PlannerEntry, c: Config): LayoutPolicy {
   return selectPolicy(entry.policy ?? c.layoutPolicy, { modules: entry.request.modules.length }, {
     corridorMin: c.layoutCorridorMin,
     corridorPreferred: c.layoutCorridorPreferred,
@@ -87,7 +102,13 @@ export function entryPolicy(entry: PlannerEntry): LayoutPolicy {
     smelting: c.layoutSmelting,
     placementSoftClaim: c.plannerPlacementSoftClaim,
     routerSoftClaim: c.plannerRouterSoftClaim,
+    routerSoftClaimDecay: c.plannerRouterSoftClaimDecay,
     routerBundleFactor: c.plannerRouterBundleFactor,
+    placementGrowthBand: c.plannerPlacementGrowthBand,
+    placementGrowthBandUnits: c.plannerPlacementGrowthBandUnits,
+    placementGrowthBlocked: c.plannerPlacementGrowthBlocked,
+    poleEvict: c.plannerPoleEvictCost,
+    placementNewField: c.plannerPlacementNewField,
   })
 }
 
@@ -108,6 +129,8 @@ export interface StartPlanOptions {
   baseFaction?: string
   maxUnderground?: number
   topology?: string
+  /** D62: scan only this ground of the region (home zone, explored strips, charted chunks); all of it when unset. */
+  known?: KnownGround
 }
 
 /** Starts a layout job: scan the request's region, then place and route, all under the per-tick budgets. */
@@ -115,7 +138,12 @@ export function startPlan(o: StartPlanOptions): PlannerEntry {
   const p = planner()
   if (p.entries[o.id] !== undefined) error(`planner job ${o.id} exists`)
   const t = (o.terrain !== undefined ? storage.terrains?.[o.terrain] : undefined) ?? newTerrain(`plan:${o.id}`, o.surface, o.force)
-  requestArea(t, o.request.region)
+  const known = o.known
+  if (known !== undefined) {
+    const force = game.forces[o.force]
+    const surface = game.surfaces[o.surface]
+    requestArea(t, o.request.region, (cx, cy) => chunkKnown(cx, cy, known, (x, y) => force !== undefined && surface !== undefined && force.is_chunk_charted(surface, { x, y })))
+  } else requestArea(t, o.request.region)
   const entry: PlannerEntry = {
     id: o.id,
     surface: o.surface,
@@ -163,16 +191,26 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   const reserved = ownReserved ? faction?.brain?.reserved : undefined
   const others = name !== undefined ? otherClaims(name, surface) : []
   const fields = name !== undefined ? otherOreFields(name, surface) : []
-  if (reserved === undefined && others.length === 0) return base
+  // B15 / D51: the faction's own bootstrap mining sites are clearable ground (evicted when a plan takes it).
+  const evictable = evictableTiles(faction?.brain)
   const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
+  const poles = (layout?.poles?.length ?? 0) > 0
+  if (reserved === undefined && others.length === 0 && evictable === undefined && !poles) return base
   return {
     block: (x, y) => {
+      // B37: the faction's own pole-line poles (built or ghosts) are clearable ground: the layout's pole tag carries
+      // the eviction cost, and a plan that takes the tile evicts the line.
+      if (poles && isPoleTag(layout!.occ[tkey(x, y)]) && base.block(x, y) === OWN) return FREE
+      if (evictable !== undefined && evictable[tkey(x, y)] && (layout === undefined || (layout.occ[tkey(x, y)] === undefined && layout.routeOcc[tkey(x, y)] === undefined))) {
+        const raw = base.block(x, y)
+        if (raw === FREE || raw === TREE || raw === ROCK || raw === OWN) return TREE
+      }
       const b = base.block(x, y)
       if (b !== FREE && b !== TREE && b !== ROCK) return b
       const k = tkey(x, y)
       if (others.length > 0 && claimed(others, k)) return FOREIGN
       if (reserved === undefined || !reserved[k]) return b
-      if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined)) return b
+      if (layout !== undefined && (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined || layout.reserved[k] !== undefined || layout.mine?.[k] !== undefined)) return b
       return OWN
     },
     // D46: ore of another faction's field is not this faction's resource (a drill reaching it is refused, B6).
@@ -181,11 +219,16 @@ export function claimView(name: string | undefined, surface: string, base: Terra
       if (o !== undefined && fields.length > 0 && claimed(fields, tkey(x, y))) return `claimed:${o}`
       return o
     },
+    oreTiles:
+      base.oreTiles !== undefined
+        ? (resource, rect) => (fields.length > 0 ? base.oreTiles!(resource, rect).filter((k) => !claimed(fields, k)) : base.oreTiles!(resource, rect))
+        : undefined,
+    stamp: base.stamp,
   }
 }
 
-/** One tick of one planner job. */
-export function stepEntry(entry: PlannerEntry): void {
+/** One tick of one planner job; `budget`: its share of the planner's work this tick (default: all of it). */
+export function stepEntry(entry: PlannerEntry, budget?: number): void {
   const c = getConfig()
   const t = storage.terrains?.[entry.terrain]
   if (t === undefined) return
@@ -210,7 +253,7 @@ export function stepEntry(entry: PlannerEntry): void {
     const w0 = st.work
     const c0 = st.candidates ?? 0
     const e0 = st.expansions
-    const finished = stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), c.plannerWorkPerTick)
+    const finished = stepPlan(entry.job!, factionView(entry, terrainView(t)), prototypeFacts, entryPolicy(entry), budget ?? c.plannerWorkPerTick)
     countWork("plannerWork", st.work - w0)
     countWork("placementCandidates", (st.candidates ?? 0) - c0)
     countWork("routerExpansions", st.expansions - e0)
@@ -220,12 +263,29 @@ export function stepEntry(entry: PlannerEntry): void {
   if (entry.build !== undefined && entry.build.phase !== "done") stepBuild(entry)
 }
 
+/**
+ * The planner's work budget (`planner-work-per-tick`) is the whole mod's, shared by the jobs planning this tick (user,
+ * 2026-10-20): each gets an equal share of what is left, and work a job doesn't use passes to the next. A job planning
+ * alone gets all of it.
+ */
 export function onPlannerTick(): void {
   const p = storage.planner
   if (p === undefined) return
+  let left = getConfig().plannerWorkPerTick
+  let planning = 0
+  for (const id of p.order) if (p.entries[id]?.phase === "plan") planning++
   for (const id of p.order) {
     const e = p.entries[id]
-    if (e !== undefined) stepEntry(e)
+    if (e === undefined) continue
+    if (e.phase !== "plan") {
+      stepEntry(e)
+      continue
+    }
+    const share = math.max(1, math.floor(left / planning))
+    const w0 = e.job!.stats.work
+    stepEntry(e, share)
+    left = math.max(0, left - (e.job!.stats.work - w0))
+    planning--
   }
 }
 
@@ -247,6 +307,42 @@ export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?:
     }
   }
   return out
+}
+
+/** B42: every entity `layout` plans, keyed `name@x,y` (`%g`: positions went through module arithmetic). */
+export function layoutEntityKeys(layout: LayoutState): Record<string, boolean> {
+  const keys: Record<string, boolean> = {}
+  for (const e of partEntities(layout, allParts(layout))) keys[string.format("%s@%g,%g", e.name, e.x, e.y)] = true
+  return keys
+}
+
+/** Types under a ghost that are not built structures. */
+const NOT_STRUCTURES = ["entity-ghost", "tile-ghost", "character", "character-corpse", "item-request-proxy", "item-entity"]
+
+/**
+ * B42: the faction's own built entities under `ghost` that the layout (`layoutEntityKeys`) does not plan: an obsolete
+ * route piece put back, say. Nothing else removes them, so the ghost could never be placed. A live entity with the
+ * ghost's own name and position is the planned one already built (B41), not a stray.
+ */
+export function strayUnder(surface: LuaSurface, force: string, planned: Record<string, boolean>, ghost: LuaEntity): LuaEntity[] {
+  const box = ghost.bounding_box
+  const area = { left_top: { x: box.left_top.x + 0.05, y: box.left_top.y + 0.05 }, right_bottom: { x: box.right_bottom.x - 0.05, y: box.right_bottom.y - 0.05 } }
+  const out: LuaEntity[] = []
+  for (const e of findEntities(surface, { area, force })) {
+    if (NOT_STRUCTURES.indexOf(e.type) >= 0) continue
+    if (e.name === ghost.ghost_name && e.position.x === ghost.position.x && e.position.y === ghost.position.y) continue
+    if (planned[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]) continue
+    out.push(e)
+  }
+  return out
+}
+
+/** B36: a stamped module's buffer chest (ghost or real) is a registered buffer, like a route spec's (`createSpec`). */
+function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buffer?: boolean }[], placed: (LuaEntity | undefined)[]): void {
+  for (let i = 0; i < specs.length; i++) {
+    const e = placed[i]
+    if (e !== undefined && specs[i].buffer) registerBuffer(surface, force, e)
+  }
 }
 
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
@@ -272,14 +368,25 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
   for (const m of layout.modules) {
     if (!mods[m.id]) continue
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
+    registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
       else entities.push(e)
     }
   }
-  const only: BuildParts = { modules: [], routes: parts.routes, poles: parts.poles }
-  for (const spec of partEntities(layout, only)) {
+  const routes: BuildParts = { modules: [], routes: parts.routes, poles: [] }
+  for (const spec of partEntities(layout, routes)) {
+    const e = createSpec(surface, force, spec, ghost)
+    if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
+    else entities.push(e)
+  }
+  const poles: BuildParts = { modules: [], routes: [], poles: parts.poles }
+  for (const spec of partEntities(layout, poles)) {
+    // B41: B37 can re-plan an evicted line through some of the same tiles. Those poles deliberately stay built;
+    // Factorio nevertheless permits a pole ghost on top of a live pole, and that ghost can never be revived.
+    // Reuse the live pole instead of creating an impossible ghost/place job for it.
+    if (ghost && findEntities(surface, { name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
     else entities.push(e)
@@ -293,6 +400,7 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
   const failed: string[] = []
   for (const m of layout.modules) {
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
+    registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
       if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
@@ -307,17 +415,83 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
   return { entities, failed }
 }
 
+/** Built belts where new splitter taps of `parts` go onto routes outside `parts` (the base layout's). */
+/** The tiles where new splitter taps of `parts` replace a belt of a route outside `parts`. */
+function tapSpots(layout: LayoutState, parts: BuildParts | undefined): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = []
+  if (parts === undefined) return out
+  const mine: Record<string, boolean> = {}
+  for (const id of parts.routes) mine[id] = true
+  for (const id of parts.routes) {
+    const r = layout.routes[id]
+    if (r === undefined || r.tapOf === undefined || mine[r.tapOf]) continue
+    const st = r.steps[0]
+    if (st === undefined || st.kind !== "splitter") continue
+    out.push({ x: st.x + 0.5, y: st.y + 0.5 })
+  }
+  return out
+}
+
+export function tappedBelts(surface: LuaSurface, layout: LayoutState, parts: BuildParts | undefined, force: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  for (const position of tapSpots(layout, parts)) for (const e of findEntities(surface, { type: "transport-belt", force, position, limit: 1 })) out.push(e)
+  return out
+}
+
+/**
+ * B69 (soak vps-d66 seed 5387208): a tap on a route another build has not finished. The splitter's ghost cannot go over
+ * that route's belt ghost, and the build completed without its tap (the consumer never got the item). Waits while such
+ * a ghost has a place job, then picks the built belt up like `startBuild` does (once per belt). True while waiting.
+ */
+function tapsPending(b: BuildState, surface: LuaSurface, force: string, layout: LayoutState): boolean {
+  const faction = getFaction(b.faction)!
+  let wait = false
+  for (const position of tapSpots(layout, b.parts)) {
+    for (const g of findEntities(surface, { name: "entity-ghost", force, position, limit: 1 })) {
+      if (g.ghost_type === "transport-belt" && faction.ghostJobs[g.unit_number!] !== undefined) wait = true
+    }
+    for (const e of findEntities(surface, { type: "transport-belt", force, position, limit: 1 })) {
+      b.tapCleared ??= {}
+      if (e.unit_number === undefined || b.tapCleared[e.unit_number]) continue
+      b.tapCleared[e.unit_number] = true
+      if (clearJobFor(faction, e) === undefined) b.clearJobs.push(addClearJob(faction, e, b.priority))
+      wait = true
+    }
+  }
+  return wait
+}
+
 /**
  * Turns a finished plan into Job Board work for its faction: clear jobs now, ghosts and place jobs once the clearing
  * is done (`stepBuild`).
  */
-export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts } = {}): BuildState {
+export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; count: number }; priority?: number; parts?: BuildParts; clear?: LuaEntity[] } = {}): BuildState {
   if (entry.phase !== "done" || entry.job === undefined) error(`plan ${entry.id} is not done`)
   const faction = getFaction(entry.faction ?? "")
   if (faction === undefined) error(`plan ${entry.id} has no faction`)
   const surface = game.surfaces[entry.surface]
-  const clearJobs: number[] = []
-  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) clearJobs.push(addClearJob(faction, e, opts.priority))
+  const clearJobs: JobId[] = []
+  // Re-entrant: an adoption resumed after a Lua error must not queue the same target twice.
+  const queueClear = (e: LuaEntity): void => {
+    if (e.valid && clearJobFor(faction, e) !== undefined) return
+    clearJobs.push(addClearJob(faction, e, opts.priority))
+  }
+  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) queueClear(e)
+  // B15: entities of evicted bootstrap sites under the plan.
+  for (const e of opts.clear ?? []) if (e.valid) queueClear(e)
+  // B19: a new splitter tap on a built route replaces that route's belt: pick the belt up first.
+  const queued: Record<number, boolean> = {}
+  for (const e of tappedBelts(surface, entry.job.layout, opts.parts, faction.force)) {
+    if (e.unit_number !== undefined) queued[e.unit_number] = true
+    queueClear(e)
+  }
+  // B56: the faction's own stale belt pieces on the new routes' tiles (an older copy of a rerouted connection).
+  if (opts.parts !== undefined) {
+    for (const e of staleUnderRoutes(surface, faction.force, entry.job.layout, opts.parts.routes)) {
+      if (e.unit_number !== undefined && queued[e.unit_number]) continue
+      queueClear(e)
+    }
+  }
   entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
   return entry.build
 }
@@ -332,16 +506,34 @@ export function stepBuild(entry: PlannerEntry): void {
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
     const surface = game.surfaces[entry.surface]
+    if (tapsPending(b, surface, entry.force, entry.job!.layout)) return
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
     if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
-    b.ghosts = r.entities
-    for (const g of r.entities) {
+    const stamped: LuaEntity[] = [...r.entities]
+    // B23: a completed shared mine's new entities (a base module not in `parts`) join the same build.
+    if (b.extraAdd !== undefined) {
+      // B66 (5387208): the plan's own pole lines can put a pole on a completion pole's spot, and a pole can be built
+      // there between planning and this stamp. Factorio accepts the second ghost (on the first ghost, or on the live
+      // pole) but it can never be revived: its place job fails `cannot-place` forever and the goal stalls.
+      const have: Record<string, boolean> = {}
+      for (const g of stamped) if (g.valid) have[`${g.ghost_name}@${g.position.x},${g.position.y}`] = true
+      for (const s of b.extraAdd) {
+        if (have[`${s.name}@${s.x},${s.y}`]) continue
+        if (findEntities(surface, { name: s.name, position: { x: s.x, y: s.y }, force: entry.force, limit: 1 }).length > 0) continue
+        have[`${s.name}@${s.x},${s.y}`] = true
+        const e = createSpec(surface, entry.force, s, true)
+        if (e === undefined) b.failed.push(`ghost ${s.owner}: ${s.name}@${s.x},${s.y}`)
+        else stamped.push(e)
+      }
+    }
+    b.ghosts = stamped
+    for (const g of stamped) {
       const id = addPlaceJob(faction, g, { fuel: b.fuel, priority: b.priority })
       if (id !== undefined) b.placeJobs.push(id)
     }
     // Ghost creation raises no event: mark their chunks for the terrain model (they are planned own structures).
-    for (const g of r.entities) if (g.valid) markDirty(entry.surface, g.bounding_box.left_top, g.bounding_box.right_bottom)
+    for (const g of stamped) if (g.valid) markDirty(entry.surface, g.bounding_box.left_top, g.bounding_box.right_bottom)
     b.phase = "place"
     return
   }

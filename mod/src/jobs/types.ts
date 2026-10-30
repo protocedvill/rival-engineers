@@ -1,6 +1,9 @@
 import { LuaEntity, MapPosition } from "factorio:runtime"
 import { BrainState } from "../strategy/types"
 import { Board, ItemCount, Pos } from "./board"
+import type { SupplyPoint } from "./supply"
+import type { DiagnosticEventStore } from "../diagnostic-events"
+import type { JobId } from "../shared/ids"
 
 // Runtime shapes for factions, crew and the per-job data the board carries. All of it lives in
 // `storage`, so plain tables only.
@@ -24,11 +27,14 @@ export type JobPayload =
    * makes the intermediates). With `deliverTo`, the products go there afterwards.
    */
   | { kind: "craft"; recipe: string; count: number; item?: string; deliverTo?: LuaEntity }
-  /** Collect: take up to `count` `item` from `from` (a furnace's output, a drill's fuel...) and put it in `to`. */
+  /**
+   * Take up to `count` `item` from `from` and put it in `to`. B32: the brain no longer creates these (the crew takes
+   * from supply points directly when a job needs the item); kept so jobs in older saves still finish.
+   */
   | { kind: "transfer"; item: string; count: number; from: LuaEntity; to: LuaEntity }
   /** Created and claimed by a crew member for itself: put what it carries into the faction's depot. */
   | { kind: "deposit"; forMember: number }
-  /** Created and claimed by a crew member for itself: take its batch's missing materials from stockpiles. */
+  /** Created and claimed by a crew member for itself: take its batch's missing materials from stockpiles and supply points (B32). */
   | { kind: "haul"; forMember: number }
   /** Remove `target`: the faction's own buildings are picked up, trees and rocks are mined. */
   | { kind: "clear"; target: LuaEntity }
@@ -45,15 +51,26 @@ export interface FactionState {
   stockpiles: LuaEntity[]
   board: Board<JobPayload>
   /** Ghost unit_number → place job id, so a ghost is planned once. */
-  ghostJobs: Record<number, number>
+  ghostJobs: Record<number, JobId>
   /** Paused factions don't claim new jobs (running work finishes). */
   paused: boolean
-  /** Items crew members are on their way to take from the stockpiles, so others don't count them. */
+  /** Items crew members are on their way to take (legacy: reservations made before B32 carry no source). */
   reserved: Record<string, number>
+  /** B32: supply points the crew takes from besides the stockpiles (the brain registers them every think). */
+  supplies?: SupplyPoint[]
+  /** B32: takes on their way, by source unit number and item, so two members never count the same stack. */
+  reservedAt?: Record<number, Record<string, number>>
   /** Empty the crew's pockets into the depot between jobs, as brain-driven factions always do (tests). */
   depositBetweenJobs?: boolean
   /** The strategy layer (M3 burner bootstrap). Factions without one only work jobs added from outside. */
   brain?: BrainState
+  /** Bounded structured history for explaining why the crew and planners chose or rejected work. */
+  diagnosticEvents?: DiagnosticEventStore
+  /**
+   * B102: entities to ghost once the listed clear jobs are over (a kept route's belt where a dropped splitter stands:
+   * no ghost can go over the live splitter). `jobs/crew.ts` `placePendingGhosts` serves them.
+   */
+  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number }[]
 }
 
 export interface CrewStats {
@@ -75,16 +92,26 @@ export interface CrewStats {
   deposits?: number
   /** D38: craft jobs queued in the background of another batch. */
   backgroundCrafts?: number
+  /** M6: times the member cleared a way out of an enclosure (picked an entity up — re-placed from a ghost — or mined a tree/rock). */
+  unboxed?: number
   /** Mining trips of more than one job (B3). */
   trips?: number
+  /** B17: batches dropped to work a strictly higher-priority job first (a collect transfer on furnaces, a fuel refill). */
+  preemptions?: number
+  /** B31: preemptions whose re-plan claimed the job the member dropped its batch for. */
+  preemptTaken?: number
+  /** B36: items taken for jobs, by source kind (`depot`, `buffer`, `furnace`, `temp-out`, ... see `SupplyKind`). */
+  takes?: Record<string, number>
 }
 
 /** A controller action the crew member queued, and the job it serves (none for a batch walk). */
 export interface CrewAction {
   action: number
   job?: number
-  /** A take from a stockpile reserves this until it finishes. */
-  reserve?: ItemCount
+  /** A take from a stockpile reserves this until it finishes (`from`: the source's unit number, B32). */
+  reserve?: ItemCount & { from?: number }
+  /** B36: the source kind of a take (telemetry). */
+  src?: string
 }
 
 export interface CrewMember {
@@ -100,4 +127,12 @@ export interface CrewMember {
   spot?: Pos
   dead: boolean
   stats: CrewStats
+  /** M6: walk failures in a row (no path, or a stuck/unreachable re-path loop); the member is boxed in at TRAPPED_NO_PATHS. */
+  noPaths?: number
+  /** B22: ticks one over the earliest tick of the next escape attempt when the last found nothing to clear. */
+  unboxRetryAt?: number
+  /** B30: ready fuel/transfer jobs when the member last planned; only jobs not in it can preempt its batch. */
+  planSeen?: number[]
+  /** B31: the urgent job this member just dropped its batch for; its next plan takes it first. */
+  preemptFor?: number
 }

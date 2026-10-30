@@ -61,7 +61,7 @@ Two layers, by analogy:
 | D35 | Smelter placement (2026-10-14, user decision via manager) | "Smelting near its ore patch" vs "compact core" is a **LayoutPolicy option**, not a fixed rule. Both are implemented, and **M6 soak runs A/B them** to pick the early-game default. The M4 real-terrain bar (lab 5 modules + steam block, 5/5 seeds) is accepted. |
 | D36 | Undergrounds (2026-10-15, user decision on P16, changed) | Research `logistics` (hand-fed packs, like the other unblocking techs) **before** a production/mall plan only when a route using underground belts would be **at least 50 tiles shorter** in total than the best plan without them (setting, default 50). Otherwise it waits for the normal research order. A plan that has no routing at all without undergrounds counts as infinitely longer, so the seed-222 case still researches it first. **Same rule for splitters** (user, 2026-10-15): if a plan using splitters (e.g. one producer feeding several consumers through splits instead of separate long belts) is at least n tiles shorter (own setting), research the technology that unlocks them first instead of building the long belts. |
 | D37 | Stage 1 target (2026-10-15, user decision) | P11 approved: default `factory-targets` = 10 red/min, labs sized for the research goal's mean unit time. M6 adds the 30 + 30 stage. |
-| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. |
+| D38 | Bootstrap intermediates (2026-10-15, user decision on P10, changed) | Hand-crafting everything before the mall is discouraged. Once assemblers are available, factions build **temporary factories**: simple chest-fed assemblers (a chest feeding an assembler making gears, another making belts, and so on, including packs while hand-feeding labs) that are **marked for deconstruction once the real mall covers their product**. The crew also **hand-craft opportunistically** (queue crafts while walking or waiting). Hand-feeding labs for unblocking techs (P10) stays; before `automation` (no assemblers yet) the packs are still hand-crafted. B18: cells are **kept stocked proactively** — every think tops the input chests up to the same buffer the demand feed uses (`bootstrap-factory-wait-seconds` of output) from the depot's surplus, so an output chest always holds a buffer that serves any later request; `bootstrap-temp-cell-feed-priority` (0 = off) decides how the refills compete with other work. |
 | D39 | Crew pace (2026-10-15, user) | No artificial "think time" slowdown: the crews are already slower than a human because they work inefficiently. Efficiency improvements (batching, crafting while walking) are wanted, not throttling. |
 | D40 | Bootstrap sizing (2026-10-15, user) | Bootstrap drill/furnace counts are **settings**, with the current values as defaults. |
 | D41 | "Module" (2026-10-15, user) | **Module** means both kinds: hand-made / imported (curated) modules and generated ones (§5.4 `source`). Code and docs use "module" for either and say "curated" or "generated" only when the difference matters. |
@@ -74,6 +74,27 @@ Two layers, by analogy:
 | D48 | Growth by belts, upgrades, soft claims (2026-10-15, user direction; later stage) | (1) Plan raw-material modules in **whole belts of I/O** (e.g. 48 stone furnaces fill one yellow belt; ratios as in https://factoriocheatsheet.com/#material-processing): an expandable module (`ModuleDef.expand`) has a full size of N belts. (2) Early on, build only **part** of a module for current needs, and **finish it** later when demand grows. (3) Prefer **in-place upgrades** of existing modules when more is needed (stone → steel furnaces, yellow → red belts, other same-footprint replacements) before building new ones; this extends D24's `upgrade-tier`. (4) **Soft claims:** when an expandable module is placed, the area it can grow into gets a placement/routing cost for anything else (a weight, not a hard block). Schedule: soft claims with the planner work (backlog B9); partial-then-finish and in-place upgrades after M5 (M6 where in v1 scope; steel furnaces need steel, so post-v1 per D20). |
 | D49 | Reconciler remedies (2026-10-15, user decision on P21) | P21 approved, including the D28 exception: the crew re-place missing **belts and poles** (never machines). **Belt capacity** (D24 tier upgrade / parallel route) is decided **only in planning**, and only when adding a consumer or producer would take an edge above its limit (D25); the reconciler never upgrades a belt at runtime. The reconciler **runs from the start**, but nodes supplied by the crew by design (hand-fed labs before automated science) are expected: neither reported as problems nor remedied. |
 | D50 | Planner weights as settings (2026-10-16, user decisions via the manager) | (1) The placement soft-claim weight (B9, D48 (4)) is a setting, **default 0.5** (`planner-placement-soft-claim`); the planner must work at 0.5. (2) Also settings, current values as defaults: the least comparison work `planner-compare-min-work` (5,000), router `planner-router-bundle-factor` (0.9) and router `planner-router-soft-claim` (0.5). The work-count tolerance (15%) and the reference-base size stay tooling, not settings. (3) P23 approved: the D36 / B2 comparison reroutes the same placement. (4) The splitter comparison (B2) gets an enable setting `logistics-splitter-compare`, **default off**; the code stays. |
+| D51 | Buffers, D36 per attempt, bootstrap on production patches (2026-10-16, user decisions via the manager) | (1) P25 changed: module buffer depots hold **2 slots** (`module-buffer-slots` default 2) and go on **smelter columns, circuit blocks and gear rows** (change their layouts as needed). (2) P29 approved: a plan that fails to route without undergrounds but routes the same placement with them defers to `logistics` at once. (3) Bootstrap mining sites **may be placed on a production outpost's ore patch**, as long as they can be deconstructed when something more important needs that ground (as D43 does for depleted sites). P26 (temporary factories on by default?) is pending: the user is checking it in game. |
+| D52 | Whole-patch mines (2026-10-17, user decision via the manager; approved) | User: "mines should be designed in a way to be maximally efficient, covering the entire patch, always. its still fine to only build a part of it first, but it should be expamdable. sometimes I see power poles blocking mine expansion". (1) Every mining outpost's planned layout covers the whole ore patch (or the part of it the outpost claims) at maximum drill coverage. (2) It may be built partially first, then expanded in place. (3) Nothing else may be placed on the unbuilt part of that planned footprint: no poles, no routes, no other modules, no bootstrap sites (D51 (3) eviction still applies to bootstrap sites). Poles must avoid the reserved footprint, or be moved when expansion needs the ground (a user-observed bug). Supersedes L3 (now B21). |
+| D53 | Factory-graph navigation (2026-10-19, user decision) | The in-game factory graph is an **exact module-to-module topology**, not an item-level aggregate. Every logical node remains individually identifiable even when several nodes have the same role or output item, and every displayed relationship preserves its actual `from` and `to`; the GUI must never imply a shared stream or all-to-all connectivity that is absent from the logical graph. The primary view is a deterministic left-to-right topology with explicit fan-in/fan-out, plus selection-based focus: selecting a node highlights only that node, its direct neighbours and their exact edges, while an inspector lists each incoming and outgoing edge separately and lets the user traverse to the neighbour. “Show all” restores the full topology; “Locate selected” opens the physical base context. Initial implementation does not collapse nodes. Any later collapsing may combine only structurally equivalent nodes with identical neighbour sets and must remain expandable. See B40. |
+| D54 | Steam-block coal: hand-fed, then electric mines (2026-10-19, user decision, approved in-session) | User: "the burner miners should be replaced by the electric miner system … when power plants lack coal, they should be fueled by hand, putting in an entire stack. We can skip the burner mine and belt going to the power plant." Answers to the follow-up questions: (1) **Plant fuel:** "Hand-feed until electric. However, if power goes out, that would create a spiral, so hand feeding is the backup." A steam block gets **no coal outpost or fuel belt before electric mining drills are researched**; the crew hand-feeds its boilers. Once electric drills are researched, the design plans the steam block's coal supply as an electric mine with a belt, and hand-feeding stays on as the backup (an outage stops the electric mine that would refuel the boilers). (2) **Scope:** factory outposts only; bootstrap burner sites (D43) stay. Once electric drills are researched, a built factory outpost that uses burner drills is replaced, one at a time and only while no plan runs, by an electric one (the P36 relocation path: given up, out of the layout and graph, re-planned by the design). (3) **Trigger:** a boiler is refuelled only when its fuel slot is **empty**, with a **whole stack** of the fuel item (stack size from game data). (4) **Coal source:** the existing haul sourcing (depot or any supply). Supersedes P36 (a)'s hand-fuelling rule (no longer skipped while the fuel producer grows; boilers no longer use the FUEL_LOW/TOP thresholds). |
+| D55 | Depleted mines (2026-10-20, user decision, approved in-session; exception to D28) | Asked how a worked-out factory mine should be handled, the user chose "Claim more of same field": "A worked-out mine claims the next free part of its own patch and is rebuilt/extended there, keeping its output route; only when the patch is exhausted does it move to another patch." A strip outpost still first expands in place (D52). A completed whole-patch mine whose ore under its drills is used up re-plans its mine over the free part of the same patch it can reach (at most as many drills as its whole-patch plan, its output port kept and its route re-laid); this is accepted only when the new drills cover more ore tiles than the current ones still do. When the patch has nothing better left (or a strip has no ore left in its growth area), the mine is given up (the P36/D54 relocation path: deconstructed, out of the layout and graph) and the design plans the producer again on fresh ore. A relocation waits while a plan is in flight or a goal builds a connection from the mine. |
+| D56 | Radar (2026-10-20, user decision, approved in-session; was P41) | The user: "We can keep the existing chunk generation exploration system, and just have them place a radar for realism for a human player observing." Plans keep using the chunks the planner asks the engine to generate; once a radar can be built and the faction has power, it places one radar at its base. The radar is for show (a player-like base): no plan depends on what it charts. |
+| D57 | Faster mine site search (2026-10-20, user decision, approved in-session; was P42) | The user approved P42 (a)-(d): "Go with the proposed spec to make the mine search faster. 1, 2, 3, 4." (a) A **patch index** of free ore (not built over, not in a drill area or mine claim) ranks the patches a new mine may use; the window search runs only over a patch's box plus a margin. (b) A summed-area pre-check skips patches and windows without enough free ore for one drill area. (c) A patch found to have no room is remembered until the ground near it changes (terrain rescan). (d) A new patch's mine is laid out by the D52 whole-patch planner. Ranking (asked in-session, the user chose "New field costs +50"): a patch where the faction already has a mine is preferred over opening a fresh field unless the fresh field is 50+ tiles closer (setting, magic-numbers table). Each consumer still gets its own mine (point-to-point, B33). |
+| D58 | Long routes and the planner budget (2026-10-20, user decision, approved in-session) | Shown that seed 3333's far-mine routes took ~3.6M router expansions, the user chose: "Let's do two-level routing for long distances and do (3), but in a flexible way where any planning entry can take the entire mod's budget if there is nothing competing. Otherwise, they share." (1) A connection whose ends are `longRoute` (128) tiles or more apart is routed over `coarseCell` (8) tile cells first, then tile by tile inside a corridor of those cells (`corridorCells` 1 around the path, one more at the ends) with a weighted heuristic (`corridorWeight` 1.5); with no way through the corridor, the whole window is searched. (2) `planner-work-per-tick` is the whole mod's planner budget: the plans running share it equally, work one leaves passes to the next, and one plan alone gets all of it (default raised 100 → 400). |
+| D59 | Soft-claim cost by growth unit (2026-10-20, user decision, approved in-session) | B52: a route crossed the steam block's next growth unit for 0.5 a tile. The user: "I would set it to 10 or so depending on testing which can be done later. What would be even better, is have it diminish a bit every after every single expansion unit, so there more incentive to not block the most immediate and closest to expansion units." The router's soft-claim cost (`planner-router-soft-claim`) defaults to **10** (was 0.5, D50) for a tile in another module's next growth unit, multiplied by `planner-router-soft-claim-decay` for each unit farther out. The decay's default **0.5** is the agent's choice from a replay sweep (proposed; the user asked for "a bit"): an underground crossing pays only its ends, and on seed 3333's g20 replay 10 / 0.55–0.8 still put 4 underground ends in the next unit. Placement's soft-claim weight is unchanged. |
+| D60 | Site-retry pause (2026-10-20, user decision, approved in-session) | B53: a goal whose module finds no site in its region (e.g. no shore for a steam block) failed all its plans and an identical goal started at once, forever, spinning the planner. Proposed a back-off; the user: "Yeah the 5 minute backoff is fine" and "it should also log pretty clearly so we aren't surprised later". After a goal fails all its plans with "no … site in the region", goals of its kind wait `factory-site-retry-minutes` (default **5**, 0 = retry at once); the pause and its end are logged as "SITE RETRY PAUSE (B53)" and shown in the factory's waiting list. |
+| D61 | Power first (2026-10-21, user decision, approved in-session) | B54: a goal that re-laid a built module's pole line placed the new poles among its other work and left the module unpowered for 25–30 game-min. The user: "make placing any new power networks the first priority". A factory build's electric-pole place jobs (new, re-laid and module poles), hand-crafts of poles and the gathering of their materials (wood) get `factory-power-build-priority` (default **150**; the bootstrap's highest is fuel 100), never below the build's own priority. |
+| D62 | Radar exploration arms (2026-10-21, user decision, approved in-session; extends D56) | Seed 46464 failed at ~115 game-min: the only copper patch within 384 tiles was mined out and nothing looked farther. The user: "what should happen in a case like this is what a normal human player would do. They would string a power line out into the distance, placing down a radar so the area is explored." (1) **Home zone:** within 3 × `scan-radius` (384 tiles) of the hub, plans and the bootstrap keep generating and scanning chunks themselves ("Keep the cheaty scan for the home base, since failures would be unrecoverable at that stage of the game"); the plan region ladder is capped at the same radius. Beyond it, the planner knows only chunks the faction's force has charted (radars, `on_sector_scanned`) and ground its crew explores while building (2). (2) **Trigger and arms:** when a mine module finds no free patch of its ore, the faction builds a **radar outpost**: one radar module plus a pole line from the base network, on one arm (N, E, S, W round robin, one outpost at a time). The first outpost of an arm goes ~400 tiles from the hub, each later one ~200 tiles farther along the arm. The crew explores the strip of the pole line and the radar site as it builds ("The player should just explore the terrain while building it"); a cliff or water at the spot moves the radar a little. (3) **Next arm:** once the new radar's nearby square is charted and scanned and still shows no usable patch, the next arm gets an outpost; earlier radars keep sector-scanning and a patch they find later is used by the next retry. Outposts stay (a later mine reuses the pole line). (4) **Search:** one mine search over the home square plus all charted ground, patches still ranked by distance from the hub. Ore found far away gets a plain mine with a long belt to the existing smelters ("Keep using belts for this implementation even though pathfinding will be rough"); remote outposts with trains are a later phase. (5) **Waiting:** the blocked goal waits on "exploring" and does not count toward fail-fast; in a normal game exploration goes on forever ("shouldn't fail in a normal game, just go forever, since eventually it will run into a success"). Soaks fail fast after 1 game-hour stuck exploring. Distances are agent guesses the user accepted ("Spacing is fine"); listed in the M6 report's magic numbers. **Radars (P43 → (a), the user in-session 2026-10-21: "go with (a)"):** a radar charts nothing for a force with no players (our factions), but its sector scan still runs and raises `on_sector_scanned`: each scanned chunk becomes known ground for the faction's plans, and a powered outpost radar's nearby square counts as explored at once. |
+| D63 | Mixed-ore drill spots / P20 (2026-10-23, user decision, approved in principle; deferred beyond v1) | The user: "approve but defer to a much later milestone, it's a nice to have." P20 (allow a mixed-ore drill spot when the module has a sorting stage, with the extra belt length in its placement cost) is approved as a later nice-to-have, **not** part of v1/M6, the seed sweep or the current B6 work. The B6 minimum fix (never place a drill that can mine a foreign ore onto an unsorted single-item line) stays in force. No implementation is scheduled; revisit after v1. |
+| D64 | Verified provider handover: kept for M6, evaluated in M7 (2026-10-24, user decision in-session) | The user: "you can keep it for now but add it to m7 to determine if it's needed or to refactor to better fit." The M6 slice keeps `strategy/handover.ts`, `planAdoption`/`adoptRoute` and `abandonParts(adopt)` as they are, and the seed sweep runs with them. **The provider-group rule of this milestone is not handover:** a provider that cannot grow is kept at its real capacity and serves the consumers it has, and new or residual demand goes to parallel providers or merged inputs (`providerShort`, `parallelRole`, `providerNoTap`; `Growth.replace` removed). Handover only touches the *depletion* paths (D55 worked-out mine, P36 fuel running low, D54 burner-drill outpost), never the unexpandable case. **M7 must decide** whether verified handover is needed at all or should be refactored to fit the provider-group model, using the M6 evidence recorded in the M6 report (M6b.47): no route was ever adopted in a soak, one handover completed instantly because another built provider already fed the port, and one stalled at the 10-minute valve and fell back to the old deconstruct-then-plan. |
+| D65 | Power demand scales with utilization (2026-10-28, user decision in-session) | The user chose "Scale by utilization" over nameplate or measured load. A designed module's `powerW` is its nameplate electric draw times `need / capacity`, exactly as its inputs already were (`design.addProducer`; the mall by its utilization). Cause: nameplate sizing put the design ~7x above the measured load (8646103: steam block at 14%), and once B66 let the excess plan real steam blocks it used up the coal patches (5387208 `vps-b68`: a fourth parallel coal mine for power at 98 min, then 60 game-min of fruitless exploration). |
+| D66 | Crew prefetch for far builds (2026-10-28, user decision in-session) | The user chose "Yes, prefetch" when asked whether a member hauling for a far build should also carry materials for the upcoming place jobs nearby. A place batch whose nearest source is far also hauls for the ready place jobs that are nearer to the batch than that source, nearest first, while the load fits the existing `trip-inventory-fill` share of empty stacks (`board.prefetchJobs`). No new tuning number: the source distance sets the reach. Cause: seed 8646103 (`vps-b68`) fetched ~10 belts per 500-tile walk for a 300-belt outpost route and stalled twice. |
+| D67 | Factory mines replaced before they run dry (2026-10-28, user decision in-session; exception to D28, extends P36 (a)) | Asked whether every factory mine should be replaced ahead of time like the power fuel mine, the user chose "Yes, own lead setting": a factory mine (an `outpost` node) whose drills have less than `factory-mine-lead-minutes` (default **30**, 0 = never) of ore left at its planned rate starts a provider handover (goalpost 1): a replacement on fresh ore is planned and connected before the old mine is deconstructed. Steam-block fuel mines keep `factory-power-fuel-minutes` (10). A mine that runs dry first is still D55's (claim more of its patch, else relocate). Cause: seed 8646103 (`vps-d66`): three science mines ran dry 200-220 game-min after being built and each handover began only then, so lab clusters starved for the whole move. |
+| D68 | Tap a built producer with capacity first (2026-10-28, user decision in-session; replaces P36 (b), before D62) | Seed 1264816 (`vps-b80d`): lab cluster 3's smelters needed a third parallel coal provider (~0.1 coal/s), the only coal patch within 384 tiles was full, and four D62 radar outposts found no more coal: the soak failed after an hour of exploring while built coal mines had 0.1–0.96/s spare each. Asked what a fuel provider should do when it finds no free patch, the user: "tap first is best as long as there is capacity", then: "should be agnostic, we should always try to build rules that aren't a bunch of hacks but apply to everything to keep it clean". **Rule, for every item:** a new producer that cannot be placed makes its consumers tap the nearest built producer of the same item that has capacity (spare full-speed output over its planned draw, or room to grow in place), at once and before D62 explores; consumers of a split shared group (B61) tap it too. Without such a producer, D62 explores. P36 (b)'s fuel-only, after-2-failures rule is gone. Setting `factory-fuel-fallback` (id kept) switches it. |
+| D69 | Conditional-logic refactor deferred to M7 (2026-10-29, user decision in-session) | A code audit (agent-run, 2026-10-29) found the branching hot spots where special cases pile up on the generic rules. The agent proposed three refactors: (1) a typed planner failure plus one constraint store, instead of failure strings parsed downstream; (2) node fields instead of parsing role strings; (3) one remedy handler per kind in the reconciler. The user: "push the refactor to m7". M6 ships without them; M7 does them. |
+| D70 | Exploring for extra capacity never fails a soak (2026-10-30, user decision in-session) | Two factions, seed 3333: faction 2's third power block searched for coal (D62) from 142 min and never found it, while the faction met the science bar at 213 min and reached `v1-done` at 252; the 60-min exploring fail-fast stopped the run at 202. Asked how the fail-fast should work, the user chose "Exploring for optional growth doesn't count": only exploration for something the factory can't run without (a first power block, a missing ore) starts the clock. The mod tags each search `required` or `extra capacity` (extra capacity when the faction already has a built node or bootstrap site making the item searched for; `shared/explore-need.ts`), and `soak.py` starts its `exploring_minutes` clock only for required searches. |
+| D71 | Two M6 findings deferred to M7 (2026-10-30, user decision in-session) | The user: "yes put both of those suggestions to m7". (a) **Fixed seed 222** (`m6-fixed10-845a46b`): cluster 1's iron smelter cannot grow (blocked site), the design caps cluster 1 and plans a parallel provider, yet the green line stays short of iron plates and science holds ~18/min to the cap; growth also keeps retrying the blocked tile after the provider is marked short. (b) **Make before break for evicted pole lines** (two factions, seed 222): a goal that evicts a pole line (B37) places the replacement poles with the rest of its build, leaving modules unpowered meanwhile (~30 game-min there); proposed remedy: place the replacement poles before any other entity of the build. Neither blocks M6 acceptance. |
 
 ## 3. v1 Definition of Done
 
@@ -176,7 +197,10 @@ reach multiplier (scales build, reach and resource reach through the character's
   reserved so crew members don't plan with the same items.
 - (M3) Haul jobs come in three payloads: a member's own **haul** of materials for its batch, a **deposit** of what
   it carries into the depot (brain-driven factions empty their pockets between jobs), and a **transfer** that
-  collects output from a machine (furnace plates, a stone chest, a coal pair's surplus) into the depot. Fuel jobs
+  moves items from one entity to another. B32 (user, 2026-10-19): a haul takes the batch's materials straight from
+  the depot and the faction's **supply points** (bootstrap furnace outputs and chests, a coal pair's surplus, the
+  factory's output chests, module buffers), several in one trip, reserved per source; the brain no longer creates
+  transfers that shuffle machine output to the depot. Fuel jobs
   also feed ore into furnaces. Deliveries (gather → furnace, craft → depot) insert what fits; leftovers are
   deposited.
 
@@ -370,16 +394,17 @@ tag → filter → in-game validation gate.
     **chest**. The first-electricity kit (`first-electricity-items`, default offshore pump, boiler, steam engine,
     10 small poles) comes once every resource has half its sites; the remaining sites follow.
   - **H2** at most 2 goals in progress, so materials go to the earliest goals.
-  - **H3** everything gathered, collected or crafted goes to the depot; crew empty their pockets there between
+  - **H3** everything gathered or crafted goes to the depot; crew empty their pockets there between
     jobs. Craft jobs take raw materials; the crafting queue makes intermediates.
   - **H4 demand-driven production:** the materials of active jobs and the goal's items are the demand. A
-    shortfall is met by collecting from the faction's machines, then hand-crafting, then hand-mining (ore goes
+    shortfall beyond what the depot and the supply points hold (B32: the crew takes from them directly) is met by
+    temporary cells, then hand-crafting, then hand-mining (ore goes
     straight into a furnace of its kind), with at most one hand-mining job per crew member.
-  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are collected on demand only.
+  - **H5** burners are refuelled below 2 minutes of fuel, up to 8 minutes. Outputs are taken by the jobs that need them (B32), never moved to the depot.
   - **H6** sites go on the patch chosen by distance and size from the depot, on the patch tiles nearest it,
     facing it, one tile apart, on tiles free of trees, rocks and active hand-mining.
   - **H7 exploration:** when a needed resource (or trees) has no known patch, the area around the base is
-    generated 64 tiles farther (up to 3 × `scan-radius`) and rescanned.
+    generated 64 tiles farther (up to 3 × `scan-radius`) and rescanned. Past that home zone, radar outposts explore (D62).
 - **World knowledge:** crew don't chart. At start the chunks within `scan-radius` (128) of the base are generated,
   as for a player exploring, and scanned into resource patches (clusters of one resource, tiles within 2 of each
   other); exploration (H7) and replanning rescan.
@@ -424,11 +449,18 @@ Default to configurable (D18). Settings live in three places:
 - **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
   `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
   the plan's own routing work).
-- **Planner weights (M5d, D50):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (0.5),
+- **Planner weights (M5d, D50; D59):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (10, D59; was 0.5),
+  `planner-router-soft-claim-decay` (0.5 per growth unit, D59),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
+  B26 (proposed, P38): `planner-placement-growth-band` (4), `planner-placement-growth-band-units` (2),
+  `planner-placement-growth-blocked` (3).
+- **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
+  `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10),
+  `factory-site-retry-minutes` (5, D60), `factory-power-build-priority` (150, D61).
 - **Buffers and bootstrap factories (M5d, D42 / D38):** `module-buffer` (`iron-chest`; empty = no buffers),
-  `module-buffer-slots` (1), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
-  = none), `bootstrap-factory-wait-seconds` (60), `crew-background-crafts` (1; 0 = craft standing).
+  `module-buffer-slots` (2, D51), `bootstrap-factories` (`iron-gear-wheel=1,transport-belt=1,automation-science-pack=1`; empty
+  = none), `bootstrap-factory-wait-seconds` (60), `bootstrap-temp-cell-feed-priority` (40, B18; 0 = off),
+  `crew-background-crafts` (1; 0 = craft standing).
 - **Remote interface** (`remote.call("rival-engineers", ...)`): everything the test harness needs, including spawning
   a faction at a position with a config, pausing a faction, forcing goals, dumping state and reading the
   state hash. Tests and soak runs drive the mod only through this, plus settings.
@@ -500,9 +532,9 @@ emits replanning goals for the root cause, not the symptom.
 30 SPM in v1), but size trunk belts and reserve space and corridor width for the next stage target (default
 2×, configurable per policy). Build incrementally toward it.
 
-**Disruption (D28):** deferred to P2. v1 assumes a static world: no ore-depletion relocation and no
-rebuilding destroyed modules. The stored graph plus build plan is what P2's rebuild and relocate will use.
-In v1, a stall caused by depletion just shows up as a starved node in telemetry.
+**Disruption (D28):** deferred to P2. v1 assumes a static world: no rebuilding destroyed modules. The stored graph
+plus build plan is what P2's rebuild will use. Exceptions: bootstrap sites are rebuilt on remaining ore (D43), and
+worked-out factory mines expand, move within their patch, or are relocated (D52, D55).
 
 **Visibility (D29):**
 - **Graph export:** the graph (both layers, planned and measured rates, node status) is dumped to JSON
@@ -510,6 +542,17 @@ In v1, a stall caused by depletion just shows up as a starved node in telemetry.
   and status.
 - **In-game overlay:** a debug setting draws module boxes, edges, rates and node status using the
   `rendering` API in the live game.
+- **Factory-graph window (B16, B40, D53):** a per-player GUI screen (`Ctrl+Shift+G`) beside the overlay: an exact
+  module-to-module topology laid out by dataflow depth (not real positions). Distinct logical nodes and their
+  actual directed edges remain distinct even when their roles or items match. Explicit fan-in/fan-out shows which
+  providers feed which consumers. Selecting a node focuses its immediate neighbourhood and fills an exact
+  incoming/outgoing edge inspector; neighbour rows traverse the graph, “Show all” restores the full topology and
+  “Locate selected” jumps to the module in the physical base. Nodes and edges retain reconciler status,
+  measured/planned rates, probe verdicts and cause information.
+- **Review toolbar and reports (B35, B34):** the review hotkeys (Ctrl+Shift+I/G/R) are enabled while spectating;
+  a top-left toolbar (sandbox and spectators) opens the inspector, the graph window, the overlay with one toggle per
+  registered layer, and the report dialog, which writes a diagnostic bundle (`script-output/rival-engineers/reports/`)
+  and saves the game (`_autosave-re-report-*`) for a later diagnosis.
 
 **Testing:** T1 tests cover the solver (ratios for the red/green chain against hand-computed values,
 e.g. 30+30 SPM → 3.75 Fe/s, 1.25 Cu/s), capacity math and overflow decisions. T2 tests cover measurement
@@ -587,11 +630,20 @@ Each milestone ends with a PR and a report (§9). Acceptance criteria are tests,
 | M4 | **Modules and routing** | Module library pipeline: generators for simple recipes plus curated modules where needed (≥ 10 modules total), at least one curated module with `expand`, all passing validation. The router connects 5 modules in a lab with no crossings through footprints, **and** the early-game compact `LayoutPolicy` places and routes them on **real generated terrain with cliffs, water, trees and existing structures** (not only clean labs). Factory Graph **physical layer** and **capacity math** (§5.8): T1 capacity/overflow tests and a T2 lab with a deliberately undersized belt. |
 | M5 | **Power and planner** | Steam power + pole planner. Recipe-graph planner drives a faction from first electricity to automated red science feeding labs, placing and routing on **real generated terrain with cliffs, water and existing structures** through the active `LayoutPolicy`. Factory Graph **solver** and **logical layer**, **measurement**, **reconciler** and **in-game overlay** (§5.8): T1 solver ratio tests, and a T2 test where a deliberately starved module is classified *starved* with the right upstream cause. |
 | M6 | **v1** | Green science, full red/green research, multi-faction runs, all of §3 green on the seed sweep, Space Age smoke test, final timelapses for user approval. Conflict repair relocates only the blocked module and its routes (D47). Factory Graph **scorecard metrics** (§5.8: utilization, starved/backed-up node counts, how often measured throughput falls short of plan). |
-
 Later phases (spec them after v1): **P2** biters + defense (turrets, walls, ammo logistics) · **P3**
 oil, blue science and bots (crew switches to construction robots) · **P4** inter-faction diplomacy and war
-(Biter Battles-style arenas as test maps) · **P5** Space Age · optional **external strategist**
+(Biter Battles-style arenas as test maps) · **remote outposts** (trains to far fields, on-site smelting; D62 uses
+long belts in v1) · **P5** Space Age · optional **external strategist**
 (LLM over RCON) for server-only experiments.
+
+**Deferred to M7 (D64):** decide whether verified provider handover is needed at all, or refactor it to fit the
+provider-group model. It is kept in M6 and its evaluation is not part of v1 acceptance.
+
+**Deferred to M7 (D71):** (a) fixed seed 222's iron shortfall when cluster 1's smelter cannot grow; (b) make before
+break for evicted pole lines (replacement poles placed first).
+
+**Deferred to M7 (D69):** the conditional-logic refactor from the 2026-10-29 audit (typed planner failures with one
+constraint store, node fields instead of role-string parsing, one reconciler remedy handler per kind).
 
 ## 9. Agent operating model
 
@@ -612,11 +664,16 @@ oil, blue science and bots (crew switches to construction robots) · **P4** inte
   it under "Assumptions" in the report and keep going. Stop and wait only for decisions that are hard to
   reverse or that change §2 or §3.
 - Never weaken an acceptance test to make it pass. Changing an acceptance threshold is a spec change.
-- **Finishing a task (user, 2026-10-15).** The working agent runs the full test suite and the single-faction
-  acceptance soak on its final code commit, checks the work-count gate (below), writes its report, pushes and
-  hands off. The **manager** then starts the next agent and, in parallel, does the final validation: GitHub CI on
-  the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
-  agent's work (or a resumed agent if it is small). Wall-clock numbers from runs that overlap are not
+- **Long runs belong to the manager (user, 2026-10-19).** A subagent's prompt cache expires after 5 minutes, the
+  manager's after an hour, so a subagent never runs or waits on anything that can take longer than about 5 minutes:
+  soaks, acceptance rounds, the full T2 suite (parallel or serial, over 5 min since 2026-10-19), benchmarks. It may
+  run unit tests and filtered T2 tests (`npm test -- "pattern"`) covering what it changed. For a longer run it commits, returns the exact command and what to look for, and the manager runs
+  it and briefs a **new** agent with the result. The manager never resumes a finished agent (user, 2026-10-19).
+- **Finishing a task (user, 2026-10-15; amended 2026-10-19).** The working agent runs the unit tests and the filtered T2 tests for
+  what it changed on its final code commit, writes its report, pushes and hands off. The **manager** then runs the
+  full T2 suite and the single-faction acceptance soak, checks the work-count gate (below), starts the next agent and, in parallel, does the final
+  validation: GitHub CI on the pushed commit and the **two-faction soak**. A failure there becomes the first item of the running or next
+  agent's work (or a new agent if it is small). Wall-clock numbers from runs that overlap are not
   performance evidence.
 - **Performance gates (user, 2026-10-15).** (1) **Work counts** (planner work units, path requests, entity scans,
   jobs, candidates scored, per tick and per run) are deterministic per seed and act as a **soft gate** in every
@@ -682,11 +739,11 @@ M5a.2 proposals (2026-10-15, all **proposed**; evidence in `docs/reports/M5-repo
 
 M5a.3 proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5a.3"):
 
-- **P20, mixed-ore drill spots (proposed, B6):** today a drill whose mining area holds a second ore is never placed
-  (mining modules, growth and bootstrap drills; the minimum fix). Proposal for later: allow a mixed spot when the
-  module gets a sorting stage (filter inserters or a splitter filter off the line into a belt to a consumer or a
-  chest) and its placement cost includes that extra belt length; pure spots win otherwise. Not built: no seed in
-  the M5 acceptance set needed a mixed spot.
+- **P20, mixed-ore drill spots (approved in principle, deferred beyond v1 → D63; B6):** today a drill whose mining
+  area holds a second ore is never placed (mining modules, growth and bootstrap drills; the minimum fix). The
+  sorting-stage extension (filter inserters or a splitter filter off the line into a belt to a consumer or a chest,
+  with that belt length in the placement cost; pure spots win otherwise) is approved as a later nice-to-have, not
+  part of v1/M6. Not built: no seed in the M5 acceptance set needed a mixed spot, and no implementation is scheduled.
 
 M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md` "M5b"):
 
@@ -705,7 +762,7 @@ M5b proposals (2026-10-15, **proposed**; evidence in `docs/reports/M5-report.md`
 
 M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md` "M5d"):
 
-- **P25, which modules get a buffer (proposed, D42 / B5):** only **smelter columns**: an inserter in the column's head
+- **P25, which modules get a buffer (changed by the user → D51, 2026-10-16: 2 slots; smelter columns, circuit blocks and gear rows):** only **smelter columns**: an inserter in the column's head
   takes plates off the west output belt into an iron chest the crew collects from (before hand-mining or hand-crafting),
   limited to `module-buffer-slots` (1 slot = 100 plates) so it fills up and stops. Not mining outposts (the crew needs
   ore only to hand-feed bootstrap furnaces), not the red line (its packs go to the labs by belt), not the circuit block,
@@ -726,7 +783,7 @@ M5d proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
 - **P28, soft claims and partners (proposed, D50):** at placement, a module ignores the soft claims of the modules it
   connects to (their ports sit at their growing end, and growth reroutes the connection anyway). With it, 0.5 plans both
   replays that failed in M5c.
-- **P29, D36 per attempt (proposed):** a production or mall plan that fails to route without undergrounds routes the same
+- **P29, D36 per attempt (approved → D51, 2026-10-16):** a production or mall plan that fails to route without undergrounds routes the same
   placement with them; if that works, it counts as infinitely shorter and the goal defers to the technology at once
   (instead of after four failed attempts; the four-attempt rule stays as a fallback).
 
@@ -748,6 +805,102 @@ M5c proposals (2026-10-16, **proposed**; evidence in `docs/reports/M5-report.md`
   its ports move when it grows) and 0.1 per footprint tile for placement. At 0.5 the placement weight made production
   clusters 10–30% longer in belts and broke two no-underground plan replays; 0.1 is a mild preference.
 
+M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-report.md` "M6a"):
+
+- **P30, the 30 + 30 stage (proposed, D37):** default `factory-targets` = `automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30`,
+  every stage designed at `factory-design-margin` (1.1) × its target so the measured rate reaches it. Green science
+  comes from the curated green line (an inserter has three ingredients, no generator makes it); one line makes 0.28/s, so
+  the stage splits into two **production clusters** (D24). Cluster 1 keeps the stage-1 roles (its modules grow in place:
+  labs, red line, smelters), cluster 2 is new; one steam block serves both. Labs are sized per stage by
+  `factory-lab-sizing` (`mean;max`: stage 1 the mean unit time as D37 says, stage 2 the slowest, 30 s, so the labs never
+  cap the 30 + 30 rate). Cluster 1's goals come first (power growth, its green chain, its grows), then cluster 2's labs and
+  production.
+- **P31, how "30 + 30 sustained" is measured (proposed, §3):** packs **consumed by the labs** (force item statistics),
+  sampled every game-minute; the bar holds once every pack of the last stage averaged at least its target over
+  `factory-sustain-minutes` (30) consecutive minutes (`science-sustained`). With `research-goal-done` that is `v1-done`.
+  The scorecard recomputes it from the samples.
+- **P32, shared providers (proposed, B19):** from stage `factory-shared-providers` (1) on and once splitters can be built,
+  a new consumer of an item first taps a built producer of it that has spare capacity (its planned output minus what its
+  edges carry; the steam block's coal outpost included), else the new consumers of a cluster share one new producer; a
+  tap on a built route has the crew pick up the belt under the splitter first. Splitters are researched before production
+  when sharing saves at least `logistics-share-min-modules` (1) modules (like D36). No distance check yet: a tap may run a
+  long belt.
+- **P33, when the factory can't grow a module (proposed):** a growth whose expansion fails 3 times no longer holds its
+  stage; a steam block that can't grow gets a second one (`power#2`) for the excess, labs a second array (`labs+`).
+- **P34, stuck builds and boxed-in crews (proposed, B20):** a build whose leftover ghosts placed nothing for
+  `build-stuck-rounds` (10, 30 s apart) gives up its location (a growth is abandoned with what stands); a crew member that
+  finds no path 3 times in a row picks up the nearest small entity around it and leaves a ghost for it (a player walled in
+  by their own build does the same).
+- **P35, bootstrap eviction (proposed, B15, implements D51 (3)):** plans see the faction's bootstrap mining sites as
+  clearable ground (like trees); a plan or growth that takes their tiles evicts them: built sites are retired and picked
+  up before the build, planned ones dropped, and the bootstrap gets a replacement goal elsewhere. M6a.2 (seed 222):
+  the depot is evicted too (an extra depot built over a factory port's approach tiles read as unevictable OWN ground and
+  walled the port in for good; the bootstrap rebuilds the depot near the hub), and a retired site releases its tiles as
+  soon as it is picked up.
+- **P36, coal running out for power and the green clusters (proposed, M6a close-out; hand-off to M6b):** two of the five
+  acceptance seeds fail on coal, not on planning. Seed 555555: the first steam block's coal outpost depletes at ~150
+  game-min and the steam block starves (D28 defers relocation to P2). Seed 3333: the only coal patch within 168 tiles of
+  the hub is ~70% built over (power, bootstrap pairs, earlier outposts) and the new cluster's shared coal outpost has no
+  feasible position on four region sizes. Proposed: (a) a depleted (or nearly depleted) coal supply of a steam block
+  gets a replacement outpost elsewhere, like D43 for bootstrap sites (an exception to D28 limited to power fuel);
+  (b) when a fuel producer can't be placed, the consumers tap the nearest built coal producer and that producer grows
+  (or the cluster waits) instead of failing the goal. Not implemented. M6a.2 (seed 222): (a)'s hand-fuelling skips a
+  steam block whose fuel producer is currently being grown (the built drills run through the growth) — at the build
+  priority it starved the growth's own craft jobs and stalled the stage.
+- **P37, no mine-site credit for head growth (proposed, B25):** since B25, `tryExpand(..., "head")` refuses growth that
+  would run a belt out of the module, and that covers every mining outpost: its head holds the output port. Placement's
+  D52 site check (`firstGrowthCoverage`) still accepts a mine whose only ore-bearing growth unit is at the head.
+  Proposed: count the tail only for modules that can't grow at the head. This changes mine placement, so it needs
+  replays first. Not implemented (M6 report, M6b.3).
+- **P38, growth bands at placement (proposed, B26; M6 report M6b.6):** (a) a module placed in the **near band** of another
+  expandable module (its first `planner-placement-growth-band-units` = **2** growth units, on the end `tryExpand` grows)
+  pays `planner-placement-growth-band` = **4** per footprint tile on top of the 0.5 soft claim (D50 unchanged); a direct
+  partner stays exempt, as from the soft claim (P28): applying it to partners pushed feeders off the smelter's input side
+  and broke the seed 11 replay. (b) An expandable non-mining module scores each candidate site by its own near band:
+  `planner-placement-growth-blocked` = **3** per near unit that `tryExpand` would refuse there (terrain, ore, other
+  modules and their corridor ring, routes, port reservations, interaction tiles, mine and soft claims; units past the
+  first refused one count too). Only the near band counts: checking every unit up to the cap (a smelter's band is 20
+  tiles deep) and 8 per unit pulled the seed 222 cluster apart and its iron feed failed even with undergrounds. Cost:
+  with (b) on, the seed 11 and 3333 stage-1 clusters no longer route **without** undergrounds (a smelter's growth end is
+  its input side, which now turns away from ore, so feeds wrap round it); they do route with them, and both seeds decide
+  "undergrounds first" under D36 / D51 anyway. Values are guesses tuned on six replays; a soak decides.
+- **P39, take from smelter modules' furnaces (decided by the user in-session 2026-10-19: keep the implemented setting, default off, no further work; B36; M6 report M6b.8):** with `supply-module-furnaces` on
+  (default **off**), the result slots of built smelter modules' furnaces are supply points too (registered last, after
+  buffers and bootstrap furnaces). Their plates pile up when the output belt backs up, but taking them can starve the
+  module's belt and its consumers, and the buffer head (D42/D51) already holds the surplus the crew should take. Open
+  question for the user: turn it on, or rather raise `module-buffer-slots` (2)?
+- **P40, the part of a patch a mine claims (proposed, B33; M6 report M6b.9):** D52 whole-patch plans now apply in every
+  plan topology (before, only splitter-tap plans got them, so point-to-point mines stayed strips whose growth claim ran
+  off the patch). "The part it claims" (D52 (1)) is: (a) a **shared** (splitter-tap) mine: as many drills of the
+  whole-patch grid as its one output belt carries (both lanes; 30 electric drills on iron with yellow belts; a starting
+  iron patch holds 67-69), whole lanes nearest the consumer first; (b) a **point-to-point** mine (it only ever feeds
+  one consumer): **one lane** of the grid, at most the drills its strip template could grow to (14 for a 1-side
+  electric 2-row outpost). Two lanes or more made the second coal outpost of the seed 11 / 3333 stage-1 clusters
+  unplaceable (one small coal field). (c) A mine whose plan does not fit (its entities on water, cliffs, other modules'
+  ground or claims, its output port facing built structures) stays a strip, and its growth claim stops at the last unit
+  whose drills all have ore under them (was: the belt-limited cap, 36 tiles for an electric strip). (d) Strip growth
+  needs ore under each new drill's body, not just in its mining area (the whole-patch plan's own test). (e) A partial
+  stage starts with drills whose mining area meets `minOreCoverage` (0.6), not on the thin edge nearest the consumer.
+  (f) A route that crossed itself is retried with that tile blocked, not just costed. Not done:
+  balancing the two lanes of the collector belt (the part is capped at the belt's total).
+- **P41, radar exploration (resolved → D56, 2026-10-20):** once a radar can be
+  built, the faction places one to discover more of the map passively, like a player. Open: (a) whether plans may
+  only use charted chunks (the radar is then the only way to find far fields; today the planner asks the engine to
+  generate the chunks of its search region, which is free exploration), or the radar only adds to that; (b) whether
+  one radar goes up early at the base or only when the home fields run low.
+- **P43, faction radars don't chart (resolved → D62 (a), 2026-10-21):** in 2.0 a radar charts nothing for a force with
+  no players: no chart, no chunk generation, and `force.chart` only marks chunks requested. The radar still sector-scans
+  (`on_sector_scanned`, one chunk per ~33 s at full power, nearest first in rings, no chunk twice: 53 scans in 30
+  game-min reached ring 4). The user chose (a), the scan event as the faction's exploration, over emulating the radar
+  in script or counting an outpost's whole reach at once.
+- **P42, faster mine site search (resolved → D57, 2026-10-20):** a mine's placement now goes on from a dead ore
+  site to the next one (B50), but each site still costs a window search of up to ~430² tiles, 4 plan attempts per
+  goal (seed 3333: ~200 s wall per attempt). Proposed: (a) a per-faction **patch index** (connected patches from
+  `world/resources.ts` with their free ore: not built over, not in a drill area) ranked by free ore and distance, the
+  window search only over a patch's box plus a margin; (b) a summed-area pre-check that skips windows without enough
+  free ore for one drill area; (c) remember patches with no room until the ground near them changes (`markDirty`);
+  (d) lay out a new patch's mine with the D52 whole-patch planner instead of sliding a template.
+
 Resolved 2026-10-16 (user, via the manager): P23 → D50 (approved), P24 → D50 (weights are settings; placement soft claim default 0.5), splitter comparison off by default (D50).
 
 Resolved 2026-10-15 (user, via the manager): P21 → D49 (belt capacity only in planning, when a new consumer/producer exceeds the limit; belt/pole re-placement OK).
@@ -765,6 +918,7 @@ Resolved 2026-10-14: blueprint sources → D19 and §5.4 (agents decide, attribu
 are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runner choice → agent decides
 (GitHub-hosted for T0–T2, local for T3/T4). Steel in v1 → D20 (no steel production; still researched).
 
+- **P44, avoid side-loading belts (user guidance in-session 2026-10-28; implementation proposed):** the user: "side loading belts is not great to do. Because belts have two lanes that each take 7.5 items per second, when throughput starts getting high it does work great [does not work great]. Using balancers and sometimes even lane balancers are useful depending on the output situation of the module. Within modules sometimes it's useful to sideload, but it's best to avoid it. I know the mine generator has that problem and it might appear in some other places." Places that side-load today: provider-group merges (`planner/merge.ts` `mergeGoals` tries up to 12 side-load spots before any splitter merge, with no lane-capacity check; B60/B75/B79 rely on them), the mine generator's collector belts, the smelter column's output (both sides side-load onto the output belt) and the two-input module joins (`modules/generators.ts`). **Proposed:** (a) merges try the splitter merge first and side-load only when the merged flow plus what is already on that lane fits one lane with margin; (b) generators replace side-loads with splitters/lane balancers where the module's output rate can exceed one lane. Timing (user, in-session 2026-10-28): after the running `m6-random20-eecca19` sweep finishes, then re-sweep. The design of (a)/(b) above is still the agent's proposal. **(a) implemented** (after the sweep, as decided): `mergeGoals` tries splitter merges first and offers side-loads only when the consumer port's rate is at most `router.sideLoadLaneShare` (0.8, proposed) of one lane. **(b) audit:** the smelter column's two output belts side-load from opposite sides (one lane each, balanced) and its ore/fuel join uses the two lanes on purpose, so neither needs a change. The whole-patch mine's collector does: every drill row's belt joins the collector from the same side, so all rows but the farthest share one lane of the output belt, and B33 sizes the mine for two lanes. **User decision (in-session 2026-10-28):** "Splitters, cap before": once splitters are researched, each drill row joins the collector through a splitter merge (both lanes of the output belt usable; one extra tile row on the footprint, a splitter per row); before splitters, the mine is capped at what its output can really carry. **Implemented:** `materializeMinePlan(..., "splitter")` puts one splitter per row but the farthest on the collector (moved one row out; each row turns into its splitter's second input, the splitter's other output stays unbuilt) and the output leaves two tiles past the output row; the style is stored in the mine's params, so a reclaim keeps it. Without splitters (`PlanRequest.splitters`, set from the splitter recipe's technology), a whole-patch mine is one row.
 ## 12. References
 
 - Factorio Learning Environment (LLM agents via RCON/Python, NeurIPS 2025): https://arxiv.org/abs/2503.09617.
@@ -779,6 +933,29 @@ are OK. Spawn placement → configurable (§5.7). §3 numbers accepted. CI runne
 
 ## Changelog
 
+- v0.34 (2026-10-28, user decision in-session): D67 (every factory mine starts its handover at `factory-mine-lead-minutes`, default 30).
+- v0.35 (2026-10-29, user decision in-session): D69 (the conditional-logic refactor proposed after the 2026-10-29 audit is deferred to M7).
+- v0.36 (2026-10-30, user decision in-session): D70 (exploring for extra capacity never fails a soak; only required searches start the fail-fast clock).
+- v0.37 (2026-10-30, user decision in-session): D71 (fixed seed 222's iron shortfall and make-before-break pole eviction deferred to M7).
+- v0.33 (2026-10-28, user decisions in-session): D65 (module power demand scales with utilization) and D66 (crew prefetch for far builds).
+- v0.32 (2026-10-24, user decision in-session): D64 (verified provider handover kept for M6, its necessity or refactor decided in M7; the provider-group rule stays "keep the short provider, add parallel providers").
+- v0.30 (2026-10-21, user decision in-session): P43 → D62 (a): faction radars explore through `on_sector_scanned` (they chart nothing: no players on the force).
+- v0.29 (2026-10-21, user decision in-session): D62 (radar outposts on N/E/S/W arms explore past the 384-tile home zone when a mine finds no ore; the home zone keeps chunk generation).
+- v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
+- v0.28 (2026-10-21, user decision in-session): D61 (a factory build's poles are placed and crafted before every other job).
+- v0.27 (2026-10-20, user decision in-session): D60 (a goal with no site in its region pauses its kind for 5 game-minutes, logged).
+- v0.26 (2026-10-20, user decision in-session): D59 (router soft-claim cost 10 next to a module, lower for each growth unit farther out).
+  The router's seal check (a cost-free flood from both ends that proves "no path" when one end is boxed in) is the
+  approach the user picked in-session the same day. A retry after "no path" runs it to the end (the user: "if either
+  end are enclosed, then consider it done and a fail"); the first search's cap `router.sealCheck` (2000 states) is
+  proposed.
+- v0.25 (2026-10-20, user decision in-session): D58 (two-level routing for long connections; one planner budget for the whole mod, shared by the plans running).
+- v0.24 (2026-10-20, user decisions in-session): D56 (a radar for realism; chunk-generation exploration stays), D57 (faster mine site search: patch index, pre-check, dead-patch memory, whole-patch layout; a fresh field costs +50 tiles).
+- v0.23 (2026-10-20, user decision in-session): D55 (a worked-out whole-patch mine moves to the next free part of its own patch; with none left, the mine is relocated and re-planned on fresh ore).
+- v0.21 (2026-10-17, user decision via the manager): D52 (whole-patch mining outposts, built partially and expanded in place; nothing else on their unbuilt footprint).
+- v0.20 (2026-10-16/17, M6a): §11 P30–P36 proposed (30 + 30 stage and clusters, sustained-throughput measure, shared
+  providers, second steam block / lab array, stuck builds and boxed-in crews, bootstrap eviction); §5.7 M6 settings.
+- v0.19 (2026-10-16, user decisions via the manager): D51 (buffers 2 slots on smelter columns, circuit blocks and gear rows; P29 approved; bootstrap sites allowed on production patches, deconstructible); P26 pending the user's in-game check.
 - v0.18 (2026-10-16, M5d): §11 P25–P29 proposed (buffers on smelter columns, temporary factories, opportunistic
   crafting, soft claims and partners, D36 per attempt); §5.7 planner weight, buffer and bootstrap-factory settings; D49 "expected"
   node status implemented.

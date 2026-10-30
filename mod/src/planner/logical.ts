@@ -6,6 +6,7 @@
 // `storage` (strategy/factory.ts) and exported with the physical layer for tools/render (D29). Pure: no Factorio globals.
 
 import { Rate } from "../modules/types"
+import type { ModuleId } from "../shared/ids"
 
 export type NodeKind = "module" | "outpost" | "power" | "labs" | "sink" | "source"
 
@@ -67,12 +68,17 @@ export interface RootCause {
 }
 
 export interface LogicalNode {
-  id: string
+  id: ModuleId
   /** Stable role in the design ("labs", "automation-science-pack>labs", ...): how plans and diffs find it again. */
   role: string
   kind: NodeKind
   /** Module definition id and generator (the physical instance has the node's id). */
   module?: string
+  /**
+   * D52 / B78: the layout module this node's role was folded into (a new mine that completed a shared whole-patch
+   * mine): the node has no module of its own, and later connections from or to it use that module's ports.
+   */
+  alias?: ModuleId
   generator?: string
   recipe?: string
   /** The node's main product (an item, "electricity" or "research-unit"). */
@@ -108,9 +114,9 @@ export interface LogicalEdge {
   /** An item, or "electricity" for power edges. */
   item: string
   /** Producer node and port (absent: supplied from outside the graph, e.g. by the crew). */
-  from?: string
+  from?: ModuleId
   fromPort?: string
-  to: string
+  to: ModuleId
   toPort?: string
   /** Items/s (W for power) by plan, and at the next stage target (D27 headroom). */
   plannedRate: number
@@ -212,13 +218,52 @@ export function rateIn(list: Rate[], item: string): number {
 }
 
 /** Total power supply (generators) and planned demand (consumers) of the graph's nodes, in W, by lifecycle filter. */
+/**
+ * B65 (supply): a node whose consumers ask it for more than the plan sized it to deliver. `planned` is the rate its
+ * input chain was built for (it is set from the design's need when the node is committed), while the edges are what
+ * later consumers attached; when the second exceeds the first the extra is fictional — the provider cannot feed it,
+ * which shows up as a starved consumer much later (seed 3891760: a copper smelter planned 0.183/s carrying 0.827/s of
+ * edges for 270 game-min, half the science rate).
+ *
+ * Cheap: one pass over the nodes and their outgoing edges, no allocation per healthy node. `minRate` drops the noise
+ * from float dust and rounding on tiny feeds.
+ */
+export interface SupplyGap {
+  id: string
+  role: string
+  item: string
+  /** What the plan sized this node to deliver. */
+  planned: number
+  /** What its consumers' edges ask for. */
+  committed: number
+}
+
+export function supplyGaps(g: LogicalGraph, minRate = 0.01): SupplyGap[] {
+  const out: SupplyGap[] = []
+  for (const id of g.nodeOrder) {
+    const n = g.nodes[id]
+    if (n.item === undefined) continue
+    const planned = rateIn(n.planned.outputs, n.item)
+    if (planned <= 0) continue
+    let committed = 0
+    for (const eid of g.edgeOrder) {
+      const e = g.edges[eid]
+      if (e.from !== id || e.item !== n.item) continue
+      committed += e.plannedRate
+    }
+    if (committed - planned > minRate) out.push({ id, role: n.role, item: n.item, planned, committed })
+  }
+  return out
+}
+
 export function powerBalance(g: LogicalGraph, built?: boolean): { supplyW: number; demandW: number } {
   let supplyW = 0
   let demandW = 0
   for (const id of g.nodeOrder) {
     const n = g.nodes[id]
     if (built === true && n.lifecycle !== "built") continue
-    if (n.kind === "power") supplyW += n.powerW
+    // B52: a grown plant's capacity (saves from before the fix kept the first unit's powerW).
+    if (n.kind === "power") supplyW += math.max(n.powerW, rateIn(n.capacity.outputs, "electricity"))
     else demandW += n.powerW
   }
   return { supplyW, demandW }
@@ -241,4 +286,44 @@ export function upstream(g: LogicalGraph, node: string): string[] {
     }
   }
   return out
+}
+
+/**
+ * The graph's part of the factory's design cache key: the design is diffed against the graph, so any change the diff
+ * can see must change the key. B77: edges count too. A goal that only adds connections (no node) left the key unchanged,
+ * so the cached diff still listed its edges as missing once they were built, and the next goal planned them again
+ * (vps-b76-r4410923 g20 after g19); its failure marked the working feed "not tapped" and the design asked for a second
+ * provider into an already fed port.
+ */
+export function designGraphKey(g: LogicalGraph): string {
+  let built = 0
+  for (const n of nodesOf(g)) if (n.lifecycle === "built") built++
+  return `${g.nodeOrder.length}|${built}|${g.edgeOrder.length}`
+}
+
+/**
+ * B78: the layout module a plan connects to for node `id`: the node's own module, else the module it was folded into
+ * (`alias`, followed a few steps), else undefined. vps-b77a 2034469: a mine folded into the shared mine n16 stayed in the
+ * graph as n22 with no module, and every later plan asked for `n22.out` ("no belt-out port"): 8 failures in a row.
+ */
+export function connectModule(g: LogicalGraph, id: string, inLayout: (this: void, id: string) => boolean): ModuleId | undefined {
+  let cur: string | undefined = id
+  for (let i = 0; i < 4 && cur !== undefined; i++) {
+    if (inLayout(cur)) return cur as ModuleId
+    cur = g.nodes[cur]?.alias
+  }
+  return undefined
+}
+
+/**
+ * D68 (user, 2026-10-28): the fuel a built producer can still give new consumers: its full-speed output minus what its
+ * belt edges are planned to take. For a mine this is real (its drills stand on ore); a smelter's full speed also needs
+ * its own feed grown (B65), so callers use it for fuel outposts.
+ */
+export function spareCapacity(g: LogicalGraph, id: string): number {
+  const n = g.nodes[id]
+  if (n === undefined || n.item === undefined) return 0
+  let used = 0
+  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += e.plannedRate
+  return rateIn(n.capacity.outputs, n.item) - used
 }

@@ -61,6 +61,8 @@ export interface NodeMeter {
   inserters: LuaEntity[]
   /** The node's builtTick when the machines were found (a grown node is searched again). */
   builtTick: number
+  /** B48: machines the module's layout plans; while fewer are found, they are searched again every sample. */
+  planned?: number
   /** Lab packs (the module's belt-in items). */
   packs: string[]
   cum: Counters
@@ -178,6 +180,18 @@ function kindOf(type: string): MachineKind | undefined {
   return undefined
 }
 
+/** B48: how many machines (measured entity types) the module's layout entities hold. */
+function plannedMachines(layout: LayoutState, n: LogicalNode): number {
+  const m = findModule(layout, n.id)
+  if (m === undefined) return 0
+  let count = 0
+  for (const e of m.def.entities) {
+    const type = prototypes.entity[e.name]?.type
+    if (type !== undefined && kindOf(type) !== undefined) count++
+  }
+  return count
+}
+
 function findMachines(surface: LuaSurface, force: string, layout: LayoutState, n: LogicalNode): { machines: Machine[]; packs: string[]; inserters: LuaEntity[] } {
   const m = findModule(layout, n.id)
   if (m === undefined) return { machines: [], packs: [], inserters: [] }
@@ -290,7 +304,10 @@ function evaluate(n: LogicalNode, meter: NodeMeter): void {
     const perSample = meter.machines.length > 0 ? samples / meter.machines.length : 0
     const w = perSample > 0 ? (cur.energy - old.energy) / perSample : 0
     outputs = [{ item: "electricity", perSecond: w }]
-    load = n.powerW > 0 && gens > 0 ? w / n.powerW : 0
+    // B52: against what is built (the capacity follows growth; powerW was the first unit's).
+    const cap = rateIn(n.capacity.outputs, "electricity")
+    const built = cap > 0 ? cap : n.powerW
+    load = built > 0 && gens > 0 ? w / built : 0
   } else if (crafters) {
     const items: string[] = []
     for (const r of [...n.capacity.outputs, ...n.planned.outputs]) if (items.indexOf(r.item) < 0) items.push(r.item)
@@ -325,8 +342,16 @@ export function sampleNodes(meter: MeterState, graph: LogicalGraph, layout: Layo
     let nm = meter.nodes[id]
     if (nm === undefined || nm.builtTick !== built) {
       const found = findMachines(surface, force, layout, n)
-      nm = { machines: found.machines, inserters: found.inserters, packs: found.packs, builtTick: built, cum: newCounters(tick), ring: [] }
+      nm = { machines: found.machines, inserters: found.inserters, packs: found.packs, builtTick: built, planned: plannedMachines(layout, n), cum: newCounters(tick), ring: [] }
       meter.nodes[id] = nm
+    } else if (nm.machines.length < (nm.planned = plannedMachines(layout, n))) {
+      // B48: machines built into a built module later (a shared mine's completion keeps its builtTick) are measured
+      // once they stand; the counters go on (seed 3333: 5 of n28's 17 drills were measured, it read as depleted).
+      const found = findMachines(surface, force, layout, n)
+      if (found.machines.length > nm.machines.length) {
+        nm.machines = found.machines
+        nm.inserters = found.inserters
+      }
     }
     let lost = false
     for (const mc of nm.machines) if (!sampleMachine(nm.cum, mc, nm.packs)) lost = true
@@ -373,6 +398,13 @@ function portBelt(surface: LuaSurface, layout: LayoutState, module: string | und
 function probeable(graph: LogicalGraph, e: LogicalEdge | undefined): boolean {
   if (e === undefined || e.kind !== "belt" || e.from === undefined || e.toPort === undefined) return false
   return graph.nodes[e.from]?.lifecycle === "built" && graph.nodes[e.to]?.lifecycle === "built"
+}
+
+/** B104: belt edges a probe can measure now (the round the probes go through). */
+export function probeableCount(graph: LogicalGraph): number {
+  let n = 0
+  for (const id of graph.edgeOrder) if (probeable(graph, graph.edges[id])) n++
+  return n
 }
 
 /** Starts the next edge probe (requested edges first, then round-robin over belt edges between built nodes). */

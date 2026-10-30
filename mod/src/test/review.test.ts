@@ -1,4 +1,12 @@
-import { PlayerIndex, Tags } from "factorio:runtime"
+import { LuaRenderObject, PlayerIndex, Tags } from "factorio:runtime"
+import { miningOutpost, smelterColumn } from "../modules/generators"
+import { moduleId } from "../shared/ids"
+import { prototypeFacts } from "../modules/prototype-facts"
+import { FREE, TerrainView } from "../planner/grid"
+import { commitModule, newLayout, PlacedModule } from "../planner/layout"
+import { prepareWholePatchPlacement } from "../planner/placement"
+import { selectPolicy } from "../planner/policy"
+import { drawGrowthLayout } from "../review/growth-overlay"
 import { enqueue, getAction } from "../character/controller"
 import { clearConfigOverrides, getConfig } from "../config"
 import { addJob } from "../jobs/board"
@@ -29,6 +37,10 @@ function checkSums(id: number): void {
 }
 
 describe("review tools", () => {
+  // Leftover factions keep planning (and slow every later test in the shard).
+  after_all(() => {
+    for (const name of [...storage.factionOrder]) destroyFaction(name)
+  })
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
@@ -115,4 +127,35 @@ describe("review tools", () => {
       assert(!game.tick_paused, "left unpaused")
     })
   })
+
+  test("B33 growth overlay draws a smelter's next units and a whole-patch mine's plan, built drills and patch", () => {
+    const lab = createLab(48)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const policy = selectPolicy("early-compact", {})
+    const layout = newLayout()
+    // A 4-furnace iron column: its growth units on the end tryExpand uses.
+    const col = smelterColumn(prototypeFacts, { recipe: "iron-plate", furnaces: 4 })
+    const sm: PlacedModule = { id: moduleId("s"), canonical: col, def: col, transform: { rot: 0, mirror: false }, origin: { x: ox - 40, y: oy - 40 }, rect: { x: ox - 40, y: oy - 40, w: col.footprint.w, h: col.footprint.h } }
+    commitModule(layout, sm, prototypeFacts, policy.corridor.preferred)
+    // An iron patch (also on the surface, for the outline) and a mine planned over it.
+    const ore = { x: ox, y: oy, w: 18, h: 15 }
+    for (let x = ore.x; x < ore.x + ore.w; x++) for (let y = ore.y; y < ore.y + ore.h; y++) lab.surface.create_entity({ name: "iron-ore", position: { x: x + 0.5, y: y + 0.5 }, amount: 1000 })
+    const view: TerrainView = { block: () => FREE, ore: (x, y) => (x >= ore.x && y >= ore.y && x < ore.x + ore.w && y < ore.y + ore.h ? "iron-ore" : undefined) }
+    const raw = miningOutpost(prototypeFacts, { resource: "iron-ore", rows: 2, sides: 1 })
+    const mine: PlacedModule = { id: moduleId("mine"), canonical: raw, def: raw, transform: { rot: 0, mirror: false }, origin: { x: ox + 2, y: oy + 2 }, rect: { x: ox + 2, y: oy + 2, w: raw.footprint.w, h: raw.footprint.h } }
+    prepareWholePatchPlacement(mine, view, prototypeFacts, { x: ox - 48, y: oy - 48, w: 96, h: 96 }, policy, layout)
+    assert(mine.minePlan !== undefined, "the mine has its whole-patch plan")
+    commitModule(layout, mine, prototypeFacts, policy.corridor.preferred)
+    const objs: LuaRenderObject[] = []
+    const n = drawGrowthLayout(layout, lab.surface, undefined, 60, (o) => objs.push(o))
+    log(`[b33] growth overlay: ${n.modules} modules, ${n.units} units, ${n.builtDrills} built + ${n.plannedDrills} planned drills, ${n.oreEdges} ore edges, ${objs.length} objects`)
+    assert(n.modules === 2, `two modules drawn (${n.modules})`)
+    assert(n.units === col.expand!.maxUnits, `every planned smelter unit drawn (${n.units} of ${col.expand!.maxUnits})`)
+    assert(n.builtDrills === 2 && n.plannedDrills > 0, `built ${n.builtDrills} and planned ${n.plannedDrills} drills`)
+    assert(n.oreEdges === 2 * (ore.w + ore.h), `patch outline ${n.oreEdges} edges`)
+    for (const o of objs) assert(o.valid, "render objects exist")
+    for (const o of objs) o.destroy()
+  })
 })
+

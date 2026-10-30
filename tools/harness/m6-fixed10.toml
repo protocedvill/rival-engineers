@@ -1,0 +1,36 @@
+# M6 fixed 10-seed acceptance sweep (SPEC §3: >= 9/10 fixed CI seeds).
+# The five m6.toml seeds plus the five extra hard seeds used in the M6 report: B58, B55, D62 radar exploration, D57,
+# and the seed that exposed the B55 mall pole. Defaults otherwise; the run stops at v1-done or the 8-game-hour cap.
+# Scorecard: python3 tools/harness/m6_scorecard.py out/soak/m6-fixed10
+
+[run]
+name = "m6-fixed10"
+seeds = [11, 222, 3333, 44444, 555555, 1212121, 8080808, 46464, 98765, 6666666]
+game_hours = 8.0
+stop_when_done = true
+work_baseline = "tools/harness/baselines/m6-work.json"
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+exploring_minutes = 60
+
+[run.fail_fast.deadlines]
+"automated-red-science" = 1.5
+"stage-2" = 3.0
+"automated:logistic-science-pack" = 5.0
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 36000
+frameDumpRadius = 160
+soakDoneMilestone = "v1-done"
+# As m6-random20: keep labs consuming red+green after the v1 research goal (hidden tech; the setting stays false in
+# game), or science-sustained is unreachable once research-goal-done fires (fixed10 seed 222, 9c41906: research done at
+# 287 min at ~28/min, then 0/min to the cap).
+debugInfiniteResearch = true

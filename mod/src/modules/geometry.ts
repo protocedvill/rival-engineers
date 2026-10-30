@@ -53,6 +53,38 @@ export function outsideFootprint(def: { footprint: { w: number; h: number }; ent
   return undefined
 }
 
+/**
+ * B25: module belts that would push items out of the footprint where no `belt-out` port is. A belt (or an
+ * underground exit, or one half of a splitter) whose output tile lies outside the footprint drops its items onto
+ * whatever belt runs past there (a mall's trunk spilled iron plates onto a neighbour's route). Only a `belt-out` port
+ * at that belt, pointing the same way, may leave the module. Returns one description per offender (empty: none).
+ */
+export function beltLeaks(def: { footprint: { w: number; h: number }; entities: ModuleEntity[]; ports: Port[] }, facts: ProtoFacts): string[] {
+  const out: string[] = []
+  const { w, h } = def.footprint
+  const portAt = (x: number, y: number, dir: Dir): boolean => {
+    for (const p of def.ports) if (p.kind === "belt-out" && p.dir === dir && math.abs(p.pos.x - x) < 0.01 && math.abs(p.pos.y - y) < 0.01) return true
+    return false
+  }
+  for (const e of def.entities) {
+    const type = facts.entity(e.name)?.type
+    if (type !== "transport-belt" && type !== "underground-belt" && type !== "splitter") continue
+    if (type === "underground-belt" && e.ioType === "input") continue
+    const dir = e.dir ?? 0
+    const v = dirVec(dir)
+    // A splitter is two belt tiles side by side, across its flow.
+    const lanes: Vec[] = type === "splitter" ? [{ x: e.x - 0.5 * math.abs(v.y), y: e.y - 0.5 * math.abs(v.x) }, { x: e.x + 0.5 * math.abs(v.y), y: e.y + 0.5 * math.abs(v.x) }] : [{ x: e.x, y: e.y }]
+    for (const c of lanes) {
+      const tx = math.floor(c.x + v.x)
+      const ty = math.floor(c.y + v.y)
+      if (tx >= 0 && ty >= 0 && tx < w && ty < h) continue
+      if (portAt(c.x, c.y, dir)) continue
+      out.push(`${e.name}@${c.x},${c.y} dir ${dir} feeds out of the ${w}×${h} footprint with no belt-out port there`)
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Transforms. A transform is "mirror (x → W − x) first, then rotate `rot` quarter turns clockwise", applied in
 // the module's frame: the result is again a module with its top-left corner at (0, 0).

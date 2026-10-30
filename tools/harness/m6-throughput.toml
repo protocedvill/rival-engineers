@@ -1,0 +1,27 @@
+# Debug/soak-only sustained-throughput run: keep researching a hidden infinite red + green technology after the v1
+# research goal, so the labs remain a constant 30 + 30/min sink. This is never used for v1 acceptance.
+# The run stops at the game-hour cap rather than at v1-done.
+# Scorecard: python3 tools/harness/m6_scorecard.py out/soak/m6-throughput --hours 6
+
+[run]
+name = "m6-throughput"
+seeds = [11]
+game_hours = 6.0
+stop_when_done = false
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+exploring_minutes = 60
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 36000
+frameDumpRadius = 160
+soakDoneMilestone = "debug-never"
+debugInfiniteResearch = true

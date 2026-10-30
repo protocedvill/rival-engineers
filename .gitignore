@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 mod/build/
 mod/build-unit/
 .factorio-test/

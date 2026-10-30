@@ -8,9 +8,12 @@
 // is a list of pole lines added to the LayoutState (`layout.poles`), so routes and later plans keep off them, and the
 // build list stamps them. Pure: no Factorio globals.
 
+import { moduleId, poleId, poleLineId } from "../shared/ids"
+import type { ModuleId, PoleId, PoleLineId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
+import { claimPoleTile, poleClaimConflict, releasePoleTile } from "./claims"
 import { FREE, ROCK, TerrainView, tkey, TREE } from "./grid"
-import { LayoutState, PlannedPole } from "./layout"
+import { bumpLayout, LayoutState, PlannedPole } from "./layout"
 import { LayoutPolicy } from "./policy"
 
 interface PoleNode {
@@ -32,17 +35,17 @@ export interface PoleJob {
   /** Component root → powered. */
   powered: Record<number, boolean>
   /** Owners (module ids) that still need joining, nearest first when picked. */
-  pending: string[]
+  pending: ModuleId[]
   current?: PoleSearch
-  added: string[]
+  added: PoleId[]
   failures: Record<string, string>
   work: number
   /** Module ids that ended up powered (or were). */
-  connected: string[]
+  connected: ModuleId[]
 }
 
 interface PoleSearch {
-  target: string
+  target: ModuleId
   /** Window margin around the endpoints; a failed search is retried with a wider one. */
   margin: number
   /** Target component poles. */
@@ -129,24 +132,48 @@ function addNode(job: PoleJob, n: PoleNode): number {
   return i
 }
 
+/** Factorio electric poles have five copper-wire connections. The API exposes wire reach but not this count. */
+const MAX_WIRE_CONNECTIONS = 5
+
+/** Existing copper wires a pole can still take (geometric neighbour count, conservative). */
+function wireDegree(job: PoleJob, i: number): number {
+  let n = 0
+  const a = job.nodes[i]
+  for (let j = 0; j < job.nodes.length; j++) {
+    if (j === i) continue
+    const b = job.nodes[j]
+    const dx = a.x - b.x
+    const dy = a.y - b.y
+    const r = math.min(a.reach, b.reach)
+    if (dx * dx + dy * dy <= r * r + 1e-9) n++
+  }
+  return n
+}
+
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
-function layoutPoles(layout: LayoutState, facts: ProtoFacts): PoleNode[] {
+function layoutPoles(layout: LayoutState, facts: ProtoFacts, dropped?: Record<number, boolean>): PoleNode[] {
   const out: PoleNode[] = []
   for (const m of layout.modules) {
     for (const e of m.def.entities) {
       const f = facts.entity(e.name)
       if (f?.type !== "electric-pole") continue
-      out.push({ owner: m.id, x: m.origin.x + e.x, y: m.origin.y + e.y, reach: f.wireReach ?? 7.5 })
+      const x = m.origin.x + e.x
+      const y = m.origin.y + e.y
+      if (dropped !== undefined && dropped[tkey(math.floor(x), math.floor(y))] === true) continue
+      out.push({ owner: m.id, x, y, reach: f.wireReach ?? 7.5 })
     }
   }
-  for (const p of layout.poles ?? []) out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+  for (const p of layout.poles ?? []) {
+    if (dropped !== undefined && dropped[tkey(p.x, p.y)] === true) continue
+    out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+  }
   return out
 }
 
 /** Modules that make electricity (a generator entity inside) and modules that need it (a power port). */
-export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: string[]; consumers: string[] } {
-  const sources: string[] = []
-  const consumers: string[] = []
+export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: ModuleId[]; consumers: ModuleId[] } {
+  const sources: ModuleId[] = []
+  const consumers: ModuleId[] = []
   for (const m of layout.modules) {
     let gen = false
     for (const e of m.def.entities) if (facts.entity(e.name)?.type === "generator") gen = true
@@ -175,21 +202,22 @@ export function newPoleJob(prefix: string, pole: string, facts: ProtoFacts): Pol
   }
 }
 
-function init(job: PoleJob, layout: LayoutState, facts: ProtoFacts): number {
+function init(job: PoleJob, layout: LayoutState, facts: ProtoFacts, dropped?: Record<number, boolean>): number {
   const roles = powerRoles(layout, facts)
-  const isSource: Record<string, boolean> = {}
-  for (const s of roles.sources) isSource[s] = true
-  const poles = layoutPoles(layout, facts)
+  const poles = layoutPoles(layout, facts, dropped)
+  // B39: one network. Only the first generator module (the first power plant) is powered; later ones join it like
+  // consumers do, or a second plant stays an island that powers nothing.
+  const main = roles.sources[0]
   for (const p of poles) {
     const i = addNode(job, p)
-    if (isSource[p.owner]) job.powered[find(job, i)] = true
+    if (p.owner === main) job.powered[find(job, i)] = true
   }
   // Without a generator there is nothing to connect to yet: a later plan (the steam block's) joins everything.
   if (roles.sources.length === 0) {
     job.phase = "done"
     return poles.length
   }
-  job.pending = [...roles.consumers]
+  job.pending = [...roles.sources.slice(1), ...roles.consumers]
   job.phase = "connect"
   return poles.length
 }
@@ -207,7 +235,7 @@ function ownerHasPoles(job: PoleJob, owner: string): boolean {
 /** Free for a pole: buildable terrain (trees and rocks at a cost) and not used by the layout. Returns -1 if not. */
 function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): number {
   const k = tkey(x, y)
-  if (layout.occ[k] !== undefined || layout.reserved[k] !== undefined || layout.routeOcc[k] !== undefined) return -1
+  if (poleClaimConflict(layout, k) !== undefined) return -1
   const b = terrain.block(x, y)
   let c = 1
   if (b === TREE) {
@@ -227,9 +255,9 @@ function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolic
 const MARGINS = [16, 48, 112]
 
 /** Picks the pending owner nearest the powered set and starts a search for it. */
-function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boolean {
-  let best: { owner: string; d2: number; src: PoleNode } | undefined
-  const keep: string[] = []
+function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): boolean {
+  let best: { owner: ModuleId; d2: number; src: PoleNode } | undefined
+  const keep: ModuleId[] = []
   for (const owner of retry !== undefined ? [retry.owner] : job.pending) {
     if (ownerPowered(job, owner)) {
       job.connected.push(owner)
@@ -244,7 +272,7 @@ function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boo
       const a = job.nodes[i]
       if (a.owner !== owner) continue
       for (let j = 0; j < job.nodes.length; j++) {
-        if (!job.powered[find(job, j)]) continue
+        if (!job.powered[find(job, j)] || wireDegree(job, j) >= MAX_WIRE_CONNECTIONS) continue
         const b = job.nodes[j]
         const d2 = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)
         if (best === undefined || d2 < best.d2 || (d2 === best.d2 && owner < best.owner)) best = { owner, d2, src: b }
@@ -254,19 +282,28 @@ function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boo
   if (retry === undefined) job.pending = keep
   if (best === undefined) return false
   job.pending = job.pending.filter((o) => o !== best!.owner)
-  // The target: every pole of the owner's component(s).
+  // The target: every pole of the owner's component(s). B43: that includes line poles joined to it, e.g. a line to a
+  // mine whose trunk line a plan evicted (B37): the mine's own pole may sit where no new pole can reach it.
+  const roots: Record<number, boolean> = {}
+  for (let i = 0; i < job.nodes.length; i++) if (job.nodes[i].owner === best.owner) roots[find(job, i)] = true
   const goals: PoleNode[] = []
   let gx1 = math.huge
   let gy1 = math.huge
   let gx2 = -math.huge
   let gy2 = -math.huge
-  for (const n of job.nodes) {
-    if (n.owner !== best.owner) continue
+  for (let i = 0; i < job.nodes.length; i++) {
+    const n = job.nodes[i]
+    // A saturated pole cannot accept the new wire; choose another pole in the target component.
+    if (!roots[find(job, i)] || wireDegree(job, i) >= MAX_WIRE_CONNECTIONS) continue
     goals.push(n)
     gx1 = math.min(gx1, n.x)
     gy1 = math.min(gy1, n.y)
     gx2 = math.max(gx2, n.x)
     gy2 = math.max(gy2, n.y)
+  }
+  if (goals.length === 0) {
+    job.failures[best.owner] = "every pole has all wire connections in use"
+    return false
   }
   const margin = retry?.margin ?? MARGINS[0]
   const x0 = math.floor(math.min(gx1, best.src.x) - margin)
@@ -274,7 +311,7 @@ function startNext(job: PoleJob, retry?: { owner: string; margin: number }): boo
   const x1 = math.ceil(math.max(gx2, best.src.x) + margin)
   const y1 = math.ceil(math.max(gy2, best.src.y) + margin)
   const s: PoleSearch = {
-    target: best.owner,
+    target: moduleId(best.owner),
     margin,
     goals,
     gx1,
@@ -434,21 +471,28 @@ function commitLine(job: PoleJob, layout: LayoutState): void {
     tiles.push(st)
     st = s.par[st]
   }
-  const lineId = `${job.prefix}${layout.poleLines?.length ?? 0}`
+  // B37: evicted lines leave gaps in the numbering; the next free id keeps line ids unique.
+  const used: Record<string, boolean> = {}
+  for (const l of layout.poleLines ?? []) used[l.id] = true
+  for (const p of layout.evictedPoles ?? []) used[p.line] = true
+  let n = layout.poleLines?.length ?? 0
+  while (used[`${job.prefix}${n}`]) n++
+  const lineId: PoleLineId = poleLineId(`${job.prefix}${n}`)
   layout.poles ??= []
   layout.poleLines ??= []
-  const ids: string[] = []
+  const ids: PoleId[] = []
   for (let i = tiles.length - 1; i >= 0; i--) {
     const x = s.x0 + (tiles[i] % s.w)
     const y = s.y0 + math.floor(tiles[i] / s.w)
-    const id = `${lineId}.${tiles.length - 1 - i}`
+    const id = poleId(`${lineId}.${tiles.length - 1 - i}`)
     layout.poles.push({ id, name: job.pole, x, y, line: lineId })
-    layout.occ[tkey(x, y)] = `x:${lineId}`
+    claimPoleTile(layout, tkey(x, y), lineId)
     ids.push(id)
     job.added.push(id)
     addNode(job, { owner: lineId, x: x + 0.5, y: y + 0.5, reach: job.reach })
   }
   layout.poleLines.push({ id: lineId, to: s.target, from: from ?? "?", poles: ids })
+  bumpLayout(layout)
   job.connected.push(s.target)
 }
 
@@ -495,29 +539,139 @@ export function polesNow(layout: LayoutState, terrain: TerrainView, facts: Proto
 
 /**
  * Independent check: the pole components of a layout (module poles and line poles joined within wire reach), and the
- * consumer modules not connected to any generator module.
+ * modules not on the first generator module's network: consumers, and (B39) later generator modules.
  */
 export function unpoweredModules(layout: LayoutState, facts: ProtoFacts): string[] {
+  return unpoweredWith(layout, facts, undefined)
+}
+
+/** `unpoweredModules` as it would be if the poles on the listed tiles were gone (B63: simulate a removal). */
+export function unpoweredWith(layout: LayoutState, facts: ProtoFacts, dropped: Record<number, boolean> | undefined): string[] {
   const job = newPoleJob("check:", "small-electric-pole", facts)
-  init(job, layout, facts)
+  init(job, layout, facts, dropped)
   const out: string[] = []
-  for (const owner of powerRoles(layout, facts).consumers) if (!ownerPowered(job, owner)) out.push(owner)
+  const roles = powerRoles(layout, facts)
+  // B39: a generator module off the first plant's network counts too (an island powers nothing).
+  for (const owner of [...roles.sources.slice(1), ...roles.consumers]) if (!ownerPowered(job, owner)) out.push(owner)
   return out
+}
+
+/** A pole that must survive a removal because it is the only path from a generator to something (B63). */
+export interface KeptPole {
+  /** Tile key of the pole. */
+  key: number
+  name: string
+  /** Layout tile (integers, like LayoutState.poles). */
+  x: number
+  y: number
+  /** The kept line it belongs to, when it is a line pole (a module's own pole has none and is re-homed). */
+  line?: string
+  /** A module this pole is the only power path for: the line it is re-homed into serves it. */
+  forModule: string
+}
+
+/**
+ * B63 (bridge rule): a pole is a bridge when removing it disconnects a module that was powered. `abandonParts` takes a
+ * module's own poles and its lines' poles with it, and a line that merely *passes through* the abandoned ground can be
+ * the only link for everything behind it (seed 3891760: 91 modules went dark on a 17-tile gap).
+ * Returns the lines that may still be removed, and the poles that must be kept with the module each protects.
+ */
+export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: string[], dropModules: string[]): { dropLines: string[]; keepPoles: KeptPole[] } {
+  const none = { dropLines, keepPoles: [] as KeptPole[] }
+  const lineDrop: Record<string, boolean> = {}
+  for (const id of dropLines) lineDrop[id] = true
+  const modDrop: Record<string, boolean> = {}
+  for (const id of dropModules) modDrop[id] = true
+  const roles = powerRoles(layout, facts)
+  const isSource: Record<string, boolean> = {}
+  for (const id of roles.sources) isSource[id as string] = true
+  for (const id of dropModules) if (isSource[id] === true) return none
+  // Only modules that stay matter: the ones being abandoned are meant to go dark.
+  const orphans = (dropped: Record<number, boolean> | undefined): string[] => {
+    const out: string[] = []
+    for (const id of unpoweredWith(layout, facts, dropped)) if (modDrop[id] !== true) out.push(id)
+    return out
+  }
+  if (orphans(undefined).length > 0) return none
+  const cands: { key: number; name: string; x: number; y: number; line: string | undefined }[] = []
+  for (const m of layout.modules) {
+    if (modDrop[m.id] !== true) continue
+    for (const e of m.def.entities) {
+      if (facts.entity(e.name)?.type !== "electric-pole") continue
+      const x = math.floor(m.origin.x + e.x)
+      const y = math.floor(m.origin.y + e.y)
+      cands.push({ key: tkey(x, y), name: e.name, x, y, line: undefined })
+    }
+  }
+  for (const p of layout.poles ?? []) if (lineDrop[p.line] === true) cands.push({ key: tkey(p.x, p.y), name: p.name, x: p.x, y: p.y, line: p.line })
+  if (cands.length === 0) return none
+  const all: Record<number, boolean> = {}
+  for (const c of cands) all[c.key] = true
+  if (orphans(all).length === 0) return none
+  const keep: KeptPole[] = []
+  for (const c of cands) {
+    const without: Record<number, boolean> = {}
+    for (const k in all) without[k as unknown as number] = true
+    delete without[c.key]
+    const lost = orphans(without)
+    if (lost.length === 0) continue
+    keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: lost[0] })
+  }
+  const finalDrop: Record<number, boolean> = {}
+  for (const k in all) finalDrop[k as unknown as number] = true
+  for (const k of keep) delete finalDrop[k.key]
+  // Two bridges that only work together: rather than risk a cut, keep every candidate.
+  if (orphans(finalDrop).length > 0) {
+    keep.length = 0
+    for (const c of cands) keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: roles.consumers[0] ?? roles.sources[0] })
+  }
+  const keptLines: Record<string, boolean> = {}
+  for (const c of cands) if (c.line !== undefined && keep.some((k) => k.key === c.key)) keptLines[c.line] = true
+  const out: string[] = []
+  for (const id of dropLines) if (keptLines[id] !== true) out.push(id)
+  return { dropLines: out, keepPoles: keep }
+}
+
+/**
+ * B63: a kept pole that belonged to an abandoned module is put back into the layout as its own one-pole line, re-homed
+ * to the module it protects, so the graph still shows the path that survived.
+ */
+export function rehomeKeptPoles(layout: LayoutState, keep: KeptPole[]): void {
+  let any = false
+  for (const k of keep) {
+    if (k.line !== undefined) continue
+    // The id must keep the `poles:` prefix: `poleTag` marks a pole's `occ` as `x:<line>` in the same space as an
+    // interaction claim (`x:<module>`), and `isPoleTag` tells them apart by the prefix. A line id without it decodes as
+    // an interaction claim owned by a module that does not exist, so every later plan is rejected as
+    // `invalid-layout-claims` (measured: a 4-tile leak looping the goal forever).
+    const line = poleLineId(`poles:kept:${k.key}`)
+    const id = poleId(`${line}.0`)
+    layout.poles ??= []
+    layout.poleLines ??= []
+    layout.poles.push({ id, name: k.name, x: k.x, y: k.y, line })
+    claimPoleTile(layout, tkey(k.x, k.y), line)
+    layout.poleLines.push({ id: line, to: moduleId(k.forModule), from: "?", poles: [id] })
+    any = true
+  }
+  if (any) bumpLayout(layout)
 }
 
 /** Removes the pole lines whose ids are listed (a plan rolled back), from the layout. */
 export function removePoleLines(layout: LayoutState, lineIds: string[]): void {
   const drop: Record<string, boolean> = {}
   for (const id of lineIds) drop[id] = true
+  let removed = 0
   const kept: PlannedPole[] = []
   for (const p of layout.poles ?? []) {
     if (drop[p.line]) {
-      const k = tkey(p.x, p.y)
-      if (layout.occ[k] === `x:${p.line}`) delete layout.occ[k]
+      removed++
+      releasePoleTile(layout, tkey(p.x, p.y), p.line)
     } else kept.push(p)
   }
+  const oldLines = layout.poleLines?.length ?? 0
   layout.poles = kept
   layout.poleLines = (layout.poleLines ?? []).filter((l) => !drop[l.id])
+  if (removed > 0 || (layout.poleLines?.length ?? 0) !== oldLines) bumpLayout(layout)
 }
 
 export function poleTileKeys(layout: LayoutState): number[] {

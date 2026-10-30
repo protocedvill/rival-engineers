@@ -436,13 +436,13 @@
    "name": "transport-belt",
    "x": 5.5,
    "y": 14.5,
-   "dir": 8
+   "dir": 12
   },
   {
    "name": "transport-belt",
    "x": 6.5,
    "y": 14.5,
-   "dir": 8
+   "dir": 4
   },
   {
    "name": "inserter",
@@ -498,6 +498,7 @@
   "assembling-machine-2 -> assembling-machine-1 (v1 tier, D20); constant combinators (labels) removed",
   "the bus connection (undergrounds above the tile) is cropped; the belts' top tiles are the ports",
   "the pass-through underground from the tile below (bottom of the output chain) is removed",
+  "B25: the copper and gear belts no longer run off the bottom edge (they would spill onto belts passing the module): their last tiles turn west (into an empty tile) and east (into the inserter that picks from it)",
   "expand: the tile repeats every 6 rows (4 science assemblers); units are copies of rows 2-7"
  ],
  "recipe": "automation-science-pack",

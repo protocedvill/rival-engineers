@@ -85,13 +85,18 @@ function enqueue(t: TerrainState, cx: number, cy: number): void {
   t.queue.push(k)
 }
 
-/** Queues every chunk overlapping `area` (world tiles) that is not scanned yet. */
-export function requestArea(t: TerrainState, area: Rect): void {
+/**
+ * Queues every chunk overlapping `area` (world tiles) that is not scanned yet. D62: with `known`, only the chunks it
+ * allows (the rest stay UNKNOWN to the planner).
+ */
+export function requestArea(t: TerrainState, area: Rect, known?: (this: void, cx: number, cy: number) => boolean): void {
   const cx1 = math.floor(area.x / 32)
   const cy1 = math.floor(area.y / 32)
   const cx2 = math.floor((area.x + area.w - 1) / 32)
   const cy2 = math.floor((area.y + area.h - 1) / 32)
-  for (let cy = cy1; cy <= cy2; cy++) for (let cx = cx1; cx <= cx2; cx++) if (t.chunks[tkey(cx, cy)] === undefined) enqueue(t, cx, cy)
+  for (let cy = cy1; cy <= cy2; cy++) {
+    for (let cx = cx1; cx <= cx2; cx++) if (t.chunks[tkey(cx, cy)] === undefined && (known === undefined || known(cx, cy))) enqueue(t, cx, cy)
+  }
 }
 
 export function terrainReady(t: TerrainState): boolean {
@@ -199,6 +204,26 @@ export function onEntityChanged(entity: LuaEntity | undefined): void {
   markDirty(entity.surface.name, box.left_top, box.right_bottom)
 }
 
+/**
+ * Destroys `entity` and marks its ground for a rescan: `destroy()` raises no event the terrain model listens to
+ * (M6a.2, seed 222: picked-up drills and dropped ghosts left their tiles OWN for good).
+ */
+export function destroyEntity(entity: LuaEntity): void {
+  const surface = entity.surface.name
+  const box = entity.bounding_box
+  entity.destroy()
+  markDirty(surface, box.left_top, box.right_bottom)
+}
+
+/**
+ * Drains every terrain's dirty queue under a per-terrain budget. The planner entries drain their own region on demand,
+ * but removals between entries (a pick-up, a dropped ghost) would otherwise wait for the next entry, and a synchronous
+ * planGrowth in between could read stale ground (M6a.2, seed 222).
+ */
+export function stepAllTerrains(maxChunks: number): void {
+  for (const [, t] of pairs(terrains())) stepTerrain(t, maxChunks)
+}
+
 /** The pure view the planner reads. Unscanned tiles are UNKNOWN. */
 export function terrainView(t: TerrainState): TerrainView {
   const chunks = t.chunks
@@ -218,6 +243,39 @@ export function terrainView(t: TerrainState): TerrainView {
       if (c === undefined) return undefined
       const i = c.ore[(y - cy * 32) * 32 + (x - cx * 32)]
       return i !== undefined ? resources[i - 1] : undefined
+    },
+    oreTiles: (resource, rect) => {
+      const out: number[] = []
+      const id = t.resourceIndex[resource]
+      if (id === undefined) return out
+      for (let cx = math.floor(rect.x / 32); cx <= math.floor((rect.x + rect.w - 1) / 32); cx++) {
+        for (let cy = math.floor(rect.y / 32); cy <= math.floor((rect.y + rect.h - 1) / 32); cy++) {
+          const c = chunks[tkey(cx, cy)]
+          if (c === undefined) continue
+          for (const [i, r] of pairs(c.ore)) {
+            if (r !== id) continue
+            const x = cx * 32 + ((i as number) % 32)
+            const y = cy * 32 + math.floor((i as number) / 32)
+            if (x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h) out.push(tkey(x, y))
+          }
+        }
+      }
+      // pairs order is not deterministic across loads: sort.
+      out.sort((a, b) => a - b)
+      return out
+    },
+    stamp: (rect) => {
+      let n = 0
+      let last = 0
+      for (let cx = math.floor(rect.x / 32); cx <= math.floor((rect.x + rect.w - 1) / 32); cx++) {
+        for (let cy = math.floor(rect.y / 32); cy <= math.floor((rect.y + rect.h - 1) / 32); cy++) {
+          const c = chunks[tkey(cx, cy)]
+          if (c === undefined) continue
+          n++
+          last = math.max(last, c.tick)
+        }
+      }
+      return `${n}@${last}`
     },
   }
 }
