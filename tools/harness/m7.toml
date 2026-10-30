@@ -13,7 +13,7 @@ stop_when_done = true
 stalls = 2
 consecutive_plan_failures = 8
 ghost_rounds = 20
-exploring_minutes = 60
+exploring_minutes = 120
 
 [mapgen]
 enemy_bases = false

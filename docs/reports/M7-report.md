@@ -323,6 +323,13 @@ five radar outposts without finding crude (B115). The field is chosen from real 
 the plan region and reads every known chunk (home, explored strips, radar-scanned or charted). Known chunks that were
 never generated are generated on the spot (blocking, once per chunk).
 
+Ground truth from a probe on the minute-450 save: with every chunk within 768 tiles of the faction generated, seed 11
+has no crude there. The nearest wells are 7 at about (−364, 31), ~830 tiles west of the hub. The west arm reaches them
+with its third outpost, the 12th outpost in arm order. The second east outpost (E2) then stalled for 45 game-min
+(B116): its 28 small poles needed 14 wood, the two members held 13 and 10, and the depot was full with no spot for
+another within 24 tiles of the hub. The bootstrap pools pockets when there is a depot, so it saw enough wood, while
+neither member could claim the craft alone.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
@@ -334,3 +341,6 @@ never generated are generated on the spot (blocking, once per chunk).
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
+| Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
+| Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |
+| Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

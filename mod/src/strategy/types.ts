@@ -119,6 +119,8 @@ export interface BrainState {
   exploreRadius: number
   /** Rescan the explored area at this tick (chunk generation is asynchronous). */
   rescanAt?: number
+  /** B116: no depot spot was free at the last search: search again at this tick. */
+  depotSearchAt?: number
   /** Why the spawn spot is a compromise, if it is. */
   spawnNote?: string
 }

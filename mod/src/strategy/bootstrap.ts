@@ -61,6 +61,10 @@ const EXPLORE_MAX = HOME_SCANS
 /** D43: a new mining site must hold this many times the depletion lead time of ore, or it would be replaced at once. */
 const SITE_MIN_LIFE = 2
 const PRIORITY_RETIRE = 60
+/** B116: a new depot goes within this many tiles of the hub (the hub fills up as the factory grows). */
+const DEPOT_SEARCH_RADIUS = 64
+/** B116: ticks between depot spot searches that found nothing (the search scans the whole square). */
+const DEPOT_SEARCH_RETRY = 3600
 
 type CrewJob = Job<JobPayload>
 
@@ -497,13 +501,13 @@ function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
   const cx = math.floor(hub.x)
   const cy = math.floor(hub.y)
   const catalog = ctx.brain.catalog
-  for (let r = 0; r <= 24; r++) {
+  const others = otherClaims(ctx.faction.name, ctx.faction.surface)
+  for (let r = 0; r <= DEPOT_SEARCH_RADIUS; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
         if (math.max(math.abs(dx), math.abs(dy)) !== r) continue
         const part = partAt(catalog.chest, catalog.chestItem, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
         let ok = true
-        const others = otherClaims(ctx.faction.name, ctx.faction.surface)
         for (let x = part.x1 - 2; x < part.x2 + 2 && ok; x++) {
           for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
         }
@@ -749,7 +753,9 @@ function completeGoal(ctx: Ctx, goal: Goal): void {
 
 function planSite(ctx: Ctx, goal: Extract<Goal, { kind: "site" }>): Site | undefined {
   if (goal.site === "depot") {
+    if (ctx.brain.depotSearchAt !== undefined && ctx.tick < ctx.brain.depotSearchAt) return undefined
     const spot = findDepotSpot(ctx)
+    ctx.brain.depotSearchAt = spot ? undefined : ctx.tick + DEPOT_SEARCH_RETRY
     return spot ? createSite(ctx, "depot", [spot]) : undefined
   }
   const resource = goal.resource!
