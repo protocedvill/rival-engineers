@@ -38,6 +38,11 @@ export interface ModuleEntity {
   /** Mining drills: the resource the module is built for (informational; the drill mines what is under it). */
   mines?: string
   /**
+   * M7b: a drill on a fluid resource (a pumpjack): what it yields per second at its well (10/s × the well's yield), read
+   * from the well when the module is generated. Overrides the mining-speed rate.
+   */
+  perSecond?: number
+  /**
    * D42 buffer depot: a chest the module fills through an inserter and the crew collects from. Never a demand in the
    * graph or rates; its usable slots are limited when built and blocked in throughput validation (D33).
    */

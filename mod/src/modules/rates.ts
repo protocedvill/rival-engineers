@@ -207,8 +207,9 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
         warnings.push(`drill ${e.name}@${e.x},${e.y}: unknown resource ${tostring(resource)}`)
         continue
       }
-      const node = newNode(i, "drill", (f.miningSpeed ?? 0) / time)
+      const node = newNode(i, "drill", e.perSecond ?? (f.miningSpeed ?? 0) / time)
       node.outs[product] = 1
+      if (e.perSecond !== undefined) node.fluids[product] = fluidItems[product] = true
       if (f.burner) addTo(upkeep, e.name, 1)
       nodes[i] = node
     } else if (f.type === "lab") {

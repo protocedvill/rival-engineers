@@ -19,6 +19,7 @@
 import { finalizeModule, ModuleDraft } from "./build"
 import { ProtoFacts, RecipeFacts } from "./facts"
 import { inserterCapacity } from "./rates"
+import { placePoles } from "./poles"
 import { Dir, EAST, ModuleDef, ModuleEntity, NORTH, Port, SOUTH, WEST } from "./types"
 
 export interface CommonParams {
@@ -1008,7 +1009,133 @@ export function waterPump(facts: ProtoFacts, p: WaterPumpParams): ModuleDef {
   return finalizeModule(draft, facts)
 }
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump"
+// ---------------------------------------------------------------------------------------------------------
+// Pumpjack field (M7b)
+
+export interface PumpjackFieldParams extends CommonParams {
+  /**
+   * The wells: tile of each (the pumpjack is centred on it) and its crude per second; any origin. Module params hold
+   * them encoded (`x,y,perSecond;…`, `encodeWells`) so the module can be generated again from its params.
+   */
+  wells: { x: number; y: number; perSecond: number }[] | string
+  resource?: string
+  pumpjack?: string
+  pipe?: string
+}
+
+/**
+ * A pumpjack on every well of a field, all facing north, and plain pipes joining their outputs to one `pipe-out`
+ * port on the east edge (only one fluid here, so pipes may touch anything). Poles from `placePoles`. The footprint is
+ * the pumpjacks' box plus a margin of `PUMPJACK_FIELD_MARGIN` tiles for pipes and poles.
+ */
+export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): ModuleDef {
+  const pumpjack = p.pumpjack ?? "pumpjack"
+  const pipe = p.pipe ?? "pipe"
+  const resource = p.resource ?? "crude-oil"
+  const wells = typeof p.wells === "string" ? decodeWells(p.wells) : p.wells
+  if (wells.length === 0) error("pumpjack-field: no wells")
+  const M = PUMPJACK_FIELD_MARGIN
+  let minX = math.huge
+  let minY = math.huge
+  let maxX = -math.huge
+  let maxY = -math.huge
+  for (const w of wells) {
+    minX = math.min(minX, w.x)
+    minY = math.min(minY, w.y)
+    maxX = math.max(maxX, w.x)
+    maxY = math.max(maxY, w.y)
+  }
+  // Module-local tile of each well: the pumpjack (3×3) covers it ±1; M tiles of room around.
+  const ox = minX - 1 - M
+  const oy = minY - 1 - M
+  const W = maxX - minX + 3 + 2 * M
+  const H = maxY - minY + 3 + 2 * M
+  const blocked: Record<string, boolean> = {}
+  const entities: ModuleEntity[] = []
+  const outs: { x: number; y: number }[] = []
+  const box = need(facts.entity(pumpjack)?.fluidBoxes?.find((b) => b.production === "output"), `${pumpjack} has no output fluid box`)
+  const c = box.connections[0]
+  for (const w of wells) {
+    const x = w.x - ox
+    const y = w.y - oy
+    entities.push({ name: pumpjack, x: x + 0.5, y: y + 0.5, dir: NORTH, mines: resource, perSecond: w.perSecond })
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) blocked[`${x + dx},${y + dy}`] = true
+    outs.push({ x: x + c.x + [0, 1, 0, -1][c.dir], y: y + c.y + [-1, 0, 1, 0][c.dir] })
+  }
+  // The port: the east edge, on the row of the first output; the collector grows from it to each output in turn.
+  const port = { x: W - 1, y: outs[0].y }
+  const pipes: Record<string, boolean> = { [`${port.x},${port.y}`]: true }
+  const inside = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < W && y < H && !blocked[`${x},${y}`]
+  for (const o of outs) {
+    if (pipes[`${o.x},${o.y}`]) continue
+    // BFS from the output to the nearest collector tile.
+    const prev: Record<string, string> = {}
+    const queue: { x: number; y: number }[] = [o]
+    prev[`${o.x},${o.y}`] = ""
+    let hit: string | undefined
+    while (queue.length > 0 && hit === undefined) {
+      const t = queue.shift()!
+      for (let d = 0; d < 4; d++) {
+        const nx = t.x + [0, 1, 0, -1][d]
+        const ny = t.y + [-1, 0, 1, 0][d]
+        const k = `${nx},${ny}`
+        if (prev[k] !== undefined || !inside(nx, ny)) continue
+        prev[k] = `${t.x},${t.y}`
+        if (pipes[k]) {
+          hit = k
+          break
+        }
+        queue.push({ x: nx, y: ny })
+      }
+    }
+    if (hit === undefined) error(`pumpjack-field: no pipe path from the well output at ${o.x},${o.y}`)
+    for (let k: string = prev[hit]; k !== ""; k = prev[k]) pipes[k] = true
+  }
+  for (const [k] of pairs(pipes)) {
+    const [xs, ys] = string.match(k as string, "^(-?%d+),(-?%d+)$")
+    entities.push({ name: pipe, x: tonumber(xs)! + 0.5, y: tonumber(ys)! + 0.5 })
+    blocked[k as string] = true
+  }
+  const poles = placePoles({ w: W, h: H }, entities, facts, p.pole ?? "small-electric-pole", blocked)
+  const first = poles[0]
+  for (const pole of poles) entities.push(pole)
+  let total = 0
+  for (const w of wells) total += w.perSecond
+  const draft: ModuleDraft = {
+    id: `pumpjack-field/${encodeWells(wells)}`,
+    source: "generated",
+    generator: "pumpjack-field",
+    provenance: "generator pumpjack-field (Rival Engineers)",
+    description: `${wells.length} ${pumpjack} on ${resource}, ${string.format("%.1f", total)}/s`,
+    footprint: { w: W, h: H },
+    entities,
+    ports: [
+      { id: `out-${resource}`, kind: "pipe-out", pos: { x: port.x + 0.5, y: port.y + 0.5 }, dir: EAST, item: resource },
+      { id: "power", kind: "power", pos: { x: first?.x ?? 0.5, y: first?.y ?? 0.5 }, dir: NORTH },
+    ],
+    rotatable: false,
+    mirrorable: false,
+    site: "resource-patch",
+    anchor: { resource },
+    params: { wells: encodeWells(wells), resource },
+  }
+  return finalizeModule(draft, facts)
+}
+
+export function encodeWells(wells: { x: number; y: number; perSecond: number }[]): string {
+  return wells.map((w) => string.format("%d,%d,%g", w.x, w.y, w.perSecond)).join(";")
+}
+
+function decodeWells(s: string): { x: number; y: number; perSecond: number }[] {
+  const out: { x: number; y: number; perSecond: number }[] = []
+  for (const [x, y, r] of string.gmatch(s, "(-?%d+),(-?%d+),([%d%.e%-]+)")) out.push({ x: tonumber(x)!, y: tonumber(y)!, perSecond: tonumber(r)! })
+  return out
+}
+
+/** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
+const PUMPJACK_FIELD_MARGIN = 2
+
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1024,7 +1151,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "radar") return radarCell(facts, P)
   if (name === "fluid-chain") return fluidChain(facts, P)
   if (name === "water-pump") return waterPump(facts, P)
+  if (name === "pumpjack-field") return pumpjackField(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field"]

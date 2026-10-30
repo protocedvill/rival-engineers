@@ -174,13 +174,21 @@ a plain pipe beside another module's crude port), T1 44/44 files.
 - Generator `water-pump`: an offshore pump on a shore (`site = shore`, like the steam block) and its output pipe as the
   `pipe-out` port; `rates.ts` puts a water-port pump's 1200/s out (pumps feeding boilers stay the steam block's).
 
-Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water apart from petroleum; the water pump),
+- Generator `pumpjack-field` (`wells`: tile and crude/s of each, encoded in the params so the module regenerates): a
+  pumpjack facing north on every well, plain pipes (one fluid: they may touch anything) joining every output to one
+  `pipe-out` port on the east edge (BFS to the growing collector), poles by `placePoles`. A drill entity may carry
+  `perSecond` (a pumpjack's yield), which the rate engine uses instead of its mining speed. In-game: three wells at
+  100% (10/s each) deliver **29.98 of 30 crude/s** at the port (T2 engine-capabilities "M7b: a generated pumpjack field").
+
+Tests: T1 `fluid-chain` (rates; no overlaps; unused boxes touch no pipe; water apart from petroleum; the water pump; the
+pumpjack field's network, power and rates),
 T2 validation `fluid-chain plastic 2/2` and `sulfur 1/1`. The water pump is checked in-game with its first real route.
 
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
+| Pumpjack field margin | `modules/generators.ts` `PUMPJACK_FIELD_MARGIN` | 2 tiles | Agent guess: room around the pumpjacks for the collector pipes and poles. | no |
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |

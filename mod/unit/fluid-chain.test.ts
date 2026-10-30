@@ -1,4 +1,5 @@
-import { fluidChain, waterPump } from "../src/modules/generators"
+import { fluidChain, pumpjackField, waterPump } from "../src/modules/generators"
+import { powerCheck } from "../src/modules/poles"
 import { occupancy } from "../src/modules/geometry"
 import { rateOf } from "../src/modules/rates"
 import { ModuleDef } from "../src/modules/types"
@@ -70,6 +71,45 @@ test("water pump: an offshore pump on a shore puts 1200 water/s out of its pipe-
   eq(def.site, "shore")
   const port = def.ports[0]
   ok(port.kind === "pipe-out" && port.item === "water", "a water pipe-out port")
+})
+
+test("pumpjack field: a pumpjack on every well, one pipe network to the pipe-out port, every pumpjack powered", () => {
+  const wells = [
+    { x: 100, y: 200, perSecond: 7.5 },
+    { x: 106, y: 201, perSecond: 12 },
+    { x: 102, y: 207, perSecond: 4.2 },
+    { x: 110, y: 206, perSecond: 9 },
+  ]
+  const def = pumpjackField(F, { wells })
+  near(rateOf(def.rates.outputs, "crude-oil"), 32.7, 1e-6, "crude: the wells' sum")
+  eq(def.rates.outputs[0]?.kind, "fluid")
+  occupancy(def.entities, F)
+  const pc = powerCheck(def.entities, F)
+  eq(pc.unpowered.length, 0, pc.unpowered.join(", "))
+  eq(pc.networks, 1, "one pole network")
+  // Every pumpjack's output tile is a pipe joined to the port through pipes.
+  const p = pipes(def)
+  const port = def.ports.find((x) => x.kind === "pipe-out")!
+  const start = `${math.floor(port.pos.x)},${math.floor(port.pos.y)}`
+  const seen: Record<string, boolean> = { [start]: true }
+  const queue = [start]
+  while (queue.length > 0) {
+    const k = queue.shift()!
+    const [xs, ys] = string.match(k, "^(-?%d+),(-?%d+)$")
+    for (let d = 0; d < 4; d++) {
+      const n = `${tonumber(xs)! + DX[d]},${tonumber(ys)! + DY[d]}`
+      if (p[n] !== undefined && !seen[n]) {
+        seen[n] = true
+        queue.push(n)
+      }
+    }
+  }
+  for (const e of def.entities) {
+    if (e.name !== "pumpjack") continue
+    const out = `${math.floor(e.x) + 1},${math.floor(e.y) - 2}`
+    ok(seen[out] === true, `pumpjack at ${e.x},${e.y}: its output ${out} reaches the port`)
+  }
+  ok(port.pos.x === def.footprint.w - 0.5, "the port is on the east edge")
 })
 
 run("fluid-chain")

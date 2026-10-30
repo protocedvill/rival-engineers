@@ -4,6 +4,10 @@ import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../char
 import { tkey } from "../planner/grid"
 import { chunkKnown } from "../strategy/arms"
 import { onSectorScanned } from "../strategy/explore"
+import { encodeWells } from "../modules/generators"
+import { generatedModule } from "../modules/library"
+import { rateOf } from "../modules/rates"
+import { stampModule } from "../modules/stamp"
 import { at, createLab, everyTickFor, itemCount, spawnEngineer } from "./lab"
 
 // M0 spike: can a character entity with NO attached player perform every player action the crew
@@ -384,6 +388,61 @@ describe("fluids", () => {
   function crude(tank: LuaEntity): number {
     return tank.get_fluid_contents()["water"] ?? 0
   }
+
+  test("M7b: a generated pumpjack field on real wells delivers its declared crude at its pipe-out port", () => {
+    async(3600 * 2)
+    const surface = game.create_surface("m7b-field", { seed: 2, width: 200, height: 200, autoplace_controls: {} } as never)
+    surface.request_to_generate_chunks({ x: 0, y: 0 }, 2)
+    surface.force_generate_chunk_requests()
+    const tiles = []
+    for (let x = -40; x < 40; x++) for (let y = -40; y < 40; y++) tiles.push({ name: "lab-dark-1", position: { x, y } })
+    surface.set_tiles(tiles)
+    // Wells at 100% (the prototype's normal amount): 10 crude/s each.
+    const normal = prototypes.entity["crude-oil"].normal_resource_amount
+    const wells = [
+      { x: -10, y: -10 },
+      { x: -4, y: -9 },
+      { x: -8, y: -3 },
+    ]
+    for (const w of wells) surface.create_entity({ name: "crude-oil", position: { x: w.x + 0.5, y: w.y + 0.5 }, amount: normal })
+    const def = generatedModule("pumpjack-field", { wells: encodeWells(wells.map((w) => ({ ...w, perSecond: 10 }))) })
+    const ox = -10 - 3
+    const oy = -10 - 3
+    const placed = stampModule(surface, "player", def, { x: ox, y: oy })
+    let missing = 0
+    for (let i = 0; i < def.entities.length; i++) if (placed[i] === undefined) missing++
+    assert(missing === 0, `${missing} entities could not be placed`)
+    const port = def.ports.find((p) => p.kind === "pipe-out")!
+    // A pump on the port's outside tiles starts a separate segment; the pipe after it is drained and counted every tick.
+    const px = ox + math.floor(port.pos.x)
+    const py = oy + math.floor(port.pos.y)
+    surface.create_entity({ name: "pump", position: { x: px + 2, y: py + 0.5 }, direction: defines.direction.east, force: "player" })
+    const tank = surface.create_entity({ name: "pipe", position: { x: px + 3.5, y: py + 0.5 }, force: "player" })!
+    surface.create_entity({ name: "small-electric-pole", position: { x: px + 1.5, y: py - 0.5 }, force: "player" })
+    const eei2 = surface.create_entity({ name: "electric-energy-interface", position: { x: px + 1, y: py - 2 }, force: "player" })!
+    eei2.electric_buffer_size = 1e7
+    eei2.power_production = 1e6
+    const powerPort = def.ports.find((p) => p.kind === "power")!
+    const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: ox + powerPort.pos.x, y: oy - 3 }, force: "player" })!
+    eei.electric_buffer_size = 1e8
+    eei.power_production = 1e7
+    surface.create_entity({ name: "small-electric-pole", position: { x: ox + powerPort.pos.x, y: oy - 1.5 }, force: "player" })
+    const start = game.tick
+    let got = 0
+    on_tick(() => {
+      const t = game.tick - start
+      if (t > 600) got += tank.get_fluid_contents()["crude-oil"] ?? 0
+      tank.clear_fluid_inside()
+      if (t < 1800) return true
+      const rate = got / 20
+      const declared = rateOf(def.rates.outputs, "crude-oil")
+      log(`[m7b] pumpjack field: ${string.format("%.2f", rate)} crude/s measured, ${declared} declared`)
+      assert(rate >= 0.9 * declared, `pumpjack field delivers ${rate}/s of ${declared}/s`)
+      game.delete_surface(surface)
+      done()
+      return false
+    })
+  })
 
   test("M7b finding: fluid flow through a long pipe-to-ground pipeline (pumps, tank at the end)", () => {
     async(3600 * 2)
