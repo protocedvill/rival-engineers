@@ -118,6 +118,22 @@ starts a new segment. The crude line therefore needs a pump at least every 320 t
 `prototypes.utility_constants` at runtime, not a tuning number). Throughput is not the limit: the blue chain needs about
 42 crude/s, a pumped line carries over 1000/s.
 
+### M7b.2: plan for fluids (agent design, not a user decision)
+
+Fluid connections are kept point to point, so the planner needs no general fluid network:
+
+- **Fluid plumbing stays inside modules.** A generated oil-processing module holds the refineries and chemical plants
+  (plastic, sulfur; later cracking, lubricant, sulfuric acid) with every pipe between them, and its products leave on
+  belt ports like any other module. Pumpjack fields are a mining module with one `pipe-out` port.
+- **Only two kinds of fluid route cross the map:** crude (pumpjack field → oil module, long, D73) and water (offshore
+  pump → oil module). `pipe-in`/`pipe-out` ports (already in `PortKind`) mark their ends.
+- **Pipe router** (`planner/pipe-router.ts`, pure, T1): A* over (tile, heading) with two moves, a plain pipe or a
+  pipe-to-ground pair (2 to `max_underground_distance` + 1 apart). Underground ends connect only along their axis, so
+  the route prefers them; a plain pipe joins every fluid box next to it, so it may not stand next to another route's
+  pipe or another port (two fluids must never touch). Pumps start a new segment at least every pipeline extent
+  (`default_pipeline_extent`, M7b.1) and are powered by the pole planner like a module.
+- Pumpjacks need power at the field, so the field's pole line runs along the crude route.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
