@@ -1003,7 +1003,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // A mine's candidate patches are cheap to enumerate (no placement scan), so a mine goal always searches all known
   // ground: the radius ladder only exists to bound the expensive scan, and spending attempts to widen it three times
   // before looking at a patch that was already known just costs plans (1376111: "1 of 1 patches tried", four times).
-  const mine = modules.some((m) => m.def.site === "resource-patch")
+  const mine = modules.some((m) => m.def.site === "resource-patch" || m.def.generator === "pumpjack-field")
   const r = mine ? EX.homeRadius(ctx) : math.min(g.radius, EX.homeRadius(ctx))
   const region = EX.planRegion(ctx, g, r)
   // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
@@ -1018,7 +1018,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     if (m.def.generator !== "pumpjack-field") continue
     const n = g.nodes.find((x) => x.id === m.id)!
     const resource = (n.params.resource as string | undefined) ?? "crude-oil"
-    const field = OIL.fieldModule(ctx.surface, region, center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params))
+    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params))
     if (field === undefined) {
       transitionGoal(g, "failed")
       g.deferred = true

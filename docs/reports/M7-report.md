@@ -314,6 +314,15 @@ production or mall node needing an unresearched trigger technology (or one behin
 kind (`production#c~trigger`): the rest, the pumpjack field included, is built first, and an edge into the later part
 belongs to it. Labs and power goals never waited for technologies and are not split (v1 order unchanged). T1 `design`.
 
+### M7c.5: finding crude (B114, B115)
+
+Resumed soak `m7r-11-m450`: the first blue goal planned no pumpjack field (B114), because the design only knew the
+bootstrap's ore patches. Fluid resources are now always in the design context. Then the field goal explored through
+five radar outposts without finding crude (B115). The field is chosen from real wells before the plan starts
+(`OIL.fieldModule`). That search read only the home zone and only chunks already generated. It now counts as a mine for
+the plan region and reads every known chunk (home, explored strips, radar-scanned or charted). Known chunks that were
+never generated are generated on the spot (blocking, once per chunk).
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

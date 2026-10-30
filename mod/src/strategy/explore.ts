@@ -65,7 +65,8 @@ export function planRegion(ctx: ExploreCtx, g: FactoryGoal, r: number): Rect {
   if (g.site !== undefined) return Arms.rectUnion(region, g.site.strip)
   if (f.arms === undefined) return region
   let mine = false
-  for (const n of g.nodes) if (n.generator === "mining-outpost") mine = true
+  // B115: a pumpjack field mines a fluid resource: it searches the explored ground too.
+  for (const n of g.nodes) if (n.generator === "mining-outpost" || n.generator === "pumpjack-field") mine = true
   if (!mine) return region
   const reach = radarReach(ctx).sector
   region = Arms.rectUnion(region, Arms.homeRect(c, homeRadius(ctx)))
@@ -79,6 +80,12 @@ export function knownGround(ctx: ExploreCtx, g: FactoryGoal): Arms.KnownGround {
   const explored = [...(ctx.f.arms?.strips ?? [])]
   if (g.site !== undefined) explored.push(g.site.strip)
   return { home: Arms.homeRect(ctx.f.center, homeRadius(ctx)), explored, scanned: ctx.f.radarChunks }
+}
+
+/** B115: whether goal `g`'s plan may read chunk (cx, cy) (the planner's rule, for searches outside the planner). */
+export function chunkKnownFor(ctx: ExploreCtx, g: FactoryGoal): (this: void, cx: number, cy: number) => boolean {
+  const known = knownGround(ctx, g)
+  return (cx, cy) => Arms.chunkKnown(cx, cy, known, (x, y) => ctx.force.is_chunk_charted(ctx.surface, { x, y }))
 }
 
 /**

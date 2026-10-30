@@ -41,13 +41,31 @@ function wellRate(resource: string, amount: number, pumpjack: string): number {
 
 /**
  * A pumpjack field module for `need` per second of `resource` from the wells inside `region`: the nearest field to
- * `center` that yields enough, else the richest. Undefined when no well is known there.
+ * `center` that yields enough, else the richest. Undefined when no well is known there. Only chunks `known` to the
+ * faction count (home zone, explored strips, radar-scanned chunks).
  */
-export function fieldModule(surface: LuaSurface, region: Rect, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
-  const area = { left_top: { x: region.x, y: region.y }, right_bottom: { x: region.x + region.w, y: region.y + region.h } }
+export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
+  // B115: only known ground (the plan's chunk rule), generated now if it is not yet: a mine's patch search generates its
+  // chunks through the planner's terrain scan, this search reads the surface directly.
+  const chunks: Vec[] = []
+  let missing = 0
+  for (let cy = math.floor(region.y / 32); cy <= math.floor((region.y + region.h - 1) / 32); cy++) {
+    for (let cx = math.floor(region.x / 32); cx <= math.floor((region.x + region.w - 1) / 32); cx++) {
+      if (!known(cx, cy)) continue
+      chunks.push({ x: cx, y: cy })
+      if (!surface.is_chunk_generated({ x: cx, y: cy })) {
+        surface.request_to_generate_chunks({ x: cx * 32 + 16, y: cy * 32 + 16 }, 0)
+        missing++
+      }
+    }
+  }
+  if (missing > 0) surface.force_generate_chunk_requests()
   const wells: Well[] = []
-  for (const e of findEntities(surface, { type: "resource", name: resource, area })) {
-    wells.push({ x: math.floor(e.position.x), y: math.floor(e.position.y), perSecond: wellRate(resource, e.amount, pumpjack) })
+  for (const c of chunks) {
+    const area = { left_top: { x: c.x * 32, y: c.y * 32 }, right_bottom: { x: c.x * 32 + 32, y: c.y * 32 + 32 } }
+    for (const e of findEntities(surface, { type: "resource", name: resource, area })) {
+      wells.push({ x: math.floor(e.position.x), y: math.floor(e.position.y), perSecond: wellRate(resource, e.amount, pumpjack) })
+    }
   }
   if (wells.length === 0) return undefined
   wells.sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y))
