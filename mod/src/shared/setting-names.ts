@@ -19,6 +19,7 @@ export const Settings = {
   researchSciencePacks: "rival-engineers-research-science-packs",
   researchExcludedTriggers: "rival-engineers-research-excluded-triggers",
   researchSkipCombat: "rival-engineers-research-skip-combat",
+  factoryRowInputs: "rival-engineers-factory-row-inputs",
   autoSpawn: "rival-engineers-auto-spawn",
   spawnMode: "rival-engineers-spawn-mode",
   spawnMinDistance: "rival-engineers-spawn-min-distance",

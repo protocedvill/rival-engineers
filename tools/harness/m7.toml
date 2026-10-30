@@ -1,0 +1,32 @@
+# M7 soak (SPEC §8 M7, D72–D75, P45–P46): from a fresh start, one faction reaches the M7 bar: ≥ 30 red + 30 green +
+# 30 blue science per minute consumed by its labs, sustained over 30 game-minutes, within 16 game-hours, and every
+# technology of the M7 research goal (D74: red/green/blue, no uranium chain, no combat-only technologies; 89 in vanilla
+# 2.0.77). Stages (P46): 10 red; 30 red + 30 green; then 10 blue (so the robot technologies come early); then 30 of each.
+
+[run]
+name = "m7"
+seeds = [11, 222, 3333, 44444, 555555]
+game_hours = 16.0
+stop_when_done = true
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+exploring_minutes = 60
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 36000
+frameDumpRadius = 160
+soakDoneMilestone = "v1-done"
+debugInfiniteResearch = true
+researchSciencePacks = "automation-science-pack,logistic-science-pack,chemical-science-pack"
+researchExcludedTriggers = "uranium-ore"
+researchSkipCombat = true
+factoryRowInputs = 3
+factoryTargets = "automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=10;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=30"

@@ -36,6 +36,7 @@ import * as CS from "./constraints"
 import * as FR from "./failure-rules"
 import * as NF from "./node-facts"
 import * as LF from "./lab-feed"
+import * as OIL from "./oil"
 import type { PlanFailure } from "../shared/plan-failure"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
@@ -407,6 +408,8 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     buffer: ctx.config.moduleBuffer,
     fuel: brain.catalog.fuel,
     assembler: e.assembler ?? "assembling-machine-1",
+    assemblers: [e.assembler ?? "assembling-machine-1", e["assembler-2"] ?? "assembling-machine-2"],
+    rowInputs: ctx.config.factoryRowInputs,
     furnace: brain.catalog.furnace,
     electricDrill: e["electric-drill"] ?? "electric-mining-drill",
     burnerDrill: brain.catalog.drill,
@@ -981,7 +984,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     const from = fromNode !== undefined ? LG.connectModule(f.graph, fromNode, inLayout) ?? fromNode : undefined
     const to = toNode !== undefined ? LG.connectModule(f.graph, toNode, inLayout) ?? toNode : undefined
     if (from === undefined || to === undefined) continue
-    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt, merge: e.merge === true })
+    connections.push({ id: IDS.connectionId(e.role), from: { module: from, port: e.fromPort }, to: { module: to, port: e.toPort }, rate: e.rate, belt: e.belt, merge: e.merge === true, fluid: OIL.fluidConnection(e.item, ctx.entities.pole ?? "small-electric-pole") })
   }
   // D62: plan regions stay in the home zone, plus the ground explored past it: an outpost's arm strip, or for a goal
   // with a mine every outpost's radar reach and strip.
@@ -998,6 +1001,22 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const off = offsets[tries % offsets.length]
   // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
   const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
+  // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
+  for (const m of modules) {
+    if (m.def.generator !== "pumpjack-field") continue
+    const n = g.nodes.find((x) => x.id === m.id)!
+    const resource = (n.params.resource as string | undefined) ?? "crude-oil"
+    const field = OIL.fieldModule(ctx.surface, region, center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params))
+    if (field === undefined) {
+      transitionGoal(g, "failed")
+      g.deferred = true
+      g.reason = `exploring for ${resource}: no ${resource} field within the plan region`
+      EX.exploreFor(ctx, g, resource)
+      return
+    }
+    m.def = field.def
+    m.at = field.at
+  }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
   // B63: a consumer whose input port boxed a plan in gets a wider window for this whole plan (see wideJoin).
   for (const e of g.edges) if (CS.has(f.constraints, "wideJoin", CS.portKey(e.to, e.toPort))) request.windowScale = 3

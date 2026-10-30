@@ -39,6 +39,8 @@ export interface Config {
   researchExcludedTriggers: string
   /** D74 / P47: leave combat-only technologies out of the research goal (kept when a kept technology needs them). */
   researchSkipCombat: boolean
+  /** M7c: most ingredients an assembler row takes (2 in v1). */
+  factoryRowInputs: number
   /** Create `factionCount` factions on a new map (never while factorio-test is running). */
   autoSpawn: boolean
   spawnMode: string

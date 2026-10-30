@@ -60,4 +60,23 @@ data:extend({
     },
     effects = {},
   },
+  -- M7: the same sink with blue packs too (the M7 bar sustains red, green and blue).
+  {
+    type = "technology",
+    name = "rival-engineers-throughput-test-blue",
+    icon = "__base__/graphics/technology/chemical-science-pack.png",
+    icon_size = 256,
+    hidden = true,
+    max_level = "infinite",
+    unit = {
+      count_formula = "30",
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1},
+        {"chemical-science-pack", 1},
+      },
+      time = 60,
+    },
+    effects = {},
+  },
 })

@@ -164,6 +164,17 @@ data.extend([
     order: "f-c",
   },
   {
+    // M7c: most ingredients an assembler row takes (2: v1; 3: engines, advanced circuits, blue packs). At 3 the design
+    // would also make inserters in a row instead of v1's curated green line (proposed, see the M7 report).
+    type: "int-setting",
+    name: Settings.factoryRowInputs,
+    setting_type: "runtime-global",
+    default_value: 2,
+    minimum_value: 1,
+    maximum_value: 3,
+    order: "j-d2",
+  },
+  {
     type: "bool-setting",
     name: Settings.autoSpawn,
     setting_type: "runtime-global",
