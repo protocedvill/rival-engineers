@@ -389,6 +389,11 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
   for (const t of researchGoal()) plannable[t] = true
   const resources: string[] = []
   for (const p of brain.patches) if (resources.indexOf(p.name) < 0) resources.push(p.name)
+  // M7c: fluid resources (crude oil) are never bootstrap patches: count them always, so crude demand gets a pumpjack
+  // field, whose goal explores for a field when none is known (`OIL.fieldModule`).
+  for (const [name, proto] of pairs(prototypes.get_entity_filtered([{ filter: "type", type: "resource" }]))) {
+    if (proto.mineable_properties.products?.[0]?.type === "fluid" && resources.indexOf(name as string) < 0) resources.push(name as string)
+  }
   resources.sort()
   const packs: string[] = []
   for (const [p] of string.gmatch(ctx.config.researchSciencePacks, "[^,%s]+")) packs.push(p)
