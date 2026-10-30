@@ -2954,6 +2954,7 @@ smelter n15 (`iron-plate>automation-science-pack>labs`) could not grow (`blocked
 capped cluster 1's share at 0.173 of the target and planned a parallel provider once, but n24 (green) kept lacking
 iron plates to the end. Growth also kept retrying the same blocked tile after the provider was marked short. Not
 diagnosed further; the fixed-seed bar (9/10) is met without it. Seed 222 failed in earlier acceptance runs too (M6a).
+**Deferred to M7** by the user in-session, 2026-10-30 (SPEC D71 (a)).
 
 **T4 determinism (new).** `state_dump(file)` (remote interface, `mod/src/determinism.ts`) writes the mod's whole
 `storage` with sorted keys and full-precision numbers (Lua objects as kind and identity, e.g. an entity's name, unit
