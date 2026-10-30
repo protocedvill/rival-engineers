@@ -115,6 +115,34 @@ as its mines deplete and are rebuilt. D71 (a) stays open; the random20 gate is u
 harness artefact; fixed in `7d0549e`). Resumed from `min-0200` on the fix, 2034469 reaches `v1-done` at ~212 min, so
 the gate stands at 20/20 with B112. Full T2 on the M7 code (`7d0549e` + docs): 170/170.
 
+### M7a.6: SPEC §11 triage (P45; for the user to decide, nothing here is approved)
+
+Every §11 entry still marked "proposed", with what the code does now. "Implemented" means the proposal is in the code
+as written (built in M5/M6 while marked proposed); the user's approval would make it a decision.
+
+| Entry | Status in the code | Recommendation |
+|---|---|---|
+| P9 crafting triggers for the crew | implemented (`character/triggers.ts`) | approve |
+| P12 build order of goals | implemented (`goal-selection.ts`: power, labs, production, mall, growth) | approve |
+| P13 material supply | implemented (the bootstrap economy supplies every build) | approve |
+| P14 M5 acceptance milestone | obsolete (M5 closed; v1-done replaced it) | close |
+| P15 port approach tiles | implemented (`layout.ts` `portApproach`) | approve |
+| P22 edge flow probes | implemented (`measure.ts` edge probes, item `unique_id`s) | approve |
+| P26 temporary factories | implemented (D38 chest cells) | approve |
+| P27 opportunistic crafting | implemented (`crew-background-crafts`) | approve |
+| P28 soft claims and partners | implemented (`partnersOf`, `softExempt`) | approve |
+| P30 the 30 + 30 stage | implemented (`factory-targets` default) | approve |
+| P31 how "sustained" is measured | implemented (packs consumed by the labs, force statistics) | approve |
+| P32 shared providers | implemented (B19, `factory-shared-providers`) | approve |
+| P33 when a module can't grow | implemented (`growFails`, B60 provider groups) | approve |
+| P34 stuck builds, boxed-in crews | implemented (B20 leftover rounds, B22 unboxing) | approve |
+| P35 bootstrap eviction | implemented (`evict.ts`, B15) | approve |
+| P36 coal running out | (a) implemented, now through D76 retirement; (b) superseded by D68 | approve (a), close (b) |
+| P37 no mine-site credit for head growth | not implemented (needs replays) | keep open |
+| P38 growth bands at placement | implemented (B26 policy weights, settings) | approve |
+| P40 the part of a patch a mine claims | implemented (D52 claims, B33) | approve |
+| P44 avoid side-loading (implementation) | implemented (`4bf6b94`: splitter merges first, side-loads capped) | approve |
+
 ## M7b: fluids
 
 ### M7b.1: how far crude can be piped (engine finding)

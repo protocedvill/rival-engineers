@@ -700,6 +700,9 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
+M7a triage (2026-10-30, agent): every entry below still marked "proposed" is listed with its status in the code and a
+recommendation in `docs/reports/M7-report.md` M7a.6. None of them is approved until the user says so.
+
 M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-15; details and evidence in `docs/reports/M5-report.md`):
 
 - **P9, crafting triggers for the crew (proposed):** the engine does not fire `craft-item` research triggers for a
