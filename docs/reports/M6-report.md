@@ -2720,7 +2720,7 @@ deliberate scope boundary rather than a hole.
 | provider depleted → handover | `deplete:` remedy | works (evaluation deferred, D64) |
 | replacement route failure → re-split consumers | `providerNoTap` / `providerSplit` | implemented, never yet fired in a soak |
 
-## M6b.50: B62–B107, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
+## M6b.50: B62–B108, power by utilization, crew prefetch, mine lead time (2026-10-25 to 2026-10-28)
 
 The `m6-random20` sweep at `aa766aa` passed 11/20 (SPEC §3 needs 18). This slice is the fixes found by soaking failed
 and fresh seeds since then: B62–B65 (an opencode session, committed as `6ad980c`), then B66–B71 and three user
@@ -2777,6 +2777,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | `3111332` |
 | B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | `3111332` |
 | B107 | 1264816 (every recent sweep) | a smelter column's ore lane full of coal since a growth (the merge tile curved while the ore side-load was missing): repairs that find nothing missing now empty the consumer's belts where another input fills both lanes | `e79d77f` |
+| B108 | 3333 (two factions) | a power goal that ran out of coal started D62 exploration, whose outpost waited for "power built", read as "the last power goal done" (that same failed goal): a deadlock. Power now means any power goal done | pending |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
@@ -2932,8 +2933,8 @@ anywhere in the repo or the run directories, and no state hash existed in the co
 |---|---|---|---|
 | ≥ 18/20 random seeds | `m6-random20-3c2c18f` | `3c2c18f` | **19/20** (the failure, 5387208, is B106; fixed and validated) |
 | ≥ 18/20 random seeds, final code | `m6-random20-8f39d07` | `8f39d07` (B105–B107) | **20/20**, no stalls; v1-done from 175 to 258 min (median ~212); AI 1.3–3.4 ms/tick with 3–4 games at once |
-| ≥ 9/10 fixed CI seeds | `m6-fixed10a-9c41906` + `m6-fixed10b-9c41906` (5 seeds each) | `9c41906` | running |
-| Two factions, each to `v1-done` | `m6-two-factions-9c41906` (11, 222, 3333) | `9c41906` | running: 11 both at ~200 min; 222 at 308 / 217 min (see below) |
+| ≥ 9/10 fixed CI seeds | `m6-fixed10a-9c41906` + `m6-fixed10b-9c41906` (stopped) | `9c41906` | stopped after 11, 1212121, 8080808 passed: `m6-fixed10.toml` lacked `debugInfiniteResearch` (unlike `m6-random20`), so seed 222, research done at 287 min at ~28/min, could never sustain (0/min after). Config fixed in `m6-fixed10`, `m6-two-factions` and `m6`; rerun of all 10 on the final code below |
+| Two factions, each to `v1-done` | `m6-two-factions-9c41906` (11, 222, 3333) | `9c41906` | **2/3**: 11 both at ~200 min; 222 at 308 / 217 min (see below); 3333 stopped at 203 min (fail fast: exploring > 60 min → **B108**); validation of B108 running |
 | Space Age smoke test | `m6-space-age-981ca35` | `981ca35` | **pass**: space-age, quality and elevated-rails loaded, no errors; `first-power` at 10.4 game-min (seed 11) |
 | Determinism (T4) | `tools/harness/determinism.py`, seed 11 | `981ca35` + the dump | **pass**: identical state at 30 and 45 min (3.6 MB / 3.7 MB) for a fresh snapshot-server run, a fresh `--benchmark` run, and a run resumed from the first's `min-0020` save |
 | Research (42 techs) | part of `v1-done` | — | covered by every passing seed |
