@@ -387,7 +387,7 @@ export function steamBlock(facts: ProtoFacts, p: SteamParams): ModuleDef {
 // Row helpers
 
 /** Tail for a row module with one or two inputs: returns ports; `xt` is the tail's first column. */
-function rowTail(L: Layout, xt: number, inputs: string[], inRow: number): Port[] {
+function rowTail(L: Layout, xt: number, inputs: string[], inRow: number, top = 0): Port[] {
   if (inputs.length === 1) {
     L.beltAt(xt + 0.5, inRow + 0.5, WEST)
     return [{ id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 0.5, y: inRow + 0.5 }, dir: WEST, item: inputs[0] }]
@@ -396,10 +396,10 @@ function rowTail(L: Layout, xt: number, inputs: string[], inRow: number): Port[]
   // the south (left lane of a west-flowing belt), the second from the north (right lane).
   L.beltAt(xt + 0.5, inRow + 0.5, WEST)
   L.beltAt(xt + 0.5, inRow + 1.5, NORTH)
-  for (let y = 0; y < inRow; y++) L.beltAt(xt + 0.5, y + 0.5, SOUTH)
+  for (let y = top; y < inRow; y++) L.beltAt(xt + 0.5, y + 0.5, SOUTH)
   return [
     { id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 0.5, y: inRow + 1.5 }, dir: NORTH, item: inputs[0] },
-    { id: `in-${inputs[1]}`, kind: "belt-in", pos: { x: xt + 0.5, y: 0.5 }, dir: SOUTH, item: inputs[1] },
+    { id: `in-${inputs[1]}`, kind: "belt-in", pos: { x: xt + 0.5, y: top + 0.5 }, dir: SOUTH, item: inputs[1] },
   ]
 }
 
@@ -738,15 +738,19 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
 export interface LabArrayParams extends CommonParams {
   /** Labs, even: each belt-fed lab passes packs on to the next through an inserter. */
   labs: number
-  /** One or two science packs (one per lane); M7c: a third on a belt of its own (long-handed inserters). */
+  /** One or two science packs (one per lane); M7c: a third on a belt of its own along the top. */
   packs: string[]
-  longInserter?: string
   /** Seconds per research unit used for the declared rates (the technology being researched decides). */
   unitTime?: number
   lab?: string
 }
 
-/** Pairs of labs in a row: the first is fed from the pack belt, the second from the first (lab-to-lab inserter). */
+/**
+ * Pairs of labs in a row: the first is fed from the pack belt, the second from the first (lab-to-lab inserter). M7c: a
+ * third pack runs on a belt along the top (port at the west edge, flowing east), fed into each pair's first lab by a
+ * regular inserter, and everything else moves two rows down; no long-handed inserter, so the array needs nothing
+ * researched after `electronics` (a lab array is built before `automation`).
+ */
 export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
   const lab = p.lab ?? "lab"
   const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
@@ -754,54 +758,61 @@ export function labArray(facts: ProtoFacts, p: LabArrayParams): ModuleDef {
   if (p.packs.length < 1 || p.packs.length > 3) error("lab-array: one to three packs")
   const three = p.packs.length === 3
   const lanes = three ? p.packs.slice(0, 2) : p.packs
-  const long = p.longInserter ?? "long-handed-inserter"
+  const dy = three ? 2 : 0
   const units = p.labs / 2
   const xt = 8 * units
   for (let u = 0; u < units; u++) {
     const ux = 8 * u
-    L.add(lab, ux + 1.5, 1.5)
-    L.add(lab, ux + 5.5, 1.5)
-    L.ins(ux + 3.5, 0.5, WEST)
-    L.ins(ux + 1.5, 3.5, SOUTH)
-    L.poleAt(ux + 3.5, 2.5)
-    L.poleAt(ux + 7.5, 2.5)
-    for (let dx = 0; dx < 8; dx++) L.beltAt(ux + dx + 0.5, 4.5, WEST)
+    L.add(lab, ux + 1.5, dy + 1.5)
+    L.add(lab, ux + 5.5, dy + 1.5)
+    L.ins(ux + 3.5, dy + 0.5, WEST)
+    L.ins(ux + 1.5, dy + 3.5, SOUTH)
+    L.poleAt(ux + 3.5, dy + 2.5)
+    L.poleAt(ux + 7.5, dy + 2.5)
+    for (let dx = 0; dx < 8; dx++) L.beltAt(ux + dx + 0.5, dy + 4.5, WEST)
     if (three) {
-      // The third pack: a belt one row south, picked by a long-handed inserter beside the first lab's inserter.
-      L.add(long, ux + 0.5, 3.5, SOUTH)
-      for (let dx = 0; dx < 8; dx++) L.beltAt(ux + dx + 0.5, 5.5, WEST)
+      // The third pack: the top belt, an inserter picking from it (it faces north: the side it picks from), a pole.
+      L.ins(ux + 1.5, 1.5, NORTH)
+      L.poleAt(ux + 3.5, 1.5)
     }
   }
-  const ports = rowTail(L, xt, lanes, 4)
+  const ports = rowTail(L, xt, lanes, dy + 4, dy)
   if (three) {
-    // It enters from below one column before the merge column and curves west (it touches neither belt of the tail).
-    L.beltAt(xt - 0.5, 6.5, NORTH)
-    ports.push({ id: `in-${p.packs[2]}`, kind: "belt-in", pos: { x: xt - 0.5, y: 6.5 }, dir: NORTH, item: p.packs[2] })
+    // One more column east: the top belt flows west from its port on the east edge (row 0), and the lanes' second input
+    // enters on that edge at row dy and curves south into the tail column (nothing behind it, so a curve).
+    for (let x = 0; x <= xt + 1; x++) L.beltAt(x + 0.5, 0.5, WEST)
+    ports.push({ id: `in-${p.packs[2]}`, kind: "belt-in", pos: { x: xt + 1.5, y: 0.5 }, dir: WEST, item: p.packs[2] })
+    L.beltAt(xt + 1.5, dy + 0.5, WEST)
+    for (const port of ports) if (port.item === lanes[1] && port.kind === "belt-in") {
+      port.pos = { x: xt + 1.5, y: dy + 0.5 }
+      port.dir = WEST
+    }
   }
-  ports.push({ id: "power", kind: "power", pos: { x: 3.5, y: 2.5 }, dir: NORTH })
+  ports.push({ id: "power", kind: "power", pos: { x: 3.5, y: dy + 2.5 }, dir: NORTH })
   const unitTime = p.unitTime ?? 30
+  const H = dy + (lanes.length === 2 ? 6 : 5)
   const draft: ModuleDraft = {
     id: `lab-array/${p.labs}/${p.packs.join("+")}/${L.belt}/${L.inserter}`,
     source: "generated",
     generator: "lab-array",
     provenance: "generator lab-array (Rival Engineers)",
-    description: `${p.labs} labs, ${p.packs.join(" + ")} merged on one belt`,
-    footprint: { w: xt + 1, h: three ? 7 : p.packs.length === 2 ? 6 : 5 },
+    description: `${p.labs} labs, ${p.packs.join(" + ")}`,
+    footprint: { w: three ? xt + 2 : xt + 1, h: H },
     entities: L.entities,
     ports,
     rotatable: true,
     mirrorable: true,
     params: { labs: p.labs, packs: p.packs.join(","), unitTime, belt: L.belt, inserter: L.inserter },
     expand: {
-      unit: { footprint: { w: 8, h: three ? 7 : p.packs.length === 2 ? 6 : 5 }, entities: sliceUnit(L.entities, "x", 0, 8) },
+      unit: { footprint: { w: 8, h: H }, entities: sliceUnit(L.entities, "x", 0, 8) },
       axis: "x",
       insertAt: xt,
       maxUnits: Math.max(0, 10 - units),
     },
   }
   // B25: the pack belt ends at the first lab's inserter.
-  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 4.5)
-  if (three) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 5.5)
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, dy + 4.5)
+  if (three) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 0.5)
   return finalizeModule(draft, facts)
 }
 

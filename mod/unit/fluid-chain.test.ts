@@ -1,4 +1,4 @@
-import { assemblerRow, fluidChain, pumpjackField, waterPump } from "../src/modules/generators"
+import { assemblerRow, fluidChain, labArray, pumpjackField, waterPump } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { occupancy } from "../src/modules/geometry"
 import { rateOf } from "../src/modules/rates"
@@ -136,6 +136,20 @@ test("assembler row, three ingredients: advanced circuits and blue packs", () =>
   const blue = assemblerRow(F, { recipe: "chemical-science-pack", count: 4, machine: "assembling-machine-2" })
   // 24 s for 2 packs at 0.75: 0.0625 packs/s per machine.
   near(rateOf(blue.rates.outputs, "chemical-science-pack"), 0.25, 1e-6, "blue packs")
+})
+
+test("lab array, three packs: blue on a top belt with regular inserters, every port on the edge", () => {
+  const def = labArray(F, { labs: 4, packs: ["automation-science-pack", "logistic-science-pack", "chemical-science-pack"] })
+  occupancy(def.entities, F)
+  for (const e of def.entities) ok(e.name !== "long-handed-inserter", "no long-handed inserter (nothing past electronics)")
+  for (const p of def.ports) {
+    if (p.kind !== "belt-in") continue
+    const onEdge = p.pos.x < 1 || p.pos.y < 1 || p.pos.x > def.footprint.w - 1 || p.pos.y > def.footprint.h - 1
+    ok(onEdge, `port ${p.id} at ${p.pos.x},${p.pos.y} is on the edge of ${def.footprint.w}x${def.footprint.h}`)
+  }
+  near(rateOf(def.rates.inputs, "chemical-science-pack"), rateOf(def.rates.inputs, "automation-science-pack"), 1e-9, "blue at the red rate")
+  const pc = powerCheck(def.entities, F)
+  eq(pc.unpowered.length, 0, pc.unpowered.join(", "))
 })
 
 run("fluid-chain")

@@ -82,8 +82,8 @@ function check(name: string, def: ModuleDef, r: LabResult): void {
   assert(any, `${def.id} declares no outputs`)
 }
 
-/** The red+green technology with the most units (so a lab run never finishes it), with its prerequisites. */
-function researchTarget(): LuaTechnologyPrototype {
+/** The technology researched with exactly `packs` with the most units (a lab run never finishes it). */
+function researchTarget(packs: string[] = ["automation-science-pack", "logistic-science-pack"]): LuaTechnologyPrototype {
   let best: LuaTechnologyPrototype | undefined
   const names: string[] = []
   for (const [n] of pairs(prototypes.technology)) names.push(n as string)
@@ -91,10 +91,10 @@ function researchTarget(): LuaTechnologyPrototype {
   for (const n of names) {
     const t = prototypes.technology[n]
     const ing = t.research_unit_ingredients
-    if (ing.length !== 2 || t.research_unit_count_formula !== undefined) continue
+    if (ing.length !== packs.length || t.research_unit_count_formula !== undefined) continue
     const set: Record<string, boolean> = {}
     for (const i of ing) set[i.name] = true
-    if (!set["automation-science-pack"] || !set["logistic-science-pack"]) continue
+    if (packs.some((pk) => !set[pk])) continue
     if (best === undefined || t.research_unit_count > best.research_unit_count) best = t
   }
   return best!
@@ -124,7 +124,8 @@ function labTest(entry: CatalogEntry): void {
     let setupForce: ((this: void, force: LuaForce) => void) | undefined
     if (entry.generator === "lab-array") {
       // Declare the lab array for the technology it will research.
-      const tech = researchTarget()
+      const packs = ((entry.params?.packs as string[] | undefined) ?? []).length > 0 ? (entry.params!.packs as string[]) : undefined
+      const tech = researchTarget(packs)
       def = generatedModule("lab-array", { ...(entry.params ?? {}), unitTime: tech.research_unit_energy / 60 })
       setupForce = (force) => {
         researchPrerequisites(force, tech.name)

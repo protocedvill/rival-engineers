@@ -252,7 +252,10 @@ weapon-shooting-speed-1/2 are dropped; production and utility science stay (D74:
 - Pipe ports are demands and outputs like belt ports (`inputPorts`, `outPort`). A module may ask for items the recipe
   walk never reaches (a fluid chain's crude and water: petroleum has no recipe of its own): they are expanded after
   the ordered walk.
-- Lab arrays take a third pack on a belt of their own (long-handed inserters, as the assembler rows).
+- Lab arrays take a third pack on a top belt fed by regular inserters (no long-handed ones: the first lab array is
+  built before `automation`, and long-handed inserters deadlocked the first M7 soak, `m7x-11`, at 50 min). Both its
+  east-side inputs enter on the edge, one column wider. Validation lab: `lab-array 4 blue` 98.8% on a three-pack
+  technology; the two-pack array is unchanged (100%).
 - The D67/P36 ore checks skip fluid wells (their yield falls to a floor; they do not run dry).
 - **Proposed (not a user decision): `rowInputs` stays 2 by default.** At 3, inserters become producible by an assembler
   row, and "generators first" (D34) would replace v1's validated curated green line. M7 configs set 3; whether the
