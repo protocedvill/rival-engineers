@@ -2777,7 +2777,7 @@ decisions, found and validated on the VPS soak server (3 seeds at a time, niced)
 | B105 | 1264816 (B104 replay) | the trace stopped at the first of a port's feeds ("below plan") and never reached the backed-up one: passive verdicts no longer end the search | `3111332` |
 | B106 | 5387208 (sweep `3c2c18f`) | a new mine placed in a walled-in pocket was never placed again (site-bound modules were exempt from re-placement): a proven seal on its own port re-places it | `3111332` |
 | B107 | 1264816 (every recent sweep) | a smelter column's ore lane full of coal since a growth (the merge tile curved while the ore side-load was missing): repairs that find nothing missing now empty the consumer's belts where another input fills both lanes | `e79d77f` |
-| B108 | 3333 (two factions) | a power goal that ran out of coal started D62 exploration, whose outpost waited for "power built", read as "the last power goal done" (that same failed goal): a deadlock. Power now means any power goal done | pending |
+| B108 | 3333 (two factions) | a power goal that ran out of coal started D62 exploration, whose outpost waited for "power built", read as "the last power goal done" (that same failed goal): a deadlock. Power now means any power goal done | `f42cafa` |
 | — | all | `build-job-missing` reported the finished jobs of done goals (955 false violations in 4410923); only planning/building goals count now | `c6ac901` |
 
 Details, evidence and the regression test for each are in `docs/BUGS.md`.
