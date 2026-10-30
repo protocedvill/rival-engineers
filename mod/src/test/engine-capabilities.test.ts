@@ -1,4 +1,4 @@
-import { LuaEntity, LuaForce, MapPosition } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { PathfinderWaypoint } from "factorio:runtime"
 import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
 import { tkey } from "../planner/grid"
@@ -343,6 +343,96 @@ describe("player-less character", () => {
       // D62 depends on this: if it changes, faction radars chart by themselves and the emulation is not needed.
       assert(q === 0, `a player-less force's radar charted ${q}/49: the engine charts for it now`)
       game.delete_surface(surface)
+    })
+  })
+})
+
+// M7b (D73: crude is piped home from an oil field outside the starting area). How much a long 2.0 pipeline of
+// pipe-to-ground pairs delivers, so the planner knows when a pump is needed. An offshore pump pushes water in at one end
+// (flow does not depend on the fluid) and a storage tank at the other end, emptied every tick, counts what arrives.
+describe("fluids", () => {
+  function pipeline(surface: LuaSurface, y: number, length: number, pumpEvery = 0): { tank: LuaEntity; source: LuaEntity } {
+    const tiles = []
+    for (let x = -8; x <= length + 6; x++) for (let dy = -2; dy <= 2; dy++) tiles.push({ name: x < -1 ? "water" : "lab-dark-1", position: { x, y: y + dy } })
+    surface.set_tiles(tiles)
+    // An offshore pump pushes water like pumpjacks push crude (an infinity pipe sets its whole segment instead).
+    const source = surface.create_entity({ name: "offshore-pump", position: { x: -1.5, y: y + 0.5 }, direction: defines.direction.west, force: "player" })!
+    surface.create_entity({ name: "pipe", position: { x: -0.5, y: y + 0.5 }, force: "player" })
+    surface.create_entity({ name: "pipe", position: { x: 0.5, y: y + 0.5 }, force: "player" })
+    // Pairs: an entrance facing back toward the source, an exit 10 tiles on facing onward, then the next entrance.
+    let x = 1
+    let sincePump = 0
+    while (x + 10 <= length) {
+      if (pumpEvery > 0 && sincePump >= pumpEvery) {
+        surface.create_entity({ name: "pump", position: { x: x + 1, y: y + 0.5 }, direction: defines.direction.east, force: "player" })
+        const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: x + 0.5, y: y - 2.5 }, force: "player" })!
+        eei.electric_buffer_size = 1e7
+        eei.power_production = 1e6
+        surface.create_entity({ name: "small-electric-pole", position: { x: x + 1.5, y: y - 0.5 }, force: "player" })
+        x += 2
+        sincePump = 0
+      }
+      surface.create_entity({ name: "pipe-to-ground", position: { x: x + 0.5, y: y + 0.5 }, direction: defines.direction.west, force: "player" })
+      surface.create_entity({ name: "pipe-to-ground", position: { x: x + 10.5, y: y + 0.5 }, direction: defines.direction.east, force: "player" })
+      sincePump += 11
+      x += 11
+    }
+    const tank = surface.create_entity({ name: "storage-tank", position: { x: x + 1, y: y + 1 }, force: "player" })!
+    return { tank, source }
+  }
+
+  function crude(tank: LuaEntity): number {
+    return tank.get_fluid_contents()["water"] ?? 0
+  }
+
+  test("M7b finding: fluid flow through a long pipe-to-ground pipeline (pumps, tank at the end)", () => {
+    async(3600 * 2)
+    const surface = game.create_surface("m7b-pipes", { seed: 1, width: 4000, height: 400, autoplace_controls: {} } as never)
+    surface.request_to_generate_chunks({ x: 0, y: 0 }, 1)
+    surface.force_generate_chunk_requests()
+    const lengths = [22, 110, 308, 330, 1100, 2200]
+    const runs: { length: number; pump: boolean; tank: LuaEntity }[] = []
+    let row = 0
+    for (const length of lengths) {
+      for (const pump of [false, true]) {
+        if (pump && length < 300) continue
+        for (let cx = 0; cx * 32 < length + 40; cx++) surface.request_to_generate_chunks({ x: cx * 32, y: row * 8 }, 0)
+        surface.force_generate_chunk_requests()
+        runs.push({ length, pump, tank: pipeline(surface, row * 8, length, pump ? 220 : 0).tank })
+        row++
+      }
+    }
+    const start = game.tick
+    // The tank is emptied every tick and what arrived is counted (a full tank would read as no flow).
+    const got: number[] = runs.map(() => 0)
+    on_tick(() => {
+      const t = game.tick - start
+      for (let i = 0; i < runs.length; i++) {
+        if (t > 600) got[i] += crude(runs[i].tank)
+        runs[i].tank.clear_fluid_inside()
+      }
+      if (t < 900) return true
+      const lines: string[] = []
+      const rates: number[] = []
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i]
+        rates.push(got[i] / 5)
+        lines.push(`${r.length} tiles${r.pump ? " (pump every 220)" : ""}: ${string.format("%.1f", got[i] / 5)}/s`)
+      }
+      log(`[m7b] fluid through pipe-to-ground pipelines (offshore pump source): ${lines.join("; ")}`)
+      // 2.0 fluid segments longer than the pipeline extent (utility constant `default_pipeline_extent`, 320) carry
+      // nothing; a pump starts a new segment. So a long crude line needs a pump at least every extent. The blue chain
+      // needs about 42 crude/s (3 refineries on basic oil processing).
+      const extent = (prototypes.utility_constants as unknown as { default_pipeline_extent?: number }).default_pipeline_extent
+      log(`[m7b] default_pipeline_extent ${extent}`)
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i]
+        if (r.pump || r.length <= (extent ?? 320)) assert(rates[i] > 42, `a pipeline within the extent (or pumped) carries the blue chain's crude (${lines[i]})`)
+        else assert(rates[i] === 0, `a segment longer than the extent carries nothing (${lines[i]}): the engine changed`)
+      }
+      game.delete_surface(surface)
+      done()
+      return false
     })
   })
 })

@@ -211,6 +211,12 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   reached ring 4); the chunk is only marked requested for charting, never charted or generated (D62 (a) uses the event). `force.chart` on such a force only requests too. (A forum post quotes a
   developer: charting is skipped for forces without players.) Pinned by two engine-capabilities tests ("D62 finding").
   A script-created `electric-energy-interface` makes no power until `power_production` and `electric_buffer_size` are set.
+- **A 2.0 fluid segment longer than the pipeline extent carries nothing** (utility constant `default_pipeline_extent`,
+  320 tiles; a fluid box may override it). Pipe-to-ground pairs count their whole span. A pump starts a new segment
+  (~1040-1140/s through 2200 tiles with a pump every 220); within the extent a line carries ~1000-1170/s. Pinned by the
+  engine-capabilities test "M7b finding". Measure fluids with a pushing source (an offshore pump): an `infinity-pipe`
+  sets its whole segment's contents and fakes any flow; read amounts with `get_fluid_contents()` (TSTL shifts
+  `fluidbox[1]`). An offshore pump's output is on the side opposite its facing (`west` → connects east).
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

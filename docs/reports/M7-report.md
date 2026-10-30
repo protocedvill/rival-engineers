@@ -96,6 +96,28 @@ dark until ~130 min. The user deferred the proposed remedy to M7 (D71 (b), 2026-
 Test: T2 `factory` "D71 (b)": a build evicting a pole starts in `poles`, ghosts only the new pole on open ground, keeps
 the old pole until the new one is placed, then queues its clear job; a build without an eviction starts in `clear`.
 
+## M7b: fluids
+
+### M7b.1: how far crude can be piped (engine finding)
+
+D73 pipes crude home from an oil field outside the starting area. T2 engine-capabilities "M7b finding" pushes water
+(fluid flow does not depend on the fluid) from an offshore pump through pipe-to-ground pipelines into a storage tank
+emptied every tick:
+
+| Length (tiles) | No pump | Pump every 220 tiles |
+|---|---|---|
+| 22 | 1172/s | — |
+| 110 | 1103/s | — |
+| 308 | 974/s | 1136/s |
+| 330 | **0/s** | 1119/s |
+| 1100 | **0/s** | 1042/s |
+| 2200 | **0/s** | 1035/s |
+
+A 2.0 fluid segment longer than `default_pipeline_extent` (utility constant, 320 tiles) carries nothing at all; a pump
+starts a new segment. The crude line therefore needs a pump at least every 320 tiles of segment (game data, read from
+`prototypes.utility_constants` at runtime, not a tuning number). Throughput is not the limit: the blue chain needs about
+42 crude/s, a pumped line carries over 1000/s.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
