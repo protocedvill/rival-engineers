@@ -2946,7 +2946,7 @@ anywhere in the repo or the run directories, and no state hash existed in the co
 faction 2 at 217. Faction 1's red science stopped from ~100 to ~136 min and green started only at ~150: production goal
 g19 evicted 22 poles (B37) at 99 min, and their replacement line went up with the rest of its 153-entity build, which
 took until 130 min; meanwhile most of the factory was unpowered and every "lacks power" repair found the planned poles
-(still ghosts) and did nothing. g23 did the same at 136 min. A general remedy (proposed, not implemented): when a goal
+(still ghosts) and did nothing. g23 did the same at 136 min. A general remedy (proposed, not implemented; **deferred to M7** by the user in-session, 2026-10-30, SPEC D71 (b)): when a goal
 evicts a pole line, place its replacement poles before any other entity of the build (make before break).
 
 **Fixed seed 222 (open).** Science reached ~28/min near 300 min, then held ~18/min to the 480-min cap. Cluster 1's iron
