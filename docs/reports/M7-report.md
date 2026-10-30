@@ -106,6 +106,14 @@ restore the power supply run at the refuels' priority. Resumed from `min-0340`, 
 production follows, but seed 222 still falls short: science peaks at ~26.7/min around 230 min and sags to 12–23/min
 as its mines deplete and are rebuilt. D71 (a) stays open; the random20 gate is unaffected (12/12 so far).
 
+### M7a.5: the gate sweep (P45)
+
+`m7a-random20-1e01f8b` (the M7a code, `m6-random20.toml`, 3 at a time): **19/20 v1-done, no stalls** (gate ≥ 18/20:
+**passed**). Done times 173–291 game-min (M6's final sweep: 175–258). The failure, 2034469 (it passed in M6 at
+175 min), made ~25 red + 25 green/min from ~125 min, finished the research goal at 209 min and then consumed exactly
+18/min to the cap: the throughput-test sink's 60-s units made labs sized for shorter units the bottleneck (B112, a
+harness artefact; fixed in `7d0549e`, validation resumed from `min-0200`).
+
 ## M7b: fluids
 
 ### M7b.1: how far crude can be piped (engine finding)
