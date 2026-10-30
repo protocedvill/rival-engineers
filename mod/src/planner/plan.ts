@@ -9,14 +9,16 @@ import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { releaseLaneReservation, reserveFreeTile } from "./claims"
-import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { dirIndex, DX, DY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, tapTree, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
-import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
+import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
+import { routePipe } from "./pipe-router"
+import type { PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
 import { moduleId, routeId } from "../shared/ids"
@@ -50,6 +52,11 @@ export interface ConnectionRequest {
    * routing a second belt into the input port.
    */
   merge?: boolean
+  /**
+   * M7b: a fluid connection (`pipe-out` → `pipe-in`), routed with pipes by `planner/pipe-router.ts`. The caller reads
+   * the entities and limits from the prototypes (the planner stays pure).
+   */
+  fluid?: { name: string; pipe: string; underground: string; pump: string; maxUnderground: number; extent: number }
 }
 
 export interface PlanRequest {
@@ -474,6 +481,115 @@ export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): 
     if (rid !== `route:${conn}`) return true
   }
   return false
+}
+
+/**
+ * M7b: routes a fluid connection in one go (`routePipe`), within the step budget's spirit: pipe routes are point to point
+ * and the search is bounded by `PIPE_BUDGET` expansions. Commits the route, or records the failure.
+ */
+function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: ConnectionRequest): number {
+  const f = c.fluid!
+  const fromRef = c.from !== undefined ? resolve(job, c.from) : undefined
+  const toRef = resolve(job, c.to)
+  const fm = fromRef !== undefined ? findModule(job.layout, fromRef.module) : undefined
+  const fp = fm !== undefined && fromRef !== undefined ? findPort(fm, fromRef.port) : undefined
+  const tm = findModule(job.layout, toRef.module)
+  const tp = tm !== undefined ? findPort(tm, toRef.port) : undefined
+  if (fm === undefined || fp === undefined || fp.kind !== "pipe-out" || tm === undefined || tp === undefined || tp.kind !== "pipe-in") {
+    fail(job, c.id, `no pipe ports ${fromRef?.module}.${fromRef?.port} → ${toRef.module}.${toRef.port}`)
+    return 1
+  }
+  const start = portOutside(fm, fp)
+  const goal = portOutside(tm, tp)
+  const id = `route:${c.id}`
+  const own: Record<string, boolean> = { [portTag(fm.id, fp.id)]: true, [portTag(tm.id, tp.id)]: true }
+  const costReq = { id, conn: c.id, item: f.name, from: fromRef, to: toRef, goal: { x: goal.x, y: goal.y, dir: 0 }, tier: job.tier, own } as RouteRequest
+  // Other fluids: other fluid routes' tiles and every other pipe port of a module.
+  const fluids: Record<number, boolean> = {}
+  for (const rid of job.layout.routeOrder) {
+    const r = job.layout.routes[rid]
+    if (r.fluid !== undefined && rid !== id) for (const k of r.tiles) fluids[k] = true
+  }
+  for (const m of job.layout.modules) {
+    for (const p of m.def.ports) {
+      if ((p.kind !== "pipe-in" && p.kind !== "pipe-out") || (m.id === fm.id && p.id === fp.id) || (m.id === tm.id && p.id === tp.id)) continue
+      const t = portTile(m, p)
+      fluids[tkey(t.x, t.y)] = true
+    }
+  }
+  const r = routePipe({
+    start: { x: start.x, y: start.y, dir: math.floor(fp.dir / 4) },
+    goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
+    maxUnderground: f.maxUnderground,
+    extent: f.extent,
+    cost: (x, y) => tileCost(job.layout, terrain, policy, costReq, false, x, y),
+    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y) && pipeSpanAt(job.layout, x, y, axis) === undefined,
+    fluidNear: (x, y) => fluids[tkey(x, y)] === true,
+    minCost: minTileCost(policy),
+    ugCost: policy.router.pipeUnderground ?? 2,
+    pumpCost: policy.router.pump ?? 10,
+    budget: PIPE_BUDGET,
+  })
+  if (r === undefined) {
+    fail(job, c.id, "no pipe path")
+    return PIPE_BUDGET
+  }
+  commitRoute(job.layout, pipeRoute(id, c, f, r.steps, r.cost))
+  job.stats.routeWork += r.expansions
+  return math.max(1, r.expansions)
+}
+
+/** Expansions one fluid route may take (agent guess; a 600-tile line needs a few thousand). */
+const PIPE_BUDGET = 200000
+
+/** The line key of pipe-to-ground spans (apart from belt undergrounds: the two never connect). */
+function pipeLine(x: number, y: number, axis: number): string {
+  return `p${axis === 1 ? `h${y}` : `v${x}`}`
+}
+
+/** The fluid route whose pipe-to-ground span on `axis` covers (x, y), if any. */
+function pipeSpanAt(layout: LayoutState, x: number, y: number, axis: number): string | undefined {
+  const c = axis === 1 ? x : y
+  for (const sp of layout.spans[pipeLine(x, y, axis)] ?? []) if (sp.a <= c && c <= sp.b) return sp.route
+  return undefined
+}
+
+function pipeRoute(id: string, c: ConnectionRequest, f: NonNullable<ConnectionRequest["fluid"]>, steps: PipeStep[], cost: number): Route {
+  const out: RouteStep[] = []
+  const tiles: number[] = []
+  const spans: Route["spans"] = []
+  let ugs = 0
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]
+    const kind = s.kind === "ug-in" ? "pipe-ug-in" : s.kind === "ug-out" ? "pipe-ug-out" : s.kind
+    out.push({ kind, x: s.x, y: s.y, dir: s.dir })
+    tiles.push(tkey(s.x, s.y))
+    if (s.kind === "pump") tiles.push(tkey(s.x + DX[s.dir], s.y + DY[s.dir]))
+    if (s.kind === "ug-in") {
+      const e = steps[i + 1]
+      const axis = s.dir % 2
+      spans.push({ line: pipeLine(s.x, s.y, axis), span: { a: axis === 1 ? math.min(s.x, e.x) : math.min(s.y, e.y), b: axis === 1 ? math.max(s.x, e.x) : math.max(s.y, e.y), route: id } })
+      ugs++
+    }
+  }
+  return {
+    id: routeId(id),
+    conn: c.id,
+    item: f.name,
+    from: c.from,
+    to: c.to,
+    steps: out,
+    tiles,
+    spans,
+    belt: "",
+    underground: "",
+    splitter: "",
+    length: steps.length,
+    undergrounds: ugs,
+    cost,
+    ripped: 0,
+    fluid: { name: f.name, pipe: f.pipe, underground: f.underground, pump: f.pump },
+  }
 }
 
 /** Records a failure of `key` (a connection, `module:<id>` or `power:<owner>`): its text and, D69, its kind. */
@@ -928,6 +1044,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       return 0
     }
     const c = connection(job, id)
+    if (c.fluid !== undefined) return pipeStep(job, terrain, policy, c)
     const req = routeRequest(job, c, policy, {})
     if (isPlanFailure(req)) {
       fail(job, id, req)

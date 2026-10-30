@@ -270,7 +270,7 @@ export function minTileCost(policy: LayoutPolicy): number {
 }
 
 /** Whether an underground may pass under a tile (anything but module footprints, unless allowed, and unknown land). */
-function underPassable(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): boolean {
+export function underPassable(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): boolean {
   const o = state.occ[tkey(x, y)]
   if (o !== undefined && !policy.router.underModules && string.sub(o, 1, 2) === "m:") return false
   return terrain.block(x, y) !== UNKNOWN

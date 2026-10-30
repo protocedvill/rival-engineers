@@ -134,8 +134,26 @@ Fluid connections are kept point to point, so the planner needs no general fluid
   (`default_pipeline_extent`, M7b.1) and are powered by the pole planner like a module.
 - Pumpjacks need power at the field, so the field's pole line runs along the crude route.
 
+### M7b.3: fluid routes in the layout, plan and build
+
+- `Route.fluid` (fluid name and its pipe, pipe-to-ground and pump entities) and step kinds `pipe`, `pipe-ug-in`,
+  `pipe-ug-out`, `pump`. `ConnectionRequest.fluid` carries the entities and limits (`max_underground_distance`, the
+  pipeline extent) the caller reads from the prototypes, so the planner stays pure.
+- `plan.ts` `pipeStep`: a fluid connection is routed by `routePipe` in one search (bounded by `PIPE_BUDGET`) with the
+  belt router's tile costs and claims; "other fluids" are other fluid routes' tiles and every other module's pipe port.
+  Pipe-to-ground spans get their own underground lines (`p…`): they never connect to belt undergrounds.
+- `pipe-in`/`pipe-out` ports mean what belt ports mean (`pos` on the footprint edge, `dir` the flow); `portOutsideTile`
+  treats `pipe-in` like `belt-in`.
+- `build-list.ts` turns fluid steps into entities (a pipe-to-ground faces its above-ground side; a pump faces the
+  flow and sits between its two tiles); `checkLayout` checks a fluid route's chain and its arrival into the port.
+
+Tests: T1 `fluid-route` (a 55-tile crude line of pipe-to-ground pairs passes the layout check; a water line never puts
+a plain pipe beside another module's crude port), T1 44/44 files.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
+| Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
+| Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |

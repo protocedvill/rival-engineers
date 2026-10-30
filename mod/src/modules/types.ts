@@ -56,7 +56,9 @@ export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power"
  * - `power`: `pos` is a small electric pole inside the module that the planner's pole network connects to.
  * - `chest-out`: `pos` is a chest the crew empties (malls). No belt.
  * - `chest-in`: `pos` is a chest the crew fills with `item` (D38 temporary factories). No belt.
- * - `pipe-in`/`pipe-out`: reserved for fluid modules (none in v1: the steam block fuses its pump).
+ * - `pipe-in`/`pipe-out` (M7b): `pos` is the module's fluid tile on the footprint edge (a pipe, or a machine's
+ *   connection) and `dir` the flow direction, like belt ports. A fluid route ends on the tile at `pos - dirVector(dir)`
+ *   (in) or starts on `pos + dirVector(dir)` (out), connecting along `dir`.
  */
 export interface Port {
   /** Stable within a module (e.g. "in-ore", "out", "power"). */

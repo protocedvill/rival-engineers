@@ -182,7 +182,7 @@ export function toWorld(origin: Vec, p: Vec): Vec {
 /** The tile just outside a belt port where the router connects (upstream of belt-in, downstream of belt-out). */
 export function portOutsideTile(port: Port): Vec {
   const v = dirVec(port.dir)
-  const sign = port.kind === "belt-in" ? -1 : 1
+  const sign = port.kind === "belt-in" || port.kind === "pipe-in" ? -1 : 1
   return { x: port.pos.x + sign * v.x, y: port.pos.y + sign * v.y }
 }
 

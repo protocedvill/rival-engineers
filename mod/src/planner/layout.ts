@@ -45,7 +45,8 @@ export interface PortRef {
 
 /** One piece of a route. `dir` is a direction index (0..3 = N, E, S, W). */
 export interface RouteStep {
-  kind: "belt" | "ug-in" | "ug-out" | "splitter"
+  /** Belt routes: belt, ug-in/ug-out, splitter. Fluid routes (M7b, `Route.fluid`): pipe, pipe-ug-in/out, pump. */
+  kind: "belt" | "ug-in" | "ug-out" | "splitter" | "pipe" | "pipe-ug-in" | "pipe-ug-out" | "pump"
   x: number
   y: number
   dir: number
@@ -100,6 +101,11 @@ export interface Route {
   ripped: number
   /** Built already (part of the faction's base): never ripped up. */
   fixed?: boolean
+  /**
+   * M7b: a fluid route (`pipe-out` → `pipe-in` port; `planner/pipe-router.ts`): the fluid and the entities it uses.
+   * Its steps are pipes, pipe-to-ground pairs and pumps; `belt`/`underground`/`splitter` are unused.
+   */
+  fluid?: { name: string; pipe: string; underground: string; pump: string }
 }
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */
@@ -749,6 +755,43 @@ export function spanConflicts(state: LayoutState, line: string, a: number, b: nu
 // ---------------------------------------------------------------------------------------------------------
 // Independent checker: what the acceptance tests assert about a finished layout.
 
+/**
+ * M7b: a fluid route connects from its `pipe-out` port's outside tile to its `pipe-in` port's: each entity joins the
+ * next along the flow (a pipe-to-ground pair within reach, a pump two tiles long), and the last connects into the port.
+ */
+function checkPipeRoute(state: LayoutState, r: Route, to: PlacedModule, toPort: Port, claim: (this: void, route: Route, x: number, y: number, what: string) => void, problems: string[]): void {
+  const fm = r.from !== undefined ? findModule(state, r.from.module) : undefined
+  const fp = fm !== undefined && r.from !== undefined ? findPort(fm, r.from.port) : undefined
+  if (fm === undefined || fp === undefined) {
+    problems.push(`${r.id}: unknown source`)
+    return
+  }
+  let at = portOutside(fm, fp)
+  for (let i = 0; i < r.steps.length; i++) {
+    const s = r.steps[i]
+    if (s.x !== at.x || s.y !== at.y) problems.push(`${r.id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${at.x},${at.y}`)
+    claim(r, s.x, s.y, s.kind)
+    if (s.kind === "pipe-ug-in") {
+      const out = r.steps[i + 1]
+      if (out === undefined || out.kind !== "pipe-ug-out" || out.dir !== s.dir || out.x !== s.x + DX[s.dir] * (math.abs(out.x - s.x) + math.abs(out.y - s.y)) || out.y !== s.y + DY[s.dir] * (math.abs(out.x - s.x) + math.abs(out.y - s.y))) {
+        problems.push(`${r.id}: pipe-to-ground at ${s.x},${s.y} has no exit on its line`)
+        return
+      }
+      claim(r, out.x, out.y, out.kind)
+      at = { x: out.x + DX[s.dir], y: out.y + DY[s.dir] }
+      i++
+    } else if (s.kind === "pump") {
+      claim(r, s.x + DX[s.dir], s.y + DY[s.dir], "pump")
+      at = { x: s.x + 2 * DX[s.dir], y: s.y + 2 * DY[s.dir] }
+    } else at = { x: s.x + DX[s.dir], y: s.y + DY[s.dir] }
+  }
+  const end = portOutside(to, toPort)
+  const last = r.steps[r.steps.length - 1]
+  const into = math.floor(toPort.dir / 4)
+  const ok = last !== undefined && last.x === end.x && last.y === end.y && (last.kind === "pipe" || (last.kind === "pipe-ug-out" && last.dir === into))
+  if (!ok) problems.push(`${r.id}: does not end on ${r.to.module}.${r.to.port}'s outside tile connecting into it`)
+}
+
 export interface LayoutCheck {
   problems: string[]
 }
@@ -787,6 +830,10 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
     const toPort = to ? findPort(to, r.to.port) : undefined
     if (!to || !toPort) {
       problems.push(`${id}: unknown target ${r.to.module}.${r.to.port}`)
+      continue
+    }
+    if (r.fluid !== undefined) {
+      checkPipeRoute(state, r, to, toPort, claim, problems)
       continue
     }
     const target = portTile(to, toPort)

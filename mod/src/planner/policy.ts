@@ -21,6 +21,9 @@ export interface RouterWeights {
   underground: number
   /** Cost of a splitter tap. */
   splitter: number
+  /** M7b: extra cost of a pipe-to-ground pair and of a pump on a fluid route (pipe tiles cost like belt tiles). */
+  pipeUnderground?: number
+  pump?: number
   /** Extra cost per tree or rock to clear (when the policy clears them). */
   clearTree: number
   clearRock: number
