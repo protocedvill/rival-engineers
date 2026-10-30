@@ -120,7 +120,7 @@ export interface FactoryGoal {
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   /** A growth or repair build: `poles` (D71 b) places the new poles before the old ones in `breakAfter` are picked up. */
-  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[] }
+  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[]; priority?: number }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
@@ -231,6 +231,12 @@ declare global {
 const designCache: Record<string, { key: string; design: Design }> = {}
 
 const UPKEEP_INTERVAL = 300
+/**
+ * Priority of refuelling burners the power depends on, and (B111) of every build that restores the power supply: a power
+ * goal, or the growth of a steam block or its fuel supply. At the build priority such a build was preempted by the
+ * very refuels its shortage caused, for hours (fixed seed 222).
+ */
+const POWER_JOB_PRIORITY = 100
 const FUEL_MINUTES = { low: 2, top: 8 }
 const MAX_PLAN_ATTEMPTS = 4
 /** D38: tiles temporary cells keep off every existing module (their ports' routes need room). */
@@ -840,9 +846,10 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   for (const rid of f.layout.routeOrder) if (plan.rerouted.indexOf(f.layout.routes[rid].conn) >= 0) for (const k of f.layout.routes[rid].tiles) reserved[k] = true
   // M6a.2: the tiles the growth gave up (old route tiles, the old footprint's margin) are free again.
   resyncReserved(ctx.faction, f.layout)
-  const poleJobs = breakAfter.length > 0 ? RT.placeReplacementPoles(ctx.surface, ctx.faction, plan.add, clearJobs, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority }) : []
+  const priority = NF.servesPower(node, gr.role) ? POWER_JOB_PRIORITY : ctx.config.factoryBuildPriority
+  const poleJobs = breakAfter.length > 0 ? RT.placeReplacementPoles(ctx.surface, ctx.faction, plan.add, clearJobs, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority }) : []
   if (poleJobs.length === 0) for (const e of breakAfter) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
-  g.growBuild = { phase: poleJobs.length > 0 ? "poles" : "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [], poleJobs, breakAfter: poleJobs.length > 0 ? breakAfter : undefined }
+  g.growBuild = { phase: poleJobs.length > 0 ? "poles" : "clear", clearJobs, add: plan.add, ghosts: [], placeJobs: [], poleJobs, breakAfter: poleJobs.length > 0 ? breakAfter : undefined, priority }
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} grows ${gr.role} by ${gr.units} units: ${plan.remove.length} entities to pick up, ${plan.add.length} to build, rerouted ${plan.rerouted.join(", ")}`)
   return true
 }
@@ -881,7 +888,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
     if (clearObstacles(ctx, b)) return
-    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: ctx.config.factoryBuildPriority })
+    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority ?? ctx.config.factoryBuildPriority })
     for (const gh of d.ghosts) b.ghosts.push(gh)
     for (const id of d.placeJobs) b.placeJobs.push(id)
     // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
@@ -1459,7 +1466,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   AR.advance(intent, "build")
   const fuel = ctx.faction.brain!.catalog.fuel
   // A resumed adoption reuses the build job this plan already started instead of duplicating its clear targets.
-  const b = entry.build ?? RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: ctx.config.factoryBuildPriority, parts, clear: evicted, breakAfter })
+  const b = entry.build ?? RT.startBuild(entry, { fuel: { item: fuel, count: 5 }, priority: g.kind === "power" ? POWER_JOB_PRIORITY : ctx.config.factoryBuildPriority, parts, clear: evicted, breakAfter })
   // B23: a request that completed a built whole-patch mine (wholePatchCandidate): the mine is a base module, so its
   // new entities are not in `parts`. Build them the growth way: evict and clear what stands on the new ground, then
   // ghost and place (`stepBuild` stamps `extraAdd` once the clear is done). The out port of a completed mine is the
@@ -2462,7 +2469,7 @@ function upkeep(ctx: Ctx): void {
       if (have >= low || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
       const top = math.max(low + 1, math.ceil((FUEL_MINUTES.top * 3600 * perTick) / fuelValue))
       const count = math.min(top - have, prototypes.item[fuel].stack_size)
-      LF.addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
+      LF.addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: POWER_JOB_PRIORITY, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
     }
   }
 }
@@ -2478,7 +2485,7 @@ export function refuelBoilers(ctx: Pick<Ctx, "faction" | "f" | "surface" | "tick
     if (inv === undefined || inv.get_item_count(fuel) > 0) continue
     const key = `upkeep:${e.unit_number}`
     if (keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) continue
-    LF.addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: 100, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
+    LF.addKeyed(ctx, key, { kind: "fuel", pos: e.position, materials: [{ item: fuel, count }], priority: POWER_JOB_PRIORITY, payload: { kind: "fuel", item: fuel, count, target: e, partial: true } })
   }
 }
 
