@@ -1071,6 +1071,11 @@ export interface PumpjackFieldParams extends CommonParams {
   resource?: string
   pumpjack?: string
   pipe?: string
+  /**
+   * B119: tiles in the field's box nothing can stand on (cliffs, water), in the wells' coordinates, encoded `x,y;…`.
+   * Pipes and poles go around them; a well whose output cannot reach the port is left out.
+   */
+  obstacles?: string
 }
 
 /**
@@ -1105,19 +1110,28 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
   const outs: { x: number; y: number }[] = []
   const box = need(facts.entity(pumpjack)?.fluidBoxes?.find((b) => b.production === "output"), `${pumpjack} has no output fluid box`)
   const c = box.connections[0]
+  if (p.obstacles !== undefined) for (const [x, y] of string.gmatch(p.obstacles, "(-?%d+),(-?%d+)")) blocked[`${tonumber(x)! - ox},${tonumber(y)! - oy}`] = true
   for (const w of wells) {
     const x = w.x - ox
     const y = w.y - oy
-    entities.push({ name: pumpjack, x: x + 0.5, y: y + 0.5, dir: NORTH, mines: resource, perSecond: w.perSecond })
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) blocked[`${x + dx},${y + dy}`] = true
     outs.push({ x: x + c.x + [0, 1, 0, -1][c.dir], y: y + c.y + [-1, 0, 1, 0][c.dir] })
   }
   // The port: the east edge, on the row of the first output; the collector grows from it to each output in turn.
-  const port = { x: W - 1, y: outs[0].y }
-  const pipes: Record<string, boolean> = { [`${port.x},${port.y}`]: true }
+  // B119: the first such row whose edge tile is free (a cliff may stand there).
   const inside = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < W && y < H && !blocked[`${x},${y}`]
-  for (const o of outs) {
-    if (pipes[`${o.x},${o.y}`]) continue
+  const portRow = outs.find((o) => inside(W - 1, o.y))
+  if (portRow === undefined) error("pumpjack-field: no free edge tile on a well output's row")
+  const port = { x: W - 1, y: portRow.y }
+  const pipes: Record<string, boolean> = { [`${port.x},${port.y}`]: true }
+  const kept: typeof wells = []
+  for (let i = 0; i < outs.length; i++) {
+    const o = outs[i]
+    const w = wells[i]
+    if (pipes[`${o.x},${o.y}`]) {
+      kept.push(w)
+      continue
+    }
     // BFS from the output to the nearest collector tile.
     const prev: Record<string, string> = {}
     const queue: { x: number; y: number }[] = [o]
@@ -1138,25 +1152,29 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
         queue.push({ x: nx, y: ny })
       }
     }
-    if (hit === undefined) error(`pumpjack-field: no pipe path from the well output at ${o.x},${o.y}`)
+    // B119: a well walled off by cliffs or water is left out.
+    if (hit === undefined) continue
+    kept.push(w)
     for (let k: string = prev[hit]; k !== ""; k = prev[k]) pipes[k] = true
   }
+  for (const w of kept) entities.push({ name: pumpjack, x: w.x - ox + 0.5, y: w.y - oy + 0.5, dir: NORTH, mines: resource, perSecond: w.perSecond })
   for (const [k] of pairs(pipes)) {
     const [xs, ys] = string.match(k as string, "^(-?%d+),(-?%d+)$")
     entities.push({ name: pipe, x: tonumber(xs)! + 0.5, y: tonumber(ys)! + 0.5 })
     blocked[k as string] = true
   }
+  if (kept.length === 0) error("pumpjack-field: no well output reaches the port")
   const poles = placePoles({ w: W, h: H }, entities, facts, p.pole ?? "small-electric-pole", blocked)
   const first = poles[0]
   for (const pole of poles) entities.push(pole)
   let total = 0
-  for (const w of wells) total += w.perSecond
+  for (const w of kept) total += w.perSecond
   const draft: ModuleDraft = {
-    id: `pumpjack-field/${encodeWells(wells)}`,
+    id: `pumpjack-field/${encodeWells(kept)}`,
     source: "generated",
     generator: "pumpjack-field",
     provenance: "generator pumpjack-field (Rival Engineers)",
-    description: `${wells.length} ${pumpjack} on ${resource}, ${string.format("%.1f", total)}/s`,
+    description: `${kept.length} ${pumpjack} on ${resource}, ${string.format("%.1f", total)}/s`,
     footprint: { w: W, h: H },
     entities,
     ports: [
@@ -1167,7 +1185,7 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
     mirrorable: false,
     // Generated for one field: the planner places it exactly there (`ModuleRequest.at`), not by a site search.
     anchor: { resource },
-    params: { wells: encodeWells(wells), resource },
+    params: p.obstacles !== undefined ? { wells: encodeWells(wells), resource, obstacles: p.obstacles } : { wells: encodeWells(wells), resource },
   }
   return finalizeModule(draft, facts)
 }

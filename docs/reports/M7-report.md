@@ -338,6 +338,10 @@ After B117 (`m7r-11-m450d`) outposts take 4–5 game-min each: the 12th (W3) was
 search began. It found the crude. Building the field then crashed the game on a well listed twice (B118). S2 and S3
 again found no pole path.
 
+With B118 fixed the field was generated and planned, and every plan then failed at its fixed spot: the wells sit in a
+ring of cliffs (B119). A field is now generated around the cliffs and water in its box, and its fixed placement checks
+terrain only under its entities.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

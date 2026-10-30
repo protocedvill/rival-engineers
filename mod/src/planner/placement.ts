@@ -1199,14 +1199,25 @@ function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainVie
  * M7b: a module generated for one spot (a pumpjack field on its wells) is placed exactly at `origin` if every footprint
  * tile is placeable and unclaimed, without a search. Returns the module, or the reason it cannot go there.
  */
-export function placeFixed(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, id: string, def: ModuleDef, origin: Vec): PlacedModule | string {
+export function placeFixed(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, id: string, def: ModuleDef, origin: Vec, facts: ProtoFacts): PlacedModule | string {
   const td = tdefOf(def, IDENTITY)
+  // B119: the module is generated around what stands there (a pumpjack field's pipes go around cliffs): only its
+  // entities' tiles need placeable ground; elsewhere in the box only other structures block.
+  const under: Record<number, boolean> = {}
+  for (const e of def.entities) {
+    const r = entityRect(e, facts)
+    for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) under[tkey(origin.x + x, origin.y + y)] = true
+  }
   for (let x = origin.x; x < origin.x + def.footprint.w; x++) {
     for (let y = origin.y; y < origin.y + def.footprint.h; y++) {
       const b = terrain.block(x, y)
-      if (b === TREE && policy.obstacles.trees !== "clear") return `tree at ${x},${y}`
-      if (b === ROCK && policy.obstacles.rocks !== "clear") return `rock at ${x},${y}`
-      if (b !== FREE && b !== TREE && b !== ROCK) return `blocked at ${x},${y}`
+      if (!under[tkey(x, y)]) {
+        if (b === OWN || b === FOREIGN) return `structure at ${x},${y}`
+      } else {
+        if (b === TREE && policy.obstacles.trees !== "clear") return `tree at ${x},${y}`
+        if (b === ROCK && policy.obstacles.rocks !== "clear") return `rock at ${x},${y}`
+        if (b !== FREE && b !== TREE && b !== ROCK) return `blocked (${describeTile(state, terrain, x, y)}) at ${x},${y}`
+      }
       const c = placementClaimConflict(state, tkey(x, y), id)
       if (c !== undefined) return `${c.code} at ${x},${y}`
     }

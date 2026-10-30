@@ -108,13 +108,48 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     const better = best === undefined || (enough && (best.total < need || d < best.d)) || (!enough && best.total < need && total > best.total)
     if (better) best = { i: k, total, d }
   }
-  const chosen = wells.filter((_, i) => field[i] === best!.i)
-  let minX = math.huge
-  let minY = math.huge
-  for (const w of chosen) {
-    minX = math.min(minX, w.x)
-    minY = math.min(minY, w.y)
+  let chosen = wells.filter((_, i) => field[i] === best!.i)
+  // B119: cliffs and water in the field's box (seed 11's wells sit in a ring of cliffs). Pumpjacks on them are left
+  // out; the generator routes pipes and poles around the rest.
+  const box = (ws: Well[]): Rect => {
+    let minX = math.huge
+    let minY = math.huge
+    let maxX = -math.huge
+    let maxY = -math.huge
+    for (const w of ws) {
+      minX = math.min(minX, w.x)
+      minY = math.min(minY, w.y)
+      maxX = math.max(maxX, w.x)
+      maxY = math.max(maxY, w.y)
+    }
+    return { x: minX - 1 - FIELD_MARGIN, y: minY - 1 - FIELD_MARGIN, w: maxX - minX + 3 + 2 * FIELD_MARGIN, h: maxY - minY + 3 + 2 * FIELD_MARGIN }
   }
-  const def = make({ wells: encodeWells(chosen), resource, pumpjack })
-  return { def, at: { x: minX - 1 - FIELD_MARGIN, y: minY - 1 - FIELD_MARGIN } }
+  const b = box(chosen)
+  const fieldArea = { left_top: { x: b.x, y: b.y }, right_bottom: { x: b.x + b.w, y: b.y + b.h } }
+  const hard: Record<string, boolean> = {}
+  const tiles: string[] = []
+  const mark = (x: number, y: number): void => {
+    const k = `${x},${y}`
+    if (hard[k] || x < b.x || y < b.y || x >= b.x + b.w || y >= b.y + b.h) return
+    hard[k] = true
+    tiles.push(k)
+  }
+  for (const c of findEntities(surface, { type: "cliff", area: fieldArea })) {
+    const bb = c.bounding_box
+    for (let x = math.floor(bb.left_top.x); x < math.ceil(bb.right_bottom.x); x++) for (let y = math.floor(bb.left_top.y); y < math.ceil(bb.right_bottom.y); y++) mark(x, y)
+  }
+  for (const t of surface.find_tiles_filtered({ area: fieldArea, collision_mask: "water_tile" })) mark(t.position.x, t.position.y)
+  chosen = chosen.filter((w) => {
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (hard[`${w.x + dx},${w.y + dy}`]) return false
+    return true
+  })
+  if (chosen.length === 0) return undefined
+  const at = box(chosen)
+  // The generator leaves out wells it cannot pipe to the port; none left means no field here.
+  const [ok, def] = pcall(make, { wells: encodeWells(chosen), resource, pumpjack, obstacles: tiles.length > 0 ? tiles.join(";") : undefined })
+  if (!ok) {
+    log(`[rival-engineers] pumpjack field at ${at.x},${at.y}: ${tostring(def)}`)
+    return undefined
+  }
+  return { def: def as ModuleDef, at: { x: at.x, y: at.y } }
 }

@@ -109,6 +109,49 @@ test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a
   ok(job.layout.routes["route:crude"]?.fluid !== undefined, "crude is piped")
 })
 
+test("fluid route: B119 a field with cliffs in its box routes around them, leaves out a walled-off well, and is placed", () => {
+  const rows = field(140, 80)
+  // A ring of cliff around the middle well (x 17..23, y 7..13): its pumpjack cannot be piped out.
+  const cliffs: string[] = []
+  for (let x = 17; x <= 23; x++) for (let y = 7; y <= 13; y++) if (x === 17 || x === 23 || y === 7 || y === 13) cliffs.push(`${x},${y}`)
+  for (const k of cliffs) {
+    const [xs, ys] = string.match(k, "^(%d+),(%d+)$")
+    const x = tonumber(xs)!
+    const y = tonumber(ys)!
+    rows[y] = string.sub(rows[y], 1, x) + "C" + string.sub(rows[y], x + 2)
+  }
+  const terrain = asciiTerrain(rows)
+  const wells = [
+    { x: 10, y: 10, perSecond: 10 },
+    { x: 20, y: 10, perSecond: 10 },
+    { x: 30, y: 11, perSecond: 10 },
+  ]
+  const oil = pumpjackField(F, { wells, obstacles: cliffs.join(";") })
+  let jacks = 0
+  for (const e of oil.entities) if (e.name === "pumpjack") jacks++
+  eq(jacks, 2, "the walled-off well is left out")
+  const plastic = fluidChain(F, { recipe: "plastic-bar", chemPlants: 2, refineries: 2 })
+  const at = { x: 10 - 1 - 2, y: 10 - 1 - 2 }
+  const req: PlanRequest = {
+    modules: [
+      { id: "oil", def: oil, at },
+      { id: "plastic", def: plastic },
+    ],
+    connections: [{ id: connectionId("crude"), from: { module: "oil", port: "out-crude-oil" }, to: { module: "plastic", port: "in-crude-oil" }, fluid: FLUID }],
+    center: { x: 60, y: 30 },
+    region: { x: 0, y: 0, w: 140, h: 80 },
+  }
+  const job = runJob(newPlanJob(req, YELLOW), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  const m = job.layout.modules.find((x) => x.id === "oil")!
+  for (const e of m.def.entities) {
+    const x = math.floor(m.origin.x + e.x)
+    const y = math.floor(m.origin.y + e.y)
+    ok(cliffs.indexOf(`${x},${y}`) < 0, `${e.name} at ${x},${y} stands on a cliff`)
+  }
+  ok(job.layout.routes["route:crude"]?.fluid !== undefined, "crude is piped")
+})
+
 test("fluid route: pumps on a long line get a pole each, joined to the power network by the pole step", () => {
   const terrain = asciiTerrain(field(260, 30))
   const state = newLayout()

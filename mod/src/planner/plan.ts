@@ -827,7 +827,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   const mreq = moduleRequest(job, id)
   // M7b: a module generated for one spot goes exactly there, or the plan fails.
   if (mreq.at !== undefined) {
-    const m = placeFixed(job.layout, terrain, policy, id, mreq.def, mreq.at)
+    const m = placeFixed(job.layout, terrain, policy, id, mreq.def, mreq.at, facts)
     if (typeof m === "string") {
       fail(job, `module:${id}`, planFailure("no-position", `no room at its fixed spot: ${m}`))
       job.phase = "failed"
