@@ -13,6 +13,7 @@ import type { FactoryGoal, FactoryState } from "./factory"
 // The knowledge-failure classifier lives in `shared/` (pure, T1-tested); re-exported here so the factory keeps using
 // one namespace and its Lua main chunk does not gain a local (it is close to the 200 limit).
 export { exhausted } from "../shared/exhausted"
+import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */
 const RADAR_MAX_FAILED = 2
@@ -132,9 +133,10 @@ export function baseRadar(ctx: ExploreCtx, hooks: ExploreHooks): void {
 export function exploreFor(ctx: ExploreCtx, g: FactoryGoal, ore: string): void {
   const f = ctx.f
   const ex = f.explore
+  const need = searchNeed(ctx, ore)
   if (ex === undefined) {
-    f.explore = { resource: ore, kind: g.kind, since: ctx.tick, phase: "outpost", outposts: 0 }
-    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62) since tick ${ctx.tick}: goal ${g.id} (${g.kind}) found no free ${ore} patch within ${homeRadius(ctx)} tiles or on explored ground; radar outposts N, E, S, W in turn`)
+    f.explore = { resource: ore, kind: g.kind, since: ctx.tick, phase: "outpost", outposts: 0, need }
+    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62) since tick ${ctx.tick} (${need}): goal ${g.id} (${g.kind}) found no free ${ore} patch within ${homeRadius(ctx)} tiles or on explored ground; radar outposts N, E, S, W in turn`)
     return
   }
   // An outpost is being built or scanned already: this failure waits for it like the others.
@@ -142,7 +144,20 @@ export function exploreFor(ctx: ExploreCtx, g: FactoryGoal, ore: string): void {
   ex.resource = ore
   ex.phase = "outpost"
   ex.goal = undefined
+  // D70: the search now wants something the factory can't run without: from here it counts as required.
+  if (need !== ex.need) {
+    ex.need = need
+    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62) since tick ${ctx.tick} (${need}): goal ${g.id} (${g.kind}) now searches for ${ore}`)
+  }
   log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): goal ${g.id} still found no free ${ore} patch after ${ex.outposts} outposts (${math.floor((ctx.tick - ex.since) / 3600)} game-min); next outpost`)
+}
+
+/** D70: whether the faction already makes `what` (a built node or bootstrap site): if so the search is extra capacity. */
+function searchNeed(ctx: ExploreCtx, what: string): ExploreNeed {
+  const producers: Producer[] = []
+  for (const n of LG.nodesOf(ctx.f.graph)) producers.push({ item: n.item, built: n.lifecycle === "built" })
+  for (const s of storage.factions[ctx.faction.name]?.brain?.sites ?? []) producers.push({ item: s.resource, built: s.status === "built" })
+  return exploreNeed(producers, what)
 }
 
 /** D62: a plan of the searching kind was adopted: the search is over. */

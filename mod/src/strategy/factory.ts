@@ -230,7 +230,7 @@ export interface FactoryState {
    * D62: a search for ore past the home zone. `kind` goals wait while an outpost is built (`outpost`) and its radar's
    * nearby square is charted (`scan`), then plan again (`retry`); a plan of that kind ends the search.
    */
-  explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number }
+  explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number; need?: "required" | "extra capacity" }
   /** D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. */
   arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
   /** P43 (a): chunks the faction's radars scanned (sector scans, and powered outposts' nearby squares), by `tkey`. */

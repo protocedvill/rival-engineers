@@ -61,7 +61,7 @@ GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
 # D62: a search for ore past the home zone (radar outposts) starts and ends.
-EXPLORE_START = re.compile(r"EXPLORING \(D62\) since tick (\d+)")
+EXPLORE_START = re.compile(r"EXPLORING \(D62\) since tick (\d+)(?: \((required|extra capacity)\))?")
 EXPLORE_OVER = re.compile(r"EXPLORE \(D62\) over")
 FAILURE_LOG_TAIL_LINES = 200
 
@@ -328,7 +328,9 @@ class FailFast:
                 self.milestones.add(m.group(1))
             m = EXPLORE_START.search(line)
             if m:
-                self.exploring_since = int(m.group(1))
+                # D70 (user, 2026-10-30): exploring for extra capacity never fails a run; only a required search
+                # (something the factory can't run without) starts the clock. Logs without the tag count as required.
+                self.exploring_since = None if m.group(2) == "extra capacity" else int(m.group(1))
             if EXPLORE_OVER.search(line):
                 self.exploring_since = None
             limit = self.rules.get("exploring_minutes")
