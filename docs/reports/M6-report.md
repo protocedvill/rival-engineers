@@ -2934,7 +2934,9 @@ anywhere in the repo or the run directories, and no state hash existed in the co
 | ≥ 18/20 random seeds | `m6-random20-3c2c18f` | `3c2c18f` | **19/20** (the failure, 5387208, is B106; fixed and validated) |
 | ≥ 18/20 random seeds, final code | `m6-random20-8f39d07` | `8f39d07` (B105–B107) | **20/20**, no stalls; v1-done from 175 to 258 min (median ~212); AI 1.3–3.4 ms/tick with 3–4 games at once |
 | ≥ 9/10 fixed CI seeds | `m6-fixed10a-9c41906` + `m6-fixed10b-9c41906` (stopped) | `9c41906` | stopped after 11, 1212121, 8080808 passed: `m6-fixed10.toml` lacked `debugInfiniteResearch` (unlike `m6-random20`), so seed 222, research done at 287 min at ~28/min, could never sustain (0/min after). Config fixed in `m6-fixed10`, `m6-two-factions` and `m6`; rerun of all 10 on the final code below |
+| ≥ 9/10 fixed CI seeds, final code | `m6-fixed10-845a46b` | `845a46b` (B108, configs fixed) | **9/10**, no stalls. v1-done: 11 183, 3333 252, 555555 195, 44444 368, 1212121 186, 8080808 186, 98765 177, 46464 240, 6666666 186. **222 failed at the cap** (see below) |
 | Two factions, each to `v1-done` | `m6-two-factions-9c41906` (11, 222, 3333) | `9c41906` | **2/3**: 11 both at ~200 min; 222 at 308 / 217 min (see below); 3333 stopped at 203 min (fail fast: exploring > 60 min → **B108**); validation of B108 running |
+| Two factions, final code | `m6-two-factions-845a46b` | `845a46b` | **2/3**: 11 both at ~200; 222 at 316 / 214; 3333 stopped at 203 by the exploring fail-fast while faction 2 searched for a third power block's coal (→ **D70**, user decision); rerun of 3333 on `d494226` running |
 | Space Age smoke test | `m6-space-age-981ca35` | `981ca35` | **pass**: space-age, quality and elevated-rails loaded, no errors; `first-power` at 10.4 game-min (seed 11) |
 | Determinism (T4) | `tools/harness/determinism.py`, seed 11 | `981ca35` + the dump | **pass**: identical state at 30 and 45 min (3.6 MB / 3.7 MB) for a fresh snapshot-server run, a fresh `--benchmark` run, and a run resumed from the first's `min-0020` save |
 | Research (42 techs) | part of `v1-done` | — | covered by every passing seed |
@@ -2946,6 +2948,12 @@ g19 evicted 22 poles (B37) at 99 min, and their replacement line went up with th
 took until 130 min; meanwhile most of the factory was unpowered and every "lacks power" repair found the planned poles
 (still ghosts) and did nothing. g23 did the same at 136 min. A general remedy (proposed, not implemented): when a goal
 evicts a pole line, place its replacement poles before any other entity of the build (make before break).
+
+**Fixed seed 222 (open).** Science reached ~28/min near 300 min, then held ~18/min to the 480-min cap. Cluster 1's iron
+smelter n15 (`iron-plate>automation-science-pack>labs`) could not grow (`blocked at -44,484`, 27 failures); the design
+capped cluster 1's share at 0.173 of the target and planned a parallel provider once, but n24 (green) kept lacking
+iron plates to the end. Growth also kept retrying the same blocked tile after the provider was marked short. Not
+diagnosed further; the fixed-seed bar (9/10) is met without it. Seed 222 failed in earlier acceptance runs too (M6a).
 
 **T4 determinism (new).** `state_dump(file)` (remote interface, `mod/src/determinism.ts`) writes the mod's whole
 `storage` with sorted keys and full-precision numbers (Lua objects as kind and identity, e.g. an entity's name, unit
