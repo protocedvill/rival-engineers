@@ -112,7 +112,8 @@ as its mines deplete and are rebuilt. D71 (a) stays open; the random20 gate is u
 **passed**). Done times 173–291 game-min (M6's final sweep: 175–258). The failure, 2034469 (it passed in M6 at
 175 min), made ~25 red + 25 green/min from ~125 min, finished the research goal at 209 min and then consumed exactly
 18/min to the cap: the throughput-test sink's 60-s units made labs sized for shorter units the bottleneck (B112, a
-harness artefact; fixed in `7d0549e`, validation resumed from `min-0200`).
+harness artefact; fixed in `7d0549e`). Resumed from `min-0200` on the fix, 2034469 reaches `v1-done` at ~212 min, so
+the gate stands at 20/20 with B112. Full T2 on the M7 code (`7d0549e` + docs): 170/170.
 
 ## M7b: fluids
 
