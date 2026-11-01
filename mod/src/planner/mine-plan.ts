@@ -137,6 +137,26 @@ export function candidateOk(terrain: TerrainView, resource: string, drill: Entit
   return true
 }
 
+/**
+ * M7: a drill position's check and the patch ore tiles it mines (false: no drill there), by doubled centre. The grid
+ * phases of one `planWholePatch` revisit each centre (about four times), so each is read from the terrain once.
+ */
+type DrillSpots = Record<number, number[] | false>
+
+function drillSpot(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, x: number, y: number, spots: DrillSpots): number[] | false {
+  const key = tkey(2 * x, 2 * y)
+  const known = spots[key]
+  if (known !== undefined) return known
+  let tiles: number[] | false = false
+  if (candidateOk(terrain, patch.resource, drill, x, y)) {
+    tiles = []
+    const mr = miningRect(x, y, drill)
+    for (let tx = mr.x; tx < mr.x + mr.w; tx++) for (let ty = mr.y; ty < mr.y + mr.h; ty++) if (terrain.ore(tx, ty) === patch.resource) tiles.push(tkey(tx, ty))
+  }
+  spots[key] = tiles
+  return tiles
+}
+
 function addCandidate(
   terrain: TerrainView,
   patch: PatchPlan,
@@ -147,25 +167,20 @@ function addCandidate(
   side: -1 | 1,
   drills: PlannedDrill[],
   covered: Record<number, boolean>,
+  spots: DrillSpots,
 ): void {
   // One belt tile between the two drill columns: drill centres are (tileW + 1) / 2 from the belt centre.
   const away = (drill.tileW + 1) / 2
   const x = axis === "y" ? lane + side * away : along
   const y = axis === "y" ? along : lane + side * away
-  if (!candidateOk(terrain, patch.resource, drill, x, y)) return
+  const tiles = drillSpot(terrain, patch, drill, x, y, spots)
+  if (tiles === false) return
+  for (const k of tiles) covered[k] = true
   const mr = miningRect(x, y, drill)
-  let ore = 0
-  for (let tx = mr.x; tx < mr.x + mr.w; tx++) {
-    for (let ty = mr.y; ty < mr.y + mr.h; ty++) {
-      if (terrain.ore(tx, ty) !== patch.resource) continue
-      covered[tkey(tx, ty)] = true
-      ore++
-    }
-  }
-  drills.push({ x, y, lane, side, ore, area: mr.w * mr.h })
+  drills.push({ x, y, lane, side, ore: tiles.length, area: mr.w * mr.h })
 }
 
-function phasePlan(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, axis: "x" | "y", crossPhase: number, alongPhase: number): WholePatchMinePlan {
+function phasePlan(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, axis: "x" | "y", crossPhase: number, alongPhase: number, spots: DrillSpots): WholePatchMinePlan {
   const drills: PlannedDrill[] = []
   const coveredMap: Record<number, boolean> = {}
   // Repeating [drill][drill][belt][drill][drill]: derived from prototype width, not a tuned distance.
@@ -180,8 +195,8 @@ function phasePlan(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, a
   while (lane <= cross2) {
     let along = math.floor((along1 - alongPhase) / alongPitch) * alongPitch + alongPhase + drill.tileH / 2
     while (along <= along2) {
-      addCandidate(terrain, patch, drill, axis, lane, along, -1, drills, coveredMap)
-      addCandidate(terrain, patch, drill, axis, lane, along, 1, drills, coveredMap)
+      addCandidate(terrain, patch, drill, axis, lane, along, -1, drills, coveredMap, spots)
+      addCandidate(terrain, patch, drill, axis, lane, along, 1, drills, coveredMap, spots)
       along += alongPitch
     }
     lane += lanePitch
@@ -217,11 +232,12 @@ export function planWholePatch(terrain: TerrainView, patch: PatchPlan, drill: En
   if (drill.type !== "mining-drill") error(`${drill.name} is not a mining drill`)
   let best: WholePatchMinePlan | undefined
   const lanePitch = 2 * drill.tileW + 3
+  const spots: DrillSpots = {}
   for (const axis of ["y", "x"] as const) {
     const alongPitch = axis === "y" ? drill.tileH : drill.tileW
     for (let cross = 0; cross < lanePitch; cross++) {
       for (let along = 0; along < alongPitch; along++) {
-        const p = phasePlan(terrain, patch, drill, axis, cross, along)
+        const p = phasePlan(terrain, patch, drill, axis, cross, along, spots)
         if (better(p, best)) best = p
       }
     }

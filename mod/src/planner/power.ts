@@ -32,6 +32,11 @@ export interface PoleJob {
   prefix: string
   nodes: PoleNode[]
   parent: number[]
+  /**
+   * M7: per node, the other nodes within wire reach (`wireDegree`), kept by `addNode`. Was counted over every node at
+   * each look: O(poles²) per owner when `startNext` picks the next module on a large base. Absent in saves from before.
+   */
+  degree?: number[]
   /** Component root → powered. */
   powered: Record<number, boolean>
   /** Owners (module ids) that still need joining, nearest first when picked. */
@@ -64,6 +69,8 @@ interface PoleSearch {
   hs: number[]
   hf: number[]
   from: Record<number, string>
+  /** M7: `poleCost` by window tile, for the search's life (each tile is a neighbour of every pole in wire reach). */
+  tc?: Record<number, number>
   found?: number
   status: "running" | "found" | "failed"
   expansions: number
@@ -119,15 +126,17 @@ function union(job: PoleJob, a: number, b: number): void {
 }
 
 function addNode(job: PoleJob, n: PoleNode): number {
+  if (job.degree === undefined || job.degree.length !== job.nodes.length) job.degree = degrees(job.nodes)
+  const deg = job.degree
   const i = job.nodes.length
   job.nodes.push(n)
   job.parent.push(i)
+  deg.push(0)
   for (let j = 0; j < i; j++) {
-    const o = job.nodes[j]
-    const dx = o.x - n.x
-    const dy = o.y - n.y
-    const r = math.min(o.reach, n.reach)
-    if (dx * dx + dy * dy <= r * r + 1e-9) union(job, i, j)
+    if (!inWireReach(job.nodes[j], n)) continue
+    union(job, i, j)
+    deg[i]++
+    deg[j]++
   }
   return i
 }
@@ -137,17 +146,29 @@ const MAX_WIRE_CONNECTIONS = 5
 
 /** Existing copper wires a pole can still take (geometric neighbour count, conservative). */
 function wireDegree(job: PoleJob, i: number): number {
-  let n = 0
-  const a = job.nodes[i]
-  for (let j = 0; j < job.nodes.length; j++) {
-    if (j === i) continue
-    const b = job.nodes[j]
-    const dx = a.x - b.x
-    const dy = a.y - b.y
-    const r = math.min(a.reach, b.reach)
-    if (dx * dx + dy * dy <= r * r + 1e-9) n++
+  if (job.degree === undefined || job.degree.length !== job.nodes.length) job.degree = degrees(job.nodes)
+  return job.degree[i]
+}
+
+/** Each node's count of other nodes within wire reach (a job saved before `degree` existed). */
+function degrees(nodes: PoleNode[]): number[] {
+  const out: number[] = []
+  for (let i = 0; i < nodes.length; i++) out.push(0)
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (!inWireReach(nodes[i], nodes[j])) continue
+      out[i]++
+      out[j]++
+    }
   }
-  return n
+  return out
+}
+
+function inWireReach(a: PoleNode, b: PoleNode): boolean {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  const r = math.min(a.reach, b.reach)
+  return dx * dx + dy * dy <= r * r + 1e-9
 }
 
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
@@ -195,6 +216,7 @@ export function newPoleJob(prefix: string, pole: string, facts: ProtoFacts): Pol
     prefix,
     nodes: [],
     parent: [],
+    degree: [],
     powered: {},
     pending: [],
     added: [],
@@ -420,6 +442,8 @@ function stepSearch(job: PoleJob, layout: LayoutState, terrain: TerrainView, pol
   const s = job.current!
   const offs = offsetsFor(job.reach)
   const unit = 1 + offs.length / 40
+  s.tc ??= {}
+  const tc = s.tc
   let used = 0
   while (s.status === "running" && used < budget) {
     if (s.hs.length === 0) {
@@ -446,7 +470,11 @@ function stepSearch(job: PoleJob, layout: LayoutState, terrain: TerrainView, pol
       if (nx < s.x0 || ny < s.y0 || nx >= s.x0 + s.w || ny >= s.y0 + s.h) continue
       const nst = (ny - s.y0) * s.w + (nx - s.x0)
       if (s.closed[nst]) continue
-      const c = poleCost(layout, terrain, policy, nx, ny)
+      let c = tc[nst]
+      if (c === undefined) {
+        c = poleCost(layout, terrain, policy, nx, ny)
+        tc[nst] = c
+      }
       if (c < 0) continue
       const ng = g + c
       const old = s.g[nst]
