@@ -1052,6 +1052,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     }
     m.def = field.def
     m.at = field.at
+    EX.knowRect(f, { x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
   }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
   // B63: a consumer whose input port boxed a plan in gets a wider window for this whole plan (see wideJoin).

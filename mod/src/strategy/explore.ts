@@ -82,6 +82,18 @@ export function knownGround(ctx: ExploreCtx, g: FactoryGoal): Arms.KnownGround {
   return { home: Arms.homeRect(ctx.f.center, homeRadius(ctx)), explored, scanned: ctx.f.radarChunks }
 }
 
+/**
+ * A pumpjack field chosen from wells the faction has seen becomes known ground under its whole footprint (agent design,
+ * proposed): its box reaches past the wells, and on seed 11 the explored square ended at chunk row 0 while the box went
+ * on to y = 32, so its fixed-spot check read "terrain unknown" on every attempt. Recorded with the radar-scanned chunks.
+ */
+export function knowRect(f: FactoryState, r: Rect): void {
+  f.radarChunks ??= {}
+  for (let cy = math.floor(r.y / 32); cy <= math.floor((r.y + r.h - 1) / 32); cy++) {
+    for (let cx = math.floor(r.x / 32); cx <= math.floor((r.x + r.w - 1) / 32); cx++) f.radarChunks[tkey(cx, cy)] = true
+  }
+}
+
 /** B115: whether goal `g`'s plan may read chunk (cx, cy) (the planner's rule, for searches outside the planner). */
 export function chunkKnownFor(ctx: ExploreCtx, g: FactoryGoal): (this: void, cx: number, cy: number) => boolean {
   const known = knownGround(ctx, g)
