@@ -17,8 +17,8 @@ import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, l
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
-import { routePipe } from "./pipe-router"
-import type { PipeStep } from "./pipe-router"
+import { newPipeSearch, stepPipeSearch } from "./pipe-router"
+import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
 import { moduleId, poleId, routeId } from "../shared/ids"
@@ -182,6 +182,8 @@ export interface PlanJob {
   deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
+  /** M7: the fluid connection being routed (its search runs over several steps). */
+  pipe?: PipeJob
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
   failures: Record<string, string>
   /** D69: the same failures, typed (the factory decides from `kind`, never from the text). */
@@ -488,11 +490,45 @@ export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): 
   return false
 }
 
+/** M7: a fluid connection being routed: its search (stepped under the plan's budget) and what finishing it needs. */
+export interface PipeJob {
+  conn: string
+  search: PipeSearch
+  /** Plain pipes of the same fluid's lines from this source, by tile (B120 tap). */
+  trunk: Record<number, string>
+  /** Tiles of other fluids (other routes, other pipe ports). */
+  fluids: Record<number, boolean>
+  costReq: RouteRequest
+}
+
+/** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
+function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, pj: PipeJob): PipeCallbacks {
+  const f = connection(job, pj.conn).fluid!
+  const routeTerrain = pipeTerrain(terrain, f)
+  return {
+    cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
+    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y) && pipeSpanAt(job.layout, x, y, axis) === undefined,
+    fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
+  }
+}
+
 /**
- * M7b: routes a fluid connection in one go (`routePipe`), within the step budget's spirit: pipe routes are point to point
- * and the search is bounded by `PIPE_BUDGET` expansions. Commits the route, or records the failure.
+ * A built source's exit and its immediate neighbours can retain an OWN terrain/claim mark after an entity is gone. The
+ * runtime verifies each tile can actually take a pipe before marking it free; layout collisions still apply.
  */
-function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: ConnectionRequest): number {
+function pipeTerrain(terrain: TerrainView, f: NonNullable<ConnectionRequest["fluid"]>): TerrainView {
+  if (f.verifiedFree === undefined) return terrain
+  return {
+    block: (x, y) => f.verifiedFree?.[tkey(x, y)] === true ? FREE : terrain.block(x, y),
+    ore: (x, y) => terrain.ore(x, y),
+  }
+}
+
+/**
+ * M7b: starts routing a fluid connection (`pipe-router.ts`): the search runs under the step budget (`pipeStep`) and is
+ * bounded by `PIPE_BUDGET` work units. Returns undefined (and records the failure) when the ports are missing.
+ */
+function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): PipeJob | undefined {
   const f = c.fluid!
   const fromRef = c.from !== undefined ? resolve(job, c.from) : undefined
   const toRef = resolve(job, c.to)
@@ -502,16 +538,10 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
   const tp = tm !== undefined ? findPort(tm, toRef.port) : undefined
   if (fm === undefined || fp === undefined || fp.kind !== "pipe-out" || tm === undefined || tp === undefined || tp.kind !== "pipe-in") {
     fail(job, c.id, `no pipe ports ${fromRef?.module}.${fromRef?.port} → ${toRef.module}.${toRef.port}`)
-    return 1
+    return undefined
   }
   const start = portOutside(fm, fp)
   const goal = portOutside(tm, tp)
-  // A built source's exit and its immediate neighbours can retain an OWN terrain/claim mark after an entity is gone.
-  // The runtime verifies each tile can actually take a pipe before marking it free; layout collisions still apply.
-  const routeTerrain: TerrainView = f.verifiedFree !== undefined ? {
-    block: (x, y) => f.verifiedFree?.[tkey(x, y)] === true ? FREE : terrain.block(x, y),
-    ore: (x, y) => terrain.ore(x, y),
-  } : terrain
   const id = `route:${c.id}`
   const own: Record<string, boolean> = { [portTag(fm.id, fp.id)]: true, [portTag(tm.id, tp.id)]: true }
   const costReq = { id, conn: c.id, item: f.name, from: fromRef, to: toRef, goal: { x: goal.x, y: goal.y, dir: 0 }, tier: job.tier, own } as RouteRequest
@@ -520,15 +550,10 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
   const trunk: Record<number, string> = {}
   const starts: { x: number; y: number; dir: number }[] = []
   if (fromRef !== undefined) {
-    for (const rid of sameSource(job, fromRef, c.id)) {
-      const r = job.layout.routes[rid]
-      if (r.fluid?.name !== f.name) continue
-      for (const k of r.tiles) trunk[k] = rid
-    }
-    for (const rid of sameSource(job, fromRef, c.id)) {
-      const r = job.layout.routes[rid]
-      if (r.fluid?.name !== f.name) continue
-      for (const st of r.steps) {
+    const lines = sameSource(job, fromRef, c.id).filter((rid) => job.layout.routes[rid].fluid?.name === f.name)
+    for (const rid of lines) for (const k of job.layout.routes[rid].tiles) trunk[k] = rid
+    for (const rid of lines) {
+      for (const st of job.layout.routes[rid].steps) {
         if (st.kind !== "pipe") continue
         for (let d = 0; d < 4; d++) {
           const k = tkey(st.x + DX[d], st.y + DY[d])
@@ -550,30 +575,48 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
       fluids[tkey(t.x, t.y)] = true
     }
   }
-  const failure: { expansions?: number; reason?: string } = {}
-  const r = routePipe({
+  const w = policy.router
+  const search = newPipeSearch({
     start: { x: start.x, y: start.y, dir: math.floor(fp.dir / 4) },
     starts: starts.length > 0 ? starts : undefined,
     goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
     maxUnderground: f.maxUnderground,
     extent: f.extent,
-    cost: (x, y) => tileCost(job.layout, routeTerrain, policy, costReq, false, x, y),
-    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y) && pipeSpanAt(job.layout, x, y, axis) === undefined,
-    fluidNear: (x, y) => fluids[tkey(x, y)] === true,
     minCost: minTileCost(policy),
-    ugCost: policy.router.pipeUnderground ?? 2,
-    pumpCost: policy.router.pump ?? 10,
+    ugCost: w.pipeUnderground ?? 2,
+    pumpCost: w.pump ?? 10,
     budget: PIPE_BUDGET,
-    failure,
+    cell: w.coarseCell,
+    longRoute: w.longRoute,
+    corridorCells: w.corridorCells,
   })
-  if (r === undefined) {
-    const k = tkey(start.x, start.y)
-    fail(job, c.id, `no pipe path (${failure.reason ?? "unknown"}, ${failure.expansions ?? 0} expansions; start ${start.x},${start.y} raw block ${terrain.block(start.x, start.y)} routed block ${routeTerrain.block(start.x, start.y)} cost ${tileCost(job.layout, routeTerrain, policy, costReq, false, start.x, start.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${goal.x},${goal.y}, taps ${starts.length})`)
-    return PIPE_BUDGET
+  return { conn: c.id, search, trunk, fluids, costReq }
+}
+
+/** Steps the running fluid connection (`job.pipe`); commits its route or records the failure when the search ends. */
+function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  const pj = job.pipe!
+  const s = pj.search
+  const used = stepPipeSearch(s, pipeCallbacks(job, terrain, policy, pj), budget)
+  job.stats.routeWork += used
+  job.stats.expansions += used
+  if (s.status === "running") return used
+  job.pipe = undefined
+  const c = connection(job, pj.conn)
+  const f = c.fluid!
+  if (s.status === "failed") {
+    const st = s.p.start
+    const routeTerrain = pipeTerrain(terrain, f)
+    const k = tkey(st.x, st.y)
+    const g = s.p.goal
+    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0})`)
+    return used
   }
+  const r = s.result!
+  const id = pj.costReq.id
   const first = r.steps[0]
   let tapOf: string | undefined
-  if (starts.length > 0 && first !== undefined) for (let d = 0; d < 4 && tapOf === undefined; d++) tapOf = trunk[tkey(first.x + DX[d], first.y + DY[d])]
+  if (s.p.starts !== undefined && first !== undefined) for (let d = 0; d < 4 && tapOf === undefined; d++) tapOf = pj.trunk[tkey(first.x + DX[d], first.y + DY[d])]
   const route = pipeRoute(id, c, f, r.steps, r.cost)
   if (tapOf !== undefined) route.tapOf = routeId(tapOf)
   commitRoute(job.layout, route)
@@ -583,10 +626,10 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
   for (let i = 0; i < r.steps.length; i++) {
     const st = r.steps[i]
     if (st.kind !== "pump") continue
-    const spot = pumpPoleSpot(job.layout, terrain, policy, costReq, st)
+    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st)
     if (spot === undefined) {
       fail(job, c.id, `no room for a pole beside the pump at ${st.x},${st.y}`)
-      return math.max(1, r.expansions)
+      return used
     }
     const pid = poleId(`${line}:${i}`)
     job.layout.poles = [...(job.layout.poles ?? []), { id: pid, name: f.pole ?? "small-electric-pole", x: spot.x, y: spot.y, line }]
@@ -594,8 +637,7 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, c: C
     poles.push(pid)
   }
   if (poles.length > 0) job.layout.poleLines = [...(job.layout.poleLines ?? []), { id: line, to: moduleId(id), from: "pump", poles }]
-  job.stats.routeWork += r.expansions
-  return math.max(1, r.expansions)
+  return used
 }
 
 /** A free tile beside a pump (either of its two tiles) for its pole. */
@@ -1026,6 +1068,7 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.queue = []
   job.ripCount = {}
   job.current = undefined
+  job.pipe = undefined
   job.failures = {}
   job.failed = undefined
   job.expanded = {}
@@ -1117,6 +1160,7 @@ function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy)
 }
 
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  if (job.pipe !== undefined) return pipeStep(job, terrain, policy, budget)
   if (job.current === undefined) {
     const id = job.queue.shift()
     if (id === undefined) {
@@ -1131,7 +1175,11 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       return 0
     }
     const c = connection(job, id)
-    if (c.fluid !== undefined) return pipeStep(job, terrain, policy, c)
+    if (c.fluid !== undefined) {
+      job.pipe = newPipeJob(job, policy, c)
+      if (job.pipe === undefined) return 1
+      return pipeStep(job, terrain, policy, budget)
+    }
     const req = routeRequest(job, c, policy, {})
     if (isPlanFailure(req)) {
       fail(job, id, req)

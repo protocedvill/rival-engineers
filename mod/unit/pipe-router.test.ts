@@ -1,6 +1,6 @@
 import { eq, ok, run, test } from "./harness"
-import { asciiTerrain, DX, DY, FREE, tkey } from "../src/planner/grid"
-import { PipeRequest, PipeResult, PipeStep, routePipe } from "../src/planner/pipe-router"
+import { asciiTerrain, DX, DY, FREE, OWN, tkey, UNKNOWN } from "../src/planner/grid"
+import { newPipeSearch, PipeRequest, PipeResult, PipeStep, routePipe, stepPipeSearch } from "../src/planner/pipe-router"
 
 // T1: M7b pipe router. One fluid from a pipe-out port to a pipe-in port, preferring pipe-to-ground pairs, never letting
 // a plain pipe touch another fluid, with a pump at least every pipeline extent.
@@ -136,6 +136,67 @@ test("pipe router: a remote 800-tile field has a bounded search", () => {
 test("pipe router: no route when the goal is walled in", () => {
   const rows = [".".repeat(20), ".........###........", ".........#.#........", ".........###........", ".".repeat(20)]
   eq(routePipe(request(rows, { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 }, { under: () => false, budget: 20000 })), undefined)
+})
+
+/**
+ * M7 performance: a remote line into a pocket that opens away from the source (the seed 11 blue plan: crude from ~800
+ * tiles west into a block walled by modules, open to the east). Walls are modules: nothing passes under them.
+ */
+function pocket(): { rows: string[]; under: (this: void, x: number, y: number) => boolean } {
+  const rows: string[] = []
+  for (let y = 0; y < 81; y++) {
+    let row = ""
+    for (let x = 0; x < 300; x++) {
+      const wall = x >= 200 && x <= 262 && y >= 20 && y <= 60 && (x <= 201 || y <= 21 || y >= 59 || (x >= 261 && (y < 36 || y > 44)))
+      row += wall ? "#" : "."
+    }
+    rows.push(row)
+  }
+  const t = asciiTerrain(rows)
+  return { rows, under: (x, y) => t.block(x, y) !== OWN && t.block(x, y) !== UNKNOWN }
+}
+
+const COARSE = { cell: 8, longRoute: 128, corridorCells: 1 }
+
+test("pipe router: M7 a long line into a pocket open away from it keeps to the coarse corridor", () => {
+  const pk = pocket()
+  const flat = routePipe(request(pk.rows, { x: 2, y: 40, dir: 1 }, { x: 210, y: 40, dir: 3 }, { under: pk.under, budget: 400000 }))
+  const req = request(pk.rows, { x: 2, y: 40, dir: 1 }, { x: 210, y: 40, dir: 3 }, { under: pk.under, budget: 400000, ...COARSE })
+  const r = route(req)
+  ok(flat !== undefined, "the tile search alone routes it too")
+  ok(r.expansions * 8 < flat!.expansions, `the corridor search is far cheaper (${r.expansions} work against ${flat!.expansions})`)
+  ok(r.cost <= flat!.cost * 1.5, `and not much dearer (${r.cost} against ${flat!.cost})`)
+})
+
+test("pipe router: M7 the coarse pass proves a walled-in goal at once", () => {
+  // The pocket closed: the goal cannot be reached, however much the tile search floods.
+  const pk = pocket()
+  const rows = pk.rows.map((row) => row.substring(0, 261) + "##" + row.substring(263))
+  const t = asciiTerrain(rows)
+  const under = (x: number, y: number): boolean => t.block(x, y) !== OWN && t.block(x, y) !== UNKNOWN
+  const failure: { expansions?: number; reason?: string } = {}
+  eq(routePipe(request(rows, { x: 2, y: 40, dir: 1 }, { x: 210, y: 40, dir: 3 }, { under, budget: 400000, failure, ...COARSE })), undefined)
+  eq(failure.reason, "search exhausted")
+  ok(failure.expansions! < 20000, `proved by the cells (${failure.expansions} work)`)
+})
+
+test("pipe router: M7 a resumed search keeps to the step budget and finds the one-shot route", () => {
+  const pk = pocket()
+  const req = request(pk.rows, { x: 2, y: 40, dir: 1 }, { x: 210, y: 40, dir: 3 }, { under: pk.under, budget: 400000, ...COARSE })
+  const whole = route(req)
+  const s = newPipeSearch(req)
+  let steps = 0
+  let most = 0
+  while (s.status === "running") {
+    // A cell's analysis may overrun the budget by one cell's work (8 for 8-tile cells).
+    most = math.max(most, stepPipeSearch(s, req, 50))
+    steps++
+  }
+  eq(s.status, "found")
+  ok(steps > 10, `several steps (${steps})`)
+  ok(most <= 50 + 4 * 8, `each step near its budget (most ${most})`)
+  eq(s.result!.steps.length, whole.steps.length, "the same route")
+  eq(s.result!.cost, whole.cost)
 })
 
 run("pipe-router")
