@@ -86,6 +86,7 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
   if (config.factoryPowerFuelMinutes <= 0 && config.factoryMineLeadMinutes <= 0) return undefined
   if (busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
   // Rebuilt each check (a removed or replaced mine leaves no stale entry).
+  const before = f.oreLeft ?? {}
   f.oreLeft = {}
   for (const id of [...f.graph.nodeOrder]) {
     const n = f.graph.nodes[id]
@@ -107,6 +108,12 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     // M7c: the design reads it to keep new consumers off a mine that runs out soon (stage.ts `oreRunsOut`).
     f.oreLeft ??= {}
     f.oreLeft[n.role] = { amount: left.amount, minMinutes: lead * MINE_TAP_LIFE_LEADS }
+    const full = LG.rateIn(n.capacity.outputs, n.item ?? resource)
+    const was = before[n.role]
+    const short = (o: { amount: number; minMinutes: number } | undefined): boolean => o !== undefined && full > 0 && o.amount / full / 60 < o.minMinutes
+    if (short(f.oreLeft[n.role]) && !short(was)) {
+      log(string.format("[rival-engineers] faction %s: %s has %.0f min of %s left at full output (%.2f/s): no new consumers tap it", ctx.faction.name, n.role, left.amount / full / 60, resource, full))
+    }
     // A goal still building a connection from it (a new tap on its route) finishes first.
     let used = false
     for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true

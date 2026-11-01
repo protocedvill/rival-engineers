@@ -469,8 +469,12 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const role of CS.keys(c, "providerShort")) short += `${role}:${string.format("%.6g", caps[role] ?? 0)};`
   let retiring = ""
   for (const [role] of pairs(f.retiring ?? {})) retiring += `${role as string};`
+  // M7c: mines about to run out take no new consumers (stage.ts `oreRunsOut`): a change redesigns.
+  const runningOut: string[] = []
+  for (const [role] of pairs(f.oreLeft ?? {})) if (ST.oreRunsOut(f, role as string)) runningOut.push(role as string)
+  runningOut.sort()
   const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
-  const key = `${flagKey}|${blocked}|${short}|${retiring}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${flagKey}|${blocked}|${short}|${retiring}|${runningOut.join(";")}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
