@@ -365,6 +365,23 @@ function ownGrowthLength(def: ModuleDef): number {
 }
 
 /**
+ * B26 / M7: the length of the growth band `evaluate` scores (`growthBandUnits` units on the end `tryExpand` grows), 0 for
+ * a mine or a module that can't grow. Was the whole band up to `maxUnits`: a blue-pack assembler row (~300 tiles of
+ * growth) made a 711×224 window at the smallest radius, rebuilt for every re-placement.
+ */
+function scoredGrowthLength(def: ModuleDef, policy: LayoutPolicy): number {
+  const spec = def.expand
+  if (spec === undefined || spec.maxUnits < 1 || isMining(def)) return 0
+  const units = math.min(spec.maxUnits, policy.placement.growthBandUnits ?? spec.maxUnits)
+  return units * (spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h)
+}
+
+/** The window's margin around the scanned square: the largest footprint, its corridor ring and its scored growth band. */
+function windowMargin(s: PlacementSearch, policy: LayoutPolicy): number {
+  return maxDim(s) + policy.corridor.preferred + 4 + scoredGrowthLength(s.req.def, policy) + policy.corridor.min
+}
+
+/**
  * B26: the near band of every other expandable module (its first `growthBandUnits` growth units, on the end
  * `tryExpand` grows), inside the window. Mines are left out: their room to grow is already a hard claim (D52 (3)).
  */
@@ -624,8 +641,8 @@ function sealGate(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, 
 
 function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
   const R = radii(s, policy)[s.radiusIdx]
-  // B26: an expandable module's own growth band (and its corridor ring) must fit in the window to be scored.
-  const M = maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
+  // B26: an expandable module's own scored growth band (and its corridor ring) must fit in the window.
+  const M = windowMargin(s, policy)
   const t = s.target!
   s.wx = math.max(t.x - R - M, s.req.region.x)
   s.wy = math.max(t.y - R - M, s.req.region.y)
@@ -950,7 +967,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       const reg = s.req.region
       let reach = 0
       for (const R of radii(s, policy)) reach = math.max(reach, R)
-      reach += maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
+      reach += windowMargin(s, policy)
       const bx1 = reg.x - reach
       const by1 = reg.y - reach
       const bx2 = reg.x + reg.w - 1 + reach

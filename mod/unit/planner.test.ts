@@ -736,6 +736,17 @@ test("placement: compact next to the partner, at least the minimum corridor away
   ok(math.abs(px - target.x) + math.abs(py - target.y) <= 20, `input port near the smelter's output (${px},${py} vs ${target.x},${target.y})`)
 })
 
+test("placement: M7 an expandable module's window holds the growth band it scores, not its whole cap", () => {
+  // m7-seed11-blue-wide: a blue-pack assembler row may grow ~300 tiles; its window was 711×224 at the smallest radius.
+  const terrain = asciiTerrain(field(400, 400))
+  const row = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  const def = { ...row, expand: { ...row.expand!, maxUnits: 60 } }
+  const s = placeNow({ id: "g", def, targets: {}, center: { x: 200, y: 200 }, region: { x: 0, y: 0, w: 400, h: 400 } }, newLayout(), terrain, policy())
+  eq(s.phase, "done", "placed")
+  const R = policy().searchRadii[0]
+  ok(s.ww < 2 * R + 120, `window ${s.ww}×${s.wh} near the radius (${2 * R + 1} tiles of origins)`)
+})
+
 test("placement trace: same decision with the trace on; score terms sum to the score; rejections name their blocker", () => {
   const rows = field(50, 50)
   for (let y = 15; y < 35; y++) rows[y] = string.rep(".", 15) + string.rep("i", 20) + string.rep(".", 15)
