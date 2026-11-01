@@ -117,9 +117,23 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
   return { keep, spare, fallback: fallbackProducers(f), split: CS.flags(f?.constraints, "providerSplit"), blocked: CS.flags(f?.constraints, "providerNoTap") }
 }
 
-/** D69: whether new consumers may tap provider `role` (not marked no-tap or short, not retiring). */
+/** D69: whether new consumers may tap provider `role` (not marked no-tap or short, not retiring, not running out). */
 function tappable(f: FactoryState, role: string): boolean {
-  return !CS.has(f.constraints, "noTap", role) && !CS.has(f.constraints, "providerShort", role) && f.retiring?.[role] === undefined
+  return !CS.has(f.constraints, "noTap", role) && !CS.has(f.constraints, "providerShort", role) && f.retiring?.[role] === undefined && !oreRunsOut(f, role)
+}
+
+/**
+ * M7c (seed 11): a mine whose ore at full output lasts less than its `minMinutes`. Full output, not the planned draw:
+ * consumers with room take all a mine makes (two 4-furnace columns planned at 0.47/s drew its whole 1/s), so the planned
+ * spare was never there and the mine ran out ~40 game-min after the blue line tapped it.
+ */
+export function oreRunsOut(f: FactoryState, role: string): boolean {
+  const o = f.oreLeft?.[role]
+  if (o === undefined) return false
+  const n = nodeByRole(f.graph, role)
+  if (n === undefined || n.item === undefined) return false
+  const rate = rateIn(n.capacity.outputs, n.item)
+  return rate > 0 && o.amount / rate / 60 < o.minMinutes
 }
 
 /**

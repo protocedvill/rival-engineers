@@ -218,6 +218,11 @@ export interface FactoryState {
   arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
   /** P43 (a): chunks the faction's radars scanned (sector scans, and powered outposts' nearby squares), by `tkey`. */
   radarChunks?: Record<number, boolean>
+  /**
+   * M7c: ore left under each built mine's drills (by role, refreshed by the ore check every game-minute) and the fewest
+   * minutes of it at full output that still let new consumers tap it.
+   */
+  oreLeft?: Record<string, { amount: number; minMinutes: number }>
 }
 
 /** The only legal status mutation boundary for an existing goal. Constructors set their initial status directly. */
@@ -583,6 +588,21 @@ export interface FactoryGoalSelectionSnapshot {
  * Plain-data input to the goal scheduler. Capture this through the remote interface when a live game chooses the
  * wrong next goal, then paste it into a T1 fixture: replay does not need the save or any Factorio object.
  */
+/** M7c: whether `spec` feeds an input of a module still being built that no edge of the graph feeds now. */
+function feedsBuilding(f: FactoryState, spec: GoalSpec): boolean {
+  for (const e of spec.edges) {
+    const to = LG.nodeByRole(f.graph, e.to)
+    if (to === undefined || to.lifecycle !== "building") continue
+    let fed = false
+    for (const id of f.graph.edgeOrder) {
+      const ge = f.graph.edges[id]
+      if (ge.to === to.id && ge.toPort === e.toPort) fed = true
+    }
+    if (!fed) return true
+  }
+  return false
+}
+
 function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
   const active: Partial<Record<GoalKind, boolean>> = {}
   const completed: Partial<Record<GoalKind, boolean>> = {}
@@ -599,6 +619,7 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
       kind: spec.kind,
       cluster: spec.cluster,
       techs: spec.techs,
+      feedsBuilding: spec.kind === "production" ? feedsBuilding(f, spec) : undefined,
       growth: spec.growth === undefined ? undefined : {
         role: spec.growth.role,
         have: spec.growth.have,

@@ -23,6 +23,11 @@ import * as CS from "./constraints"
 
 /** How often the ore under steam-block fuel producers is counted (find_entities per drill). */
 const FUEL_CHECK_TICKS = 3600
+/**
+ * M7c (agent guess, proposed): a mine whose ore lasts less than this many retirement lead times at full output takes no
+ * new consumers (seed 11: the blue line's iron smelter tapped an iron mine that was retired ~40 game-min later).
+ */
+const MINE_TAP_LIFE_LEADS = 2
 
 /** Whether `n` (a built module) feeds a power node through a belt. */
 function feedsPower(g: LogicalGraph, n: LogicalNode): boolean {
@@ -80,6 +85,8 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
   const { f, config } = ctx
   if (config.factoryPowerFuelMinutes <= 0 && config.factoryMineLeadMinutes <= 0) return undefined
   if (busy || ctx.tick % FUEL_CHECK_TICKS >= config.brainIntervalTicks) return undefined
+  // Rebuilt each check (a removed or replaced mine leaves no stale entry).
+  f.oreLeft = {}
   for (const id of [...f.graph.nodeOrder]) {
     const n = f.graph.nodes[id]
     // B70: mines are `outpost` nodes; this checked `module` only and never fired (no P36 line in any M6 soak).
@@ -88,10 +95,6 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const power = feedsPower(f.graph, n)
     const lead = power ? config.factoryPowerFuelMinutes : config.factoryMineLeadMinutes
     if (lead <= 0) continue
-    // A goal still building a connection from it (a new tap on its route) finishes first.
-    let used = false
-    for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true
-    if (used) continue
     const m = findModule(f.layout, id)
     const resource = m?.def.anchor?.resource
     if (m === undefined || resource === undefined) continue
@@ -100,10 +103,17 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     const drills = findEntities(ctx.surface, { type: "mining-drill", force: ctx.faction.force, area })
     if (drills.length === 0) continue
+    const left = oreLeft(ctx.surface, drills, resource)
+    // M7c: the design reads it to keep new consumers off a mine that runs out soon (stage.ts `oreRunsOut`).
+    f.oreLeft ??= {}
+    f.oreLeft[n.role] = { amount: left.amount, minMinutes: lead * MINE_TAP_LIFE_LEADS }
+    // A goal still building a connection from it (a new tap on its route) finishes first.
+    let used = false
+    for (const g of f.goals) if (g.status === "building" || g.status === "planning") for (const e of g.edges) if (e.from === n.role) used = true
+    if (used) continue
     let rate = 0
     for (const e of LG.edgesFrom(f.graph, id)) if (e.kind === "belt") rate += e.plannedRate
     if (rate <= 0) rate = LG.rateIn(n.capacity.outputs, n.item ?? resource)
-    const left = oreLeft(ctx.surface, drills, resource)
     const minutes = rate > 0 ? left.amount / rate / 60 : math.huge
     if (!left.dry && minutes >= lead) continue
     // D67: a dry mine that feeds no power is D55's (claim more of its patch first, else relocate).

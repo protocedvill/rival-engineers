@@ -10,6 +10,12 @@ export interface GoalSelectionSpec {
   cluster?: number
   techs: string[]
   growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number }
+  /**
+   * M7c: the goal feeds an input of a module a goal is still building, an input nothing feeds now (its provider was
+   * retired). It may start while that goal builds: the building goal cannot finish without it (seed 11: the blue line
+   * waited ~6 game-hours on steel whose iron mine was gone, and the replacement mine waited for the blue line).
+   */
+  feedsBuilding?: boolean
 }
 
 export interface GoalSelectionState {
@@ -75,7 +81,7 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
 
   const decisions: GoalDecision[] = []
   for (const { spec, index } of pending) {
-    if (state.active[spec.kind]) {
+    if (state.active[spec.kind] && !(spec.kind === "production" && spec.feedsBuilding === true)) {
       decisions.push({ index, action: "skip" })
       continue
     }
