@@ -111,10 +111,17 @@ function preemptForUrgent(faction: FactionState, config: Config, tick: number): 
     busy.push(m)
   }
   if (busy.length === 0) return
+  // Only a job above some busy member's own claimed batch can preempt it (`mayPreemptFor`): none such, no scan.
+  let floor = math.huge
+  for (const m of busy) {
+    const anchor = board.jobs[m.claims[0] ?? -1]
+    if (anchor !== undefined && anchor.status === "claimed" && anchor.claimedBy === m.id) floor = math.min(floor, anchor.priority)
+  }
+  if (floor === math.huge) return
   let jobs: CrewJob[] | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!canPreempt(job) || !isReady(board, job, tick)) continue
+    if (job.priority <= floor || !canPreempt(job) || !isReady(board, job, tick)) continue
     // `isUrgent` reads the target's burner (game API calls) for every ready refuel every tick; it is only asked for a job
     // some busy member may still drop its batch for. A member reset below plans again and sees every job of this tick's
     // list as already seen (`notePlanSeen`), so filtering on the members as they are now changes nothing.
