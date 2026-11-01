@@ -991,56 +991,11 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
   while (used < budget && (s.phase === "site" || s.phase === "sat" || s.phase === "scan")) {
     if (s.phase === "site" && isMining(s.req.def)) {
       used += nextPatch(s, state, terrain, policy)
-      continue
-    }
-    if (s.phase === "site") {
-      // Ring by ring around the centre: the nearest shore tile or ore tile of the resource. Only points whose window
-      // (`startWindow`: the target ± the largest radius and margin, clipped to the region) still meets the region count:
-      // the rings are clipped to that box. Half a work unit a tile checked, as `satRow` (B53: r / 2 a ring of 8r tiles
-      // let one planner tick scan ~16× its budget; a region with no water spun at ~50 ms a tick).
-      const c = s.req.center
-      const r = s.ring
-      const reg = s.req.region
-      let reach = 0
-      for (const R of radii(s, policy)) reach = math.max(reach, R)
-      reach += windowMargin(s, policy)
-      const bx1 = reg.x - reach
-      const by1 = reg.y - reach
-      const bx2 = reg.x + reg.w - 1 + reach
-      const by2 = reg.y + reg.h - 1 + reach
-      const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
-      if (r > maxR) {
-        s.phase = "failed"
-        s.failure = planFailure("no-site", `no ${s.req.def.site} site in the region`, s.req.def.site)
-        s.reason = s.failure.reason
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-        break
-      }
-      // Resumes the ring where the last step stopped; half a work unit a point checked.
-      let found: Vec | undefined
-      const n = r === 0 ? 1 : 8 * r
-      let i = s.ringIdx ?? 0
-      while (i < n && found === undefined && used < budget) {
-        const p = ringPoint(c, r, i)
-        i++
-        if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
-        used += 0.5
-        if (sitePoint(s.req.def, terrain, p.x, p.y)) found = p
-      }
-      if (found === undefined && i < n) {
-        s.ringIdx = i
-        break
-      }
-      s.ringIdx = undefined
-      used += 0.5
-      s.ring++
-      if (found !== undefined) {
-        s.target = found
-        startWindow(s, state, policy)
-      }
-      continue
-    }
-    if (s.phase === "sat") {
+    } else if (s.phase === "site") {
+      const r = siteStep(s, state, terrain, policy, budget - used)
+      used += r.used
+      if (r.stop) break
+    } else if (s.phase === "sat") {
       if (s.ww <= 0 && s.row === 0 && s.sat.hard === undefined) startWindow(s, state, policy)
       if (s.row >= s.wh) {
         s.phase = "scan"
@@ -1048,109 +1003,171 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       }
       satRow(s, state, terrain, policy)
       used += s.ww / 2
-      continue
-    }
-    // Scan: candidates for transform ti, origin index ci over a (2R + 1)² square around the target, every `stride`
-    // tiles; then refine (±1 around the best few per transform of a coarse pass).
-    const R = radii(s, policy)[s.radiusIdx]
-    const side = 2 * R + 1
-    const n = math.floor((side - 1) / s.stride) + 1
-    if (s.ri >= 0) {
-      if (s.ri >= s.refine.length) {
-        s.ti = s.tdefs.length
-        s.ri = -1
-        s.refine = []
-        s.stride = 0
-      } else {
-        const c = s.refine[s.ri]
-        const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy, state)
-        s.candidates = (s.candidates ?? 0) + 1
-        if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
-        if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, s.tdefs[c.ti], c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
-        s.ri++
-        used++
-        continue
-      }
-    }
-    if (s.ti >= s.tdefs.length) {
-      if (s.stride === 2 && s.best !== undefined) {
-        // Refine around the coarse pass's best candidates.
-        const seen: Record<string, boolean> = {}
-        for (let ti = 0; ti < s.tdefs.length; ti++) {
-          for (const c of s.top[ti] ?? []) {
-            for (let dx = -1; dx <= 1; dx++) {
-              for (let dy = -1; dy <= 1; dy++) {
-                const key = `${ti}:${c.ox + dx},${c.oy + dy}`
-                if ((dx === 0 && dy === 0) || seen[key]) continue
-                seen[key] = true
-                s.refine.push({ ti, ox: c.ox + dx, oy: c.oy + dy })
-              }
-            }
-          }
-        }
-        s.ri = 0
-        continue
-      }
-      if (s.stride === 2) {
-        // Nothing feasible on the coarse grid: scan every origin before widening the radius.
-        s.stride = 1
-        s.ti = 0
-        s.ci = 0
-        continue
-      }
-      if (s.best !== undefined) {
-        const td = s.tdefs[s.best.ti]
-        const m: PlacedModule = {
-          id: moduleId(s.req.id),
-          canonical: s.req.def,
-          def: td.def,
-          transform: td.t,
-          origin: { x: s.best.ox, y: s.best.oy },
-          rect: { x: s.best.ox, y: s.best.oy, w: td.def.footprint.w, h: td.def.footprint.h },
-        }
-        s.result = m
-        s.phase = "done"
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-      } else if (s.radiusIdx + 1 < radii(s, policy).length) {
-        s.radiusIdx++
-        startWindow(s, state, policy)
-      } else if (s.patch !== undefined) {
-        // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
-        noteDeadPatch(s, state, terrain)
-        s.patch = undefined
-        s.target = undefined
-        s.radiusIdx = 0
-        s.phase = "site"
-      } else {
-        s.phase = "failed"
-        s.failure = planFailure("no-position", "no feasible position", s.req.def.anchor?.resource)
-        s.reason = s.failure.reason
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-      }
-      continue
-    }
-    const td = s.tdefs[s.ti]
-    const t = s.target!
-    const cx = (s.ci % n) * s.stride
-    const cy = math.floor(s.ci / n) * s.stride
-    const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
-    const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
-    const e = evaluate(s, policy, td, ox, oy, state)
-    s.candidates = (s.candidates ?? 0) + 1
-    if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
-    if (e !== undefined) {
-      if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
-      if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
-    }
-    used++
-    s.ci++
-    if (s.ci >= n * n) {
-      s.ci = 0
-      s.ti++
-    }
+    } else if (s.ri >= 0) used += refineStep(s, state, policy)
+    else if (s.ti >= s.tdefs.length) passEnd(s, state, terrain, policy)
+    else used += scanStep(s, state, policy)
   }
   s.work += used
   return used
+}
+
+/**
+ * The site phase of a non-mining module: ring by ring around the centre, the nearest shore tile or ore tile of the
+ * resource. Only points whose window (`startWindow`: the target ± the largest radius and margin, clipped to the region)
+ * still meets the region count: the rings are clipped to that box. Half a work unit a tile checked, as `satRow` (B53:
+ * r / 2 a ring of 8r tiles let one planner tick scan ~16× its budget; a region with no water spun at ~50 ms a tick).
+ * `stop`: the step ends here (the search failed, or the budget ran out mid-ring).
+ */
+function siteStep(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): { used: number; stop: boolean } {
+  let used = 0
+  const c = s.req.center
+  const r = s.ring
+  const reg = s.req.region
+  let reach = 0
+  for (const R of radii(s, policy)) reach = math.max(reach, R)
+  reach += windowMargin(s, policy)
+  const bx1 = reg.x - reach
+  const by1 = reg.y - reach
+  const bx2 = reg.x + reg.w - 1 + reach
+  const by2 = reg.y + reg.h - 1 + reach
+  const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
+  if (r > maxR) {
+    s.phase = "failed"
+    s.failure = planFailure("no-site", `no ${s.req.def.site} site in the region`, s.req.def.site)
+    s.reason = s.failure.reason
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+    return { used, stop: true }
+  }
+  // Resumes the ring where the last step stopped; half a work unit a point checked.
+  let found: Vec | undefined
+  const n = r === 0 ? 1 : 8 * r
+  let i = s.ringIdx ?? 0
+  while (i < n && found === undefined && used < budget) {
+    const p = ringPoint(c, r, i)
+    i++
+    if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
+    used += 0.5
+    if (sitePoint(s.req.def, terrain, p.x, p.y)) found = p
+  }
+  if (found === undefined && i < n) {
+    s.ringIdx = i
+    return { used, stop: true }
+  }
+  s.ringIdx = undefined
+  used += 0.5
+  s.ring++
+  if (found !== undefined) {
+    s.target = found
+    startWindow(s, state, policy)
+  }
+  return { used, stop: false }
+}
+
+/** The square of origins scanned at the current radius: its side in candidates, and the radius. */
+function scanSide(s: PlacementSearch, policy: LayoutPolicy): { n: number; R: number } {
+  const R = radii(s, policy)[s.radiusIdx]
+  return { n: math.floor((2 * R + 1 - 1) / s.stride) + 1, R }
+}
+
+/** Scores the next candidate of the scan: transform `ti`, origin `ci` every `stride` tiles around the target. */
+function scanStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
+  const { n, R } = scanSide(s, policy)
+  const td = s.tdefs[s.ti]
+  const t = s.target!
+  const cx = (s.ci % n) * s.stride
+  const cy = math.floor(s.ci / n) * s.stride
+  const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
+  const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
+  const e = evaluate(s, policy, td, ox, oy, state)
+  s.candidates = (s.candidates ?? 0) + 1
+  if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
+  if (e !== undefined) {
+    if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
+    if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
+  }
+  s.ci++
+  if (s.ci >= n * n) {
+    s.ci = 0
+    s.ti++
+  }
+  return 1
+}
+
+/** Scores the next refine candidate (±1 around the coarse pass's best); past the last, ends the pass. */
+function refineStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
+  if (s.ri >= s.refine.length) {
+    s.ti = s.tdefs.length
+    s.ri = -1
+    s.refine = []
+    s.stride = 0
+    return 0
+  }
+  const c = s.refine[s.ri]
+  const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy, state)
+  s.candidates = (s.candidates ?? 0) + 1
+  if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
+  if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, s.tdefs[c.ti], c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
+  s.ri++
+  return 1
+}
+
+/**
+ * Every transform scanned: refine around the coarse pass's best, or scan every origin when the coarse grid had nothing
+ * feasible; then place the best, or widen the radius, or try the next patch, or fail.
+ */
+function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
+  if (s.stride === 2 && s.best !== undefined) {
+    const seen: Record<string, boolean> = {}
+    for (let ti = 0; ti < s.tdefs.length; ti++) {
+      for (const c of s.top[ti] ?? []) {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            const key = `${ti}:${c.ox + dx},${c.oy + dy}`
+            if ((dx === 0 && dy === 0) || seen[key]) continue
+            seen[key] = true
+            s.refine.push({ ti, ox: c.ox + dx, oy: c.oy + dy })
+          }
+        }
+      }
+    }
+    s.ri = 0
+    return
+  }
+  if (s.stride === 2) {
+    // Nothing feasible on the coarse grid: scan every origin before widening the radius.
+    s.stride = 1
+    s.ti = 0
+    s.ci = 0
+    return
+  }
+  if (s.best !== undefined) {
+    const td = s.tdefs[s.best.ti]
+    s.result = {
+      id: moduleId(s.req.id),
+      canonical: s.req.def,
+      def: td.def,
+      transform: td.t,
+      origin: { x: s.best.ox, y: s.best.oy },
+      rect: { x: s.best.ox, y: s.best.oy, w: td.def.footprint.w, h: td.def.footprint.h },
+    }
+    s.phase = "done"
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+  } else if (s.radiusIdx + 1 < radii(s, policy).length) {
+    s.radiusIdx++
+    startWindow(s, state, policy)
+  } else if (s.patch !== undefined) {
+    // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
+    noteDeadPatch(s, state, terrain)
+    s.patch = undefined
+    s.target = undefined
+    s.radiusIdx = 0
+    s.phase = "site"
+  } else {
+    s.phase = "failed"
+    s.failure = planFailure("no-position", "no feasible position", s.req.def.anchor?.resource)
+    s.reason = s.failure.reason
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------
