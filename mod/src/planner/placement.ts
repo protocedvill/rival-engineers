@@ -1601,58 +1601,21 @@ function fromMine(state: LayoutState, rid: string, mine: string): boolean {
   return false
 }
 
+/**
+ * Grows module `id` in place by `k` units at `end` (or completes a whole-patch mine's plan, or with `reclaim` re-plans
+ * its patch). Each check is a `...Blocker` returning why the growth is refused; nothing changes unless all pass.
+ */
 export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto", reclaim = false): ExpansionResult {
   const m = findModule(state, id)
-  if (m === undefined) return { ok: false, reason: "unknown module", movedPorts: [], moved: [] }
+  if (m === undefined) return refused("unknown module")
   if (reclaim) {
     const why = reclaimWholePatch(state, terrain, facts, policy, m)
-    return why === undefined ? { ok: true, movedPorts: [], moved: [] } : { ok: false, reason: why, movedPorts: [], moved: [] }
+    return why === undefined ? { ok: true, movedPorts: [], moved: [] } : refused(why)
   }
   if (m.minePlan !== undefined) {
-    if (m.minePlan.complete || k < 1) return { ok: false, reason: "whole-patch mine is already complete", movedPorts: [], moved: [] }
-    const current: Record<string, boolean> = {}
-    for (const e of m.def.entities) current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)] = true
-    // B23: completion re-checks geometry (terrain, other modules, routes) but not ore: the patch was validated whole
-    // at planning time, and between planning and completion the terrain can only lose ore (mining) — a drill over
-    // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
-    // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
-    // would be stricter than the planning-time one that accepted them.)
-    // B55: the tile its output route starts on is never the mine's, whatever B25 lets give way (a full plan made
-    // before the fix could put a pole there).
-    const fullOut = m.minePlan.full.ports.find((p) => p.id === "out")
-    const outside = fullOut !== undefined ? portOutside(m, fullOut) : undefined
-    for (const e of m.minePlan.full.entities) {
-      if (current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)]) continue
-      const er = entityRect(e, facts)
-      if (outside !== undefined && outside.x >= m.origin.x + er.x && outside.x < m.origin.x + er.x + er.w && outside.y >= m.origin.y + er.y && outside.y < m.origin.y + er.y + er.h)
-        return { ok: false, reason: `planned mine covers its output at ${outside.x},${outside.y}`, movedPorts: [], moved: [] }
-      for (let x = m.origin.x + er.x; x < m.origin.x + er.x + er.w; x++) {
-        for (let y = m.origin.y + er.y; y < m.origin.y + er.y + er.h; y++) {
-          const kk = tkey(x, y)
-          const b = terrain.block(x, y)
-          // B24: the mine's own D52 footprint is reserved — the adoption reserves the whole rect plus 1 ring and the
-          // plan's claim is the mine's own — so those tiles read as OWN for a later request, but they are exactly
-          // what the completion builds. Only a ground someone else reserved (or raw obstacles) still blocks.
-          const own = state.mine?.[kk] === m.id || rectContains(m.rect, x, y)
-          if (b !== FREE && b !== TREE && b !== ROCK && !(b === OWN && own)) return { ok: false, reason: `planned mine blocked at ${x},${y}`, movedPorts: [], moved: [] }
-          const o = state.occ[kk]
-          // B25: pole lines placed before the mine's claim, and the faction's own earlier routes, can stand on its
-          // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
-          // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
-          // the rip breaks, so neither blocks a completion.
-          // B37: pole lines anywhere on the new ground give way (markModule evicts them; the plan re-poles).
-          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
-          // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
-          // belts up and reconcile re-routes the broken edge).
-          const rid = state.routeOcc[kk]
-          if (rid !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
-          // B74 (soak vps-d67 seed 7718665): B55 for the whole output route, not just its first tile. The mine's own
-          // output belt ran west along its unbuilt top row; the completion put a pole on its second tile and picked the
-          // belt up. With the mine backed up nothing measured the break, and three science clusters starved 150 min.
-          if (rid !== undefined && fromMine(state, rid, m.id)) return { ok: false, reason: `planned mine covers its own output route at ${x},${y}`, movedPorts: [], moved: [] }
-        }
-      }
-    }
+    if (m.minePlan.complete || k < 1) return refused("whole-patch mine is already complete")
+    const why = minePlanBlocker(state, terrain, facts, m)
+    if (why !== undefined) return refused(why)
     unmarkModule(state, m, facts)
     m.canonical = m.minePlan.full
     m.def = m.minePlan.full
@@ -1663,9 +1626,113 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
   }
   const canon = m.canonical
   const spec = canon.expand
-  if (spec === undefined || k < 1 || k > spec.maxUnits) return { ok: false, reason: "cannot expand by that much", movedPorts: [], moved: [] }
+  if (spec === undefined || k < 1 || k > spec.maxUnits) return refused("cannot expand by that much")
+  const g = grownGeometry(m, k, end, facts)
+  if (typeof g === "string") return refused(g)
+  const why = newGroundBlocker(state, terrain, policy, m, g.rect) ?? growthOreBlocker(terrain, facts, m, g, k, end) ?? growthRingBlocker(state, m, g.rect, policy.corridor.min) ?? grownPortBlocker(state, terrain, m, g)
+  if (why !== undefined) return refused(why)
+  const before: Record<string, Vec> = {}
+  for (const p of m.def.ports) before[p.id] = portTile(m, p)
+  unmarkModule(state, m, facts)
+  m.canonical = g.grown
+  m.def = g.placed
+  m.origin = g.origin
+  m.rect = g.rect
+  // B33: a strip mine's growth claim keeps stopping where its ore ends.
+  if (isMining(canon) && m.oreUnits !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
+  markModule(state, m, facts, policy.corridor.preferred)
+  const movedPorts: string[] = []
+  for (const p of m.def.ports) {
+    const now = portTile(m, p)
+    const was = before[p.id]
+    if (was === undefined || was.x !== now.x || was.y !== now.y) movedPorts.push(p.id)
+  }
+  // Forced head growth keeps every existing entity in place; forced tail growth moves the canonical tail. Auto keeps
+  // the original minimum-movement behaviour.
+  const moved = end === "auto" ? expandMoves(canon, k).moved : end === "head" ? [] : expandTail(canon)
+  return { ok: true, movedPorts, moved }
+}
+
+function refused(reason: string): ExpansionResult {
+  return { ok: false, reason, movedPorts: [], moved: [] }
+}
+
+function entityKey(e: ModuleEntity): string {
+  return string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)
+}
+
+/** Why a whole-patch mine's full plan cannot be completed now (undefined: it can). */
+function minePlanBlocker(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, m: PlacedModule): string | undefined {
+  const plan = m.minePlan!
+  const current: Record<string, boolean> = {}
+  for (const e of m.def.entities) current[entityKey(e)] = true
+  // B23: completion re-checks geometry (terrain, other modules, routes) but not ore: the patch was validated whole
+  // at planning time, and between planning and completion the terrain can only lose ore (mining) — a drill over
+  // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
+  // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
+  // would be stricter than the planning-time one that accepted them.)
+  // B55: the tile its output route starts on is never the mine's, whatever B25 lets give way (a full plan made
+  // before the fix could put a pole there).
+  const fullOut = plan.full.ports.find((p) => p.id === "out")
+  const outside = fullOut !== undefined ? portOutside(m, fullOut) : undefined
+  for (const e of plan.full.entities) {
+    if (current[entityKey(e)]) continue
+    const er = entityRect(e, facts)
+    const r = { x: m.origin.x + er.x, y: m.origin.y + er.y, w: er.w, h: er.h }
+    if (outside !== undefined && rectContains(r, outside.x, outside.y)) return `planned mine covers its output at ${outside.x},${outside.y}`
+    for (let x = r.x; x < r.x + r.w; x++) {
+      for (let y = r.y; y < r.y + r.h; y++) {
+        const why = mineTileBlocker(state, terrain, m, x, y)
+        if (why !== undefined) return why
+      }
+    }
+  }
+  return undefined
+}
+
+/** One tile of a whole-patch mine's unbuilt plan: what keeps the completion off it. */
+function mineTileBlocker(state: LayoutState, terrain: TerrainView, m: PlacedModule, x: number, y: number): string | undefined {
+  const kk = tkey(x, y)
+  const b = terrain.block(x, y)
+  // B24: the mine's own D52 footprint is reserved — the adoption reserves the whole rect plus 1 ring and the
+  // plan's claim is the mine's own — so those tiles read as OWN for a later request, but they are exactly
+  // what the completion builds. Only a ground someone else reserved (or raw obstacles) still blocks.
+  const own = state.mine?.[kk] === m.id || rectContains(m.rect, x, y)
+  if (b !== FREE && b !== TREE && b !== ROCK && !(b === OWN && own)) return `planned mine blocked at ${x},${y}`
+  const o = state.occ[kk]
+  // B25: pole lines placed before the mine's claim, and the faction's own earlier routes, can stand on its
+  // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
+  // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
+  // the rip breaks, so neither blocks a completion.
+  // B37: pole lines anywhere on the new ground give way (markModule evicts them; the plan re-poles).
+  if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return `planned mine occupied at ${x},${y}`
+  // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
+  // belts up and reconcile re-routes the broken edge).
+  const rid = state.routeOcc[kk]
+  if (rid !== undefined && !own) return `planned mine route at ${x},${y}`
+  // B74 (soak vps-d67 seed 7718665): B55 for the whole output route, not just its first tile. The mine's own
+  // output belt ran west along its unbuilt top row; the completion put a pole on its second tile and picked the
+  // belt up. With the mine backed up nothing measured the break, and three science clusters starved 150 min.
+  if (rid !== undefined && fromMine(state, rid, m.id)) return `planned mine covers its own output route at ${x},${y}`
+  return undefined
+}
+
+/** A module grown by k units: its canonical and placed defs and where it then stands. */
+interface GrownGeometry {
+  grown: ModuleDef
+  placed: ModuleDef
+  origin: Vec
+  rect: Rect
+  /** Unit length along the growth axis. */
+  size: number
+}
+
+/** Where module `m` stands grown by k units at `end`, keeping its fixed end in place; or why it cannot grow. */
+function grownGeometry(m: PlacedModule, k: number, end: "auto" | "head" | "tail", facts: ProtoFacts): GrownGeometry | string {
+  const canon = m.canonical
+  const spec = canon.expand!
   const grown = end === "head" ? expandHeadModule(canon, k, facts) : expandModule(canon, k, facts)
-  if (grown === undefined) return { ok: false, reason: HEAD_GROWTH_OPENS_BELT, movedPorts: [], moved: [] }
+  if (grown === undefined) return HEAD_GROWTH_OPENS_BELT
   const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
   // Which end stays put. "head" growth keeps the far end (largest coordinate) in place; otherwise `expandMoves` decides.
   let headMoves: boolean
@@ -1685,101 +1752,100 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       if (tail === headMoves) { anchor = e; break }
     }
   }
-  if (anchor === undefined) return { ok: false, reason: "no fixed entity", movedPorts: [], moved: [] }
+  if (anchor === undefined) return "no fixed entity"
   const grownAnchor = headMoves ? (spec.axis === "x" ? { x: anchor.x + k * size, y: anchor.y } : { x: anchor.x, y: anchor.y + k * size }) : anchor
   const pOld = transformPoint(anchor, canon.footprint.w, canon.footprint.h, m.transform)
   const pNew = transformPoint(grownAnchor, grown.footprint.w, grown.footprint.h, m.transform)
   const placed = m.transform.rot === 0 && !m.transform.mirror ? grown : transformModule(grown, m.transform)
   const origin = { x: m.origin.x + pOld.x - pNew.x, y: m.origin.y + pOld.y - pNew.y }
-  const rect = { x: origin.x, y: origin.y, w: placed.footprint.w, h: placed.footprint.h }
-  const mining = isMining(canon)
-  const ownTags: Record<string, boolean> = { [`m:${m.id}`]: true, [`x:${m.id}`]: true }
+  return { grown, placed, origin, rect: { x: origin.x, y: origin.y, w: placed.footprint.w, h: placed.footprint.h }, size }
+}
+
+/** The ground a growth adds: buildable terrain, no other claim, no ore under a non-mine (`protectOre`). */
+function newGroundBlocker(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, m: PlacedModule, rect: Rect): string | undefined {
+  const mining = isMining(m.canonical)
   for (let x = rect.x; x < rect.x + rect.w; x++) {
     for (let y = rect.y; y < rect.y + rect.h; y++) {
       if (rectContains(m.rect, x, y)) continue
       const kk = tkey(x, y)
       const b = terrain.block(x, y)
-      if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return { ok: false, reason: `blocked at ${x},${y}`, movedPorts: [], moved: [] }
+      if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return `blocked at ${x},${y}`
       const c = moduleGrowthClaimConflict(state, kk, m.id)
       // B37: a pole line on the new ground gives way (markModule evicts it; the growth re-poles).
       if (c !== undefined) {
         const why = c.code === "occupied" ? "occupied" : c.code === "routed" ? "route" : c.code === "mine-claimed" ? `mine claim of ${c.claim.owner}` : "reserved"
-        return { ok: false, reason: `${why} at ${x},${y}`, movedPorts: [], moved: [] }
+        return `${why} at ${x},${y}`
       }
-      if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }
+      if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return `ore at ${x},${y}`
     }
   }
-  if (mining) {
-    // B6: every grown drill's mining area must not reach a second ore (or another faction's field, D46).
-    const resource = canon.anchor?.resource
-    for (const a of placed.anchor?.miningAreas ?? []) {
-      for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
-        for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
-          const ore = terrain.ore(x, y)
-          if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
-        }
-      }
-    }
-    // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
-    // need resource; otherwise depletion could never be remedied in place (M6a.2, seed 222). B33: under the drill
-    // itself (the whole-patch plan's test), not just somewhere in its mining area: a strip growing on a drill that
-    // only grazes the patch edge is growth off the patch.
-    for (let i = 0; i < k; i++) {
-      for (const e of spec.unit.entities) {
-        const f = facts.entity(e.name)
-        if (f?.type !== "mining-drill") continue
-        const offset = end === "head" ? i * size : spec.insertAt + i * size
-        const er = entityRect(e, facts)
-        const local = spec.axis === "x" ? { x: er.x + offset, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + offset, w: er.w, h: er.h }
-        const r = transformRect(local, grown.footprint.w, grown.footprint.h, m.transform)
-        const x1 = origin.x + r.x
-        const y1 = origin.y + r.y
-        let mine = false
-        for (let x = x1; x < x1 + r.w; x++) for (let y = y1; y < y1 + r.h; y++) if (terrain.ore(x, y) === resource) mine = true
-        if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${x1},${y1}`, movedPorts: [], moved: [] }
+  return undefined
+}
+
+/** A growing mine: no foreign ore in any drill's mining area (B6, D46), and its own ore under each added drill. */
+function growthOreBlocker(terrain: TerrainView, facts: ProtoFacts, m: PlacedModule, g: GrownGeometry, k: number, end: "auto" | "head" | "tail"): string | undefined {
+  const canon = m.canonical
+  if (!isMining(canon)) return undefined
+  const spec = canon.expand!
+  // B6: every grown drill's mining area must not reach a second ore (or another faction's field, D46).
+  const resource = canon.anchor?.resource
+  for (const a of g.placed.anchor?.miningAreas ?? []) {
+    for (let x = g.origin.x + a.x; x < g.origin.x + a.x + a.w; x++) {
+      for (let y = g.origin.y + a.y; y < g.origin.y + a.y + a.h; y++) {
+        const ore = terrain.ore(x, y)
+        if (ore !== undefined && ore !== resource) return `foreign ore ${ore} at ${x},${y}`
       }
     }
   }
-  const ring = inflate(rect, policy.corridor.min)
+  // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
+  // need resource; otherwise depletion could never be remedied in place (M6a.2, seed 222). B33: under the drill
+  // itself (the whole-patch plan's test), not just somewhere in its mining area: a strip growing on a drill that
+  // only grazes the patch edge is growth off the patch.
+  for (let i = 0; i < k; i++) {
+    for (const e of spec.unit.entities) {
+      const f = facts.entity(e.name)
+      if (f?.type !== "mining-drill") continue
+      const offset = end === "head" ? i * g.size : spec.insertAt + i * g.size
+      const er = entityRect(e, facts)
+      const local = spec.axis === "x" ? { x: er.x + offset, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + offset, w: er.w, h: er.h }
+      const r = transformRect(local, g.grown.footprint.w, g.grown.footprint.h, m.transform)
+      const x1 = g.origin.x + r.x
+      const y1 = g.origin.y + r.y
+      let mine = false
+      for (let x = x1; x < x1 + r.w; x++) for (let y = y1; y < y1 + r.h; y++) if (terrain.ore(x, y) === resource) mine = true
+      if (!mine) return `no ${resource} under a drill at ${x1},${y1}`
+    }
+  }
+  return undefined
+}
+
+/** The grown module's corridor ring holds no other module (mines on one patch may touch each other's rings). */
+function growthRingBlocker(state: LayoutState, m: PlacedModule, rect: Rect, corridor: number): string | undefined {
+  const mining = isMining(m.canonical)
+  const ring = inflate(rect, corridor)
   for (let x = ring.x; x < ring.x + ring.w; x++) {
     for (let y = ring.y; y < ring.y + ring.h; y++) {
       const o = state.occ[tkey(x, y)]
-      if (o !== undefined && string.sub(o, 1, 2) === "m:" && !ownTags[o]) {
-        const other = findModule(state, string.sub(o, 3))
-        // Mining outposts intentionally cluster on one patch. Their footprints still cannot overlap (checked above),
-        // but a mine's corridor ring may touch another mine while it fills the preplanned patch footprint.
-        if (!mining || other === undefined || !isMining(other.canonical)) return { ok: false, reason: `too close to ${o}`, movedPorts: [], moved: [] }
-      }
+      if (o === undefined || string.sub(o, 1, 2) !== "m:" || o === `m:${m.id}` || o === `x:${m.id}`) continue
+      const other = findModule(state, string.sub(o, 3))
+      // Mining outposts intentionally cluster on one patch. Their footprints still cannot overlap (checked above),
+      // but a mine's corridor ring may touch another mine while it fills the preplanned patch footprint.
+      if (!mining || other === undefined || !isMining(other.canonical)) return `too close to ${o}`
     }
   }
-  const before: Record<string, Vec> = {}
-  for (const p of m.def.ports) before[p.id] = portTile(m, p)
-  const grownPlaced: PlacedModule = { ...m, canonical: grown, def: placed, origin, rect }
-  // New port outside tiles must be usable.
-  for (const p of placed.ports) {
+  return undefined
+}
+
+/** New port outside tiles must be usable. */
+function grownPortBlocker(state: LayoutState, terrain: TerrainView, m: PlacedModule, g: GrownGeometry): string | undefined {
+  const grownPlaced: PlacedModule = { ...m, canonical: g.grown, def: g.placed, origin: g.origin, rect: g.rect }
+  for (const p of g.placed.ports) {
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(grownPlaced, p)
     const occ = state.occ[tkey(o.x, o.y)]
-    if (occ !== undefined && !ownTags[occ] && !isPoleTag(occ)) return { ok: false, reason: `port ${p.id} outside tile occupied`, movedPorts: [], moved: [] }
+    if (occ !== undefined && occ !== `m:${m.id}` && occ !== `x:${m.id}` && !isPoleTag(occ)) return `port ${p.id} outside tile occupied`
     const b = terrain.block(o.x, o.y)
-    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return { ok: false, reason: `port ${p.id} outside tile blocked`, movedPorts: [], moved: [] }
+    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return `port ${p.id} outside tile blocked`
   }
-  unmarkModule(state, m, facts)
-  m.canonical = grown
-  m.def = placed
-  m.origin = origin
-  m.rect = rect
-  // B33: a strip mine's growth claim keeps stopping where its ore ends.
-  if (mining && m.oreUnits !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
-  markModule(state, m, facts, policy.corridor.preferred)
-  const movedPorts: string[] = []
-  for (const p of m.def.ports) {
-    const now = portTile(m, p)
-    const was = before[p.id]
-    if (was === undefined || was.x !== now.x || was.y !== now.y) movedPorts.push(p.id)
-  }
-  // Forced head growth keeps every existing entity in place; forced tail growth moves the canonical tail. Auto keeps
-  // the original minimum-movement behaviour.
-  const moved = end === "auto" ? expandMoves(canon, k).moved : end === "head" ? [] : expandTail(canon)
-  return { ok: true, movedPorts, moved }
+  return undefined
 }
