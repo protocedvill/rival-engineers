@@ -13,7 +13,8 @@ import { dirIndex, DX, DY, FREE, manhattan, Rect, TerrainView, tkey, Vec } from 
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
 import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
+import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
@@ -176,6 +177,8 @@ export interface PlanJob {
   ordered?: boolean
   placeIdx: number
   placement?: PlacementSearch
+  /** M7: the placed mine's whole-patch plan being prepared (`placement` is done; committed once this is). */
+  wholePatch?: WholePatchPrep
   /** Request id → placed module id (an expanded module answers for the request). */
   alias: Record<string, string>
   /** D57 (c): patches this plan's mines found no room on (the strategy remembers them for later plans). */
@@ -810,6 +813,32 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
   }
 }
 
+/** Steps a module's placement search (none once it is done: its whole-patch plan may still be preparing). */
+function searchPlacement(job: PlanJob, s: PlacementSearch, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  if (s.phase === "done") return 0
+  const c0 = s.candidates ?? 0
+  const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
+  job.stats.placeWork += used
+  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  return used
+}
+
+/**
+ * M7: a placed mine's whole-patch plan (`stepWholePatch`), prepared under the step's budget before the module is
+ * committed (`job.wholePatch` is cleared once it is ready). Work counts as placement work.
+ */
+function wholePatchStep(job: PlanJob, s: PlacementSearch, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const p = (job.wholePatch ??= newWholePatchPrep())
+  let used = 0
+  if (budget > 0 || p.stage === "done") {
+    used = stepWholePatch(p, s.result!, { terrain, facts, region: s.req.region, policy, state: job.layout, splitters: job.request.splitters === true }, budget)
+    job.stats.placeWork += used
+  }
+  if (p.stage === "done") job.wholePatch = undefined
+  return used
+}
+
 function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   const id = moduleId(job.replaceQueue[0])
   if (job.placement === undefined) {
@@ -817,16 +846,13 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
-  const c0 = s.candidates ?? 0
-  const used = stepPlacement(s, job.layout, terrain, policy, budget)
-  keepDeadPatches(job, s)
-  job.stats.placeWork += used
-  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  let used = searchPlacement(job, s, terrain, policy, budget)
+  if (s.phase === "done") {
+    used += wholePatchStep(job, s, terrain, facts, policy, budget - used)
+    if (job.wholePatch !== undefined) return used
+  }
   if (s.phase === "done" || s.phase === "failed") {
-    if (s.phase === "done") {
-      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
-      commitPlacement(job.layout, s.result!, facts, policy)
-    }
+    if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
     else {
       placementEvidence(job, id, s)
       fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason: `re-placement: ${s.reason ?? "failed"}`, what: s.failure?.what })
@@ -966,14 +992,11 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
-  const c0 = s.candidates ?? 0
-  const used = stepPlacement(s, job.layout, terrain, policy, budget)
-  keepDeadPatches(job, s)
-  job.stats.placeWork += used
-  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  let used = searchPlacement(job, s, terrain, policy, budget)
   if (s.phase === "done") {
+    used += wholePatchStep(job, s, terrain, facts, policy, budget - used)
+    if (job.wholePatch !== undefined) return used
     delete (job.wholeFail ?? {})[id]
-    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
     commitPlacement(job.layout, s.result!, facts, policy)
     job.placement = undefined
     job.placeIdx++
@@ -1064,6 +1087,7 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.ordered = undefined
   job.placeIdx = 0
   job.placement = undefined
+  job.wholePatch = undefined
   job.alias = {}
   job.queue = []
   job.ripCount = {}

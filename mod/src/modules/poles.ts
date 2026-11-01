@@ -69,55 +69,75 @@ export function placePoles(
       if (!occupied[k] && !blocked[k]) candidates.push({ x: x + 0.5, y: y + 0.5 })
     }
   }
-  const placed: ModuleEntity[] = []
-  const used: Record<string, boolean> = {}
-  const remaining = (): number => {
-    let n = 0
-    for (const c of covered) if (!c) n++
-    return n
+  // M7: each pick used to test every free tile against every pole and every consumer. Per tile, whether a pole is in
+  // wire reach is now kept as poles are added, and the consumers it would cover are listed once; the distance to the
+  // nearest unpowered consumer is only needed when no tile covers one. The same tile wins every pick.
+  const coverList: number[][] = []
+  const linked: boolean[] = []
+  const link = (p: { x: number; y: number }): void => {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      if (linked[ci]) continue
+      const dx = p.x - candidates[ci].x
+      const dy = p.y - candidates[ci].y
+      if (dx * dx + dy * dy <= reach * reach + 1e-9) linked[ci] = true
+    }
   }
-  for (let guard = 0; guard < 1000 && remaining() > 0; guard++) {
-    let best: { x: number; y: number } | undefined
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const c = candidates[ci]
+    const list: number[] = []
+    for (let i = 0; i < consumers.length; i++) if (covers(c.x, c.y, d, consumers[i])) list.push(i)
+    coverList[ci] = list
+    linked[ci] = false
+  }
+  for (const p of poles) link(p)
+  const placed: ModuleEntity[] = []
+  const used: boolean[] = []
+  let left = 0
+  for (const c of covered) if (!c) left++
+  const remaining = (): number => left
+  for (let guard = 0; guard < 1000 && left > 0; guard++) {
+    let best = -1
     let bestGain = -1
-    let bestDist = math.huge
-    for (const c of candidates) {
-      const k = tileKey(c.x, c.y)
-      if (used[k]) continue
-      if (poles.length > 0) {
-        let connected = false
-        for (const p of poles) {
-          const dx = p.x - c.x
-          const dy = p.y - c.y
-          if (dx * dx + dy * dy <= reach * reach + 1e-9) {
-            connected = true
-            break
-          }
-        }
-        if (!connected) continue
-      }
+    for (let ci = 0; ci < candidates.length; ci++) {
+      if (used[ci] || (!linked[ci] && poles.length > 0)) continue
       let gain = 0
-      let nearest = math.huge
-      for (let i = 0; i < consumers.length; i++) {
-        if (covered[i]) continue
-        const b = consumers[i]
-        if (covers(c.x, c.y, d, b)) gain++
-        else {
+      for (const i of coverList[ci]) if (!covered[i]) gain++
+      if (gain > bestGain) {
+        best = ci
+        bestGain = gain
+      }
+    }
+    if (bestGain === 0) {
+      // No tile in reach powers anything yet: step toward the nearest unpowered consumer (first such tile in order).
+      let bestDist = math.huge
+      for (let ci = 0; ci < candidates.length; ci++) {
+        if (used[ci] || (!linked[ci] && poles.length > 0)) continue
+        const c = candidates[ci]
+        let nearest = math.huge
+        for (let i = 0; i < consumers.length; i++) {
+          if (covered[i]) continue
+          const b = consumers[i]
           const dx = Math.max(b.x1 - c.x, 0, c.x - b.x2)
           const dy = Math.max(b.y1 - c.y, 0, c.y - b.y2)
           nearest = Math.min(nearest, dx * dx + dy * dy)
         }
-      }
-      if (gain > bestGain || (gain === bestGain && gain === 0 && nearest < bestDist)) {
-        best = c
-        bestGain = gain
-        bestDist = nearest
+        if (nearest < bestDist) {
+          best = ci
+          bestDist = nearest
+        }
       }
     }
-    if (best === undefined) error(`placePoles: no connected free tile left; ${remaining()} consumers unpowered`)
-    used[tileKey(best.x, best.y)] = true
-    poles.push(best)
-    placed.push({ name: pole, x: best.x, y: best.y })
-    for (let i = 0; i < consumers.length; i++) if (!covered[i] && covers(best.x, best.y, d, consumers[i])) covered[i] = true
+    if (best < 0) error(`placePoles: no connected free tile left; ${remaining()} consumers unpowered`)
+    const c = candidates[best]
+    used[best] = true
+    poles.push(c)
+    link(c)
+    placed.push({ name: pole, x: c.x, y: c.y })
+    for (const i of coverList[best]) {
+      if (covered[i]) continue
+      covered[i] = true
+      left--
+    }
   }
   if (remaining() > 0) error(`placePoles: gave up with ${remaining()} consumers unpowered`)
   return placed

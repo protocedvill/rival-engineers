@@ -12,7 +12,7 @@ import { entityRect, portOutsideTile, tileKey } from "../modules/geometry"
 import { placePoles } from "../modules/poles"
 import { EAST, ModuleDef, ModuleEntity, NORTH, Port, SOUTH, WEST } from "../modules/types"
 import { DEFAULT_TIER_NAMES } from "./capacity"
-import { OWN, Rect, rectContains, TerrainView, tkey, Vec } from "./grid"
+import { keyX, keyY, OWN, Rect, rectContains, TerrainView, tkey, Vec } from "./grid"
 
 export interface PatchPlan {
   resource: string
@@ -138,73 +138,254 @@ export function candidateOk(terrain: TerrainView, resource: string, drill: Entit
 }
 
 /**
- * M7: a drill position's check and the patch ore tiles it mines (false: no drill there), by doubled centre. The grid
- * phases of one `planWholePatch` revisit each centre (about four times), so each is read from the terrain once.
+ * M7: a drill position's check and the ore it mines (false: no drill there), by doubled centre. The grid phases of one
+ * whole-patch search revisit each centre (about four times), so each is read from the terrain once. `n`: tiles of the
+ * patch's resource in its mining area (the drill's `ore`); `idx`: those of them in the patch, as 1-based indices into
+ * `patch.tiles` (a resource tile of another field of the same ore is mined but not counted as covered).
  */
-type DrillSpots = Record<number, number[] | false>
+interface DrillSpot {
+  n: number
+  idx: number[]
+}
+type DrillSpots = Record<number, DrillSpot | false>
 
-function drillSpot(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, x: number, y: number, spots: DrillSpots): number[] | false {
-  const key = tkey(2 * x, 2 * y)
-  const known = spots[key]
-  if (known !== undefined) return known
-  let tiles: number[] | false = false
-  if (candidateOk(terrain, patch.resource, drill, x, y)) {
-    tiles = []
-    const mr = miningRect(x, y, drill)
-    for (let tx = mr.x; tx < mr.x + mr.w; tx++) for (let ty = mr.y; ty < mr.y + mr.h; ty++) if (terrain.ore(tx, ty) === patch.resource) tiles.push(tkey(tx, ty))
+/**
+ * The tiles a whole-patch search reads, each read from the terrain once (`fillGrid`), as summed-area tables (with a
+ * zero row and column first, `w + 1` wide) of tiles a drill may not stand on, of the patch's resource and of foreign
+ * ore, and per tile its 1-based index in `patch.tiles` (0: not a patch tile). Before, each tile was read by every drill
+ * position over it (a 732-tile patch: ~20,000 `block` and ~52,000 `ore` reads).
+ */
+interface TileGrid {
+  x: number
+  y: number
+  w: number
+  h: number
+  /** Rows read so far. */
+  rows: number
+  blocked: number[]
+  res: number[]
+  foreign: number[]
+  pidx: number[]
+}
+
+/** Plain data (a plan job holds it in `storage`): a whole-patch grid search, run in steps (`stepPatchSearch`). */
+export interface PatchSearch {
+  patch: PatchPlan
+  /** The next grid phase (see `phaseOf`). */
+  phase: number
+  grid: TileGrid
+  spots: DrillSpots
+  /** Per patch tile, the last phase that covered it (so a phase counts its covered tiles without a set of its own). */
+  stamp: number[]
+  best?: { phase: number; covered: number; drills: number; plan?: WholePatchMinePlan }
+  result?: WholePatchMinePlan
+}
+
+function satIndex(g: TileGrid, x: number, y: number): number {
+  return (y - g.y) * (g.w + 1) + (x - g.x)
+}
+
+function inGrid(g: TileGrid, r: Rect): boolean {
+  return r.x >= g.x && r.y >= g.y && r.x + r.w <= g.x + g.w && r.y + r.h <= g.y + g.h
+}
+
+function gridSum(g: TileGrid, sat: number[], r: Rect): number {
+  const x2 = r.x + r.w
+  const y2 = r.y + r.h
+  return sat[satIndex(g, x2, y2)] - sat[satIndex(g, x2, r.y)] - sat[satIndex(g, r.x, y2)] + sat[satIndex(g, r.x, r.y)]
+}
+
+/**
+ * Work units of the whole-patch search, in the planner's budget scale (`planner-work-per-tick`; about 5 µs of plain Lua a
+ * unit, like a placement or route unit): a grid tile read costs ~1.5 µs (`FILL_TILES_PER_UNIT`), a drill position
+ * visited or a mined tile stamped ~0.3 µs (`OPS_PER_UNIT`). Measured on the T1 replays (Lua 5.4).
+ */
+const FILL_TILES_PER_UNIT = 4
+const OPS_PER_UNIT = 16
+
+function opsWork(ops: number): number {
+  return math.ceil(ops / OPS_PER_UNIT)
+}
+
+/** Reads grid rows until `budget` work is spent (at least one row); returns the work. */
+function fillGrid(g: TileGrid, terrain: TerrainView, resource: string, budget: number): number {
+  const W = g.w + 1
+  let used = 0
+  while (g.rows < g.h && (used === 0 || used < budget)) {
+    const r = g.rows++
+    const y = g.y + r
+    const base = (r + 1) * W
+    g.blocked[base] = 0
+    g.res[base] = 0
+    g.foreign[base] = 0
+    let b = 0
+    let o = 0
+    let f = 0
+    for (let c = 0; c < g.w; c++) {
+      const x = g.x + c
+      if (terrain.block(x, y) >= OWN) b++
+      const ore = terrain.ore(x, y)
+      if (ore === resource) o++
+      else if (ore !== undefined) f++
+      g.blocked[base + c + 1] = g.blocked[base - W + c + 1] + b
+      g.res[base + c + 1] = g.res[base - W + c + 1] + o
+      g.foreign[base + c + 1] = g.foreign[base - W + c + 1] + f
+      g.pidx[r * g.w + c] = 0
+    }
+    used += math.ceil(g.w / FILL_TILES_PER_UNIT)
   }
-  spots[key] = tiles
-  return tiles
+  return used
 }
 
-function addCandidate(
-  terrain: TerrainView,
-  patch: PatchPlan,
-  drill: EntityFacts,
-  axis: "x" | "y",
-  lane: number,
-  along: number,
-  side: -1 | 1,
-  drills: PlannedDrill[],
-  covered: Record<number, boolean>,
-  spots: DrillSpots,
-): void {
-  // One belt tile between the two drill columns: drill centres are (tileW + 1) / 2 from the belt centre.
-  const away = (drill.tileW + 1) / 2
-  const x = axis === "y" ? lane + side * away : along
-  const y = axis === "y" ? along : lane + side * away
-  const tiles = drillSpot(terrain, patch, drill, x, y, spots)
-  if (tiles === false) return
-  for (const k of tiles) covered[k] = true
+function drillSpot(terrain: TerrainView, s: PatchSearch, drill: EntityFacts, x: number, y: number): DrillSpot | false {
+  const key = tkey(2 * x, 2 * y)
+  const known = s.spots[key]
+  if (known !== undefined) return known
+  const g = s.grid
+  const er = drillEntityRect(x, y, drill)
   const mr = miningRect(x, y, drill)
-  drills.push({ x, y, lane, side, ore: tiles.length, area: mr.w * mr.h })
+  let spot: DrillSpot | false = false
+  if (inGrid(g, er) && inGrid(g, mr)) {
+    // `candidateOk` from the tables: nothing in the way, the resource under the body, no foreign ore in reach (B6).
+    if (gridSum(g, g.blocked, er) === 0 && gridSum(g, g.res, er) > 0 && gridSum(g, g.foreign, mr) === 0) {
+      spot = { n: gridSum(g, g.res, mr), idx: [] }
+      for (let tx = mr.x; tx < mr.x + mr.w; tx++) {
+        for (let ty = mr.y; ty < mr.y + mr.h; ty++) {
+          const i = g.pidx[(ty - g.y) * g.w + (tx - g.x)]
+          if (i > 0) spot.idx.push(i)
+        }
+      }
+    }
+  } else if (candidateOk(terrain, s.patch.resource, drill, x, y)) {
+    // Outside the grid (`searchRect` covers every drill position, so not expected): read the terrain.
+    spot = { n: 0, idx: [] }
+    for (let tx = mr.x; tx < mr.x + mr.w; tx++) {
+      for (let ty = mr.y; ty < mr.y + mr.h; ty++) {
+        if (terrain.ore(tx, ty) !== s.patch.resource) continue
+        spot.n++
+        const i = s.patch.tiles.indexOf(tkey(tx, ty))
+        if (i >= 0) spot.idx.push(i + 1)
+      }
+    }
+  }
+  s.spots[key] = spot
+  return spot
 }
 
-function phasePlan(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts, axis: "x" | "y", crossPhase: number, alongPhase: number, spots: DrillSpots): WholePatchMinePlan {
-  const drills: PlannedDrill[] = []
-  const coveredMap: Record<number, boolean> = {}
+/** One grid phase: its axis, cross (lane) and along offsets, and the lane/along ranges it visits. */
+interface PhaseGrid {
+  axis: "x" | "y"
+  lane1: number
+  lane2: number
+  lanePitch: number
+  along1: number
+  along2: number
+  alongPitch: number
+  /** Drill centres are this far either side of their lane's belt centre. */
+  away: number
+}
+
+function lanePitchOf(drill: EntityFacts): number {
   // Repeating [drill][drill][belt][drill][drill]: derived from prototype width, not a tuned distance.
   // Two drill columns, a belt, and one outside pole tile on either side (the existing powered mine blueprint).
-  const lanePitch = 2 * drill.tileW + 3
+  return 2 * drill.tileW + 3
+}
+
+/** Phases in search order: lanes along y first, every cross offset, every along offset; then lanes along x. */
+function phaseCount(drill: EntityFacts): number {
+  return lanePitchOf(drill) * (drill.tileH + drill.tileW)
+}
+
+function phaseOf(patch: PatchPlan, drill: EntityFacts, phase: number): PhaseGrid {
+  const lanePitch = lanePitchOf(drill)
+  const perY = lanePitch * drill.tileH
+  const axis = phase < perY ? "y" : "x"
+  const i = axis === "y" ? phase : phase - perY
   const alongPitch = axis === "y" ? drill.tileH : drill.tileW
-  const cross1 = axis === "y" ? patch.bounds.x - drill.tileW : patch.bounds.y - drill.tileH
-  const cross2 = axis === "y" ? patch.bounds.x + patch.bounds.w + drill.tileW : patch.bounds.y + patch.bounds.h + drill.tileH
-  const along1 = axis === "y" ? patch.bounds.y - drill.tileH : patch.bounds.x - drill.tileW
-  const along2 = axis === "y" ? patch.bounds.y + patch.bounds.h + drill.tileH : patch.bounds.x + patch.bounds.w + drill.tileW
-  let lane = math.floor((cross1 - crossPhase) / lanePitch) * lanePitch + crossPhase + 0.5
-  while (lane <= cross2) {
-    let along = math.floor((along1 - alongPhase) / alongPitch) * alongPitch + alongPhase + drill.tileH / 2
-    while (along <= along2) {
-      addCandidate(terrain, patch, drill, axis, lane, along, -1, drills, coveredMap, spots)
-      addCandidate(terrain, patch, drill, axis, lane, along, 1, drills, coveredMap, spots)
-      along += alongPitch
-    }
-    lane += lanePitch
+  const crossPhase = math.floor(i / alongPitch)
+  const alongPhase = i % alongPitch
+  const b = patch.bounds
+  const cross1 = axis === "y" ? b.x - drill.tileW : b.y - drill.tileH
+  const cross2 = axis === "y" ? b.x + b.w + drill.tileW : b.y + b.h + drill.tileH
+  const along1 = axis === "y" ? b.y - drill.tileH : b.x - drill.tileW
+  const along2 = axis === "y" ? b.y + b.h + drill.tileH : b.x + b.w + drill.tileW
+  return {
+    axis,
+    lane1: math.floor((cross1 - crossPhase) / lanePitch) * lanePitch + crossPhase + 0.5,
+    lane2: cross2,
+    lanePitch,
+    along1: math.floor((along1 - alongPhase) / alongPitch) * alongPitch + alongPhase + drill.tileH / 2,
+    along2,
+    alongPitch,
+    // One belt tile between the two drill columns: drill centres are (tileW + 1) / 2 from the belt centre.
+    away: (drill.tileW + 1) / 2,
   }
+}
+
+function centreX(g: PhaseGrid, lane: number, along: number, side: -1 | 1): number {
+  return g.axis === "y" ? lane + side * g.away : along
+}
+
+function centreY(g: PhaseGrid, lane: number, along: number, side: -1 | 1): number {
+  return g.axis === "y" ? along : lane + side * g.away
+}
+
+/** A phase's covered patch tiles and drills, counted only (stamping `s.stamp`), and its raw operations (`opsWork`). */
+function scorePhase(terrain: TerrainView, s: PatchSearch, drill: EntityFacts, phase: number): { covered: number; drills: number; ops: number } {
+  const g = phaseOf(s.patch, drill, phase)
+  const mark = phase + 1
+  const spots = s.spots
+  const stamp = s.stamp
+  let covered = 0
+  let drills = 0
+  let ops = 0
+  for (let lane = g.lane1; lane <= g.lane2; lane += g.lanePitch) {
+    for (let along = g.along1; along <= g.along2; along += g.alongPitch) {
+      for (let sd = -1; sd <= 1; sd += 2) {
+        const c = lane + sd * g.away
+        const x = g.axis === "y" ? c : along
+        const y = g.axis === "y" ? along : c
+        ops++
+        let spot = spots[tkey(2 * x, 2 * y)]
+        if (spot === undefined) spot = drillSpot(terrain, s, drill, x, y)
+        if (spot === false) continue
+        drills++
+        ops += spot.idx.length
+        for (const i of spot.idx) {
+          if (stamp[i - 1] === mark) continue
+          stamp[i - 1] = mark
+          covered++
+        }
+      }
+    }
+  }
+  return { covered, drills, ops }
+}
+
+/** A phase's full plan (only built for the best phase and phases tied with it). */
+function phasePlan(terrain: TerrainView, s: PatchSearch, drill: EntityFacts, phase: number): WholePatchMinePlan {
+  const g = phaseOf(s.patch, drill, phase)
+  const drills: PlannedDrill[] = []
+  const coveredIdx: Record<number, boolean> = {}
+  for (let lane = g.lane1; lane <= g.lane2; lane += g.lanePitch) {
+    for (let along = g.along1; along <= g.along2; along += g.alongPitch) {
+      for (let sd = -1; sd <= 1; sd += 2) {
+        const side = sd as -1 | 1
+        const x = centreX(g, lane, along, side)
+        const y = centreY(g, lane, along, side)
+        const spot = drillSpot(terrain, s, drill, x, y)
+        if (spot === false) continue
+        for (const i of spot.idx) coveredIdx[i] = true
+        const mr = miningRect(x, y, drill)
+        drills.push({ x, y, lane, side, ore: spot.n, area: mr.w * mr.h })
+      }
+    }
+  }
+  const axis = g.axis
   drills.sort((a, b) => (a.lane !== b.lane ? a.lane - b.lane : axis === "y" ? a.y - b.y : a.x - b.x))
   const covered: number[] = []
-  for (const k of patch.tiles) if (coveredMap[k]) covered.push(k)
-  return { patch, axis, drills, covered }
+  for (let i = 0; i < s.patch.tiles.length; i++) if (coveredIdx[i + 1]) covered.push(s.patch.tiles[i])
+  return { patch: s.patch, axis, drills, covered }
 }
 
 function better(a: WholePatchMinePlan, b: WholePatchMinePlan | undefined): boolean {
@@ -224,25 +405,104 @@ function better(a: WholePatchMinePlan, b: WholePatchMinePlan | undefined): boole
   return ad.lane < bd.lane
 }
 
-/**
- * Plans the densest regular paired-row drill grid over the entire connected patch. Like OutpostPlanner, every grid
- * phase is tried; unlike the old expand strip, both dimensions participate and irregular edges simply omit drills.
- */
-export function planWholePatch(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts): WholePatchMinePlan {
-  if (drill.type !== "mining-drill") error(`${drill.name} is not a mining drill`)
-  let best: WholePatchMinePlan | undefined
-  const lanePitch = 2 * drill.tileW + 3
-  const spots: DrillSpots = {}
-  for (const axis of ["y", "x"] as const) {
-    const alongPitch = axis === "y" ? drill.tileH : drill.tileW
-    for (let cross = 0; cross < lanePitch; cross++) {
-      for (let along = 0; along < alongPitch; along++) {
-        const p = phasePlan(terrain, patch, drill, axis, cross, along, spots)
-        if (better(p, best)) best = p
+/** Every tile any grid phase's drill body or mining area can touch. */
+function searchRect(patch: PatchPlan, drill: EntityFacts): Rect {
+  let x1 = math.huge
+  let y1 = math.huge
+  let x2 = -math.huge
+  let y2 = -math.huge
+  for (let phase = 0; phase < phaseCount(drill); phase++) {
+    const g = phaseOf(patch, drill, phase)
+    if (g.lane2 < g.lane1 || g.along2 < g.along1) continue
+    const laneLast = g.lane1 + math.floor((g.lane2 - g.lane1) / g.lanePitch) * g.lanePitch
+    const alongLast = g.along1 + math.floor((g.along2 - g.along1) / g.alongPitch) * g.alongPitch
+    const corners: [number, number, -1 | 1][] = [[g.lane1, g.along1, -1], [laneLast, alongLast, 1]]
+    for (const [lane, along, side] of corners) {
+      const x = centreX(g, lane, along, side)
+      const y = centreY(g, lane, along, side)
+      for (const r of [drillEntityRect(x, y, drill), miningRect(x, y, drill)]) {
+        x1 = math.min(x1, r.x)
+        y1 = math.min(y1, r.y)
+        x2 = math.max(x2, r.x + r.w)
+        y2 = math.max(y2, r.y + r.h)
       }
     }
   }
-  return best!
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+}
+
+export function newPatchSearch(patch: PatchPlan, drill: EntityFacts): PatchSearch {
+  const r = searchRect(patch, drill)
+  const grid: TileGrid = { x: r.x, y: r.y, w: r.w, h: r.h, rows: 0, blocked: [], res: [], foreign: [], pidx: [] }
+  for (let c = 0; c <= r.w; c++) {
+    grid.blocked[c] = 0
+    grid.res[c] = 0
+    grid.foreign[c] = 0
+  }
+  return { patch, phase: 0, grid, spots: {}, stamp: [] }
+}
+
+/** After the last grid row: each patch tile's index into `patch.tiles` (work: one unit per tile). */
+function indexPatch(g: TileGrid, patch: PatchPlan): number {
+  for (let i = 0; i < patch.tiles.length; i++) {
+    const k = patch.tiles[i]
+    const r = { x: keyX(k), y: keyY(k), w: 1, h: 1 }
+    if (inGrid(g, r)) g.pidx[(r.y - g.y) * g.w + (r.x - g.x)] = i + 1
+  }
+  return patch.tiles.length
+}
+
+/**
+ * Advances a whole-patch search by grid phases until `budget` work is spent (at least one phase a call); returns the
+ * work used. Every phase is scored by its covered tiles and drills alone; a phase's full plan is built only when it
+ * ties the best so far on both (the rest of `better` needs the plans), and for the winner at the end, so the result is
+ * exactly `better`'s pick over every phase's full plan. Work: the grid's tile reads first, then the drill positions
+ * visited and the patch tiles their drills mine (`FILL_TILES_PER_UNIT`, `OPS_PER_UNIT`).
+ */
+export function stepPatchSearch(s: PatchSearch, terrain: TerrainView, drill: EntityFacts, budget: number): number {
+  if (drill.type !== "mining-drill") error(`${drill.name} is not a mining drill`)
+  const phases = phaseCount(drill)
+  let used = 0
+  if (s.grid.rows < s.grid.h) {
+    used += fillGrid(s.grid, terrain, s.patch.resource, budget)
+    if (s.grid.rows < s.grid.h) return used
+    used += opsWork(indexPatch(s.grid, s.patch))
+  }
+  while (s.result === undefined && (used === 0 || used < budget)) {
+    if (s.phase >= phases) {
+      const best = s.best!
+      s.result = best.plan ?? phasePlan(terrain, s, drill, best.phase)
+      // The search's caches are dropped with it; the result keeps only the patch.
+      s.spots = {}
+      s.stamp = []
+      s.grid = { ...s.grid, blocked: [], res: [], foreign: [], pidx: [] }
+      break
+    }
+    const phase = s.phase++
+    const r = scorePhase(terrain, s, drill, phase)
+    used += opsWork(r.ops)
+    const best = s.best
+    if (best === undefined || r.covered > best.covered || (r.covered === best.covered && r.drills > best.drills)) {
+      s.best = { phase, covered: r.covered, drills: r.drills }
+    } else if (r.covered === best.covered && r.drills === best.drills) {
+      best.plan ??= phasePlan(terrain, s, drill, best.phase)
+      const p = phasePlan(terrain, s, drill, phase)
+      used += opsWork(p.drills.length)
+      if (better(p, best.plan)) s.best = { phase, covered: r.covered, drills: r.drills, plan: p }
+    }
+  }
+  return used
+}
+
+/**
+ * Plans the densest regular paired-row drill grid over the entire connected patch. Like OutpostPlanner, every grid
+ * phase is tried; unlike the old expand strip, both dimensions participate and irregular edges simply omit drills.
+ * Run to completion (`stepPatchSearch` with an unlimited budget).
+ */
+export function planWholePatch(terrain: TerrainView, patch: PatchPlan, drill: EntityFacts): WholePatchMinePlan {
+  const s = newPatchSearch(patch, drill)
+  while (s.result === undefined) stepPatchSearch(s, terrain, drill, math.huge)
+  return s.result
 }
 
 /**
