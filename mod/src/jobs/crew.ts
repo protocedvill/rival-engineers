@@ -5,7 +5,7 @@ import { Config, getConfig } from "../config"
 import {
   claim,
   complete,
-  countReady,
+  anyReady,
   depsDone,
   distance,
   failJob,
@@ -114,7 +114,13 @@ function preemptForUrgent(faction: FactionState, config: Config, tick: number): 
   let jobs: CrewJob[] | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!canPreempt(job) || !isReady(board, job, tick) || !isUrgent(faction, job, config)) continue
+    if (!canPreempt(job) || !isReady(board, job, tick)) continue
+    // `isUrgent` reads the target's burner (game API calls) for every ready refuel every tick; it is only asked for a job
+    // some busy member may still drop its batch for. A member reset below plans again and sees every job of this tick's
+    // list as already seen (`notePlanSeen`), so filtering on the members as they are now changes nothing.
+    let eligible = false
+    for (const m of busy) if (!eligible && mayPreemptFor(board, m, job)) eligible = true
+    if (!eligible || !isUrgent(faction, job, config)) continue
     jobs ??= []
     jobs.push(job)
   }
@@ -139,12 +145,34 @@ function preemptForUrgent(faction: FactionState, config: Config, tick: number): 
   }
 }
 
-/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
-function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
-  const board = faction.board
+/** The cheap part of `canPreemptMember`: `member`'s batch is its own and below `job` (B17), and `job` is new to it (B30). */
+function mayPreemptFor(board: FactionState["board"], member: CrewMember, job: CrewJob): boolean {
   const anchor = board.jobs[member.claims[0] ?? -1]
   if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return false
-  if (!isPreemptable(anchor, job) || (member.planSeen ?? []).indexOf(job.id) >= 0) return false
+  return isPreemptable(anchor, job) && !seenSet(member)[job.id]
+}
+
+/**
+ * `member.planSeen` as a set, rebuilt when the list is replaced (`notePlanSeen`). Every tick `preemptForUrgent` asks it
+ * for each ready refuel; with ~800 of those and a list as long, `indexOf` cost ~1M comparisons a tick (seed 11, 30 min).
+ * A derived cache only (not in `storage`): after a load it is rebuilt from the list.
+ */
+const seenSets: Record<number, { list: number[]; set: Record<number, boolean> }> = {}
+
+function seenSet(member: CrewMember): Record<number, boolean> {
+  const list = member.planSeen
+  if (list === undefined) return {}
+  const c = seenSets[member.id]
+  if (c !== undefined && c.list === list) return c.set
+  const set: Record<number, boolean> = {}
+  for (const id of list) set[id] = true
+  seenSets[member.id] = { list, set }
+  return set
+}
+
+/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
+function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
+  if (!mayPreemptFor(faction.board, member, job)) return false
   const inv = member.character.get_main_inventory()
   if (!inv || inv.count_empty_stacks() < 1) return false
   if (!hasMaterials(job, availableItems(faction, heldItems(member.character), config))) return false
@@ -216,8 +244,9 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
     }
   }
   if (!faction.paused) preemptForUrgent(faction, config, tick)
-  // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
-  const ready = countReady(faction.board, tick)
+  // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist. Whether
+  // any job is ready is looked up only for a member without a claim (it scanned every active job every tick).
+  let ready: boolean | undefined
   for (const id of faction.crew) {
     const member = storage.crew[id]
     if (member.dead) continue
@@ -230,7 +259,10 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       const kind = job ? job.payload.kind : "walk"
       stats.byKind ??= {}
       stats.byKind[kind] = (stats.byKind[kind] ?? 0) + 1
-    } else if (ready > 0) stats.idleTicks++
+    } else {
+      ready ??= anyReady(faction.board, tick)
+      if (ready) stats.idleTicks++
+    }
   }
 }
 

@@ -185,6 +185,12 @@ export function selectJob<P>(board: Board<P>, from: Pos, tick: number, accept?: 
   return best
 }
 
+/** Whether any active job is ready (`countReady` > 0, stopping at the first). */
+export function anyReady(board: Board<unknown>, tick: number): boolean {
+  for (const id of board.active) if (isReady(board, board.jobs[id], tick)) return true
+  return false
+}
+
 export function countReady(board: Board<unknown>, tick: number): number {
   let n = 0
   for (const id of board.active) if (isReady(board, board.jobs[id], tick)) n++
