@@ -111,8 +111,12 @@ export interface PlacementSearch {
   result?: PlacedModule
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
-  /** B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate. */
-  openPorts?: { x: number; y: number; out?: number; ok?: boolean; path?: Vec[] }[]
+  /**
+   * B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate,
+   * `box` the bounds of that way out, and `sealedBy` whether a candidate footprint (`rectKey`) walls it in (M7: the
+   * transforms of a module share two footprints, and the refine pass revisits origins: each is flooded once).
+   */
+  openPorts?: { x: number; y: number; out?: number; ok?: boolean; path?: Vec[]; box?: Rect; sealedBy?: Record<string, boolean> }[]
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
@@ -592,23 +596,55 @@ export function laneLeadsOut(start: LaneEnd, free: (this: void, x: number, y: nu
  */
 function sealsPortLane(s: PlacementSearch, state: LayoutState | undefined, blocked: Rect, need: number): boolean {
   const ports = s.openPorts ?? []
-  if (ports.length === 0) return false
-  // B85: placed modules' margin rings are own ground once built.
-  const margins = state !== undefined ? layoutMargins(state) : {}
-  const hardAt = (x: number, y: number): boolean => margins[tkey(x, y)] === true || (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
-  const hop: LaneHop = { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of ports) {
-    if (p.ok === undefined) {
-      p.path = laneWayOut(p, (x, y) => !hardAt(x, y), need, hop)
-      p.ok = p.path !== undefined
-    }
-    if (!p.ok) continue
+    if (p.ok === undefined) wayOutWithout(s, state, p, need)
+    if (!p.ok || !rectsOverlap(p.box!, blocked)) continue
     let touches = false
     for (const t of p.path!) if (rectContains(blocked, t.x, t.y)) touches = true
     if (!touches) continue
-    if (!laneLeadsOut(p, (x, y) => !hardAt(x, y) && !rectContains(blocked, x, y), need, { under: (x, y) => hop.under(x, y) && !rectContains(blocked, x, y), max: LANE_HOP, state })) return true
+    p.sealedBy ??= {}
+    const key = `${blocked.x},${blocked.y},${blocked.w},${blocked.h}`
+    let sealed = p.sealedBy[key]
+    if (sealed === undefined) {
+      sealed = laneWayOut(p, laneFree(s, state, blocked), need, laneHop(s, state, blocked)) === undefined
+      p.sealedBy[key] = sealed
+    }
+    if (sealed) return true
   }
   return false
+}
+
+/** B45: a port lane's way out with no candidate in it (`p.path`, `p.ok`, and its bounds `p.box`). */
+function wayOutWithout(s: PlacementSearch, state: LayoutState | undefined, p: NonNullable<PlacementSearch["openPorts"]>[number], need: number): void {
+  p.path = laneWayOut(p, laneFree(s, state), need, laneHop(s, state))
+  p.ok = p.path !== undefined
+  if (p.path === undefined) return
+  let x1 = math.huge
+  let y1 = math.huge
+  let x2 = -math.huge
+  let y2 = -math.huge
+  for (const t of p.path) {
+    x1 = math.min(x1, t.x)
+    y1 = math.min(y1, t.y)
+    x2 = math.max(x2, t.x)
+    y2 = math.max(y2, t.y)
+  }
+  p.box = { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 }
+}
+
+/** B45 / B85: ground a lane may lead out over in the window: not hard, not a placed module's margin ring, not `blocked`. */
+function laneFree(s: PlacementSearch, state: LayoutState | undefined, blocked?: Rect): (this: void, x: number, y: number) => boolean {
+  const margins = state !== undefined ? layoutMargins(state) : {}
+  return (x, y) => margins[tkey(x, y)] !== true && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (blocked === undefined || !rectContains(blocked, x, y))
+}
+
+/** B57: a lane's undergrounds go under anything but a module (or `blocked`). */
+function laneHop(s: PlacementSearch, state: LayoutState | undefined, blocked?: Rect): LaneHop {
+  return { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (blocked === undefined || !rectContains(blocked, x, y)), max: LANE_HOP, state }
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 }
 
 /**
