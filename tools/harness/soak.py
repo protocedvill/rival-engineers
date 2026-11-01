@@ -332,7 +332,9 @@ def setup_dir(cfg, seed):
     snap = int(cfg["run"].get("snapshot_minutes") or 0)
     if server_mode(cfg):
         # Snapshot mode runs a headless server (saves only work in multiplayer) as fast as the CPU allows.
-        lines += ["script.on_event(defines.events.on_tick, function()",
+        # on_nth_tick, not on_event(on_tick): a probe (--helper-lua) may have its own on_tick handler, which a second
+        # on_event registration would replace (status.lua logged nothing in snapshot runs).
+        lines += ["script.on_nth_tick(60, function()",
                   "  if game.speed < 1000 then game.speed = 1000 end",
                   "end)"]
     if snap > 0:
