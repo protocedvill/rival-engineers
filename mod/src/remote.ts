@@ -17,6 +17,7 @@ import { getTerrain, terrainView } from "./planner/terrain"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 import { factionDiagnostics } from "./diagnostics"
 import { writeStateDump } from "./determinism"
+import { boardSummary } from "./jobs/board-summary"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
@@ -78,6 +79,12 @@ export function registerRemoteInterface(): void {
         const deps = j.deps.map((d) => `${d}:${board.jobs[d]?.payload.kind ?? "?"}:${board.jobs[d]?.status ?? "gone"}`)
         out.push({ id, kind: j.payload.kind, what, status: j.status, priority: j.priority, deps, claimedBy: j.claimedBy, attempts: j.attempts, reason: j.reason, pos: j.pos })
       }
+      return out
+    },
+    /** Debug probe: the board's active jobs grouped by key prefix, kind, item and target; claimed / waiting / ready. */
+    board_summary: (name?: string) => {
+      const out: Record<string, ReturnType<typeof boardSummary>> = {}
+      for (const n of name !== undefined ? [name] : storage.factionOrder) out[n] = boardSummary(mustFaction(n), game.tick)
       return out
     },
     /** Cross-layer goal → planner → build → Job Board links plus stable blocker codes and invariant violations. */

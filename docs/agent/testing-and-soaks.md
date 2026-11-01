@@ -54,6 +54,10 @@ diagnostics, and paths to the newest frame/graph/plan artifact.
   Do not try to load a `LuaEntity` or an entire save into a unit test.
 - Use helper probes or `npm run diagnose -- <run> [seed] [faction]` to connect the current factory goal to planner and
   Job Board blockers before reading thousands of log lines.
+- For a Job Board backlog (many jobs, a busy crew), run the soak with `--helper-lua tools/harness/probes/board.lua`:
+  every 5 game-minutes it logs the active jobs grouped by key prefix, kind, item and target, with how many are claimed,
+  waiting, backing off or ready, and whether the crew could take a ready job's materials now. A large group with no key
+  prefix (`-`) whose producer uses keys means the keys were overwritten (M7c.7: orphaned temp-cell refills).
 - In the live inspector, enable **Growth reserves and mine claims** before changing expansion logic. The green box is
   the built footprint, orange is non-mine growth room, and blue is the whole-patch mine claim; the label includes the
   latest failed growth reason. Looking only at entities hides the reservation that often caused the failure.
