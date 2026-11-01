@@ -360,6 +360,15 @@ The captured minute-646 blue production plan (`m7-seed11-blue-wide`) now has no 
 blue-pack belt into the boxed old lab fails. A minute-640 snapshot resume reached the same separation on the live
 map (goals g56 and g57). Blue packs and sustained science remain unconfirmed; the lab input is the next blocker.
 
+The committed B120 build was resumed again from minute 640 (`m7-b120-r640h`). g56 and g57 failed only at that lab
+input, then B57 relocated lab n2 (121 entities to deconstruct, two routes dropped). The replacement production plan
+g58 continued without a lab connection but was expensive: at minute 648, the live planner had exhausted 200,000
+expansions on a crude-to-plastic route, then recorded several belt routes with 79,000–106,000 expansions. The run was
+stopped during g58 planning after about eight wall minutes, so this is a performance and routing diagnostic, not an
+outcome for g58. A T1 approximation made from the g57 fixture by removing n2 and its two feeds reached the power
+phase after 3.47 million work units, then failed to connect five existing modules to power. That fixture is not an
+exact capture of g58; the live run must establish whether power is also blocked there.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
