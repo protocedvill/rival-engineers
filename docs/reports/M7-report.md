@@ -450,13 +450,57 @@ resumed from a save and benchmark runs identical at 30 min. Not run here (manage
 two-faction soak on the final commit, and the g58 live resume, which should now show whether its plan completes.
 
 Observations, not changed (for the user):
-- ~800 refuel/feed jobs stay ready and unclaimed for long stretches around minute 30 of seed 11 (one keyed job per
-  burner entity or feed target; most likely waiting for materials). Harmless now that the scan is cheap, but it may be
-  worth a look as crew behaviour.
-- Whole-patch mine planning (`prepareWholePatchPlacement`) still runs in one step and counts no work: 15–55 ms in the
-  replays after the cache (was 25–106 ms). Making it resumable is the next planner step if spikes matter.
+- ~800 refuel/feed jobs stay ready and unclaimed for long stretches around minute 30 of seed 11: diagnosed and fixed in
+  the follow-up below (orphaned temp-cell refills, not burner refuels).
+- Whole-patch mine planning ran in one step and counted no work: done in the follow-up below.
 - T1 fixtures have no `oreTiles` index, so `buildPatches` scans whole regions in T1 (~100 ms steps); in game the chunk
   ore index is used and its work is counted.
+
+#### M7c.7 follow-up: whole-patch mine planning in budgeted steps (M6 mines)
+
+Asked for in-session (2026-11-01): make the mine-layout step resumable, then diagnose the refuel jobs.
+
+A mine's whole-patch preparation (D52/B33/B45: patch, grid search, materialising, lane seal check, fit) ran inside the
+placement step that accepted the mine and counted no work. It is now plain resumable state (`planner/whole-patch.ts`,
+`PlanJob.wholePatch`) stepped under `planner-work-per-tick`, its work counted as placement work, and it is cheaper:
+
+- **Grid search** (`mine-plan.ts` `stepPatchSearch`): each tile of the search area is read once into summed-area tables
+  (blocked, the resource, foreign ore); before, each tile was read once per drill position over it (~20k `block` and
+  ~52k `ore` reads for a 732-tile patch). Phases are scored by covered tiles and drills alone; a phase's full plan is
+  built only when it ties the best on both, and for the winner. 47 → 14 ms on that patch.
+- **Poles** (`modules/poles.ts` `placePoles`, also used for every generated module): each greedy pick tested every free
+  tile against every pole and consumer; wire-reach connectivity is now kept as poles are added and each tile's covered
+  consumers are listed once. A 158-entity mine: 28 → 9 ms to materialise.
+- **Lane floods** (`placement.ts` `laneWayOut`, B45/B57/B85, also used by placement): moves are tried without a table per
+  move; ground/under lookups are memoised per piece of the mine preparation.
+
+Decision-identical (logged before/after over the whole T1 suite): all 156 `planWholePatch`, 406 `placePoles` and 17,516
+`laneWayOut` results, and all 161 placements the replays commit. Replay outcomes are identical; only their `work` grows
+by the now-counted preparation (e.g. `seed11-production-ok-compare` 145,791 → 158,155). Largest single planner step at the
+in-game budget (400), same replays: 84 → 36, 73 → 15, 79 → 13, 93 → 34 ms; the remaining >30 ms steps are the T1-only
+`buildPatches` region scan noted above. T1 `mine-plan`: a stepped search and a stepped preparation give the one-shot
+result within the budget. Tests: T1 47/47, full T2 170/170 (`90a892e`).
+
+#### M7c.7 follow-up: the ready, unclaimed "refuel" backlog was a temp-cell refill leak (D38/B18)
+
+A new debug probe (remote `board_summary`, soak helper `tools/harness/probes/board.lua`) groups a faction's active jobs
+by key prefix, kind, item and target. On seed 11 (m7.toml, 40 game-min) it showed the backlog was not burner refuels:
+at minute 30, 523 of the 902 active jobs were `fuel`-kind deliveries of about one copper plate each into temporary cells'
+input chests, at priority 40 (`bootstrap-temp-cell-feed-priority`), all ready with their materials in stock, and none
+carried a job key. `topUpTempCells` (B18) queued another `tempfeed:<chest>:<item>` refill every think while the key's
+job was still open; `addKeyed` re-pointed the key, so the old job was orphaned: no longer counted as in flight (so the
+next think queued more), still counted as demand (shrinking the surplus to about one item, hence the one-item jobs), and
+starved by priority-90+ work. Every other keyed producer (refuels, ore feeds, the on-demand cell feed, lab feeds,
+upkeep) already skipped an active key; the top-up now does too (one refill per ingredient in flight; the next chunk
+follows when it is done).
+
+Same seed, same build otherwise: active jobs at minute 30 902 → 225 (a build's place jobs), unkeyed refills 523 → 0, jobs
+processed 2,544 → 1,847, crew 0.115 → 0.067 and AI 0.35 → 0.30 ms/tick; the same milestones through automated red
+science (36.7 min in both), production built at 35.8 instead of 34.7 min, `logistic-science-pack` research started at
+39.4 min (not reached by 40 before). This is a behaviour change: temp cells get fewer, larger refills. T2
+`temp-factory`: with no crew to take them and the depot gaining plates between thinks, one refill is in flight after 8
+thinks (8 before the fix). Tests on the final code (`3b33426`): T1 47/47, full T2 171/171, T4 determinism (seed 11)
+PASS. Not run: the M7 acceptance soaks.
 
 ### Magic numbers for the user (M7)
 
@@ -473,4 +517,6 @@ Observations, not changed (for the user):
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |
+| Whole-patch search work scale | `planner/mine-plan.ts` `FILL_TILES_PER_UNIT` / `OPS_PER_UNIT` | 4 tiles / 16 operations a unit | Measured (T1 replays, Lua 5.4) so a unit costs about what a placement or route unit does (~5 µs): a tile read ~1.5 µs, a drill position or stamped tile ~0.3 µs. | no |
+| Whole-patch preparation work scale | `planner/whole-patch.ts` `CLAIM_TILE_WORK` / `LANE_STATES_PER_UNIT` | 3 units a claimed tile / 2 flood states a unit | Measured the same way: materialising and checking ~17 µs a claimed tile, a lane flood ~2.4 µs a state. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |
