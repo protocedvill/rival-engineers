@@ -783,6 +783,14 @@ function checkPipeRoute(state: LayoutState, r: Route, to: PlacedModule, toPort: 
     return
   }
   let at = portOutside(fm, fp)
+  // B120: a tap starts beside a plain pipe of the line it taps.
+  const trunk = r.tapOf !== undefined ? state.routes[r.tapOf] : undefined
+  if (r.tapOf !== undefined) {
+    const s0 = r.steps[0]
+    const beside = trunk !== undefined && s0 !== undefined && trunk.steps.some((t) => t.kind === "pipe" && math.abs(t.x - s0.x) + math.abs(t.y - s0.y) === 1)
+    if (!beside) problems.push(`${r.id}: tap does not start beside a pipe of ${r.tapOf}`)
+    else at = { x: s0.x, y: s0.y }
+  }
   for (let i = 0; i < r.steps.length; i++) {
     const s = r.steps[i]
     if (s.x !== at.x || s.y !== at.y) problems.push(`${r.id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${at.x},${at.y}`)

@@ -60,6 +60,21 @@ test("fluid route: a pipe-out → pipe-in connection is piped and passes the lay
   eq(names["transport-belt"], undefined, "no belts")
 })
 
+test("fluid route: a live-verified free source exit and neighbour can clear stale OWN terrain marks", () => {
+  const rows = field(80, 30)
+  rows[11] = rows[11].substring(0, 5) + "##" + rows[11].substring(7)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const well = box("well-stale", 3, 3, [{ id: "out", kind: "pipe-out", pos: { x: 2.5, y: 1.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const refinery = box("ref-stale", 5, 5, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 2.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, well, 2, 10)
+  place(state, refinery, 60, 9)
+  const c: ConnectionRequest = { id: connectionId("stale"), from: { module: "well-stale", port: "out" }, to: { module: "ref-stale", port: "in" }, fluid: { ...FLUID, verifiedFree: { [tkey(5, 11)]: true, [tkey(6, 11)]: true } } }
+  const job = runJob(newRoutingJob(request([well, refinery], [c], 80, 30), YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  ok(job.layout.routes["route:stale"]?.fluid !== undefined, "the verified exit is routed")
+})
+
 test("fluid route: never runs a plain pipe next to another module's pipe port", () => {
   const terrain = asciiTerrain(field(60, 30))
   const state = newLayout()
@@ -150,6 +165,38 @@ test("fluid route: B119 a field with cliffs in its box routes around them, leave
     ok(cliffs.indexOf(`${x},${y}`) < 0, `${e.name} at ${x},${y} stands on a cliff`)
   }
   ok(job.layout.routes["route:crude"]?.fluid !== undefined, "crude is piped")
+})
+
+test("fluid route: B120 two chains fed from one field's port: the second taps the first line", () => {
+  const terrain = asciiTerrain(field(140, 80))
+  const wells = [
+    { x: 10, y: 10, perSecond: 10 },
+    { x: 16, y: 11, perSecond: 10 },
+  ]
+  const oil = pumpjackField(F, { wells })
+  const plastic = fluidChain(F, { recipe: "plastic-bar", chemPlants: 2, refineries: 2 })
+  const sulfur = fluidChain(F, { recipe: "sulfur", chemPlants: 1, refineries: 1 })
+  const at = { x: 10 - 1 - 2, y: 10 - 1 - 2 }
+  const req: PlanRequest = {
+    modules: [
+      { id: "oil", def: oil, at },
+      { id: "plastic", def: plastic },
+      { id: "sulfur", def: sulfur },
+    ],
+    connections: [
+      { id: connectionId("crude-plastic"), from: { module: "oil", port: "out-crude-oil" }, to: { module: "plastic", port: "in-crude-oil" }, fluid: FLUID },
+      { id: connectionId("crude-sulfur"), from: { module: "oil", port: "out-crude-oil" }, to: { module: "sulfur", port: "in-crude-oil" }, fluid: FLUID },
+    ],
+    center: { x: 60, y: 30 },
+    region: { x: 0, y: 0, w: 140, h: 80 },
+  }
+  const job = runJob(newPlanJob(req, YELLOW), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  const a = job.layout.routes["route:crude-plastic"]
+  const b = job.layout.routes["route:crude-sulfur"]
+  ok(a !== undefined && b !== undefined, "both chains are piped")
+  ok(a.tapOf !== undefined || b.tapOf !== undefined, "one line taps the other")
+  eq(checkLayout(job.layout, terrain, () => 10).problems.join("; "), "")
 })
 
 test("fluid route: pumps on a long line get a pole each, joined to the power network by the pole step", () => {

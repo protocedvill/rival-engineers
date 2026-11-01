@@ -342,10 +342,30 @@ With B118 fixed the field was generated and planned, and every plan then failed 
 ring of cliffs (B119). A field is now generated around the cliffs and water in its box, and its fixed placement checks
 terrain only under its entities.
 
+### M7c.6: fluid exits and a shared crude line (B120)
+
+The `m7r-11-m510` seed 11 run built the oil field and completed `oil-processing`, but made no blue packs. The next
+production goal failed crude to plastic, crude to sulfur, and water to sulfur with `no pipe path`. The captured plan
+only scanned the home region, while the oil field stands ~800 tiles west; the first crude exit was UNKNOWN in that
+replay. In the live planner both the crude and water exits read OWN despite no layout occupancy. A save probe at
+minute 640 found both physically free for a pipe. Fluid plans now include their built sources in the scan region and
+rescan their exit chunks; a source exit and its immediate neighbours are treated as free only when the live surface
+accepts a pipe on each tile. The second
+consumer of one field port taps a plain pipe of the first route, with layout validation of the tap. The pipe router
+now uses weighted A* for long lines: the base distance estimate includes underground-pair cost, then a weight of 4
+favours progress toward the destination (a synthetic 800-tile line: 40,881 → 157 expansions).
+
+T1 `fluid-route` covers the verified exit and the two crude consumers; `pipe-router` covers a tap and an 800-tile line.
+The captured minute-646 blue production plan (`m7-seed11-blue-wide`) now has no fluid-route failures in T1; only the
+blue-pack belt into the boxed old lab fails. A minute-640 snapshot resume reached the same separation on the live
+map (goals g56 and g57). Blue packs and sustained science remain unconfirmed; the lab input is the next blocker.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
+| Pipe-route heuristic weight | `planner/pipe-router.ts` `PIPE_HEURISTIC_WEIGHT` | 4 | Agent guess (B120): a remote crude route otherwise searched a broad area for minutes in a single tick; weighted A* trades the cheapest possible pipe path for a fast one. | no |
+| Failed-plan capture side limit | `strategy/factory.ts` `exportPlanInput` | 1,200 tiles (was 800) | Includes a remote oil field and the home base in one replay fixture; the old limit silently skipped this M7 failure. | no |
 | Power job priority | `strategy/factory.ts` `POWER_JOB_PRIORITY` | 100 | Was the literal of burner refuels; B111: builds that restore the power supply get it too, so refuels cannot preempt them (the build priority setting is 90). | no (build priority is a setting) |
 | Unreachable standing spot avoided for | `jobs/bad-spots.ts` `BAD_SPOT_TICKS` | 10 game-min | Agent guess (B111): long enough for the crew to move on, short enough that a cleared obstacle is tried again. | no |
 | Unreachable spot avoided around | `jobs/bad-spots.ts` `BAD_SPOT_RADIUS` | 2.5 tiles | Agent guess (B111): the next spot nearest the member is usually a tile over in the same pocket; 2.5 clears a four-tile stretch of corridor. | no |

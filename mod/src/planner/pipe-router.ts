@@ -13,9 +13,19 @@
 
 import { DX, DY, opposite, tkey } from "./grid"
 
+/** M7 B120: weighted A* keeps remote oil routes bounded when many near-equivalent pipe layouts exist. */
+const PIPE_HEURISTIC_WEIGHT = 4
+
 export interface PipeRequest {
   /** First tile outside the `pipe-out` port, and the direction away from the machine. */
   start: { x: number; y: number; dir: number }
+  /**
+   * B120: start tiles instead of `start` (a tap: tiles beside a line of the same fluid, heading away from it; the first
+   * pipe placed there joins the line).
+   */
+  starts?: { x: number; y: number; dir: number }[]
+  /** Filled when routing fails, for planner diagnostics. */
+  failure?: { expansions?: number; reason?: string }
   /** Tile outside the `pipe-in` port, and the direction from it into the machine. */
   goal: { x: number; y: number; dir: number }
   /** Farthest a pipe-to-ground exit may be from its entrance (`max_underground_distance`). */
@@ -113,13 +123,12 @@ function pop(heap: { n: Node; f: number }[]): Node | undefined {
 /** Routes one pipe line; `undefined` when no path was found within the budget. */
 export function routePipe(req: PipeRequest): PipeResult | undefined {
   const goal = req.goal
-  // Undergrounds cover up to `maxUnderground` tiles for two entities: a tile can cost this little on the way.
-  const perTile = (2 * req.minCost) / (req.maxUnderground + 1)
-  const h = (x: number, y: number): number => (math.abs(x - goal.x) + math.abs(y - goal.y)) * perTile
+  // Undergrounds cover up to `maxUnderground` tiles for two entities and their pair cost. The base is a lower bound;
+  // the weight favours progress toward home on remote oil lines over finding the absolute cheapest pipe layout.
+  const perTile = math.min(req.minCost, (2 * req.minCost + req.ugCost) / (req.maxUnderground + 1))
+  const h = (x: number, y: number): number => (math.abs(x - goal.x) + math.abs(y - goal.y)) * perTile * PIPE_HEURISTIC_WEIGHT
   const best: Record<number, number> = {}
   const heap: { n: Node; f: number }[] = []
-  const first: Node = { x: req.start.x, y: req.start.y, d: req.start.dir, g: 0, run: 0, placed: [] }
-  push(heap, first, h(first.x, first.y))
   let expansions = 0
   const visit = (n: Node): void => {
     const key = tkey(n.x, n.y) * 4 + n.d
@@ -127,9 +136,16 @@ export function routePipe(req: PipeRequest): PipeResult | undefined {
     best[key] = n.g
     push(heap, n, n.g + h(n.x, n.y))
   }
+  for (const s of req.starts ?? [req.start]) visit({ x: s.x, y: s.y, d: s.dir, g: 0, run: 0, placed: [] })
   for (;;) {
     const n = pop(heap)
-    if (n === undefined || expansions >= req.budget) return undefined
+    if (n === undefined || expansions >= req.budget) {
+      if (req.failure !== undefined) {
+        req.failure.expansions = expansions
+        req.failure.reason = n === undefined ? "search exhausted" : "budget exhausted"
+      }
+      return undefined
+    }
     const key = tkey(n.x, n.y) * 4 + n.d
     if (best[key] !== undefined && best[key] < n.g) continue
     expansions++

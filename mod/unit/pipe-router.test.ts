@@ -111,6 +111,28 @@ test("pipe router: a pump at least every extent; none on a short line", () => {
   eq(route(request(OPEN, { x: 1, y: 2, dir: 1 }, { x: 40, y: 2, dir: 1 }, { extent: 100 })).steps.filter((s) => s.kind === "pump").length, 0, "no pump within the extent")
 })
 
+test("pipe router: B120 a tap starts beside an existing line of the same fluid", () => {
+  // The line runs along row 1 (x 2..30); a tap may start on row 2 below any of its pipes, heading south.
+  const starts: PipeRequest["starts"] = []
+  for (let x = 2; x <= 30; x++) starts.push({ x, y: 2, dir: 2 })
+  const rows = [".".repeat(40), ".".repeat(40), ".".repeat(40), ".".repeat(40), ".".repeat(40), ".".repeat(40)]
+  const req = request(rows, { x: 0, y: 0, dir: 1 }, { x: 25, y: 5, dir: 2 }, { starts })
+  const r = routePipe(req)
+  ok(r !== undefined, "a route")
+  const first = r!.steps[0]
+  ok(first.y === 2 && first.x >= 2 && first.x <= 30, `starts beside the line (${first.x},${first.y})`)
+  ok(r!.steps.length <= 4, `a short tap (${r!.steps.length} steps)`)
+})
+
+test("pipe router: a remote 800-tile field has a bounded search", () => {
+  const rows: string[] = []
+  for (let y = 0; y < 16; y++) rows.push(".".repeat(820))
+  const req = request(rows, { x: 2, y: 8, dir: 1 }, { x: 810, y: 8, dir: 1 }, { extent: 320, budget: 200000 })
+  const r = routePipe(req)
+  ok(r !== undefined, "the remote field routes")
+  ok(r!.expansions < 1000, `remote line is found without a broad search (${r!.expansions} expansions)`)
+})
+
 test("pipe router: no route when the goal is walled in", () => {
   const rows = [".".repeat(20), ".........###........", ".........#.#........", ".........###........", ".".repeat(20)]
   eq(routePipe(request(rows, { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 }, { under: () => false, budget: 20000 })), undefined)

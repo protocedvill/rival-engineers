@@ -99,6 +99,8 @@ interface ReplayOptions {
   expect?: "done" | "failed"
   /** Text required in a failed replay's certificate. */
   failureIncludes?: string
+  /** Text forbidden in a failed replay's certificate. */
+  failureExcludes?: string
   /** Requests that represent route-reassignment providers and must use an independent mine site. */
   newSites?: string[]
 }
@@ -138,6 +140,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === (opts.expect ?? "done"))
     ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
     if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
+    if (opts.failureExcludes !== undefined) ok(string.find(why.join("; "), opts.failureExcludes, 1, true)[0] === undefined, `failure excludes ${opts.failureExcludes}: ${why.join("; ")}`)
   })
 }
 
@@ -146,6 +149,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
 // strategy now researches undergrounds after such a goal (FactoryState.needUndergrounds), and with them it plans
 // without a single rip-up.
 replay("seed222-production", { undergrounds: true })
+replay("m7-seed11-blue-wide", { expect: "failed", failureIncludes: "chemical-science-pack>labs", failureExcludes: "no pipe path" })
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.

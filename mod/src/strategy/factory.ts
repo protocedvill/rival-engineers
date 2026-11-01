@@ -10,8 +10,8 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
 import * as GROW from "../planner/grow"
-import { destroyEntity, scanChunk, terrainView } from "../planner/terrain"
-import { keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
+import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
+import { DX, DY, keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import * as LO from "../planner/layout"
 import type { LayoutState, PlacedModule, PlannedPole } from "../planner/layout"
 import { preparePlanDelta } from "../planner/plan-delta"
@@ -38,6 +38,7 @@ import * as NF from "./node-facts"
 import * as LF from "./lab-feed"
 import { mark } from "./milestone"
 import * as OIL from "./oil"
+import * as Arms from "./arms"
 import type { PlanFailure } from "../shared/plan-failure"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
@@ -1005,7 +1006,30 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // before looking at a patch that was already known just costs plans (1376111: "1 of 1 patches tried", four times).
   const mine = modules.some((m) => m.def.site === "resource-patch" || m.def.generator === "pumpjack-field")
   const r = mine ? EX.homeRadius(ctx) : math.min(g.radius, EX.homeRadius(ctx))
-  const region = EX.planRegion(ctx, g, r)
+  let region = EX.planRegion(ctx, g, r)
+  // B120: a blue-chain goal can connect to an oil field placed by an earlier goal far outside the home zone.
+  // Scan the known ground between that source and the new consumers so its pipe route does not see UNKNOWN.
+  for (const c of connections) {
+    if (c.fluid === undefined || c.from === undefined) continue
+    const source = LO.findModule(f.layout, c.from.module)
+    if (source !== undefined) {
+      region = Arms.rectUnion(region, source.rect)
+      const port = LO.findPort(source, c.from.port)
+      if (port !== undefined) {
+        const outside = LO.portOutside(source, port)
+        // A source built many goals ago may have a stale terrain chunk (a removed ghost is still OWN there).
+        // Rescan its exit before routing from it; the live surface is authoritative for this tile.
+        markDirty(ctx.surface.name, { x: outside.x - 1, y: outside.y - 1 }, { x: outside.x + 2, y: outside.y + 2 })
+        const verifiedFree: Record<number, boolean> = {}
+        for (let d = -1; d < 4; d++) {
+          const x = outside.x + (d < 0 ? 0 : DX[d])
+          const y = outside.y + (d < 0 ? 0 : DY[d])
+          if (ctx.surface.can_place_entity({ name: c.fluid.pipe, position: { x: x + 0.5, y: y + 0.5 }, force: ctx.faction.force })) verifiedFree[tkey(x, y)] = true
+        }
+        c.fluid.verifiedFree = verifiedFree
+      }
+    }
+  }
   // Every goal attempt (and a goal that failed before, retried as a new goal) starts the cluster somewhere else, so a
   // retry is not the same plan again: the hub, then 24 tiles off it in turn (deterministic).
   const tries = g.attempts - 1 + MAX_PLAN_ATTEMPTS * failedBefore(f, g.kind)
@@ -1186,7 +1210,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       RT.exportGraph(entry, `${name}.graph.json`)
       // Region radius 384 plans (a far mine or a late cluster) are 768 tiles across: export those up to 800 tiles a side
       // too, or a failure there leaves nothing to replay (B85 and 1376111 needed capture runs).
-      RT.exportPlanInput(entry, `${name}.input.lua`, 800)
+      RT.exportPlanInput(entry, `${name}.input.lua`, 1200)
     }
     RT.removePlan(entry.id)
     // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route
