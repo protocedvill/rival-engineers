@@ -237,6 +237,8 @@ declare global {
 }
 
 const designCache: Record<string, { key: string; design: Design }> = {}
+/** M7c: steps per item/s of over-planned measured draw in the design cache key (agent guess: a quarter item/s). */
+const DRAW_KEY_STEPS = 4
 
 const UPKEEP_INTERVAL = 300
 /**
@@ -473,8 +475,15 @@ function designNow(ctx: Ctx): Design | undefined {
   const runningOut: string[] = []
   for (const [role] of pairs(f.oreLeft ?? {})) if (ST.oreRunsOut(f, role as string)) runningOut.push(role as string)
   runningOut.sort()
+  // M7c (user-approved 2026-11-01): consumers measured drawing more than planned resize their providers; a change of a
+  // quarter item/s redesigns (coarse, so measurement noise does not redesign every think).
+  const draws: string[] = []
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind === "belt" && (e.measuredRate ?? 0) > e.plannedRate) draws.push(`${id}:${math.floor((e.measuredRate! - e.plannedRate) * DRAW_KEY_STEPS)}`)
+  }
   const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
-  const key = `${flagKey}|${blocked}|${short}|${retiring}|${runningOut.join(";")}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${flagKey}|${blocked}|${short}|${retiring}|${runningOut.join(";")}|${draws.join(";")}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).

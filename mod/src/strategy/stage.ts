@@ -3,7 +3,7 @@ import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { nodeByRole, rateIn, spareCapacity } from "../planner/logical"
+import { edgeDraw, nodeByRole, rateIn, spareCapacity } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
@@ -77,11 +77,12 @@ export function hasCapacity(f: FactoryState, id: string, item: string): boolean 
   return spareCapacity(f.graph, id) > 1e-6 || growableInPlace(f, id, item) > 0
 }
 
-export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> } | undefined {
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean>; draw?: Record<string, number> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
   const keep: Record<string, string> = {}
   const spare: Record<string, Record<string, number>> = {}
+  const draw: Record<string, number> = {}
   if (f !== undefined) {
     const out: Record<string, number> = {}
     for (const id of f.graph.edgeOrder) {
@@ -95,7 +96,11 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       // Keep the older role-level key for callers that do not distinguish ports. `blocked` below is authoritative:
       // expandShared checks the exact provider→consumer feed after either exact or legacy lookup.
       keep[`${e.item}@${c.role}`] = p.role
-      out[p.id] = (out[p.id] ?? 0) + e.plannedRate
+      // M7c (user-approved 2026-11-01): a consumer takes what it can, not what was planned: its draw counts at the
+      // measured rate when that is higher.
+      const used = edgeDraw(e)
+      out[p.id] = (out[p.id] ?? 0) + used
+      if (used > e.plannedRate) draw[key] = (draw[key] ?? 0) + used
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
@@ -114,7 +119,7 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room + grow
     }
   }
-  return { keep, spare, fallback: fallbackProducers(f), split: CS.flags(f?.constraints, "providerSplit"), blocked: CS.flags(f?.constraints, "providerNoTap") }
+  return { keep, spare, fallback: fallbackProducers(f), split: CS.flags(f?.constraints, "providerSplit"), blocked: CS.flags(f?.constraints, "providerNoTap"), draw }
 }
 
 /** D69: whether new consumers may tap provider `role` (not marked no-tap or short, not retiring, not running out). */

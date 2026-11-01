@@ -726,6 +726,31 @@ test("D68: spare capacity is full-speed output minus the planned belt draw", () 
   near(spareCapacity(g, "m"), 0.811, 1e-9, "1 - 0.189")
 })
 
+test("M7c: spare capacity counts a consumer's measured draw when it is above the plan (user-approved 2026-11-01)", () => {
+  const g = newGraph()
+  addNode(g, { id: moduleId("m"), role: "coal>power", kind: "outpost", item: "coal", capacity: { inputs: [], outputs: [{ item: "coal", perSecond: 1 }] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  addNode(g, { id: moduleId("p"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  addEdge(g, { id: "e", role: "coal>power=>power.in-fuel", kind: "belt", item: "coal", from: moduleId("m"), to: moduleId("p"), plannedRate: 0.189, physical: [] })
+  g.edges["e"].measuredRate = 0.9
+  near(spareCapacity(g, "m"), 0.1, 1e-9, "1 - measured 0.9")
+  g.edges["e"].measuredRate = 0.05
+  near(spareCapacity(g, "m"), 0.811, 1e-9, "a draw below the plan still reserves the plan")
+})
+
+test("M7c: a kept consumer measured drawing more than planned sizes its provider for that draw (seed 11 iron columns)", () => {
+  const s1 = design(greenCtx({ researchUnitTime: 15 }), { item: RED, perSecond: 10 / 60 })
+  const fuel = s1.edges.find((e) => e.item === "coal" && e.to === SMELT_FE)!
+  const keep = keepOf(s1)
+  const planned = design(greenCtx({ sharing: { keep, spare: {} } }), STAGE2)
+  const before = planned.edges.find((e) => e.item === "coal" && e.to === SMELT_FE)!
+  const drawn = design(greenCtx({ sharing: { keep, spare: {}, draw: { [`coal@${SMELT_FE}@${fuel.toPort}`]: before.rate * 3 } } }), STAGE2)
+  eq(drawn.errors.length, 0, drawn.errors.join("; "))
+  const after = drawn.edges.find((e) => e.item === "coal" && e.to === SMELT_FE)!
+  near(after.rate, before.rate * 3, 1e-9, "the demand counts the measured draw")
+  const provider = byRole(drawn.nodes, after.from)!
+  ok(provider.need + 1e-9 >= after.rate, `its provider ${after.from} is sized for it (${provider.need} >= ${after.rate})`)
+})
+
 test("B81: a retiring provider's replacement never shares the provider it replaces (newSite; vps-d68a 5480563 n18)", () => {
   const d = design(ctx({ enabled: ELECTRIC, retiring: { "coal>power": true } }), { item: RED, perSecond: 10 / 60 })
   const repl = d.nodes.find((n) => n.item === "coal" && n.role !== "coal>power" && d.edges.some((e) => e.from === n.role && e.to === "power"))

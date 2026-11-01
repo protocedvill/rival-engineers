@@ -324,10 +324,18 @@ export function connectModule(g: LogicalGraph, id: string, inLayout: (this: void
  * belt edges are planned to take. For a mine this is real (its drills stand on ore); a smelter's full speed also needs
  * its own feed grown (B65), so callers use it for fuel outposts.
  */
+/**
+ * M7c (user-approved 2026-11-01): what an edge's consumer takes: its planned rate, or the measured rate when that is
+ * higher (a consumer with room takes what it can, not what was planned).
+ */
+export function edgeDraw(e: LogicalEdge): number {
+  return math.max(e.plannedRate, e.measuredRate ?? 0)
+}
+
 export function spareCapacity(g: LogicalGraph, id: string): number {
   const n = g.nodes[id]
   if (n === undefined || n.item === undefined) return 0
   let used = 0
-  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += e.plannedRate
+  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += edgeDraw(e)
   return rateIn(n.capacity.outputs, n.item) - used
 }

@@ -117,8 +117,10 @@ export interface DesignContext {
    * `fallback` (P36 (b), proposed): item → built producer roles, nearest first, that new consumers tap when a new producer
    * of the item could not be placed (the first one takes them all and grows). `blocked` is an exact
    * `provider=>consumer.port` deny-list: the historical assignment stays visible, but the design must not preserve it.
+   * `draw` (M7c, user-approved 2026-11-01): `item@consumer role@port` → the rate a built consumer was measured taking;
+   * a demand counts at least that (consumers with room take what they can, not what was planned).
    */
-  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> }
+  sharing?: { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean>; draw?: Record<string, number> }
   /**
    * M6/B66: built steam blocks that can't grow any more (their expansion keeps failing, e.g. the shore is taken), in
    * role order from `power` (`power`, `power#2`, ...), with what each can supply. Each keeps that capacity and the
@@ -633,6 +635,16 @@ function edge(w: Walk, from: string, fromPort: string, c: Demand, merge = false)
  * The steam block never waits for production: its fuel demand is never a new shared consumer.
  */
 function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable<DesignContext["sharing"]>): void {
+  // M7c (user-approved 2026-11-01): a built consumer counts at what it was measured drawing when that is more than its
+  // plan (seed 11: two 4-furnace iron columns planned at 0.47/s drew a mine's whole 1/s; the blue line sharing it
+  // starved). Producers are sized and tapped for the real draw.
+  if (shared.draw !== undefined) {
+    const draw = shared.draw
+    mine = mine.map((d) => {
+      const m = draw[`${item}@${d.to}@${d.toPort}`]
+      return m !== undefined && m > d.rate ? { ...d, rate: m } : d
+    })
+  }
   const byProducer: Record<string, Demand[]> = {}
   const producers: string[] = []
   const fresh: Demand[] = []
