@@ -369,6 +369,95 @@ outcome for g58. A T1 approximation made from the g57 fixture by removing n2 and
 phase after 3.47 million work units, then failed to connect five existing modules to power. That fixture is not an
 exact capture of g58; the live run must establish whether power is also blocked there.
 
+### M7c.7: performance and complexity pass (planner, crew; M7 and earlier features)
+
+The g58 diagnostic above stopped on planner cost: one crude route searched 200,000 expansions, and the replay of the
+captured blue plan (`m7-seed11-blue-wide`) spent **7.2 s of plain Lua in a single planner step**. The user asked for
+performance under control through M7, speedups in older features too, and lower cyclomatic complexity. Every change
+below either keeps decisions identical (verified as described) or says how it changes them.
+
+**Pipe router** (`planner/pipe-router.ts`, `plan.ts` `PipeJob`). A fluid route ran in one call regardless of the
+`planner-work-per-tick` budget. The search is now plain resumable data (callbacks are passed to each step, never stored,
+so a plan job holding it can sit in `storage`), stepped under the budget like the belt router, with tile costs and
+underground checks cached per search. A coarse pass runs over `coarseCell` cells split into their 4-connected
+*traversable* components (a tile any move can use: placeable, or passable under). Its graph has a path exactly when the
+tile graph has one, so when it runs out it proves "no path" at once (the 200,000-expansion failures). On a long line
+(`longRoute`), the tile search keeps to the `corridorCells` corridor around the coarse path, guided by a reverse BFS of
+cell distances inside the corridor (wall-aware, so it no longer floods the open ground in front of a walled-in goal).
+No corridor path: the search is rerun without it. The coarse search reuses the router's `PIPE_HEURISTIC_WEIGHT` (4).
+T1 `pipe-router`: a long line into a pocket open away from the source (work 35,472 → 3,047, route cost 150 → 184), a
+walled-in goal proved by the cells, and a resumed search that keeps to its step budget and finds the one-shot route.
+
+**Placement** (`planner/placement.ts`). (a) B26 sized an expandable module's window for its whole growth cap though
+`evaluate` scores only `growthBandUnits` units: a blue-pack assembler row (~300 tiles of growth) built a 711×224
+summed-area table at the smallest radius, again on every re-placement. The window holds the scored band now
+(`scoredGrowthLength`, `windowMargin`). This is a behaviour change: the window also bounds the other modules' open port
+lanes a candidate is checked against (B45) and the lane floods' "hard" lookups, so expandable modules now get the same
+window-bounded lane checks every other module always had. On every replay fixture the placements are unchanged (routing
+work identical) except `m7-seed11-blue-wide` (same outcome, two fewer re-placements). T1 `planner` pins the window size.
+(b) B45's port-lane seal check flooded a lane again for every candidate touching its way out; the result is memoised per
+footprint (the eight transforms share two) and a lane whose bounds miss the candidate is skipped (metrics identical).
+
+**Pole network** (`planner/power.ts`, M5). A pole search costed every tile once per pole in wire reach of it (~170
+times): cached per search. `wireDegree` counted over every pole at each look and `startNext` asked it for every powered
+pole for every pending module (O(poles²) per pick): `addNode` keeps the counts (rebuilt once for older saves).
+**Whole-patch mines** (`planner/mine-plan.ts`, M6): the 54 grid phases revisit each drill centre about four times; a
+centre's terrain check is read once per plan. Both decision-identical (every replay metric unchanged).
+
+**Crew** (`jobs/crew.ts`, M2/M3). Profiled in soaks with temporary `LuaProfiler`s: `preemptForUrgent` was most of the
+crew's time (up to 13 s per game minute at minute 32 of seed 11). Every tick it read the burner of every ready refuel
+(~800 of them) and looked each up with `indexOf` in each busy member's `planSeen` (~850 ids). Now a refuel's urgency is
+read only if some busy member may drop its batch for it (a member reset in the same loop plans again and sees the tick's
+jobs as seen, so the filter cannot change the outcome); `planSeen` lookups use a derived set (not in `storage`); jobs at
+or below every busy member's batch priority are skipped first; idle-tick accounting looks for a ready job only for a
+member without a claim. Each step was checked by a same-seed soak that played out identically (goals, counters, crew
+stats, work totals).
+
+**Complexity** (cyclomatic, decision points per function; a TypeScript-API count over `mod/src`): `computeRates` 127 →
+pieces of at most 28 (verified: all 5,241 `computeRates` results of the T1 suite byte-identical); `tryExpand` 113 → 25
+(all 458 calls of the T1 suite identical, including the claims around the module); `stepPlacement` 62 → 16 and
+`routeStep` 61 → 21 at most (every replay metric identical, same step boundaries). Functions over 50: 16 → 11 (`d56970c` → final).
+
+Results (plain Lua 5.4, T1 replays at the in-game budget of 400 units a tick):
+
+| Measure | Before (`d56970c`) | After |
+|---|---|---|
+| `m7-seed11-blue-wide` largest single step | 7.2 s | 34 ms |
+| `m7-seed11-blue-wide` replay | 15.4 s, 1.22 M work | 2.6 s, 0.50 M work, same outcome |
+| B85 cluster replay (poles 2.6 s → 0.9 s) | 4.9 s | 2.4 s |
+| 18 replay fixtures: candidates / work | 1.27 M / 4.07 M | 1.22 M / 3.16 M, same outcomes and failures |
+
+Soaks on this machine (4 cores, Factorio 2.0.77 headless, `m7.toml`, seed 11; ms figures from overlapping runs are
+indicative only, SPEC §9):
+
+| Run | AI ms/tick avg / worst interval | planner | crew | Work totals |
+|---|---|---|---|---|
+| 3 game-h, `d56970c` (concurrent with the next) | 0.78 / 6.60 | 0.20 / 10.07 | 0.29 / 1.64 | planner 5.15 M, expansions 2.86 M, candidates 0.95 M |
+| 3 game-h, `7470d40` (planner changes only) | 0.82 / 3.58 | 0.10 / 4.64 | 0.42 / 2.88 | planner 3.74 M, expansions 1.09 M, candidates 1.66 M |
+| 45 game-min, before the preemption changes (temporary profiling hooks: ~10 profiler calls a tick), alone | 0.97 / 5.35 | 0.07 / 1.42 | 0.60 / 3.66 | identical play in all four 45-min runs |
+| 45 game-min, `b397fb3` (all, no hooks), alone | 0.42 / 1.55 | 0.07 / 1.33 | 0.16 / 0.50 | |
+
+The two 3-hour runs diverge from minute ~8 without any different decision: at minutes 10 and 20 both bases hold the same
+entities at the same places, but plans needing less work finish earlier under the same per-tick budget (labs g2 30
+ticks sooner), so the crew's build order shifts and the trajectories drift apart (same goal sequence, different sizes
+later). Their work totals therefore compare different games: the candidates rise there is the drift (one minute held
+0.8 M), while on the identical replay inputs above candidates fell. The crew's 0.29 → 0.42 there is the same drift; the
+crew work was measured on identical play in the 45-minute series.
+
+Tests: T1 47/47 files; full T2 170/170 on `7470d40` (planner changes) and on `b397fb3` (final code); targeted T2 for
+the crew changes (`preempt`, `jobs`, B17/B30/B31: 26/26); T4 determinism (`determinism.py --seed 11`) on `b397fb3`: fresh,
+resumed from a save and benchmark runs identical at 30 min. Not run here (manager): the M7 acceptance soaks and the
+two-faction soak on the final commit, and the g58 live resume, which should now show whether its plan completes.
+
+Observations, not changed (for the user):
+- ~800 refuel/feed jobs stay ready and unclaimed for long stretches around minute 30 of seed 11 (one keyed job per
+  burner entity or feed target; most likely waiting for materials). Harmless now that the scan is cheap, but it may be
+  worth a look as crew behaviour.
+- Whole-patch mine planning (`prepareWholePatchPlacement`) still runs in one step and counts no work: 15–55 ms in the
+  replays after the cache (was 25–106 ms). Making it resumable is the next planner step if spikes matter.
+- T1 fixtures have no `oreTiles` index, so `buildPatches` scans whole regions in T1 (~100 ms steps); in game the chunk
+  ore index is used and its work is counted.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

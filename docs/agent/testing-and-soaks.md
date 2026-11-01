@@ -59,6 +59,22 @@ diagnostics, and paths to the newest frame/graph/plan artifact.
   latest failed growth reason. Looking only at entities hides the reservation that often caused the failure.
 - Preserve the failing artifact until its regression exists. A new full soak is confirmation, not the first debugger.
 
+## Performance work: prove "no behaviour change" cheaply
+
+- **Find the cost before changing code.** Replay a captured plan in plain Lua at the in-game budget (400 units a step)
+  and time each `stepPlan` call: a single step far over the budget is uncounted work (M7: one pipe route took 7.2 s in
+  one step while counting as "expansions"). For per-tick runtime cost, wrap suspects in temporary `LuaProfiler`s logged
+  once a game minute in a 45-game-minute `soak.py -j 1` run; the soak's per-subsystem table only names the subsystem.
+- **Pure refactors:** log every result of the function over the whole T1 suite (a temporary hook appending a sorted
+  serialisation to a file named by an env var), refactor, rerun, `cmp` the files (M7: 5,241 `computeRates` results,
+  458 `tryExpand` calls). Remove the hook before committing.
+- **Planner speedups:** every replay's `REPLAY {json}` line (candidates, work, outcome, failures) must stay identical;
+  compare against a `--out` build of the previous commit.
+- **Runtime speedups:** two same-seed soaks of the same config must play out identically (telemetry goals, counters,
+  crew stats and work totals equal). A change that alters only the *amount* of planner work is not identical in play:
+  plans finish earlier under the same budget and the game drifts, so compare those on replays, not soaks.
+- A cache kept outside `storage` must be derived only (rebuilt after a load), or saves and multiplayer desync.
+
 ## Test placement
 
 - T1 (`mod/unit`): deterministic policy, geometry, state transitions, board logic, planner and captured replays.
