@@ -629,6 +629,27 @@ export function factoryGoalSelectionSnapshot(name: string): FactoryGoalSelection
   return selectionSnapshot(name, f, design.goals ?? [], researchedTechs(factionForce(faction)))
 }
 
+/**
+ * Debug probe (remote `design_debug`): the latest design's edges whose role contains `filter`, and the goals built from
+ * it (kind, node roles, edge roles, growth), as plain data.
+ */
+export function factoryDesignDebug(name: string, filter = ""): unknown {
+  const design = designCache[name]?.design as (Design & { goals?: GoalSpec[] }) | undefined
+  if (design === undefined) return undefined
+  const has = (r: string): boolean => filter === "" || string.find(r, filter, 1, true)[0] !== undefined
+  return {
+    edges: design.edges.filter((e) => has(e.role)).map((e) => ({ role: e.role, item: e.item, from: e.from, to: e.to, toPort: e.toPort, rate: e.rate })),
+    nodes: design.nodes.filter((n) => has(n.role)).map((n) => ({ role: n.role, kind: n.kind, generator: n.generator, need: n.need, capacity: n.capacity })),
+    goals: (design.goals ?? []).map((g) => ({
+      kind: g.kind,
+      cluster: g.cluster,
+      nodes: g.nodes.filter((n) => has(n.role)).map((n) => n.role),
+      edges: g.edges.filter((e) => has(e.role)).map((e) => e.role),
+      growth: g.growth !== undefined ? { role: g.growth.role, units: g.growth.units, need: g.growth.need, have: g.growth.have } : undefined,
+    })),
+  }
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {
