@@ -1183,8 +1183,9 @@ function feedTempCells(ctx: Ctx, item: string, short: number): number {
  * buffer the on-demand feed uses (`bootstrap-factory-wait-seconds` of output), from the depot's surplus, so the
  * cell's output chest builds a buffer that serves any later request without waiting for one. Each ingredient is one
  * keyed job - the same `tempfeed:` keys the on-demand feed uses, so the two never double-book; the configured
- * priority decides how the refills compete with other work (0 = never stock proactively). What the cell holds and
- * what a refill is already bringing counts, so a buffer arrives in chunks across thinks without over-reserving.
+ * priority decides how the refills compete with other work (0 = never stock proactively). What the cell holds counts,
+ * and an ingredient with a refill in flight waits for it, so a buffer arrives in chunks across thinks without
+ * over-reserving.
  */
 function topUpTempCells(ctx: Ctx): void {
   const priority = ctx.config.bootstrapTempCellFeedPriority
@@ -1207,14 +1208,13 @@ function topUpTempCells(ctx: Ctx): void {
     if (room <= 0) continue
     const crafts = math.ceil(room / per)
     for (const ing of recipe.ingredients) {
-      const have = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
-      let inflight = 0
       const key = `tempfeed:${cell.input.unit_number}:${ing.name}`
-      if (keyActive(ctx, key)) {
-        const job = ctx.faction.board.jobs[ctx.brain.jobKeys[key]!]
-        if (job.payload.kind === "fuel") inflight = job.payload.count
-      }
-      const add = math.max(0, math.min(crafts * ing.amount - have - inflight, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
+      // One job per key: the next chunk is queued once the refill in flight is done. Adding another while it was open
+      // re-pointed the key and orphaned the first job (still on the board, its materials still demand, no longer
+      // counted as in flight): seed 11 piled up ~800 one-item refills by game-minute 30 (M7c.7).
+      if (keyActive(ctx, key)) continue
+      const have = cell.input.get_item_count(ing.name) + (inv?.get_item_count(ing.name) ?? 0)
+      const add = math.max(0, math.min(crafts * ing.amount - have, (ctx.stock[ing.name] ?? 0) - (ctx.demand[ing.name] ?? 0)))
       if (add <= 0) continue
       addKeyed(ctx, key, {
         kind: "fuel",
