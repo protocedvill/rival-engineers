@@ -48,6 +48,13 @@ diagnostics, and paths to the newest frame/graph/plan artifact.
 
 - Use fail-fast rules to stop known-dead runs.
 - Use `--snapshots N`, then `--from-save`, for bugs that appear late. `--benchmark` cannot save.
+- For work past a milestone (M7: blue science after red/green), keep a save library: `--save-at stage-3
+  --stop-after-saves` files one save per seed in `out/saves/<config>/seed-N/`, and `--resume-from stage-3` starts every
+  seed there. Rebuild the library when the storage layout or anything before the milestone changes, or after a fix whose
+  bad state the saves already hold (a resume cannot show such a fix). Acceptance runs start fresh. Game-time caps and
+  `--stop-after-saves` read the log, which Factorio flushes late: a sped-up server overshoots by a few game-minutes.
+- This cloud box (4 vCPU Xeon, 15 GB): a 20-game-min early run took ~54 s alone and 28-34 s each with three at once
+  (plus a fourth long run): run soaks with `-j 3` or `-j 4` here; the default (half the cores) is 2.
 - Failed plans already emit `.input.lua`; copy a minimal reproducer into `mod/unit/fixtures/` and replay it.
 - If the factory chooses the wrong next goal, call the remote probe `goal_selection_snapshot(faction)`. It returns
   only plain data: paste the `specs` and `state` into a `goal-selection` T1 regression, then change the pure policy.

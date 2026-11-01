@@ -24,6 +24,14 @@ Usage:
   python3 tools/harness/soak.py -c tools/harness/m5.toml --seeds 3333 --name repro \
       --from-save .factorio-test/soak/snap/seed-3333/data/saves/min-0025.zip           # resume one with the current build
 
+Milestone saves (a library of saves to resume later work from, e.g. blue-science work from finished red/green):
+  python3 tools/harness/soak.py -c tools/harness/m7.toml --save-at stage-3 --stop-after-saves -j 4   # build the library
+  python3 tools/harness/soak.py -c tools/harness/m7.toml --resume-from stage-3 -j 4 --name blue      # every seed from it
+`--save-at` saves once every faction has the milestone and files it as out/saves/<config>/seed-N/<milestone>.zip with a
+JSON note (commit, config, time); `--resume-from` prints how many commits behind HEAD each save is. A save carries the
+state the old code made: rebuild the library after storage-layout changes, after changes to what happens before the
+milestone, and after fixing a bug whose bad state is in the saves. Acceptance runs start fresh.
+
 Snapshots (`--snapshots MIN`) run the seed as a headless server sped up by script (saves only work in multiplayer;
 `--benchmark` never saves) at about the same speed. A snapshot carries the mod's storage: resuming it with changed code
 works as long as the storage layout is compatible, and it only shows the fix's effect from that point on.
@@ -50,6 +58,8 @@ ROOT = Path(__file__).resolve().parents[2]
 FACTORIO = ROOT / ".factorio-test" / "factorio" / "bin" / "x64" / "factorio"
 READ_DATA = ROOT / ".factorio-test" / "factorio" / "data"
 SOAK_DIR = ROOT / ".factorio-test" / "soak"
+# Milestone save library (--save-at / --resume-from), kept across runs (out/ is git-ignored).
+SAVES_DIR = ROOT / "out" / "saves"
 TICKS_PER_HOUR = 216000
 DEFAULT_DONE_MILESTONE = "first-electricity-materials"  # the mod's soak-done-milestone default (M3)
 # Fail fast (run.fail_fast in a config): stop a seed as soon as its log shows it is stuck, instead of running to the cap.
@@ -210,6 +220,13 @@ def load_config(path, args):
     run.setdefault("snapshot_minutes", 0)
     if args.helper_lua:
         run["helper_lua"] = str(Path(args.helper_lua).resolve())
+    # Milestone saves (--save-at): the run saves once every faction has the milestone, and the harness files the save
+    # in the library under the config's file name (out/saves/<config>/seed-N/), whatever the run is called.
+    run["config_stem"] = Path(path).stem
+    if args.save_at:
+        run["save_at"] = [m for m in args.save_at.split(",") if m]
+    run.setdefault("save_at", [])
+    run["stop_after_saves"] = bool(args.stop_after_saves)
     cfg.setdefault("mod", {})
     cfg.setdefault("mapgen", {})
     return cfg
@@ -217,6 +234,62 @@ def load_config(path, args):
 
 def done_milestone(cfg):
     return cfg["mod"].get("soakDoneMilestone", DEFAULT_DONE_MILESTONE)
+
+
+def server_mode(cfg):
+    """Saves only work in a headless server: snapshot and milestone-save runs use one instead of --benchmark."""
+    return int(cfg["run"].get("snapshot_minutes") or 0) > 0 or bool(cfg["run"].get("save_at"))
+
+
+def library_dir(cfg, seed):
+    """Where a config's milestone saves are filed: out/saves/<config file name>/seed-N/."""
+    return SAVES_DIR / cfg["run"]["config_stem"] / f"seed-{seed}"
+
+
+def git_commit():
+    r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, capture_output=True, text=True)
+    return r.stdout.strip() + ("+dirty" if dirty.stdout.strip() else "")
+
+
+def stable_file(path, seconds=3.0):
+    """True once `path` exists and its size has not changed for `seconds` (a server save is written while it runs)."""
+    if not path.exists():
+        return False
+    size = path.stat().st_size
+    time.sleep(seconds)
+    return path.exists() and path.stat().st_size == size and size > 0
+
+
+def file_milestone_saves(cfg, seed, data, telemetry_tick=None):
+    """Copies the run's ms-<milestone>.zip saves into the library with a JSON note of where they came from."""
+    filed = []
+    for z in sorted((data / "saves").glob("ms-*.zip")):
+        milestone = z.stem[3:]
+        dest = library_dir(cfg, seed)
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy(z, dest / f"{milestone}.zip")
+        meta = {"milestone": milestone, "seed": seed, "commit": git_commit(), "config": cfg["run"]["config_stem"],
+                "run": cfg["run"]["name"], "saved": utc_now(), "mod": cfg["mod"], "mapgen": cfg["mapgen"]}
+        (dest / f"{milestone}.json").write_text(json.dumps(meta, indent=1))
+        filed.append(str(dest / f"{milestone}.zip"))
+    return filed
+
+
+def library_save(cfg, seed, milestone):
+    """The library save of `milestone` for `seed`, with a staleness note (commits since it was made), or exit."""
+    z = library_dir(cfg, seed) / f"{milestone}.zip"
+    if not z.exists():
+        sys.exit(f"no {milestone} save for seed {seed} in {z.parent} (make one with --save-at {milestone})")
+    meta_path = z.with_suffix(".json")
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    commit = (meta.get("commit") or "").replace("+dirty", "")
+    note = f"seed {seed}: {milestone} save from {meta.get('commit', '?')} ({meta.get('saved', '?')})"
+    if commit:
+        r = subprocess.run(["git", "rev-list", "--count", f"{commit}..HEAD"], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode == 0:
+            note += f", {r.stdout.strip()} commit(s) behind HEAD"
+    return z, note
 
 
 def setup_dir(cfg, seed):
@@ -257,13 +330,34 @@ def setup_dir(cfg, seed):
         # Debug probes (--helper-lua): extra Lua in the helper mod, e.g. an on_nth_tick that logs entity states.
         lines.append(Path(cfg["run"]["helper_lua"]).read_text())
     snap = int(cfg["run"].get("snapshot_minutes") or 0)
-    if snap > 0:
+    if server_mode(cfg):
         # Snapshot mode runs a headless server (saves only work in multiplayer) as fast as the CPU allows.
         lines += ["script.on_event(defines.events.on_tick, function()",
                   "  if game.speed < 1000 then game.speed = 1000 end",
-                  "end)",
-                  f"script.on_nth_tick({snap * 3600}, function(e)",
+                  "end)"]
+    if snap > 0:
+        lines += [f"script.on_nth_tick({snap * 3600}, function(e)",
                   '  game.server_save(string.format("min-%04d", math.floor(e.tick / 3600)))',
+                  "end)"]
+    if cfg["run"]["save_at"]:
+        # Milestone saves: every 10 game-seconds, save `ms-<milestone>` once every faction has reached it (the helper's
+        # own storage remembers which were saved, also across a resume).
+        lines += [f"local save_at = {{{', '.join(json.dumps(m) for m in cfg['run']['save_at'])}}}",
+                  "script.on_nth_tick(600, function(e)",
+                  "  storage.milestone_saves = storage.milestone_saves or {}",
+                  "  local all = remote.call('rival-engineers', 'milestones')",
+                  "  if next(all) == nil then return end",
+                  "  for _, m in ipairs(save_at) do",
+                  "    if not storage.milestone_saves[m] then",
+                  "      local reached = true",
+                  "      for _, ms in pairs(all) do if ms[m] == nil then reached = false end end",
+                  "      if reached then",
+                  "        storage.milestone_saves[m] = e.tick",
+                  "        game.server_save('ms-' .. m)",
+                  "        log(string.format('[harness] milestone save ms-%s at tick %d', m, e.tick))",
+                  "      end",
+                  "    end",
+                  "  end",
                   "end)"]
     (helper / "control.lua").write_text("\n".join(lines) + "\n")
     # Space Age smoke runs enable the DLC mods on Nauvis; normal acceptance runs keep them off (SPEC D12/D38).
@@ -375,7 +469,7 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
         subprocess.run([str(FACTORIO), "-c", conf, "--create", str(save), "--map-gen-settings", str(mgs),
                         "--map-gen-seed", str(seed)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     ticks = int(run["game_hours"] * TICKS_PER_HOUR)
-    snapshots = int(run.get("snapshot_minutes") or 0) > 0
+    snapshots = server_mode(cfg)
     if snapshots:
         ss = json.loads((READ_DATA / "server-settings.example.json").read_text())
         ss.update(visibility={"public": False, "lan": False}, require_user_verification=False, auto_pause=False,
@@ -402,8 +496,11 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
             failed_fast = watch.poll()
             done = run["stop_when_done"] and (script_out / "done.json").exists()
             capped = snapshots and watch.tick >= ticks
+            saved = bool(run["save_at"]) and run["stop_after_saves"] and all(
+                stable_file(data / "saves" / f"ms-{m}.zip") for m in run["save_at"])
+            done = done or saved
             if done or failed_fast or capped:
-                exit_reason = "milestone" if done else "fail-fast" if failed_fast else "game-time-cap"
+                exit_reason = ("milestone-saves" if saved else "milestone") if done else "fail-fast" if failed_fast else "game-time-cap"
                 time.sleep(0.5 if done else 0)
                 proc.kill()  # --benchmark ignores SIGTERM
                 stopped_early = bool(done or failed_fast)
@@ -428,6 +525,7 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
     r = summarize(seed, telemetry, out_dir / "factorio-current.log", log_path, wall, stopped_early, done_milestone(cfg))
     r["failed_fast"] = failed_fast
     r["saves"] = sorted(str(p) for p in (data / "saves").glob("min-*.zip")) if snapshots else []
+    r["milestone_saves"] = file_milestone_saves(cfg, seed, data) if run["save_at"] else []
     fatal = exit_reason == "process-exit" and proc.returncode != 0
     if fatal:
         write_failure_artifact(out_dir, seed, reason="Factorio exited unexpectedly", command=cmd,
@@ -640,6 +738,13 @@ def main():
                         help="save the game every MIN game-minutes (runs a headless server instead of --benchmark)")
     parser.add_argument("--helper-lua", metavar="LUA",
                         help="append this Lua to the generated helper mod's control.lua (debug probes; see README)")
+    parser.add_argument("--save-at", metavar="MILESTONES",
+                        help="save the game once every faction reaches each of these comma-separated milestones (e.g. "
+                             "stage-3: red and green done in m7.toml) and file it in out/saves/<config>/seed-N/")
+    parser.add_argument("--stop-after-saves", action="store_true",
+                        help="with --save-at: end each run once all its milestone saves are written")
+    parser.add_argument("--resume-from", metavar="MILESTONE",
+                        help="start every seed from its library save of MILESTONE (out/saves/<config>/seed-N/)")
     parser.add_argument("--from-save", metavar="ZIP",
                         help="continue from a snapshot save (one seed: the seed only names the output) with the current build")
     args = parser.parse_args()
@@ -652,6 +757,15 @@ def main():
         sys.exit(f"configs share a run name: {names}")
     if args.from_save and len(cfgs) * len(cfgs[0]["run"]["seeds"]) != 1:
         sys.exit("--from-save needs a single config and a single seed (--seeds N)")
+    if args.from_save and args.resume_from:
+        sys.exit("--from-save and --resume-from are exclusive")
+    resume = {}
+    if args.resume_from:
+        for cfg in cfgs:
+            for seed in cfg["run"]["seeds"]:
+                z, note = library_save(cfg, seed, args.resume_from)
+                resume[(cfg["run"]["name"], seed)] = str(z)
+                print(f"resume {cfg['run']['name']} {note}", flush=True)
     if not FACTORIO.exists():
         sys.exit(f"headless Factorio not found at {FACTORIO} (see README → Development)")
     if not args.no_build:
@@ -677,7 +791,7 @@ def main():
         print(f"{name} seed {seed}: running up to {cfg['run']['game_hours']} game hours...", flush=True)
         try:
             r = run_seed(cfg, seed, out_dirs[name] / f"seed-{seed}", ports[(name, seed)],
-                         args.from_save and str(Path(args.from_save).resolve()),
+                         resume.get((name, seed)) or (args.from_save and str(Path(args.from_save).resolve())),
                          lambda state, **fields: manifest.seed(seed, state, **fields))
             meta = r.pop("_manifest")
             state = "passed" if r["pass"] else "failed-fast" if r.get("failed_fast") else "failed"
@@ -714,6 +828,8 @@ def main():
                 lines.append(f"  STOPPED (fail fast): {r['failed_fast']}")
             if r.get("saves"):
                 lines.append(f"  snapshots: {r['saves'][0]} ... ({len(r['saves'])})")
+            for z in r.get("milestone_saves") or []:
+                lines.append(f"  milestone save: {z}")
             lines += [f"  error: {e}" for e in r["errors"]]
             print("\n".join(lines), flush=True)
             # The scorecard so far, in config seed order.

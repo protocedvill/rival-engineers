@@ -81,6 +81,12 @@ export function registerRemoteInterface(): void {
       }
       return out
     },
+    /** Each faction's milestones (name -> tick); the soak harness saves the game when one is reached (`--save-at`). */
+    milestones: () => {
+      const out: Record<string, Record<string, number>> = {}
+      for (const n of storage.factionOrder) out[n] = { ...(mustFaction(n).brain?.milestones ?? {}) }
+      return out
+    },
     /** Debug probe: the board's active jobs grouped by key prefix, kind, item and target; claimed / waiting / ready. */
     board_summary: (name?: string) => {
       const out: Record<string, ReturnType<typeof boardSummary>> = {}
