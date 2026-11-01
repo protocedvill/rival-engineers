@@ -1162,40 +1162,9 @@ function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy)
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   if (job.pipe !== undefined) return pipeStep(job, terrain, policy, budget)
   if (job.current === undefined) {
-    const id = job.queue.shift()
-    if (id === undefined) {
-      let failed = false
-      for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
-      // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
-      if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
-      else if (guardLanes(job, terrain, policy)) return 1
-      else if (guardNewLanes(job, terrain, policy)) return 1
-      else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
-      if (failed) job.routingFailed = true
-      return 0
-    }
-    const c = connection(job, id)
-    if (c.fluid !== undefined) {
-      job.pipe = newPipeJob(job, policy, c)
-      if (job.pipe === undefined) return 1
-      return pipeStep(job, terrain, policy, budget)
-    }
-    const req = routeRequest(job, c, policy, {})
-    if (isPlanFailure(req)) {
-      fail(job, id, req)
-      traceRouteFailure(job.layout, terrain, policy, id, req.reason, job.compareProbe ? "compare" : "plan")
-      return 1
-    }
-    if (c.from === undefined) {
-      const stub = externalStub(job, terrain, policy, c, req)
-      if (typeof stub === "string") {
-        fail(job, id, stub)
-        traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
-      } else commitRoute(job.layout, stub)
-      return 1
-    }
-    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
-    job.stats.searches++
+    const used = startConnection(job, terrain, policy, budget)
+    // A new belt search runs in the same call; anything else (a pipe, a stub, a failure, the end) is done.
+    if (job.current === undefined) return used
   }
   const cur = job.current
   const used = stepSearch(cur.search, job.layout, terrain, policy, budget)
@@ -1203,74 +1172,140 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   job.stats.expansions += used
   const st = cur.search.status
   if (st === "running") return used
+  if (st === "failed") searchFailed(job, terrain, facts, policy, cur)
+  else searchFound(job, terrain, facts, policy, cur)
+  return used
+}
+
+type CurrentRoute = NonNullable<PlanJob["current"]>
+
+/**
+ * The next queued connection: its search (`job.current`, stepped by the caller), a pipe search, an external stub, or a
+ * recorded failure. With the queue empty, routing ends: the lane guards, then the next phase.
+ */
+function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  const id = job.queue.shift()
+  if (id === undefined) return endRouting(job, terrain, policy)
+  const c = connection(job, id)
+  if (c.fluid !== undefined) {
+    job.pipe = newPipeJob(job, policy, c)
+    if (job.pipe === undefined) return 1
+    return pipeStep(job, terrain, policy, budget)
+  }
+  const req = routeRequest(job, c, policy, {})
+  if (isPlanFailure(req)) {
+    fail(job, id, req)
+    traceRouteFailure(job.layout, terrain, policy, id, req.reason, job.compareProbe ? "compare" : "plan")
+    return 1
+  }
+  if (c.from === undefined) {
+    const stub = externalStub(job, terrain, policy, c, req)
+    if (typeof stub === "string") {
+      fail(job, id, stub)
+      traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
+    } else commitRoute(job.layout, stub)
+    return 1
+  }
+  job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
+  job.stats.searches++
+  return 0
+}
+
+/** Every connection routed or failed: guard the lanes (B57, B85), then compare, poles, done or failed. */
+function endRouting(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): number {
+  let failed = false
+  for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
+  // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
+  if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
+  else if (guardLanes(job, terrain, policy)) return 1
+  else if (guardNewLanes(job, terrain, policy)) return 1
+  else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
+  if (failed) job.routingFailed = true
+  return 0
+}
+
+/** Searches the current connection again (`rip` mode, `retry` after "no path"), or fails it if its request can't be made. */
+function restartRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur: CurrentRoute, rip: boolean, retry = false): void {
   const c = connection(job, cur.conn)
-  const restart = (rip: boolean, retry = false): void => {
+  const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
+  if (isPlanFailure(req)) {
+    fail(job, cur.conn, req)
+    traceRouteFailure(job.layout, terrain, policy, cur.conn, req.reason, job.compareProbe ? "compare" : "plan")
+    job.current = undefined
+    return
+  }
+  cur.rip = rip
+  cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
+  job.stats.searches++
+}
+
+/** Gives up on the current connection with `reason` (traced). */
+function failRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur: CurrentRoute, reason: string): void {
+  fail(job, cur.conn, reason)
+  traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+  job.current = undefined
+}
+
+/** The current connection's search found no path: other merge goals (B60), a wider window (B28), rip mode, re-placement. */
+function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, cur: CurrentRoute): void {
+  const c = connection(job, cur.conn)
+  routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
+  // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
+  // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
+  if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
+    cur.mergeTry = (cur.mergeTry ?? 0) + 1
     const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-    if (isPlanFailure(req)) {
-      fail(job, cur.conn, req)
-      traceRouteFailure(job.layout, terrain, policy, cur.conn, req.reason, job.compareProbe ? "compare" : "plan")
-      job.current = undefined
+    if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
+      applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
+      cur.rip = false
+      cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+      job.stats.searches++
       return
     }
-    cur.rip = rip
-    cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
-    job.stats.searches++
   }
-  if (st === "failed") {
-    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
-    // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
-    // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
-    if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
-      cur.mergeTry = (cur.mergeTry ?? 0) + 1
-      const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-      if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
-        applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
-        cur.rip = false
-        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
-        job.stats.searches++
-        return used
-      }
+  // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
+  // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
+  // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
+  // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
+  // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
+  const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
+  if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
+    cur.winScale = (cur.winScale ?? 1) * 3
+    cur.rip = false
+    const req = routeRequest(job, c, policy, {}, cur.winScale)
+    if (!isPlanFailure(req)) {
+      cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+      job.stats.searches++
+      return
     }
-    // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
-    // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
-    // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
-    // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
-    // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
-    const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
-    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
-      cur.winScale = (cur.winScale ?? 1) * 3
-      cur.rip = false
-      const req = routeRequest(job, c, policy, {}, cur.winScale)
-      if (!isPlanFailure(req)) {
-        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
-        job.stats.searches++
-        return used
-      }
-    }
-    if (!cur.rip) restart(true, cur.search.reason === "no path")
-    else {
-      const reason = cur.search.reason ?? "no path"
-      // Traced before tryReplace changes the layout; a re-placement only retries the connection.
-      const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-      if (!tryReplace(job, c, facts, policy, cur.search)) fail(job, cur.conn, reason)
-      else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
-      job.current = undefined
-    }
-    return used
   }
+  if (!cur.rip) restartRoute(job, terrain, policy, cur, true, cur.search.reason === "no path")
+  else {
+    const reason = cur.search.reason ?? "no path"
+    // Traced before tryReplace changes the layout; a re-placement only retries the connection.
+    const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
+    if (!tryReplace(job, c, facts, policy, cur.search)) fail(job, cur.conn, reason)
+    else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
+    job.current = undefined
+  }
+}
+
+/** The current connection's search found a route: checked (self-crossing, B58, rip-up limit), then committed. */
+function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, cur: CurrentRoute): void {
+  const c = connection(job, cur.conn)
   const res = searchResult(cur.search, job.layout, policy)
   if (res.selfCross !== undefined) {
     routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `route crosses itself at ${res.selfCross}`)
     if (cur.retries < 3) {
       cur.retries++
       cur.avoid[res.selfCross] = true
-      restart(cur.rip)
+      restartRoute(job, terrain, policy, cur, cur.rip)
     } else {
       fail(job, cur.conn, "route crosses itself")
       traceRouteFailure(job.layout, terrain, policy, cur.conn, "route crosses itself", job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
-    return used
+    return
   }
   const route = res.route!
   // B58: a splitter tap that would rip up its own trunk is not a valid branch. The tap search saw the old trunk,
@@ -1283,13 +1318,9 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (cur.retries < 3) {
       cur.retries++
       for (const k of route.tiles) cur.avoid[k] = true
-      restart(cur.rip)
-    } else {
-      fail(job, cur.conn, "splitter tap would rip its own route")
-      traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
-      job.current = undefined
-    }
-    return used
+      restartRoute(job, terrain, policy, cur, cur.rip)
+    } else failRoute(job, terrain, policy, cur, "splitter tap would rip its own route")
+    return
   }
   for (const v of res.victims) {
     const vr = job.layout.routes[v]
@@ -1302,7 +1333,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
         traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
       }
       job.current = undefined
-      return used
+      return
     }
   }
   for (const v of res.victims) {
@@ -1315,7 +1346,6 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   }
   commitRoute(job.layout, route)
   job.current = undefined
-  return used
 }
 
 // ---------------------------------------------------------------------------------------------------------
