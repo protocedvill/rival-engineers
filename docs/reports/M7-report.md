@@ -619,7 +619,7 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     and by tick 1,846,800 (~min 513) the faction had made 82 chemical science packs, 266 advanced circuits, 1,514
     plastic bars and 1,038 sulfur, researching the blue throughput test. Pack output in that window ~3/game-min;
     plastic and sulfur back up (`full_output`) behind it. Saves: `out/saves/manual/tap-360-min-0510.zip`.
-    Not run yet: a fresh seed 11 run on this build, the other M7 seeds, the M7e acceptance soaks.
+    Not run yet then: a fresh seed 11 run on this build (see below), the other M7 seeds, the M7e acceptance soaks.
   - **A fresh seed 11 run stopped at minute 366** (goal g42: belt ghosts unplaced for 20 rounds, "pathfinder found no
     path"): crew member 1 had been walled into a ~80-tile pocket since early on (the lake on three sides, the steam
     block's offshore pump and engines on the fourth; 717 escape retries), and every job it claimed failed. The B22
@@ -633,6 +633,12 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     cannot walk to (a copper growth later rerouted belts through the same pocket under the steam block; B20 abandoned
     it after 10 rounds). Treating walk-unreachable ground (water, cliffs and own buildings around it) as blocked
     needs a reachability flood per plan: not done.
+  - **The fresh seed 11 lineage makes blue packs too** (resumed from that minute-360 save with the pocket escape):
+    after a slow stage 2, exploration found crude after 12 radar outposts (~84 game-min); goals g97, g99 and g100 (the
+    sulfur chain, 359 placements, built at tick 2,540,850) followed. First sulfur at tick 2,642,400 (~min 734), first
+    chemical science pack at tick 2,685,600 (~min 746; 540 advanced circuits, 1,774 plastic, 458 sulfur by then). The
+    earlier minute-360 resume (`tap-360` lineage, kept running as `sustain-510`) had made 868 packs by tick 2,476,800
+    (~5/game-min over two game-hours). Both still short of stage 3's 10/min.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
