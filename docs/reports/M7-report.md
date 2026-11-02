@@ -577,6 +577,23 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   owner pump:route:..."). They are now a (non-evictable) pole line (`claims.ts` `occupancyClaim`). The T1 replays
   never caught it: a replay that finishes now checks the layout's claim owners too, ignoring problems the captured base
   already had (`r333968-second-power` has some).
+- **With the chains planned and adopted (goal g61, first time on seed 11), three more blockers** (resumes from
+  minutes 360, 480 and 510):
+  - *No stone bricks*: the build stalled after 430 placements. Two oil refineries need 10 bricks each, and nothing
+    made bricks: the bootstrap catalog leaves furnace recipes for building materials (stone → brick) out of its
+    smelting, so stone only has chest sites. Such a recipe is now recorded (`Catalog.materialSmelts`), and a shortfall
+    of its product queues a smelt site on the resource (`bootstrap.ts` `brickSite`: a burner drill feeding a furnace,
+    whose output is a supply point). Catalogs saved before it are completed on first use. g61 was then built (430
+    placements).
+  - *A crash on the first refinery*: measurement read every ingredient with `get_item_count`, which throws on a fluid
+    ("Unknown item name: petroleum-gas"). Fluid ingredients are read from the fluid boxes (`measure.ts`).
+  - *The pumps had no power*: a probe found the refineries and plants out of fluid, the pumpjacks full, and the two
+    pumps of the 900-tile crude line `no_power` with no pole beside them. A plan delta built only the poles the pole
+    job added; pump poles are added when the pipe route is committed, so none was ever built. They are now part of the
+    delta (`plan-delta.ts`), and a fluid edge's repair checks its pump poles too (`factory.ts`), for layouts built
+    before.
+  - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
+    reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)

@@ -102,6 +102,13 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
   for (const p of input.layout.poles ?? []) candidatePoles[p.id] = true
   const addPoles: PoleId[] = []
   for (const id of input.addedPoles ?? []) if (candidatePoles[id]) addPoles.push(id)
+  // M7c.8: poles the pole job did not add but the plan did: a fluid route's pump poles (`pipeStep`, `pumpPoleLine`).
+  // Left out, no pump of a long crude line was ever built a pole, and the line carried nothing (seed 11).
+  const currentPoles: Record<string, boolean> = {}
+  for (const p of current.poles ?? []) currentPoles[p.id] = true
+  const listed: Record<string, boolean> = {}
+  for (const id of addPoles) listed[id] = true
+  for (const p of input.layout.poles ?? []) if (!currentPoles[p.id] && !listed[p.id] && string.sub(p.line, 1, 5) === "pump:") addPoles.push(p.id)
 
   const removeModules: ModuleId[] = []
   for (const m of current.modules) if (input.layout.modules.every((candidate) => candidate.id !== m.id)) removeModules.push(m.id)

@@ -2298,7 +2298,11 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
     const parts: BuildParts = { modules: [], routes: [], poles: [] }
     if (e.kind === "power") {
       for (const p of f.layout.poles ?? []) if (e.physical.indexOf(p.line) >= 0) parts.poles.push(p.id)
-    } else for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
+    } else {
+      for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
+      // M7c.8: a fluid route's pump poles are part of it (plan deltas before the fix never built them).
+      for (const p of f.layout.poles ?? []) if (e.physical.some((rid) => p.line === LO.pumpPoleLine(rid))) parts.poles.push(p.id)
+    }
     const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
     let clogged: { spec: EntitySpec; entity: LuaEntity }[] = []
     if (e.kind === "power") {
