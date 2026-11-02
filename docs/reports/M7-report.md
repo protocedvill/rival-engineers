@@ -761,7 +761,7 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       (network 142), joined to the base by a pole line with 6 small-pole ghosts and no active place job for any of them
       (their jobs had failed). `checkBuild` counted a ghost as present. With a faction it now counts a ghost whose job
       is failed, done or gone as missing (`orphans`), and `applyDiff` gives such a ghost a new job instead of reusing
-      the dead job id (`conflicts.ts`; T2 `conflicts` "M7c.8: a ghost whose place job failed …").
+      the dead job id (`conflicts.ts`; T2 `conflicts` "B56: … M7c.8: a jobless ghost is missing", folded into B56 because a T2 shard has at most 64 forces and a new faction test pushed one over).
     - *A reroute cut the base off its power plant (minute ~630).* After coal mine n20 retired, the coal repairs
       rerouted routes in place (B88: g98, g101, g103, 67–219 placements). `planReroute` uses the claim view, which
       reads the faction's own pole-line poles as free (B37: a plan evicts and re-lays those lines), but a reroute
