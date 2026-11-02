@@ -738,7 +738,11 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       the underground exit of another route (coal to steam block power#4, n168) stands; the smelter's own fuel route
       is ripped and freed, that one is not. The block is real. After `GROW_MAX_FAILS` (3) the design would plan a
       parallel copper provider, but in three 54-min resumes from minute 780 the third attempt never came (failure 2
-      at the start of each, then no copper growth). Why the reconciler does not retry is open.
+      at the start of each, then no copper growth). Why: the reconciler's trace for the starved "labs#2" nodes stops at
+      a broken edge downstream of copper (end of `wet-780`: 14 nodes on the packs to labs edge, the buffer chest above;
+      end of `lane-780`: 14 on the advanced circuits to packs edge), so n329 is no longer a root cause and its grow
+      remedy is not picked again. Rows built before the buffer fix keep their chest, so this save keeps showing it;
+      a fresh lineage on the current build is the check.
     - *The "labs" circuit route was being rebuilt.* Its first pieces beside circuit module n287 (x 562, y -67) are
       belt ghosts with place jobs: growth goal g112 picked up 182 entities and is placing 189. Both crew members were
       busy with other jobs (refuels, inserts, walks), so the ghosts waited. Not a bug, but the chain's circuit supply
