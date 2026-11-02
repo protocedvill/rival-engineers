@@ -671,6 +671,32 @@ function stepCoarse(s: Search, state: LayoutState, terrain: TerrainView, policy:
 }
 
 /** Runs up to `budget` expansions. Returns the number used. */
+/** M7c.8: how many of a state's ancestors a move checks for its tiles (`heldBy`); `searchResult` checks whole routes. */
+const BELT_CROSS_DEPTH = 24
+
+/**
+ * M7c.8: whether tile index `t` (`encode` / 4) holds a piece of the route to state `st` within its last
+ * `BELT_CROSS_DEPTH` states (each state's own tile, and the underground exit one behind a state an underground made).
+ * The search state is (tile, heading), so a cheap route that loops back over its own tile can own a state, and every
+ * route through that state then crosses itself (the pipe router's seed 11 g107 flood; the same plan's advanced-circuit
+ * belt failed "route crosses itself" three times over).
+ */
+function heldBy(s: Search, st: number, t: number): boolean {
+  let cur = st
+  for (let depth = 0; depth < BELT_CROSS_DEPTH; depth++) {
+    const ct = math.floor(cur / 4)
+    if (ct === t) return true
+    const mv = s.mv[cur]
+    if (mv === undefined || mv < 0) return false
+    if (mv > 0) {
+      const d = cur % 4
+      if (ct - DX[d] - DY[d] * s.w === t) return true
+    }
+    cur = s.par[cur]
+  }
+  return false
+}
+
 export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
   const req = s.req
   const w = policy.router
@@ -746,7 +772,12 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
     const c = cost(x, y)
     if (c < 0) continue
     const g = s.g[cur]
-    for (const nd of [d, cw(d), ccw(d)]) push(cur, x + DX[nd], y + DY[nd], nd, g + c + (nd === d ? 0 : w.turn), 0)
+    for (const nd of [d, cw(d), ccw(d)]) {
+      const nx = x + DX[nd]
+      const ny = y + DY[nd]
+      if (inWindow(s, nx, ny) && heldBy(s, cur, math.floor(encode(s, nx, ny, 0) / 4))) continue
+      push(cur, nx, ny, nd, g + c + (nd === d ? 0 : w.turn), 0)
+    }
     // Undergrounds: entered straight, exit k tiles ahead.
     const line = lineKey(x, y, d)
     for (let k = 2; k <= maxK; k++) {
@@ -773,6 +804,8 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
         if (fixed) continue
         extra = w.rip
       }
+      if (heldBy(s, cur, math.floor(encode(s, ex, ey, 0) / 4))) continue
+      if (inWindow(s, ex + DX[d], ey + DY[d]) && heldBy(s, cur, math.floor(encode(s, ex + DX[d], ey + DY[d], 0) / 4))) continue
       push(cur, ex + DX[d], ey + DY[d], d, g + w.underground + c + ce + extra, k)
     }
   }

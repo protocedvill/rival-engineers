@@ -23,6 +23,8 @@ import { DX, DY, keyX, keyY, opposite, tkey } from "./grid"
 
 /** M7 B120: weighted A* keeps remote oil routes bounded when many near-equivalent pipe layouts exist. */
 const PIPE_HEURISTIC_WEIGHT = 4
+/** M7c.8: how many of a node's ancestors a move checks for its tiles (`heldBy`); `found` checks whole paths. */
+const PIPE_CROSS_DEPTH = 24
 
 /** What the search reads from the layout and terrain. Passed to every step, never stored (the search stays plain data). */
 export interface PipeCallbacks {
@@ -574,6 +576,28 @@ function crossesItself(steps: PipeStep[]): boolean {
   return false
 }
 
+/**
+ * M7c.8: whether tile `k` holds a piece of the path to node `i` within its last `PIPE_CROSS_DEPTH` nodes (each node's
+ * own tile, and the exit or pump tile one behind a node an underground or pump move made). Seed 11 minute 654 (g107):
+ * a cheap path looped round to turn north under a wall through its own underground exit; it reached that (tile,
+ * heading) first, so every path the search kept descended from the loop and each of its goal arrivals crossed itself,
+ * and the search flooded its whole 200000-expansion budget (76 s of planner time in a game minute). Rejecting such a
+ * move where it is made keeps the loop from owning the state; `found` still checks the whole path.
+ */
+function heldBy(s: PipeSearch, i: number, k: number): boolean {
+  let n = i
+  for (let depth = 0; depth < PIPE_CROSS_DEPTH && n >= 0; depth++) {
+    const x = s.nx[n]
+    const y = s.ny[n]
+    if (tkey(x, y) === k) return true
+    const mv = s.nmv[n]
+    if ((mv === MV_UG || mv === MV_PUMP) && tkey(x - DX[s.nd[n]], y - DY[s.nd[n]]) === k) return true
+    if (mv === MV_START) return false
+    n = s.npar[n]
+  }
+  return false
+}
+
 /** Expands node `i`. */
 function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const p = s.p
@@ -597,7 +621,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
       if (d === opposite(d0)) continue
       const nx = x + DX[d]
       const ny = y + DY[d]
-      if (cb.fluidNear(nx, ny) || !pipeClear(cb, x, y, back, tkey(nx, ny))) continue
+      if (cb.fluidNear(nx, ny) || !pipeClear(cb, x, y, back, tkey(nx, ny)) || heldBy(s, i, tkey(nx, ny))) continue
       visit(s, nx, ny, d, g0 + c, run + 1, i, MV_PIPE)
     }
   }
@@ -621,6 +645,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
       )
         return
     }
+    if (heldBy(s, i, tkey(ex, ey)) || heldBy(s, i, tkey(ex + DX[d0], ey + DY[d0]))) continue
     visit(s, ex + DX[d0], ey + DY[d0], d0, g, run + k + 1, i, MV_UG)
   }
   // A pump along the heading: a new segment starts behind it.
@@ -628,7 +653,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const py = y + DY[d0]
   if (run > 0) {
     const cp = cachedCost(s, cb, px, py)
-    if (cp >= 0) visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
+    if (cp >= 0 && !heldBy(s, i, tkey(px, py)) && !heldBy(s, i, tkey(px + DX[d0], py + DY[d0]))) visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
   }
 }
 

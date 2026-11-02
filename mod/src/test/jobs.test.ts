@@ -586,6 +586,42 @@ describe("job board", () => {
     )
   })
 
+  test("M7c.8: a member walled in with nothing to clear leaves no haul or deposit job open", () => {
+    // Seed 11 (fresh-11): 717 "stuck and nothing in reach to clear" unboxes each lost a haul's failed take with its
+    // claim held; the leftover claims went back to the board as 2077 open self-jobs nobody may claim, and idle members
+    // scanned them every tick (crew 1 -> 21 ms/tick).
+    const lab = createLab(40)
+    const centre = { x: 0.5, y: 0.5 }
+    // Another force's walls: nothing the member may pick up or mine (a script-set water ring did not hold a character
+    // on the lab surface: it walked across).
+    for (let d = -4; d <= 4; d++) {
+      for (const [x, y] of [[d, -4], [d, 4], [-4, d], [4, d]]) lab.surface.create_entity({ name: "stone-wall", position: at(lab, x + 0.5, y + 0.5), force: "player" })
+    }
+    const faction = createFaction("m7c8-selfjobs", { position: at(lab, centre.x, centre.y), crew: 1, starterItems: {} })
+    stockpile(lab, faction, 12.5, 0.5, { "wooden-chest": 3 })
+    for (const y of [-6.5, -8.5, -10.5]) lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 12.5, y), force: faction.force })
+    planGhosts(faction)
+    const m = storage.crew[faction.crew[0]]
+    const openSelf = (): string | undefined => {
+      for (const id of faction.board.active) {
+        const j = faction.board.jobs[id]
+        if ((j.payload.kind === "haul" || j.payload.kind === "deposit") && j.status === "open") return `#${id} ${j.payload.kind} ${j.reason ?? ""}`
+      }
+      return undefined
+    }
+    async(3700)
+    let left = 3600
+    on_tick(() => {
+      const open = openSelf()
+      assert(open === undefined, `an open self-job: ${open}`)
+      if (left-- > 0) return undefined
+      assert(m.unboxRetryAt !== undefined, `the member was never found boxed in with nothing to clear: ${describeBoard(faction)}`)
+      assert(faction.board.counters.added > 3, `it planned hauls: ${describeBoard(faction)}`)
+      done()
+      return false
+    })
+  })
+
   test("B22: a member enveloped by its own machines picks one up, gets out and the machine is re-placed", () => {
     const lab = createLab(40)
     // Eight 3×3 assemblers at a pitch-3 ring around the spawn leave an enclosed 3×3 pocket at its centre: the

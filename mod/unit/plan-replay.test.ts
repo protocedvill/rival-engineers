@@ -188,6 +188,12 @@ replay("m7-seed11-crude")
 // edge, their crude lines failing one tile short of the ports. Routing fluid lines first routes the plastic one. The
 // captured sulfur chain still has both pipe inputs on its west edge (the generator now puts water on the east end),
 // facing a 2-wide gap by the steam block that cannot hold two fluids: its crude line stays unroutable here.
+// M7c.8 (seed 11 minute 654, goal g107 attempt 1, from the crew-fix save at minute 645): the sulfur chain's water line
+// searched its whole 200000-expansion budget (76 s of planner time in a game minute) though the goal was 13 tiles away,
+// and the advanced-circuit belt failed "route crosses itself": both searches let a path that loops over its own tile
+// own a (tile, heading) state, so every arrival through it crossed itself. Both routes are found now; the plan still
+// fails on an ordinary rip-up limit (a later attempt re-places).
+replay("m7-seed11-g107", { expect: "failed", failureExcludes: "crosses itself" })
 replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-science-pack>labs.in-crude-oil", failureExcludes: "=>plastic-bar>advanced-circuit>chemical-science-pack>labs.in-crude-oil" })
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes

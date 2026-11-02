@@ -769,6 +769,41 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       428.5,-5.5 as "not in the layout", and every module said "the layout's poles do not reach it". The run had no
       power from then on. A reroute now keeps pole-line tiles solid (`reroute.ts`). **Open:** a layout already cut
       this way has no recovery (the power repair only reports it); a pole-only plan from the repair would heal it.
+- **Fresh run `fixes-360` continued (minute ~600–654): the crew and the planner slowed the game to a crawl.**
+    - *2077 haul and deposit jobs open for 400 game-min (crew 21–43 ms/tick).* Probes on the minute-645 save
+      (`crew-600-min-0645`): every open job was a self-job (haul, deposit: created and claimed by one member, never
+      selected from the board) with reason "no-actions". A member boxed in by the steam block's shore pocket (below)
+      hit `TRAPPED_NO_PATHS`; `pollActions` ran the unbox *before* handling the failed walk's job, and an unbox with
+      nothing to clear keeps the member's actions, so a haul whose last take was that walk lost it with its claim
+      still held. The "no-actions" safety net then released the claim and put the self-job back on the board, where
+      nobody may claim it, and idle members scanned all of them every tick. Now the unbox runs after the action's job
+      is handled, the safety net fails a claimed self-job instead of releasing it, and `dropDeadJobs` ends open
+      self-jobs (old saves). T2 `jobs` "M7c.8: a member walled in with nothing to clear leaves no haul or deposit job
+      open" (a member walled in by another force's walls, a stockpile with chest ghosts outside; on the old code it
+      fails with "an open self-job: #5 haul no-actions").
+    - *An idle member planned every tick.* Each plan reads every supply point's inventory (`availableItems`): 1.85
+      ms/tick with an empty board and two members. After a plan finds nothing, the member now plans again after
+      `IDLE_REPLAN_TICKS` (60) or as soon as the board changes (a job added, claimed, released, done or failed;
+      `board.counters`). From the same save: crew 21–43 → 0.05–0.07 ms/tick, AI total 0.6–0.8 ms/tick.
+    - *The planner took 76 s of one game minute (minute 654, goal g107).* The sulfur chain's water line ran its whole
+      200000-expansion budget though its goal was 13 tiles from the start, and the advanced-circuit belt failed
+      "route crosses itself" three times. Replayed from the captured input (T1 `m7-seed11-g107`): the goal sits in a
+      pocket walled off on the south, and the cheapest way in went west under the wall, looped round four tiles to
+      turn north and came back through its own underground exit. Both routers search (tile, heading) states and only
+      check a found path for tiles used twice, so that loop owned the state, every path the search kept descended
+      from it, and every one of its arrivals crossed itself. A move is now rejected when one of the last
+      `PIPE_CROSS_DEPTH` / `BELT_CROSS_DEPTH` (24) nodes on its path holds its tile (`pipe-router.ts`, `router.ts`
+      `heldBy`); the whole-path check stays. Both routes are found now; the plan still fails, on an ordinary rip-up
+      limit (a later attempt re-places). Every other replay gives the same plan with slightly less work (`m7-seed11-crude`
+      routing 8 % less).
+    - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
+      exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
+      not redesigned:** the steam block's placement should keep a walkable exit.
+    - *n32's coal line to the power plant never delivers* ("0/s reach n1"): its splitters cannot be placed. **Open.**
+    - T2: a shard that creates more than ~60 factions ran out of forces ("Too many forces"). Near the limit
+      (`STALE_FORCE_LIMIT`, 56) a new lab merges the forces of destroyed factions into neutral (`test/lab.ts`); only
+      near it, because the engine frees a merged force at the end of the tick and the reconciler tests recreate
+      `rec-1` in the same tick.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
@@ -804,6 +839,9 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Escape ghost delay | `jobs/crew.ts` `UNBOX_GHOST_DELAY` | 1800 ticks (30 s) | Agent guess (M7c.8): time to walk out of a pocket before the picked-up entity's ghost (and its place job) appears. | no |
 | Fluid probe full share | `strategy/measure.ts` `PIPE_FULL_SHARE` | 0.9 | Agent guess (M7c.8): a pipe this full counts as backed up for the edge verdicts (the belt probe's 7 of 8 items). | no |
 | Fluid probe sample spacing | `strategy/measure.ts` `PIPE_PROBE_EVERY` | 30 ticks | Agent guess (M7c.8): pipe fill changes slowly; nothing has to be seen crossing. | no |
+| Idle replan interval | `jobs/crew.ts` `IDLE_REPLAN_TICKS` | 60 ticks | Agent guess (M7c.8): an idle member's plan reads every supply point; once a second (or at once when the board changes) keeps idle crews cheap and a new job is still picked up at once. | no |
+| Route self-crossing depth | `planner/pipe-router.ts` `PIPE_CROSS_DEPTH`, `planner/router.ts` `BELT_CROSS_DEPTH` | 24 nodes | Agent guess (M7c.8): the loops that owned states were a few tiles long; 24 catches those at a small cost per move, and the whole-path check catches longer ones. | no |
+| Test force cleanup threshold | `test/lab.ts` `STALE_FORCE_LIMIT` | 56 forces | Test harness only: below Factorio's 64-force limit, high enough that ordinary shards never merge a force a test may recreate in the same tick. | no |
 | Lost-items minimum | `strategy/reconcile.ts` `LOST_MIN_ITEMS` | 3 items per edge probe | Agent guess (M7c.8): a belt owed fewer items in one probe (600 ticks by default) can show none by chance; 3 keeps a real break (B69: 2/s lost) detected in one probe. | no |
 | Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

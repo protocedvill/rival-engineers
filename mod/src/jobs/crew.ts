@@ -24,6 +24,7 @@ import {
   releaseAllOf,
   selectJob,
   addJob,
+  Board,
 } from "./board"
 import { addPlaceJob, clearJobFor, factionSurface } from "./faction"
 import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
@@ -53,6 +54,18 @@ type CrewJob = Job<JobPayload>
 
 /** Unpenalised releases of one job before a blocked placement counts as a failed attempt after all. */
 const MAX_DEFERRALS = 40
+/**
+ * M7c.8 (seed 11, minute 645): an idle member planned every tick, and each plan reads every supply point's inventory
+ * (`availableItems`: 1.85 ms/tick with an empty board, 2 members). After a plan finds nothing, it plans again after
+ * this many ticks, or at once when the board changes (a job added, claimed, released, done or failed).
+ */
+const IDLE_REPLAN_TICKS = 60
+
+/** Changes whenever a job is added or changes hands (what an idle member's next plan could see differently). */
+function boardChanges(board: Board<unknown>): number {
+  const c = board.counters
+  return c.added + c.claims + c.releases + c.completions + c.failures
+}
 
 /** Jobs a crew member creates and claims for itself (never selected from the board). */
 function isSelfJob(job: CrewJob): boolean {
@@ -243,12 +256,16 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       if (member.claims.length > 0) {
         // Every action finished but a claim is left (should not happen): give it back.
         for (const jobId of [...member.claims]) {
-          release(faction.board, jobId, member.id, tick, { reason: "no-actions", penalize: false, maxAttempts: config.jobMaxAttempts, retryTicks: 0 })
+          // M7c.8: a self-job (haul, deposit) belongs to this member: nobody else may claim it, so it ends here.
+          const job = faction.board.jobs[jobId]
+          if (job !== undefined && isSelfJob(job) && job.status === "claimed") failJob(faction.board, jobId, "no-actions", tick, member.id)
+          else release(faction.board, jobId, member.id, tick, { reason: "no-actions", penalize: false, maxAttempts: config.jobMaxAttempts, retryTicks: 0 })
         }
         member.claims = []
       }
       member.spot = undefined
-      if (!faction.paused) planNext(faction, member, config, tick)
+      const waiting = member.idleUntil !== undefined && tick < member.idleUntil && member.idleBoard === boardChanges(faction.board)
+      if (!faction.paused && !waiting) planNext(faction, member, config, tick)
     }
   }
   if (!faction.paused) preemptForUrgent(faction, config, tick)
@@ -308,7 +325,9 @@ function hasMoreActionsFor(member: CrewMember, jobId: number): boolean {
 
 function pollActions(faction: FactionState, member: CrewMember, config: Config, tick: number): void {
   const board = faction.board
-  while (member.actions.length > 0) {
+  // M7c.8: a member found boxed in is unboxed after this action's job is handled (see below).
+  let trapped = false
+  while (member.actions.length > 0 && !trapped) {
     const ca = member.actions[0]
     const action = getAction(ca.action)
     const status: ActionStatus = action?.status ?? "failed"
@@ -330,10 +349,13 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     } else if (status === "succeeded" && ca.job === undefined) {
       member.noPaths = 0
     }
+    // M7c.8 (seed 11, `fresh-11`: 2077 haul/deposit jobs open for 400 game-min): the unbox used to run here, before the
+    // action's job was handled, and an unbox with nothing to clear keeps the actions. A haul whose last take was the
+    // failed walk lost it with its claim still held; the "no-actions" release then put a self-job back on the board,
+    // where nobody may claim it. Idle members scanned all of them every tick (crew 1 -> 21 ms/tick).
     if ((member.noPaths ?? 0) >= TRAPPED_NO_PATHS) {
       member.noPaths = 0
-      unbox(faction, member, tick)
-      return
+      trapped = true
     }
     if (ca.job === undefined) {
       // The walk to the standing spot. B111: no way there: the next plans pick another spot.
@@ -366,6 +388,7 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     member.actions = rest
     jobFailed(faction, member, job, action, status, config, tick)
   }
+  if (trapped) unbox(faction, member, tick)
 }
 
 /** Walk failures in a row after which a member counts as boxed in (M6, seed 222): no-path walks, and stuck/unreachable loops (B22: a member that re-paths forever in place is just as stuck). */
@@ -796,7 +819,9 @@ function dropDeadJobs(faction: FactionState, tick: number): void {
     if (job.status !== "open") continue
     const payload = job.payload
     let gone: string | undefined
-    if (payload.kind === "place" && !payload.ghost.valid) gone = "ghost-removed"
+    // M7c.8: an open self-job can never be claimed again (saves from before the pollActions fix hold thousands).
+    if (isSelfJob(job)) gone = "orphan-self-job"
+    else if (payload.kind === "place" && !payload.ghost.valid) gone = "ghost-removed"
     else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
     else if (payload.kind === "gather" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "craft" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
@@ -864,6 +889,8 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
       else if (!isReady(board, job, tick)) waiting++
     }
     recordCrewPlan(faction, member, tick, "idle", rejected, { forced: forced?.id, active: board.active.length, claimed, waiting })
+    member.idleUntil = tick + IDLE_REPLAN_TICKS
+    member.idleBoard = boardChanges(board)
     return
   }
   member.stats.plans++

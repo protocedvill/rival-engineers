@@ -129,6 +129,10 @@ export interface CrewMember {
   actions: CrewAction[]
   /** Where the member is heading to stand for its batch, if anywhere. */
   spot?: Pos
+  /** M7c.8: after a plan found nothing, the next plan waits until this tick unless the board changes (`idleBoard`). */
+  idleUntil?: number
+  /** M7c.8: the board's change count when that plan found nothing. */
+  idleBoard?: number
   dead: boolean
   stats: CrewStats
   /** M6: walk failures in a row (no path, or a stuck/unreachable re-path loop); the member is boxed in at TRAPPED_NO_PATHS. */
