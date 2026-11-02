@@ -555,7 +555,7 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
 | Pipe-route heuristic weight | `planner/pipe-router.ts` `PIPE_HEURISTIC_WEIGHT` | 4 | Agent guess (B120): a remote crude route otherwise searched a broad area for minutes in a single tick; weighted A* trades the cheapest possible pipe path for a fast one. | no |
-| Failed-plan capture side limit | `strategy/factory.ts` `exportPlanInput` | 1,200 tiles (was 800) | Includes a remote oil field and the home base in one replay fixture; the old limit silently skipped this M7 failure. | no |
+| Failed-plan capture side limit | `strategy/factory.ts` `exportPlanInput` | 2,400 tiles (was 800, then 1,200) | Includes a remote oil field and the home base in one replay fixture; 1,200 still skipped the seed 11 sulfur plan (oil field ~900 tiles west of the hub). | no |
 | Power job priority | `strategy/factory.ts` `POWER_JOB_PRIORITY` | 100 | Was the literal of burner refuels; B111: builds that restore the power supply get it too, so refuels cannot preempt them (the build priority setting is 90). | no (build priority is a setting) |
 | Unreachable standing spot avoided for | `jobs/bad-spots.ts` `BAD_SPOT_TICKS` | 10 game-min | Agent guess (B111): long enough for the crew to move on, short enough that a cleared obstacle is tried again. | no |
 | Unreachable spot avoided around | `jobs/bad-spots.ts` `BAD_SPOT_RADIUS` | 2.5 tiles | Agent guess (B111): the next spot nearest the member is usually a tile over in the same pocket; 2.5 clears a four-tile stretch of corridor. | no |
