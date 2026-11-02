@@ -31,6 +31,8 @@ export interface ReconcileParams {
   busyShare: number
   /** A producer is undersized only when at least this share of what it makes arrives (else the belt is filling). */
   arrivedShare: number
+  /** Ticks of one edge probe (M7c.8: "none reaches" needs `LOST_MIN_ITEMS` owed to the belt in one probe). */
+  probeTicks: number
   /** A belt edge measured at this fraction of its usable capacity is full (undersized for its demand). */
   edgeFull: number
   /** A port tile full in at least this share of probe samples has items piling up. */
@@ -43,6 +45,9 @@ export interface ReconcileParams {
 }
 
 /** D69: one handler per kind (`factory.ts` `REMEDIES`); `deplete` is a worked-out outpost (expand over its patch, else relocate). */
+/** M7c.8: a belt must have been owed this many items in one edge probe before "none reaches" means items are lost. */
+export const LOST_MIN_ITEMS = 3
+
 export type RemedyKind = "grow" | "deplete" | "repair" | "upkeep" | "parallel"
 
 export interface Remedy {
@@ -309,18 +314,20 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       if (prod.status === "starved" || prod.status === "unfuelled" || prod.status === "unpowered") return trace(t, prod, depth + 1)
       // The producer makes more than arrives: the belt between is still filling (or losing items). Wait.
       const made = rateIn(prod.measured?.outputs ?? [], item)
-      // B69 (soak vps-d66 seed 5387208): nothing at all arrives at a warmed-up starved consumer while the producer makes
-      // the item. A filling belt brings some; this route lost a piece (its splitter tap was never built, 150 game-min).
-      if (made > 0 && e.measuredRate === 0) {
-        remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${label(prod)} makes ${fmt(made)}/s of ${item} but none reaches ${label(n)}` })
-        return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: nothing arrives while ${label(prod)} makes ${fmt(made)}/s` }
-      }
       // B96 (sweep 3e1c4d7 seed 1264816): a shared producer's other belts of this item carry the rest of its output;
       // only what they leave is this belt's to bring (0.3/s of 0.633 reached one of three consumers: "filling" for 300
       // game-min, no remedy).
       let others = 0
       for (const o of beltsFrom(t.g, prod)) if (o.id !== e.id && o.kind === "belt" && o.item === item) others += o.measuredRate ?? 0
       const forThis = math.max(0, made - others)
+      // B69 (soak vps-d66 seed 5387208): nothing at all arrives at a warmed-up starved consumer while the producer makes
+      // the item. A filling belt brings some; this route lost a piece (its splitter tap was never built, 150 game-min).
+      // M7c.8 (fixes-360 seed 11, labs#2 iron plates): a tap that gets 0.03-0.5/s for this belt shows no item in some
+      // 10 s probes; each zero re-laid an intact route ("nothing missing"). It must have been owed a few items.
+      if (made > 0 && e.measuredRate === 0 && forThis * (p.probeTicks / 60) >= LOST_MIN_ITEMS) {
+        remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${label(prod)} makes ${fmt(made)}/s of ${item} but none reaches ${label(n)}` })
+        return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: nothing arrives while ${label(prod)} makes ${fmt(made)}/s` }
+      }
       if (forThis > 0 && (e.measuredRate ?? 0) < p.arrivedShare * forThis) {
         passive ??= { kind: "edge", id: e.id, what: "filling", why: `${label(prod)} makes ${fmt(made)}/s of ${item}, ${fmt(forThis)}/s of it for this belt, but ${fmt(e.measuredRate)}/s arrive: the belt is filling` }
         continue

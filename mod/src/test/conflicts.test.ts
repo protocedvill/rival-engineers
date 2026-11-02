@@ -22,7 +22,7 @@ import { at, createLab, Lab } from "./lab"
 import { followRoute } from "./route-lab"
 import { getPlannerEntry, removePlan, startBuild, startPlan, tappedBelts } from "../planner/runtime"
 import { addPlaceJob, addStockpile } from "../jobs/faction"
-import { getJob } from "../jobs/board"
+import { failJob, getJob } from "../jobs/board"
 
 // M5a.2: factions sharing ground. A faction never plans on another faction's claim (its reserved tiles) or ghosts; a
 // route blocked by something the faction doesn't own is rerouted (old pieces picked up); a module whose ground was
@@ -255,6 +255,29 @@ describe("faction conflicts", () => {
     revive(d.ghosts)
     const broken = followRoute(s, layout, layout.routes["route:ore"])
     assert(broken === undefined, `route connects again: ${broken}`)
+  })
+
+  test("M7c.8: a ghost whose place job failed counts as missing and gets a new job", () => {
+    // fixes-360 seed 11, minute 370: 6 pole ghosts of a mine's pole line had failed jobs; the power repair said "nothing
+    // missing" (a ghost counted as present) while the mine's 24 drills had no power.
+    const lab = createLab(64)
+    const a = faction(lab, "orphan", 30, 0)
+    const s = lab.surface
+    const { layout, ghosts } = smeltingLab(lab, a.force)
+    assert(ghosts.length > 3, `${ghosts.length} ghosts`)
+    const jobs = ghosts.map((g) => addPlaceJob(a, g)!)
+    const dead = ghosts[2]
+    failJob(a.board, jobs[2], "unreachable", game.tick)
+    const parts = { modules: [], routes: [routeId("route:ore")], poles: [] }
+    const plain = checkBuild(s, a.force, layout, parts)
+    assert(plain.missing.length === 0 && plain.orphans.length === 0, `without a faction a ghost is present (${plain.missing.length})`)
+    const check = checkBuild(s, a.force, layout, parts, undefined, a)
+    assert(check.orphans.length === 1 && check.missing.length === 1, `orphans ${check.orphans.length}, missing ${check.missing.length}`)
+    assert(check.orphans[0].x === dead.position.x && check.orphans[0].y === dead.position.y, "the failed job's ghost")
+    const d = applyDiff(s, a, [], check.missing, {})
+    assert(d.placeJobs.length === 1 && d.placeJobs[0] !== jobs[2], `a new job (${serpent.line(d.placeJobs)})`)
+    assert(getJob(a.board, d.placeJobs[0])!.status !== "failed", "the new job is open")
+    assert(checkBuild(s, a.force, layout, parts, undefined, a).orphans.length === 0, "no orphan left")
   })
 
   test("B107: another input filling both lanes past a module's input port is found; picked up and placed again, the belts are empty", () => {

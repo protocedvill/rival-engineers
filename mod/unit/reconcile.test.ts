@@ -16,6 +16,7 @@ const P: ReconcileParams = {
   edgeFull: 0.9,
   portFull: 0.5,
   arrivedShare: 0.75,
+  probeTicks: 600,
   probeMaxAge: 3600,
   maxRemedies: 2,
   cooldownTicks: 1000,
@@ -233,6 +234,14 @@ test("B69: nothing arrives while the producer makes the item (its other belts ta
   eq(r.remedies.length, 1, "one remedy")
   eq(r.remedies[0].kind, "repair", "repair")
   eq(r.remedies[0].edge, "ore", "the silent edge")
+})
+
+test("M7c.8: a trickle too thin for one probe to catch is not 'none reaches' (no repair of an intact route)", () => {
+  // fixes-360 seed 11: the labs#2 iron-plate tap got 0.03-0.5/s; 10 s probes saw no plate and re-laid the route 3 times.
+  const g = chain(st({ working: 0.97 }), 0.1, st({ starved: 1 }), 0, st({ working: 0.95 }), 1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 0.2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(r.remedies.filter((x) => x.kind === "repair").length, 0, "no repair")
 })
 
 test("broken belt: items pile up at the producer and none arrive → repair the route; the producer is backed up for the same cause", () => {

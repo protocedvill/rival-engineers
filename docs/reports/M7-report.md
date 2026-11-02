@@ -750,6 +750,25 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     - Not traced to the plan: two green circuit assemblers (x 463.5/467.5, y -23.5) put circuits on a belt that ends
       at (434.5, -27.5) with gears on its other lane, on no layout route; four others insert straight into
       neighbouring assemblers that are full. Neither is on the pack chain's routes.
+- **Fresh run `fixes-360` (seed 11 from minute 360 on the fixes above): three more "nothing missing" loops.**
+    - *A thin tap read as lost.* The labs#2 iron-plate tap (n35 → n33) was re-laid 3 times as "makes 0.033/s (… 0.48,
+      2.65) but none reaches". A probe (`fe2-420`) saw single plates cross its port every few probes: the belt gets
+      0.03–0.5/s, so a 10 s edge probe often sees none. B69's "none reaches" now needs at least `LOST_MIN_ITEMS` (3)
+      items owed to the belt in one probe (its B96 share of the producer's output × the probe length); below that the
+      edge is left to B96's "filling" verdict (`reconcile.ts`; T1 `reconcile` "M7c.8: a trickle too thin …").
+    - *Jobless ghosts count as built.* Mine n176's 24 drills had no power for 15+ game-min; every power repair said
+      "nothing missing (the layout's poles reach it)". Probes (`pw2-360`, `pw3-360`): the mine's poles are an island
+      (network 142), joined to the base by a pole line with 6 small-pole ghosts and no active place job for any of them
+      (their jobs had failed). `checkBuild` counted a ghost as present. With a faction it now counts a ghost whose job
+      is failed, done or gone as missing (`orphans`), and `applyDiff` gives such a ghost a new job instead of reusing
+      the dead job id (`conflicts.ts`; T2 `conflicts` "M7c.8: a ghost whose place job failed …").
+    - *A reroute cut the base off its power plant (minute ~630).* After coal mine n20 retired, the coal repairs
+      rerouted routes in place (B88: g98, g101, g103, 67–219 placements). `planReroute` uses the claim view, which
+      reads the faction's own pole-line poles as free (B37: a plan evicts and re-lays those lines), but a reroute
+      evicts and re-lays nothing: a coal belt was routed over main-line poles, g103 then picked up the pole at
+      428.5,-5.5 as "not in the layout", and every module said "the layout's poles do not reach it". The run had no
+      power from then on. A reroute now keeps pole-line tiles solid (`reroute.ts`). **Open:** a layout already cut
+      this way has no recovery (the power repair only reports it); a pole-only plan from the repair would heal it.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
@@ -785,5 +804,6 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Escape ghost delay | `jobs/crew.ts` `UNBOX_GHOST_DELAY` | 1800 ticks (30 s) | Agent guess (M7c.8): time to walk out of a pocket before the picked-up entity's ghost (and its place job) appears. | no |
 | Fluid probe full share | `strategy/measure.ts` `PIPE_FULL_SHARE` | 0.9 | Agent guess (M7c.8): a pipe this full counts as backed up for the edge verdicts (the belt probe's 7 of 8 items). | no |
 | Fluid probe sample spacing | `strategy/measure.ts` `PIPE_PROBE_EVERY` | 30 ticks | Agent guess (M7c.8): pipe fill changes slowly; nothing has to be seen crossing. | no |
+| Lost-items minimum | `strategy/reconcile.ts` `LOST_MIN_ITEMS` | 3 items per edge probe | Agent guess (M7c.8): a belt owed fewer items in one probe (600 ticks by default) can show none by chance; 3 keeps a real break (B69: 2/s lost) detected in one probe. | no |
 | Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

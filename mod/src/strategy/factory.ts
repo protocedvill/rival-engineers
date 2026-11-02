@@ -2058,6 +2058,7 @@ export function reconcileParams(config: Config): ReconcileParams {
     edgeFull: RECONCILE_EDGE_FULL,
     portFull: RECONCILE_PORT_FULL,
     arrivedShare: RECONCILE_ARRIVED_SHARE,
+    probeTicks: config.measureProbeTicks,
     // An edge measurement is fresh for one node window.
     probeMaxAge: config.measureIntervalTicks * config.measureWindowSamples,
     maxRemedies: config.reconcileMaxRemedies,
@@ -2364,15 +2365,16 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       parts.routes = rc.routes
       only = rc.only
     }
-    const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts, only)
+    const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts, only, ctx.faction)
     let clogged: { spec: EntitySpec; entity: LuaEntity }[] = []
     if (e.kind === "power") {
       // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing
       // ones are re-placed like line poles. Never their machines (D49).
       const built: BuildParts = { modules: [], routes: [], poles: [] }
       for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && LO.findModule(f.layout, n.id) !== undefined) built.modules.push(n.id)
-      const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole")
+      const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole", ctx.faction)
       for (const s of own.missing) check.missing.push(s)
+      for (const s of own.orphans) check.orphans.push(s)
     }
     if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0 && check.intruders.length === 0) {
       // B83: every entity stands, but the edge's routes do not bring items to the consumer's port in the layout (a
@@ -2457,6 +2459,7 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
     if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
     if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
     if (clogged.length > 0) turned += `, empties ${clogged.length} belt(s) of ${clogged[0].spec.owner} where another input fills both lanes (first at ${clogged[0].spec.x},${clogged[0].spec.y}) (B107)`
+    if (check.orphans.length > 0) turned += `, ${check.orphans.length} of them ghosts no job builds (first ${check.orphans[0].name} at ${check.orphans[0].x},${check.orphans[0].y})`
     say(`goal ${g.id} re-places ${check.missing.length} entities${turned}`)
   },
 }

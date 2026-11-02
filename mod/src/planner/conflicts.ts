@@ -49,6 +49,16 @@ export interface BuildCheck {
    * route's underground between a new pair's ends; 2/s of ore made, none arriving, "nothing missing"). Pick them up.
    */
   intruders: LuaEntity[]
+  /** M7c.8: with a faction given, the `missing` entities that stand as its ghost with no job to build it. */
+  orphans: EntitySpec[]
+}
+
+/** True when `ghost` has a place job that can still build it (not failed, done or gone). */
+function ghostHasJob(faction: FactionState, ghost: LuaEntity): boolean {
+  const id = faction.ghostJobs[ghost.unit_number!]
+  if (id === undefined) return false
+  const j = getJob(faction.board, id)
+  return j !== undefined && j.status !== "failed" && j.status !== "done"
 }
 
 const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
@@ -164,13 +174,19 @@ export function routeCheck(layout: LayoutState, routes: RouteId[]): { routes: Ro
   return { routes: deps, only: (e) => own[e.owner] === true || specTiles(e).some((k) => tiles[k] === true) }
 }
 
-/** Checks `parts` of `layout` against the world (see the file comment). */
-export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
+/**
+ * Checks `parts` of `layout` against the world (see the file comment). M7c.8 (fixes-360 seed 11, minute 370): with
+ * `faction`, a ghost no job will ever build is missing too (`orphans`). A mine's pole line kept 6 pole ghosts whose
+ * place jobs had failed; a ghost counted as present, so every repair of the mine's power edge said "nothing missing"
+ * while its 24 drills had no power.
+ */
+export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean, faction?: FactionState): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
   const misdirected: { spec: EntitySpec; entity: LuaEntity }[] = []
   const stale: { spec: EntitySpec; entities: LuaEntity[] }[] = []
   const seen: Record<string, boolean> = {}
+  const orphans: EntitySpec[] = []
   for (const e of partEntities(layout, parts)) {
     if (only !== undefined && !only(e)) continue
     if (ownBuilt(surface, force, e) !== undefined) {
@@ -179,6 +195,10 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
       continue
     }
     const ghost = ownGhost(surface, force, e)
+    if (ghost !== undefined && faction !== undefined && !ghostHasJob(faction, ghost)) {
+      missing.push(e)
+      orphans.push(e)
+    }
     if (ghost === undefined) {
       const under = layout.routes[e.owner] !== undefined ? staleBeltsUnder(surface, force, e) : []
       if (under.length > 0) stale.push({ spec: e, entities: under })
@@ -214,7 +234,7 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
       }
     }
   }
-  return { missing, conflicts, misdirected, stale, intruders }
+  return { missing, conflicts, misdirected, stale, intruders, orphans }
 }
 
 /** Item names on one transport line of a belt entity. */
@@ -313,6 +333,8 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
     let gh = ownGhost(surface, force, e)
+    // M7c.8: a ghost whose place job failed or ended keeps no job: forget it so this one places it again.
+    if (gh !== undefined && !ghostHasJob(faction, gh)) delete faction.ghostJobs[gh.unit_number!]
     if (gh === undefined) {
       const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
       if (e.ioType !== undefined) params.type = e.ioType

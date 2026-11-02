@@ -7,6 +7,7 @@ import { ProtoFacts } from "../modules/facts"
 import type { RouteId } from "../shared/ids"
 import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
+import { isPoleTag } from "./claim-tags"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
 import { dependentRoutes, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
@@ -55,8 +56,13 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
   const view: TerrainView = {
     block: (x, y) => {
+      const k = tkey(x, y)
+      // M7c.8 (fixes-360 seed 11, minute 630): a reroute never evicts or re-lays pole lines, so their poles stay solid
+      // here. The claim view reads them as free (B37, for plans that re-lay them): an in-place coal reroute ran over
+      // main-line poles, a later repair picked the pole up as "not in the layout" and the whole base lost power.
+      if (isPoleTag(layout.occ[k])) return OWN
       const b = terrain.block(x, y)
-      return freed[tkey(x, y)] && b === OWN ? FREE : b
+      return freed[k] && b === OWN ? FREE : b
     },
     ore: (x, y) => terrain.ore(x, y),
   }
