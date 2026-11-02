@@ -37,7 +37,7 @@ declare global {
 }
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { badSpotRects, recordBadSpot } from "./bad-spots"
-import { countWork, findEntities } from "../work"
+import { countEntities, countWork, findEntities } from "../work"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
@@ -605,6 +605,16 @@ function jobFailed(
       return
     }
   }
+  // M7c (seed 11, agent design, proposed): a mining drill with no ore left in its mining area can never be placed by a
+  // character (a script placement check still says it fits). Its ore was mined out after the plan; drop the ghost so the
+  // goal finishes with the drills that stand, instead of retrying until it gives up its location (B20) and tears down
+  // the whole module.
+  if (payload.kind === "place" && action?.reason === "cannot-place" && payload.ghost.ghost_type === "mining-drill" && !oreUnder(payload.ghost)) {
+    delete faction.ghostJobs[payload.ghostKey]
+    payload.ghost.destroy()
+    failJob(board, job.id, "no-ore-left", tick, member.id)
+    return
+  }
   // A character standing on the spot is temporary: retry soon, without spending an attempt.
   const blocked = payload.kind === "place" && action?.reason === "cannot-place" && charactersIn(faction, job.footprint)
   const penalize = !blocked || (job.deferrals ?? 0) >= MAX_DEFERRALS
@@ -615,6 +625,14 @@ function jobFailed(
     retryTicks: config.jobRetryTicks,
     delay: config.jobBlockedRetryTicks,
   })
+}
+
+/** Whether any resource lies in a drill ghost's mining area. */
+function oreUnder(ghost: LuaEntity): boolean {
+  const r = prototypes.entity[ghost.ghost_name].mining_drill_radius ?? 1
+  const p = ghost.position
+  const area = { left_top: { x: p.x - r, y: p.y - r }, right_bottom: { x: p.x + r, y: p.y + r } }
+  return countEntities(ghost.surface, { area, type: "resource", limit: 1 }) > 0
 }
 
 // ---------------------------------------------------------------------------------------------------
