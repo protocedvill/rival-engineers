@@ -4,6 +4,10 @@ import { clearConfigOverrides, getConfig } from "../config"
 import { destroyFaction } from "../jobs/faction"
 import { exploreNow, positionDistance } from "../world/resources"
 import { hasWater, repairStartingLake } from "../world/spawn"
+import { fieldModule } from "../strategy/oil"
+import { generatedModule } from "../modules/library"
+import { ModuleDef } from "../modules/types"
+import { at, createLab } from "./lab"
 
 // M5a.2: every faction spawned with a starting area (D32) has water near its spawn, like a player's starting lake.
 
@@ -73,5 +77,32 @@ describe("starting water", () => {
       }
       assert(positionDistance(a.brain!.base, b.brain!.base) >= config.spawnMinDistance, "factions apart")
     })
+  })
+})
+
+/** Wells in a pumpjack field module's params (`encodeWells`: `x,y,perSecond;…`). */
+function wellCount(f: { def: ModuleDef } | undefined): number {
+  if (f === undefined) return 0
+  const [, n] = string.gsub(f.def.params!.wells as string, "[^;]+", "")
+  return n
+}
+
+describe("oil fields", () => {
+  test("M7c.8: wells that already carry a pumpjack are no field for a new crude provider", () => {
+    // Seed 11, minute 720–747: a second crude provider was placed on the only known field (already fully taken) for 8
+    // plans in a row; with its wells taken, the goal explores for another field instead.
+    const lab = createLab(24)
+    const s = lab.surface
+    const wells = [at(lab, -6.5, 0.5), at(lab, 0.5, 0.5), at(lab, 7.5, 0.5)]
+    for (const w of wells) s.create_entity({ name: "crude-oil", position: w, amount: 300000 })
+    const region = { x: math.floor(lab.origin.x) - 24, y: math.floor(lab.origin.y) - 24, w: 48, h: 48 }
+    const find = () => fieldModule(s, region, () => true, lab.origin, "crude-oil", 1, "pumpjack", (params) => generatedModule("pumpjack-field", params))
+    assert(wellCount(find()) === 3, `a field of three wells (${wellCount(find())})`)
+    s.create_entity({ name: "pumpjack", position: wells[0], force: "player" })
+    assert(wellCount(find()) === 2, `a built pumpjack's well is left out (${wellCount(find())})`)
+    s.create_entity({ name: "entity-ghost", inner_name: "pumpjack", position: wells[1], force: "player" })
+    assert(wellCount(find()) === 1, `a ghost's well too (${wellCount(find())})`)
+    s.create_entity({ name: "pumpjack", position: wells[2], force: "player" })
+    assert(find() === undefined, "no free well: no field")
   })
 })

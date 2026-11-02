@@ -813,6 +813,16 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       setting `module-buffer-rows`, default `iron-gear-wheel,engine-unit`; T1 `design` "M7c.8 (user, 2026-11-02): rows
       of the listed products get a buffer depot"). Rows built before keep no buffer until replanned or grown; the
       `module-out` source covers them.
+    - *A second crude field was placed on the first one's wells, 8 plans in a row (resume `blue-720`, minute 736–747).*
+      With the pumps fixed, the blue chain ran (10 chemical packs by minute 736), and the design asked for a parallel
+      crude provider. `oil.ts` `fieldModule` picked the best known field without looking at its wells: the only field
+      in reach, already fully taken by the first, so g112 and g113 each failed 4 attempts "no room at its fixed spot:
+      occupied at -375,28" and D68 found no built producer with spare capacity. Wells carrying a pumpjack (built or a
+      ghost, any force) are now left out; a known field with none free is no field, and the goal explores for crude
+      (the existing D62 path). T2 `world` "M7c.8: wells that already carry a pumpjack are no field for a new crude
+      provider". Resumed from minute 720 (`blue2-720`): 42 chemical packs by minute 736, then the faction explored for
+      crude, and the run stopped on the open D62 problem below: radar outposts g112 and g113 (arms toward 484,936) fail
+      "power: no pole path (window margin 112)" on all 4 attempts each (8 failed plans in a row: the harness fail-fast).
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

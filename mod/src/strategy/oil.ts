@@ -44,6 +44,16 @@ function wellRate(resource: string, amount: number, pumpjack: string): number {
  * `center` that yields enough, else the richest. Undefined when no well is known there. Only chunks `known` to the
  * faction count (home zone, explored strips, radar-scanned chunks).
  */
+/**
+ * M7c.8 (seed 11, minute 720–747): whether a pumpjack (built or a ghost, any force) already stands on a well. A second
+ * crude provider was placed on the only known field again and again ("no room at its fixed spot", 8 failed plans in a
+ * row): a field whose wells are all taken is no field for a new provider, so the goal explores for another one.
+ */
+function wellTaken(surface: LuaSurface, at: Vec): boolean {
+  const area = { left_top: { x: at.x - 0.4, y: at.y - 0.4 }, right_bottom: { x: at.x + 0.4, y: at.y + 0.4 } }
+  return findEntities(surface, { type: "mining-drill", area, limit: 1 }).length > 0 || findEntities(surface, { ghost_type: "mining-drill", area, limit: 1 }).length > 0
+}
+
 export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
   // B115: only known ground (the plan's chunk rule), generated now if it is not yet: a mine's patch search generates its
   // chunks through the planner's terrain scan, this search reads the surface directly.
@@ -66,6 +76,7 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     for (const e of findEntities(surface, { type: "resource", name: resource, area })) {
       // B118: an area search matches boxes that overlap it: a well on a chunk border was found in both chunks.
       if (math.floor(e.position.x / 32) !== c.x || math.floor(e.position.y / 32) !== c.y) continue
+      if (wellTaken(surface, e.position)) continue
       wells.push({ x: math.floor(e.position.x), y: math.floor(e.position.y), perSecond: wellRate(resource, e.amount, pumpjack) })
     }
   }
