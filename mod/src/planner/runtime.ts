@@ -638,7 +638,10 @@ export function exportGraph(entry: PlannerEntry, file: string): boolean {
 export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400): boolean {
   const t = storage.terrains?.[entry.terrain]
   const r = entry.request.region
-  if (t === undefined || r.w > maxSide || r.h > maxSide) return false
+  if (t === undefined || r.w > maxSide || r.h > maxSide) {
+    log(`[rival-engineers] plan input ${file} not exported: ${t === undefined ? "no terrain" : `region ${r.w}x${r.h} over ${maxSide}`}`)
+    return false
+  }
   const view = factionView(entry, terrainView(t))
   const blockChars = [".", "T", "R", "#", "X", "~", "C", "?"]
   const oreChars: Record<string, string> = { "iron-ore": "i", "copper-ore": "c", coal: "k", stone: "s" }
