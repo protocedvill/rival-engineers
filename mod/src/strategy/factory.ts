@@ -54,6 +54,7 @@ import type { GoalStatus } from "./goal-lifecycle"
 import * as REL from "./relocation"
 import * as AR from "./adoption-runtime"
 import * as EX from "./explore"
+import * as GH from "./goal-holds"
 export { parseStages } from "./stage"
 export type { GoalStatus } from "./goal-lifecycle"
 
@@ -116,6 +117,8 @@ export interface FactoryGoal {
   reason?: string
   /** Place jobs done so far (progress), and rounds of re-planning jobs for leftover ghosts. */
   placed: number
+  /** M7c: the last tick `placed` went up (or the goal was planned): a building goal with none for `stall-ticks` is stalled. */
+  progressTick?: number
   rounds: number
   lastRound?: number
   /** Clear jobs for trees/rocks found under leftover ghosts, by obstacle position. */
@@ -237,8 +240,6 @@ declare global {
 }
 
 const designCache: Record<string, { key: string; design: Design }> = {}
-/** M7c: steps per item/s of over-planned measured draw in the design cache key (agent guess: a quarter item/s). */
-const DRAW_KEY_STEPS = 4
 
 const UPKEEP_INTERVAL = 300
 /**
@@ -471,19 +472,8 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const role of CS.keys(c, "providerShort")) short += `${role}:${string.format("%.6g", caps[role] ?? 0)};`
   let retiring = ""
   for (const [role] of pairs(f.retiring ?? {})) retiring += `${role as string};`
-  // M7c: mines about to run out take no new consumers (stage.ts `oreRunsOut`): a change redesigns.
-  const runningOut: string[] = []
-  for (const [role] of pairs(f.oreLeft ?? {})) if (ST.oreRunsOut(f, role as string)) runningOut.push(role as string)
-  runningOut.sort()
-  // M7c (user-approved 2026-11-01): consumers measured drawing more than planned resize their providers; a change of a
-  // quarter item/s redesigns (coarse, so measurement noise does not redesign every think).
-  const draws: string[] = []
-  for (const id of f.graph.edgeOrder) {
-    const e = f.graph.edges[id]
-    if (e.kind === "belt" && (e.measuredRate ?? 0) > e.plannedRate) draws.push(`${id}:${math.floor((e.measuredRate! - e.plannedRate) * DRAW_KEY_STEPS)}`)
-  }
   const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
-  const key = `${flagKey}|${blocked}|${short}|${retiring}|${runningOut.join(";")}|${draws.join(";")}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  const key = `${flagKey}|${blocked}|${short}|${retiring}|${ST.designSignals(f)}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
@@ -601,26 +591,14 @@ export interface FactoryGoalSelectionSnapshot {
  * Plain-data input to the goal scheduler. Capture this through the remote interface when a live game chooses the
  * wrong next goal, then paste it into a T1 fixture: replay does not need the save or any Factorio object.
  */
-/** M7c: whether `spec` feeds an input of a module still being built that no edge of the graph feeds now. */
-function feedsBuilding(f: FactoryState, spec: GoalSpec): boolean {
-  for (const e of spec.edges) {
-    const to = LG.nodeByRole(f.graph, e.to)
-    if (to === undefined || to.lifecycle !== "building") continue
-    let fed = false
-    for (const id of f.graph.edgeOrder) {
-      const ge = f.graph.edges[id]
-      if (ge.to === to.id && ge.toPort === e.toPort) fed = true
-    }
-    if (!fed) return true
-  }
-  return false
-}
-
 function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
   const active: Partial<Record<GoalKind, boolean>> = {}
   const completed: Partial<Record<GoalKind, boolean>> = {}
+  // M7c: a stalled building goal (`goalStalled`) holds no ordering lock.
+  const now = game.tick
+  const stallTicks = getConfig().stallTicks
   for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar"] as GoalKind[]) {
-    active[kind] = activeGoal(f, kind) !== undefined
+    active[kind] = f.goals.some((g) => g.kind === kind && (g.status === "planning" || (g.status === "building" && !GH.goalStalled(now, stallTicks, g))))
     completed[kind] = built(f, kind)
   }
   const activeGrowth = activeGoal(f, "grow")
@@ -632,7 +610,7 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
       kind: spec.kind,
       cluster: spec.cluster,
       techs: spec.techs,
-      feedsBuilding: spec.kind === "production" ? feedsBuilding(f, spec) : undefined,
+      feedsBuilding: spec.kind === "production" ? GH.feedsBuilding(f, spec) : undefined,
       growth: spec.growth === undefined ? undefined : {
         role: spec.growth.role,
         have: spec.growth.have,
@@ -788,7 +766,7 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
   // had to wait for a goal still building is not planned again until that goal is done.
   const blocker = f.growWaits?.[gr.node]
   if (blocker !== undefined) {
-    if (f.graph.nodes[blocker]?.lifecycle === "building") {
+    if (f.graph.nodes[blocker]?.lifecycle === "building" && !GH.nodeGoalStalled(f, ctx.tick, ctx.config.stallTicks, blocker)) {
       ctx.waiting.push(`${gr.role} growth waits for ${f.graph.nodes[blocker].goal ?? blocker} to finish building`)
       return "wait"
     }
@@ -844,6 +822,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     for (const end of [e.from, e.to]) {
       const other = end !== undefined && end !== gr.node ? f.graph.nodes[end] : undefined
       if (other === undefined || other.lifecycle !== "building") continue
+      // M7c: a stalled goal places nothing, so the growth does not wait for it (it may be what the goal waits for).
+      if (GH.nodeGoalStalled(f, ctx.tick, ctx.config.stallTicks, other.id)) continue
       ctx.waiting.push(`${gr.role} growth waits for ${other.goal ?? other.id} to finish building (it reroutes ${e.role})`)
       f.growWaits ??= {}
       f.growWaits[gr.node] = other.id
@@ -977,6 +957,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   if (done > g.placed) {
     ctx.faction.brain!.steps += done - g.placed
     g.placed = done
+    g.progressTick = ctx.tick
   }
   if (open) return
   const left = b.ghosts.filter((gh) => gh.valid)
@@ -1623,6 +1604,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   transitionGoal(g, "building")
   if (f.adoption === intent) f.adoption = undefined
   g.plannedTick = ctx.tick
+  g.progressTick = ctx.tick
   const s = job.stats
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} (${g.kind}) planned in ${entry.scanTicks + entry.planTicks} ticks (work ${s.work}, ${s.searches} searches, ${s.ripups} rip-ups): ${parts.modules.length} modules, ${parts.routes.length} routes, ${parts.poles.length} poles`)
   ctx.faction.brain!.steps++
@@ -1680,6 +1662,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   if (done > g.placed) {
     ctx.faction.brain!.steps += done - g.placed
     g.placed = done
+    g.progressTick = ctx.tick
   }
   if (g.rework !== undefined && !rework(ctx, g, b)) return
   if (b.phase !== "done") return

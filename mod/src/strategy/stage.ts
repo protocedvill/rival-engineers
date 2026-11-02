@@ -127,6 +127,26 @@ function tappable(f: FactoryState, role: string): boolean {
   return !CS.has(f.constraints, "noTap", role) && !CS.has(f.constraints, "providerShort", role) && f.retiring?.[role] === undefined && !oreRunsOut(f, role)
 }
 
+/** M7c: steps per item/s of over-planned measured draw in the design cache key (agent guess: a quarter item/s). */
+const DRAW_KEY_STEPS = 4
+
+/**
+ * M7c: the design cache key's part for this session's signals: mines about to run out (`oreRunsOut`, no new taps) and
+ * consumers measured drawing more than planned (user-approved 2026-11-01), in quarter item/s steps so measurement noise
+ * does not redesign every think.
+ */
+export function designSignals(f: FactoryState): string {
+  const runningOut: string[] = []
+  for (const [role] of pairs(f.oreLeft ?? {})) if (oreRunsOut(f, role as string)) runningOut.push(role as string)
+  runningOut.sort()
+  const draws: string[] = []
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind === "belt" && (e.measuredRate ?? 0) > e.plannedRate) draws.push(`${id}:${math.floor((e.measuredRate! - e.plannedRate) * DRAW_KEY_STEPS)}`)
+  }
+  return `${runningOut.join(";")}|${draws.join(";")}`
+}
+
 /**
  * M7c (seed 11): a mine whose ore at full output lasts less than its `minMinutes`. Full output, not the planned draw:
  * consumers with room take all a mine makes (two 4-furnace columns planned at 0.47/s drew its whole 1/s), so the planned
