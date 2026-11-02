@@ -73,6 +73,12 @@ export interface Catalog {
   smelts: Record<string, string>
   /** Plate item → its ore. */
   oreOf: Record<string, string>
+  /**
+   * M7c.8: a furnace product left out of `smelts` because it is a building material (stone-brick) → the resource whose
+   * ore makes it. Made on demand by a smelt site added then (`brickSite`), not by the bootstrap's sites. Optional: older
+   * saves have none.
+   */
+  materialSmelts?: Record<string, string>
 }
 
 export interface BrainState {

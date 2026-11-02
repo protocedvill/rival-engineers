@@ -220,7 +220,12 @@ function crafterMissing(c: Counters, e: LuaEntity, recipe: string | undefined): 
   const inv = e.get_inventory(defines.inventory.crafter_input)
   if (r === undefined || inv === undefined) return
   const lacking: string[] = []
-  for (const ing of r.ingredients) if (inv.get_item_count(ing.name) < ing.amount) lacking.push(ing.name)
+  // M7c.8: a fluid ingredient is in the machine's fluid boxes (`get_item_count` throws on a fluid name: seed 11 crashed
+  // on the first refinery chain's petroleum gas).
+  for (const ing of r.ingredients) {
+    const have = ing.fluid === true ? e.get_fluid_count(ing.name) : inv.get_item_count(ing.name)
+    if (have < ing.amount) lacking.push(ing.name)
+  }
   for (const item of lacking) add(c.missing, item, 1 / lacking.length)
 }
 

@@ -134,6 +134,7 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
   let fuel: string | undefined
   const smelts: Record<string, string> = {}
   const oreOf: Record<string, string> = {}
+  const materialSmelts: Record<string, string> = {}
   const furnaceCats = prototypes.entity[furnace!.entity].crafting_categories ?? {}
   // The fuel: the first resource (configured ones first, then any, by name) whose product burns.
   const allResources: string[] = []
@@ -161,7 +162,11 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
       const plate = r.products[0].name
       // Skip recipes that turn the resource into a building material (stone → brick): only smelt what the
       // bootstrap's recipes actually consume as plates is the brain's business; take the first match.
-      if (prototypes.item[plate]?.place_as_tile_result !== undefined) continue
+      if (prototypes.item[plate]?.place_as_tile_result !== undefined) {
+        // M7c.8: still a source when something needs it (an oil refinery's bricks), by a smelt site added then.
+        materialSmelts[plate] ??= res
+        continue
+      }
       smelts[item] = plate
       oreOf[plate] = item
       break
@@ -178,5 +183,6 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
     fuel: fuel!,
     smelts,
     oreOf,
+    materialSmelts,
   }
 }

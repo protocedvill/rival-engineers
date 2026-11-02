@@ -1068,6 +1068,25 @@ function reconcile(ctx: Ctx): void {
   }
 }
 
+/**
+ * M7c.8 (seed 11: the blue chain's oil refineries need 10 stone bricks each, and nothing made bricks): whether a smelt
+ * site on `resource` exists or is queued; queues one (in front of the open goals, like a depot) when neither. Its drill
+ * feeds its furnace, whose output is a supply point.
+ */
+function brickSite(ctx: Ctx, resource: string): boolean {
+  const brain = ctx.brain
+  for (const g of brain.goals) if (g.kind === "site" && g.site === "smelt" && g.resource === resource) {
+    const site = siteById(brain, g.siteId)
+    if (!g.done || (site !== undefined && site.status === "built")) return true
+  }
+  // A goal whose site failed or was retired: queue a new one.
+  let first = 0
+  while (first < brain.goals.length && brain.goals[first].done) first++
+  brain.goals.splice(first, 0, { kind: "site", site: "smelt", resource })
+  log(`[rival-engineers] faction ${ctx.faction.name}: smelt site goal for ${resource} (a building material: ${resource} smelts into one)`)
+  return true
+}
+
 function produce(ctx: Ctx, item: string, short: number): void {
   const note = (action: string): void => {
     const f = ctx.shortfalls[item]
@@ -1090,6 +1109,15 @@ function produce(ctx: Ctx, item: string, short: number): void {
   }
   // 3. Smelt: plates come from furnaces; hand-mine ore into them if what is on its way is not enough.
   const catalog = ctx.brain.catalog
+  // 3a. M7c.8: a building material made in a furnace (stone-brick): a smelt site on its resource makes it.
+  // A catalog saved before M7c.8 has no `materialSmelts`: rebuild it once from the same resources (deterministic).
+  catalog.materialSmelts ??= buildCatalog(ctx.force, requiredResources(getConfig())).materialSmelts ?? {}
+  const material = catalog.materialSmelts[item]
+  if (material !== undefined) {
+    if (brickSite(ctx, material)) return note(`smelt site for ${item} on ${material}`)
+    ctx.waiting.push(`no smelt site for ${item}`)
+    return note(`no smelt site for ${item}`)
+  }
   const ore = catalog.oreOf[item]
   if (ore !== undefined) {
     let inbound = ctx.oreInbound[ore] ?? 0
