@@ -614,6 +614,12 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     one fluid segment with the trunk's first (a pipe probe found crude up to that pump, none past the trunk's). A tap
     now starts with the length of the trunk segment it joins counted (`plan.ts` `segmentLengths`, `PipeParams.starts
     [].run`), so it must put a pump at once or join a segment with room. T1 `pipe-router` pins it.
+  - **Result: seed 11 makes blue packs** (`d5f4435`, resumed from the minute-360 save): goal g61 built at tick 1,742,760
+    (525 placements), crude reached both refineries at once (200 each, the four pumps and three pumpjacks working),
+    and by tick 1,846,800 (~min 513) the faction had made 82 chemical science packs, 266 advanced circuits, 1,514
+    plastic bars and 1,038 sulfur, researching the blue throughput test. Pack output in that window ~3/game-min;
+    plastic and sulfur back up (`full_output`) behind it. Saves: `out/saves/manual/tap-360-min-0510.zip`.
+    Not run yet: a fresh seed 11 run on this build, the other M7 seeds, the M7e acceptance soaks.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
