@@ -662,6 +662,20 @@ export function factoryDesignDebug(name: string, filter = ""): unknown {
   }
 }
 
+/** Debug probe: the live graph's edges whose role or item contains `filter`, with their last measurement. */
+export function factoryEdgeDebug(name: string, filter = ""): unknown {
+  const f = storage.factories?.[name]
+  if (f === undefined) return undefined
+  const has = (r: string): boolean => filter === "" || string.find(r, filter, 1, true)[0] !== undefined
+  const out: unknown[] = []
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e === undefined || e.kind !== "belt" || !(has(e.role) || has(e.item))) continue
+    out.push({ id, item: e.item, planned: e.plannedRate, measured: e.measuredRate, tick: e.measuredTick, full: e.measuredFull, capacity: e.capacityRate })
+  }
+  return { probe: f.meter?.probe?.edge, probes: f.meter?.probes, edges: out }
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {

@@ -7,7 +7,7 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
-import { factoryDesignDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
+import { factoryDesignDebug, factoryEdgeDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
 import { tkey } from "./planner/grid"
@@ -97,6 +97,8 @@ export function registerRemoteInterface(): void {
     diagnostics: (name: string) => factionDiagnostics(name),
     /** Debug probe: the latest design's edges and nodes whose role contains `filter`, and its goals. */
     design_debug: (name: string, filter?: string) => factoryDesignDebug(name, filter),
+    /** Debug probe (M7c.8): the live graph's belt and fluid edges matching `filter`, with their measured flow. */
+    edge_debug: (name: string, filter?: string) => factoryEdgeDebug(name, filter),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
     goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
     /** T4 determinism: the canonical state (sorted storage, the factions' entities) to script-output/`file`. */

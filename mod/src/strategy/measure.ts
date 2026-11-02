@@ -1,7 +1,7 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { Rate } from "../modules/types"
-import { findModule, findPort, LayoutState, portTile } from "../planner/layout"
+import { findModule, findPort, LayoutState, portOutside, portTile } from "../planner/layout"
 import { LogicalEdge, LogicalGraph, LogicalNode, rateIn, StateShares } from "../planner/logical"
 import { findEntities } from "../work"
 
@@ -19,6 +19,11 @@ import { findEntities } from "../work"
 //   sampled often enough to see every item cross it (items on belts keep a `unique_id`), so arrivals per second is
 //   the flow the consumer actually gets. The probe also records how often the tiles at both ports were full (items
 //   piling up). Edges are probed round-robin, and the reconciler's requests go first.
+// - **Fluid edges** (M7c.8, a pipe port at the consumer): fluids have no ids and the API has no flow counter, so the
+//   probe samples how full the pipes at both ports are (`fullFrom`/`fullTo`: the share of samples at least
+//   `PIPE_FULL_SHARE` full) and the edge's rate is what the consumer used of the fluid in its measurement window (its
+//   crafts' ingredient counts), split over its edges of that fluid by planned rate. Before, a fluid edge was measured
+//   as "no belt at the port": 0/s, and the reconciler asked for repairs of working pipelines.
 //
 // Everything lives in `storage` (entity references included) and runs at fixed ticks: deterministic (§5.6).
 
@@ -86,6 +91,8 @@ export interface EdgeProbe {
   fullTo: number
   /** Nominal items/s of the consumer's port belt (both lanes). */
   capacity: number
+  /** M7c.8: a fluid edge (pipe ports): `to`/`from` are fluid entities at the port tiles, sampled for fill. */
+  fluid?: string
 }
 
 export interface MeterState {
@@ -112,6 +119,13 @@ const TILE_ITEMS = 8
 const FULL_TILE_ITEMS = 7
 /** Probe samples are this fraction of the time an item takes to cross the tile apart, so none is missed. */
 const PROBE_SAMPLE_FRACTION = 0.75
+const FLUID_TYPES = ["pipe", "pipe-to-ground", "pump", "storage-tank", "offshore-pump"]
+/** M7c.8: a pipe at least this full counts as full in a fluid probe. */
+const PIPE_FULL_SHARE = 0.9
+/** M7c.8: fluid probe sample spacing (ticks): fill changes slowly, nothing has to be seen crossing. */
+const PIPE_PROBE_EVERY = 30
+/** Throughput of one pipeline within the extent (engine-capabilities test "M7b finding": ~1000-1170/s). */
+const PIPE_CAPACITY = 1000
 
 // --------------------------------------------------------------------------------------------------------------
 // Status classes
@@ -400,6 +414,48 @@ function portBelt(surface: LuaSurface, layout: LayoutState, module: string | und
   return beltAt(surface, t.x, t.y)
 }
 
+function isPipePort(layout: LayoutState, module: string | undefined, port: string | undefined): boolean {
+  if (module === undefined || port === undefined) return false
+  const m = findModule(layout, module)
+  const p = m !== undefined ? findPort(m, port) : undefined
+  return p !== undefined && (p.kind === "pipe-in" || p.kind === "pipe-out")
+}
+
+/** A fluid entity (pipe, pump, tank) at a pipe port's tile or the tile outside it. */
+function portPipe(surface: LuaSurface, layout: LayoutState, module: string | undefined, port: string | undefined): LuaEntity | undefined {
+  if (module === undefined || port === undefined) return undefined
+  const m = findModule(layout, module)
+  const p = m !== undefined ? findPort(m, port) : undefined
+  if (m === undefined || p === undefined) return undefined
+  for (const t of [portTile(m, p), portOutside(m, p)]) {
+    const e = findEntities(surface, { position: { x: t.x + 0.5, y: t.y + 0.5 }, type: FLUID_TYPES, limit: 1 })[0]
+    if (e !== undefined) return e
+  }
+  return undefined
+}
+
+/** How full a fluid entity is with `fluid` (0..1; 0 without a fluid box). */
+function pipeFill(e: LuaEntity, fluid: string): number {
+  const fb = e.fluidbox
+  if (fb.length < 1) return 0
+  const cap = fb.get_capacity(1)
+  if (cap <= 0) return 0
+  return math.min(1, (e.get_fluid_contents()[fluid] ?? 0) / cap)
+}
+
+/** M7c.8: a fluid edge's rate: what its consumer used of the fluid, its planned share of the consumer's feeds. */
+function fluidUsed(graph: LogicalGraph, edge: LogicalEdge): number {
+  const c = graph.nodes[edge.to]
+  const used = rateIn(c?.measured?.inputs ?? [], edge.item)
+  if (used <= 0) return 0
+  let planned = 0
+  for (const id of graph.edgeOrder) {
+    const o = graph.edges[id]
+    if (o !== undefined && o.kind === "belt" && o.to === edge.to && o.item === edge.item) planned += o.plannedRate
+  }
+  return planned > 0 ? (used * edge.plannedRate) / planned : used
+}
+
 function probeable(graph: LogicalGraph, e: LogicalEdge | undefined): boolean {
   if (e === undefined || e.kind !== "belt" || e.from === undefined || e.toPort === undefined) return false
   return graph.nodes[e.from]?.lifecycle === "built" && graph.nodes[e.to]?.lifecycle === "built"
@@ -425,6 +481,27 @@ export function startProbe(meter: MeterState, graph: LogicalGraph, layout: Layou
     if (probeable(graph, e)) edge = e
   }
   if (edge === undefined) return
+  if (isPipePort(layout, edge.to, edge.toPort)) {
+    const pipe = portPipe(surface, layout, edge.to, edge.toPort)
+    meter.probe = {
+      edge: edge.id,
+      to: pipe ?? (undefined as unknown as LuaEntity),
+      from: portPipe(surface, layout, edge.from, edge.fromPort),
+      every: PIPE_PROBE_EVERY,
+      next: tick,
+      last: tick,
+      end: tick + length,
+      initial: {},
+      seen: {},
+      arrivals: 0,
+      samples: 0,
+      fullFrom: 0,
+      fullTo: 0,
+      capacity: PIPE_CAPACITY,
+      fluid: edge.item,
+    }
+    return
+  }
   const to = portBelt(surface, layout, edge.to, edge.toPort)
   if (to === undefined) {
     // No belt at the consumer's port: nothing arrives.
@@ -461,6 +538,10 @@ export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number):
   const p = meter.probe
   if (p === undefined || tick < p.next) return
   const edge = graph.edges[p.edge]
+  if (p.fluid !== undefined) {
+    fluidProbeTick(meter, p, edge, graph, tick)
+    return
+  }
   if (edge === undefined || !p.to.valid) {
     meter.probe = undefined
     return
@@ -484,6 +565,27 @@ export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number):
   if (tick < p.end) return
   const span = p.last - p.first
   edge.measuredRate = span > 0 ? (p.arrivals * 60) / span : 0
+  edge.measuredTick = tick
+  edge.measuredFull = { from: p.fullFrom / p.samples, to: p.fullTo / p.samples }
+  edge.capacityRate = p.capacity
+  meter.probe = undefined
+  meter.probes++
+}
+
+function fluidProbeTick(meter: MeterState, p: EdgeProbe, edge: LogicalEdge | undefined, graph: LogicalGraph, tick: number): void {
+  if (edge === undefined) {
+    meter.probe = undefined
+    return
+  }
+  p.next = tick + p.every
+  if (p.first === undefined) p.first = tick
+  p.last = tick
+  p.samples++
+  // A port with no fluid entity reads empty (nothing built there, or the machine's own box: no pipe to sample).
+  if (p.to !== undefined && p.to.valid && pipeFill(p.to, p.fluid!) >= PIPE_FULL_SHARE) p.fullTo++
+  if (p.from !== undefined && p.from.valid && pipeFill(p.from, p.fluid!) >= PIPE_FULL_SHARE) p.fullFrom++
+  if (tick < p.end) return
+  edge.measuredRate = fluidUsed(graph, edge)
   edge.measuredTick = tick
   edge.measuredFull = { from: p.fullFrom / p.samples, to: p.fullTo / p.samples }
   edge.capacityRate = p.capacity

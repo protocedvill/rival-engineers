@@ -639,8 +639,18 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     chemical science pack at tick 2,685,600 (~min 746; 540 advanced circuits, 1,774 plastic, 458 sulfur by then). The
     earlier minute-360 resume (`tap-360` lineage, kept running as `sustain-510`) had made 868 packs by tick 2,476,800
     (~5/game-min over two game-hours). Both still short of stage 3's 10/min.
-  - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
-    reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
+  - *Fluid edges read 0/s*: measurement had no probe for pipes, so a fluid edge was "no belt at the port: 0/s" whatever
+    flowed (the reconciler's crude repairs said "nothing missing" while the pumps were unpowered). Fluids have no ids
+    and the API no flow counter: a probe of an edge into a pipe port now samples how full the pipes at both ports are
+    (`fullFrom`/`fullTo`, the share of samples at least `PIPE_FULL_SHARE` full) and takes as the edge's rate what the
+    consumer used of the fluid in its measurement window, split over its feeds of that fluid by planned rate
+    (`measure.ts` `fluidProbeTick`). From the minute-510 save the two crude edges read 5.0/s and 1.67/s (planned 1.88
+    and 0.47). New debug remote `edge_debug(name, filter?)`: the live graph's edges with their measurements.
+  - Open: from minute 510 the reconciler keeps repairing the coal edge from the `power~4` coal mine to the plastic
+    chain (13 repair goals, several re-placing 250-520 route entities, five "nothing missing"): that route's splitter
+    tap stands over an old belt ("picks up stale belts under"), and after the repairs the probe still sees no coal
+    arrive. The plastic plants are fed by the chain's other coal edge (same port), so packs are not held up. Not
+    diagnosed yet.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
@@ -674,4 +684,7 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Fluid segment margin | `planner/plan.ts` `PIPE_EXTENT_MARGIN` | 8 tiles under `default_pipeline_extent` | Agent guess (M7c.8): a 320-tile pump-to-pump segment carried nothing on seed 11; 16 left the sulfur tap unroutable in two replays. | no |
 | Pocket search size | `jobs/crew.ts` `POCKET_MAX_TILES` | 900 tiles | Agent guess (M7c.8): a 30 × 30 enclosure; a larger walkable area is not treated as a pocket. | no |
 | Escape ghost delay | `jobs/crew.ts` `UNBOX_GHOST_DELAY` | 1800 ticks (30 s) | Agent guess (M7c.8): time to walk out of a pocket before the picked-up entity's ghost (and its place job) appears. | no |
+| Fluid probe full share | `strategy/measure.ts` `PIPE_FULL_SHARE` | 0.9 | Agent guess (M7c.8): a pipe this full counts as backed up for the edge verdicts (the belt probe's 7 of 8 items). | no |
+| Fluid probe sample spacing | `strategy/measure.ts` `PIPE_PROBE_EVERY` | 30 ticks | Agent guess (M7c.8): pipe fill changes slowly; nothing has to be seen crossing. | no |
+| Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |
