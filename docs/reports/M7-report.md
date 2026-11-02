@@ -554,6 +554,17 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   and finding it taken: only belt ports reserved their outside and approach tiles when a module was placed, so belt
   routes and poles took a pipe port's entry. Pipe ports now reserve them too (`layout.ts` `isLanePort`). The lane
   sealing checks (B45/B57 `openPortEnds`, `openLanes`, growth port checks) are still belt-only.
+- **Fluid chains fed from a remote field were placed deep inside the base** (agent design, proposed): with the
+  ports fixed, the next resume failed only on the ~900-tile crude line, stalling 60–100 tiles short at the west edge
+  of the base's built block every attempt (replay `m7-seed11-crude`, goal g62). Placement searched radius 48 around the
+  cluster centre in the middle of the base, where the only room was on the far (east) side, and weighed a pipe tile
+  like a belt tile, so moving toward the source saved its crude port what it cost its belt ports. Now a pipe port's
+  distance to its connection counts `pipePort` times a belt port's, and a module with a pipe port fed from beyond the
+  largest search radius scans every radius before choosing (`placement.ts` `remotePipe`). The replay plans: 1.08M
+  work units, no rip-ups, 2,285 route tiles.
+- Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
+  the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
+  the branch history.)
 - Harness: the probes' on-tick handler was replaced by the speed-up script's `on_event(on_tick)`; it now uses
   `on_nth_tick(60)`. New remotes `milestones()` and `design_debug(name, filter?)`.
 
@@ -580,4 +591,5 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Whole-patch preparation work scale | `planner/whole-patch.ts` `CLAIM_TILE_WORK` / `LANE_STATES_PER_UNIT` | 3 units a claimed tile / 2 flood states a unit | Measured the same way: materialising and checking ~17 µs a claimed tile, a lane flood ~2.4 µs a state. | no |
 | Mine tap life | `strategy/fuel.ts` `MINE_TAP_LIFE_LEADS` | 2 mine leads (`factory-mine-lead-minutes`; power mines `factory-power-fuel-minutes`) | Agent guess (fix a, user-approved 2026-11-01): a new consumer needs the mine to outlive the time to build its replacement, with one lead of margin. | no (the lead is a setting) |
 | Measured-draw cache step | `strategy/stage.ts` `DRAW_KEY_STEPS` | 4 steps per item/s | Agent guess: the design is recomputed when an edge's overdraw moves by 0.25/s, not on every sample. | no |
+| Pipe port distance weight | `planner/policy.ts` `PlacementWeights.pipePort` | 4 (× the belt `port` weight) | Agent guess (M7c.8): a fluid line cannot rip or side-load through a built block and its undergrounds cannot pass under modules; 4 was enough with the widened search on seed 11 (20 alone did not move the chain: the window, not the weight, was the limit). | no (policy weight) |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

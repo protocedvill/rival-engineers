@@ -630,6 +630,19 @@ export function exportGraph(entry: PlannerEntry, file: string): boolean {
   return true
 }
 
+/** `<count><char>` runs of a row of single-character cells (the cell characters are never digits). */
+function runLength(cells: string[]): string {
+  const out: string[] = []
+  let i = 0
+  while (i < cells.length) {
+    let j = i + 1
+    while (j < cells.length && cells[j] === cells[i]) j++
+    out.push(`${j - i}${cells[i]}`)
+    i = j
+  }
+  return out.join("")
+}
+
 /**
  * Writes what a plan job starts from (request, base layout, belt tiers, policy, and the terrain the plan sees over the
  * request's region as character rows) to script-output/<file> as a Lua chunk, so a failed in-game plan can be replayed
@@ -655,8 +668,8 @@ export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400
       const ore = view.ore(x, y)
       o.push(ore === undefined ? "." : (oreChars[ore] ?? "o"))
     }
-    blocks.push(b.join(""))
-    ores.push(o.join(""))
+    blocks.push(runLength(b))
+    ores.push(runLength(o))
   }
   let all = tiers()
   if (entry.maxUnderground !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, entry.maxUnderground!) }))
@@ -669,6 +682,8 @@ export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400
     base: entry.baseFaction !== undefined ? storage.factories?.[entry.baseFaction]?.layout : undefined,
     policy: entryPolicy(entry),
     origin: { x: r.x, y: r.y },
+    // M7c.8: rows are run-length encoded (`<count><char>`): a remote oil field's plan spans ~2,500 tiles a side.
+    rle: true,
     blocks,
     ores,
   }

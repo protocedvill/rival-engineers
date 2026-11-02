@@ -88,6 +88,8 @@ export interface PlacementWeights {
   center: number
   /** Per tile from a belt port to where its connection comes from. */
   port: number
+  /** M7c.8: a pipe port's distance to its connection counts this many times a belt port's (default 1). */
+  pipePort?: number
   /** A port facing away from its connection. */
   facing: number
   /** Per clear-cost unit of trees and rocks in the footprint. */
@@ -293,7 +295,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorCells: 1,
     corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
+  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 

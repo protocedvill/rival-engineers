@@ -61,8 +61,8 @@ export interface SitePatch {
 interface TDef {
   t: Transform
   def: ModuleDef
-  /** Belt and pipe ports: local outside tile, outward normal, port id. */
-  ports: { id: string; ox: number; oy: number; nx: number; ny: number }[]
+  /** Belt and pipe ports: local outside tile, outward normal, port id, whether it is a pipe port. */
+  ports: { id: string; ox: number; oy: number; nx: number; ny: number; pipe: boolean }[]
 }
 
 export interface PlacementSearch {
@@ -162,7 +162,7 @@ function tdefOf(def: ModuleDef, t: Transform): TDef {
     const dx = DX[math.floor(p.dir / 4)]
     const dy = DY[math.floor(p.dir / 4)]
     const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
-    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy })
+    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy, pipe: p.kind === "pipe-in" || p.kind === "pipe-out" })
   }
   return { t, def: d, ports }
 }
@@ -691,6 +691,22 @@ function sealGate(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, 
   return false
 }
 
+/** M7c.8: whether a pipe port's connection comes from farther than the largest search radius from the target. */
+function remotePipe(s: PlacementSearch, policy: LayoutPolicy): boolean {
+  const rs = radii(s, policy)
+  const far = rs[rs.length - 1] ?? 0
+  const t = s.target
+  if (t === undefined) return false
+  for (const td of s.tdefs) {
+    for (const p of td.ports) {
+      const src = p.pipe ? s.req.targets[p.id] : undefined
+      if (src !== undefined && math.abs(src.x - t.x) + math.abs(src.y - t.y) > far) return true
+    }
+    return false
+  }
+  return false
+}
+
 function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
   const R = radii(s, policy)[s.radiusIdx]
   // B26: an expandable module's own scored growth band (and its corridor ring) must fit in the window.
@@ -965,7 +981,9 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]
     if (t === undefined) continue
-    portDist += math.abs(t.x - x) + math.abs(t.y - y)
+    // M7c.8: a pipe tile costs `pipePort` belt tiles: a fluid line cannot rip or side-load its way through a built
+    // block, and its undergrounds cannot pass under modules (seed 11: a plastic chain 100 tiles inside the base).
+    portDist += (math.abs(t.x - x) + math.abs(t.y - y)) * (p.pipe ? policy.placement.pipePort ?? 1 : 1)
     if (p.nx * (t.x - x) + p.ny * (t.y - y) < 0) facingAway++
   }
   // B45: nor wall in another module's unconnected port lane (its margin ring reads as own ground to later plans).
@@ -1156,7 +1174,12 @@ function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, p
     s.ci = 0
     return
   }
-  if (s.best !== undefined) {
+  if (s.best !== undefined && s.radiusIdx + 1 < radii(s, policy).length && remotePipe(s, policy)) {
+    // M7c.8: a pipe port fed from beyond every search radius (a remote oil field) looks at every radius: the nearest
+    // room is often deep in a built block, and `pipePort` prefers the base edge facing the source.
+    s.radiusIdx++
+    startWindow(s, state, policy)
+  } else if (s.best !== undefined) {
     const td = s.tdefs[s.best.ti]
     s.result = {
       id: moduleId(s.req.id),

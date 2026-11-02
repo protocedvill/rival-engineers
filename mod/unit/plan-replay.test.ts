@@ -28,6 +28,14 @@ interface PlanInput {
   origin: { x: number; y: number }
   blocks: string[]
   ores: string[]
+  /** Rows are `<count><char>` runs. */
+  rle?: boolean
+}
+
+function unRunLength(row: string): string {
+  const out: string[] = []
+  for (const [n, c] of string.gmatch(row, "(%d+)(%D)")) out.push(string.rep(c, tonumber(n)!))
+  return out.join("")
 }
 
 const BLOCKS: Record<string, number> = { ".": 0, T: 1, R: 2, "#": 3, X: 4, "~": 5, C: 6, "?": 7 }
@@ -60,6 +68,11 @@ function load(name: string, captured = false): PlanInput {
   const chunk = loadfile(`${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
   if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
   const fx = chunk() as PlanInput
+  // M7c.8 captures run-length encode their rows (runtime.ts exportPlanInput).
+  if (fx.rle === true) {
+    fx.blocks = fx.blocks.map((row) => unRunLength(row))
+    fx.ores = fx.ores.map((row) => unRunLength(row))
+  }
   // A capture freezes the policy of its day; replays judge the planner as it is now (user, 2026-10-20). Every weight
   // comes from the current defaults; only the choices the game made for that plan (topology, smelting, utilization)
   // stay as captured. A test that pins a past decision pins its weights itself, saying why (compareReplay: B26, D59).
@@ -153,6 +166,9 @@ replay("m7-seed11-blue-wide", { expect: "failed", failureIncludes: "chemical-sci
 // M7c.8 (seed 11, minute ~380 from the minute-360 save, goal g61): the sulfur module's water and crude lines (the oil
 // field ~900 tiles west of the hub) failed "no pipe path (budget exhausted, 200000 expansions)" on every attempt.
 replay("m7-seed11-sulfur")
+// M7c.8: the same chain after the pipe-port fixes (resume from minute 360, goal g62 attempt 2): the plastic chain sat
+// ~100 tiles inside the base's built block, and the ~900-tile crude line from the oil field stalled at its west edge.
+replay("m7-seed11-crude")
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
