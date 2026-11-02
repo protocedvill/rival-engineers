@@ -605,7 +605,10 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     to the pump); the field's own collector pipes made it longer. A search now starts its first segment with the
     source module's pipe tiles counted and must reach the consumer with room for its pipes (`PipeParams.startRun`,
     `goalRun`; `plan.ts` `moduleFluidRun`: every pipe tile of the module, pipe-to-ground spans included, an upper
-    bound). T1 `pipe-router` pins it.
+    bound). T1 `pipe-router` pins it. The next resume pumped crude past the first pump (pumpjacks working, the pump
+    at 400), then stopped again at a pump-to-pump segment the router had made exactly 320 tiles: the engine counts a
+    little more than the router's path. The router now keeps `PIPE_EXTENT_MARGIN` (8) tiles under the extent; 16 made
+    the sulfur chain's tap unroutable in two replays.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
@@ -638,4 +641,5 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Mine tap life | `strategy/fuel.ts` `MINE_TAP_LIFE_LEADS` | 2 mine leads (`factory-mine-lead-minutes`; power mines `factory-power-fuel-minutes`) | Agent guess (fix a, user-approved 2026-11-01): a new consumer needs the mine to outlive the time to build its replacement, with one lead of margin. | no (the lead is a setting) |
 | Measured-draw cache step | `strategy/stage.ts` `DRAW_KEY_STEPS` | 4 steps per item/s | Agent guess: the design is recomputed when an edge's overdraw moves by 0.25/s, not on every sample. | no |
 | Pipe port distance weight | `planner/policy.ts` `PlacementWeights.pipePort` | 4 (× the belt `port` weight) | Agent guess (M7c.8): a fluid line cannot rip or side-load through a built block and its undergrounds cannot pass under modules; 4 was enough with the widened search on seed 11 (20 alone did not move the chain: the window, not the weight, was the limit). | no (policy weight) |
+| Fluid segment margin | `planner/plan.ts` `PIPE_EXTENT_MARGIN` | 8 tiles under `default_pipeline_extent` | Agent guess (M7c.8): a 320-tile pump-to-pump segment carried nothing on seed 11; 16 left the sulfur tap unroutable in two replays. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

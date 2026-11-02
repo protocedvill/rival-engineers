@@ -596,7 +596,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     starts: starts.length > 0 ? starts : undefined,
     goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
     maxUnderground: f.maxUnderground,
-    extent: f.extent,
+    extent: f.extent - PIPE_EXTENT_MARGIN,
     startRun: starts.length > 0 ? 0 : moduleFluidRun(fm),
     goalRun: moduleFluidRun(tm),
     minCost: minTileCost(policy),
@@ -696,6 +696,13 @@ function pumpPoleSpot(layout: LayoutState, terrain: TerrainView, policy: LayoutP
   }
   return undefined
 }
+
+/**
+ * M7c.8: tiles kept free of each fluid segment's extent. Seed 11: a segment the router made 320 tiles long (pump to
+ * pump) carried nothing; the engine counts a little more than the router's path (the pumps' own tiles at least). 8: an
+ * agent guess, at most one extra pump on a long line.
+ */
+const PIPE_EXTENT_MARGIN = 8
 
 /** Expansions one fluid route may take (agent guess; a 600-tile line needs a few thousand). */
 const PIPE_BUDGET = 200000
