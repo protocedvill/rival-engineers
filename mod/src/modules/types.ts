@@ -105,6 +105,8 @@ export interface MachineCount {
  */
 export interface SiteAnchor {
   water?: Rect[]
+  /** M7c.8: footprint tiles that hold no entity and may be water, so a shore module fits a curved coast. */
+  wet?: Rect[]
   miningAreas?: Rect[]
   resource?: string
 }

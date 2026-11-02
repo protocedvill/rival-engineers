@@ -875,13 +875,29 @@ export function placementFailureCertificate(s: PlacementSearch): Record<string, 
   return s.rejections ?? {}
 }
 
+/**
+ * M7c.8 (seed 11): whether a shore module's only hard tiles are water on its `anchor.wet` tiles (entity-free tiles
+ * that may stand in water). The lake's straight shore was used up and the rest curves, so a sixth steam block found
+ * no rectangle of land beside a 2x3 strip of water; its pump column may now hang over the water.
+ */
+function wetOnly(s: PlacementSearch, def: ModuleDef, rect: Rect, hard: number | undefined): boolean {
+  const wet = def.anchor?.wet
+  if (wet === undefined || hard === undefined) return false
+  const water = sum(s, "water", rect)
+  if (water !== hard) return false
+  let n = 0
+  for (const w of wet) n += sum(s, "water", { x: rect.x + w.x, y: rect.y + w.y, w: w.w, h: w.h }) ?? 0
+  return n === water
+}
+
 function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number, state: LayoutState): { score: number; coverage: number; clear: number } | undefined {
   const def = td.def
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
   if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) {
     return reject(s, "region", ox, oy)
   }
-  if (sum(s, "hard", rect) !== 0) {
+  const hard = sum(s, "hard", rect)
+  if (hard !== 0 && !wetOnly(s, def, rect, hard)) {
     return reject(s, "hard", ox, oy)
   }
   for (const a of s.req.avoid ?? []) {

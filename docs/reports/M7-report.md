@@ -697,6 +697,16 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       edge is not a stopped one-lane belt; chem packs still rose 14 to 100 in the window. It newly flags the
       "labs~3" ore edge (n41 iron ore piled up, 0/s to the smelter n42): one repair re-placed an entity, a second
       found nothing missing. The coal edges did not come up in this window in either run. Open.
+    - *A sixth steam block finds no shore.* The fresh lineage ended (min ~770-805) with power goals g114 and g115
+      failing every attempt ("no feasible position", region radius 112 to 378). Replay `m7c-11-power6-nofit`: the
+      search stays 96 tiles around its target whatever the region (the only lake in the 504-tile view is within it);
+      of ~53k candidates whose 2x3 water strip fits, 33.6k are blocked only by water inside the 10x14 rectangle (the
+      straight shore is taken, the rest of the coast curves) and the others by modules, routes or built entities.
+      Changed: a shore module may list `anchor.wet`, entity-free footprint tiles that may stand in water; the steam
+      block lists its pump column (every tile but the pump's). The replay then places it at 434,41 on the curved east
+      shore (1 feasible of 24k at radius 24). A wider search (192, like outposts) found nothing more for 4x the work,
+      so it was not kept. The plan then fails on its coal: the design taps `coal>power~3` (n28, ~130 tiles north),
+      and the router's flood from its tap points is sealed after 13 tiles. Open.
     - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
       short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
       (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter

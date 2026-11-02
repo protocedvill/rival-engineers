@@ -168,6 +168,7 @@ export function transformModule(def: ModuleDef, t: Transform): ModuleDef {
     out.anchor = {
       ...def.anchor,
       water: def.anchor.water?.map((r) => transformRect(r, w, h, t)),
+      wet: def.anchor.wet?.map((r) => transformRect(r, w, h, t)),
       miningAreas: def.anchor.miningAreas?.map((r) => transformRect(r, w, h, t)),
     }
   }

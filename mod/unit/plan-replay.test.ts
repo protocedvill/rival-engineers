@@ -739,6 +739,23 @@ test("B58: a splitter tap never sits on the span of the route it taps", () => {
 // each fresh provider must be placed where its one assigned consumer can actually be reached.
 replay("m6-b60-provider-single-route", { newSites: ["n51", "n52"], expect: "failed", failureIncludes: "no free coal patch in the region" })
 
+// M7c.8 (pocket5-360, seed 11 min ~770 g114): a sixth steam block found no feasible position at any region radius: the
+// lake's straight shore was taken and the rest curves. The capture predates `anchor.wet` (the pump column may stand in
+// water), so the test adds it as the generator now does.
+test("M7c.8: a steam block fits the curved shore of a used lake", () => {
+  const fx = load("m7c-11-power6-nofit")
+  for (const m of fx.request.modules) if (m.def.generator === "steam-block" && m.def.anchor !== undefined) m.def.anchor.wet = [{ x: 0, y: 0, w: 1, h: 11 }, { x: 0, y: 12, w: 1, h: 2 }]
+  const job = newPlanJob(fx.request, tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0], fx.base, fx.tiers)
+  startTrace()
+  runJob(job, fixtureView(fx), F, fx.policy, 2000000)
+  const failures: string[] = []
+  for (const [k, v] of pairs(job.failures)) failures.push(`${k as string}: ${v}`)
+  const m = findModule(job.layout, "n334")
+  print(`  n334 at ${m?.rect.x},${m?.rect.y} ${m?.rect.w}x${m?.rect.h}; ${job.phase} ${failures.join("; ")}`)
+  finishReplay("m7c-11-power6-wet", job, true)
+  ok(m !== undefined && m.rect.w > 0, `steam block placed (${job.phase}: ${failures.join("; ")})`)
+})
+
 
 
 // B106 (sweep 3c2c18f seed 5387208): cluster 3's new copper mine was placed in a pocket of trees and the faction's own

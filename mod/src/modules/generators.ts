@@ -371,7 +371,8 @@ export function steamBlock(facts: ProtoFacts, p: SteamParams): ModuleDef {
     mirrorable: true,
     site: "shore",
     // The pump faces west: it needs water on the 2×3 tiles west of it (checked in-game by the validation lab).
-    anchor: { water: [{ x: -2, y: 10, w: 2, h: 3 }] },
+    // M7c.8 (seed 11): the pump's column holds nothing else, so it may stand in water where the coast curves.
+    anchor: { water: [{ x: -2, y: 10, w: 2, h: 3 }], wet: [{ x: 0, y: 0, w: 1, h: 11 }, { x: 0, y: 12, w: 1, h: 2 }] },
     params: { boilers: B, fuel, inserter: L.inserter },
     expand: {
       unit: { footprint: { w: 4, h: H }, entities: sliceUnit(L.entities, "x", 1, 5) },
