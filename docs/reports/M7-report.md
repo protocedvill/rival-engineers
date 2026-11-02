@@ -620,6 +620,16 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     plastic bars and 1,038 sulfur, researching the blue throughput test. Pack output in that window ~3/game-min;
     plastic and sulfur back up (`full_output`) behind it. Saves: `out/saves/manual/tap-360-min-0510.zip`.
     Not run yet: a fresh seed 11 run on this build, the other M7 seeds, the M7e acceptance soaks.
+  - **A fresh seed 11 run stopped at minute 366** (goal g42: belt ghosts unplaced for 20 rounds, "pathfinder found no
+    path"): crew member 1 had been walled into a ~80-tile pocket since early on (the lake on three sides, the steam
+    block's offshore pump and engines on the fourth; 717 escape retries), and every job it claimed failed. The B22
+    escape only looked 3 tiles around the member, and its type list named "steam-engine" (the entity's name; its type
+    is "generator") and had no offshore pump. Now a member with nothing in reach floods the tiles it can stand on (the
+    engine's character check, up to `POCKET_MAX_TILES`); a closed pocket's own entity on its edge is picked up from a
+    pocket tile beside it (small types first, then one that opens outward, then the nearest; engines before the
+    offshore pump), and the pick-up's ghost waits `UNBOX_GHOST_DELAY` before it goes in: placed at once, the member
+    took its place job from inside and walled itself in again. From the minute-360 save the member got out after
+    two pick-ups and g42 was built (302 placements).
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
@@ -653,4 +663,6 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Measured-draw cache step | `strategy/stage.ts` `DRAW_KEY_STEPS` | 4 steps per item/s | Agent guess: the design is recomputed when an edge's overdraw moves by 0.25/s, not on every sample. | no |
 | Pipe port distance weight | `planner/policy.ts` `PlacementWeights.pipePort` | 4 (× the belt `port` weight) | Agent guess (M7c.8): a fluid line cannot rip or side-load through a built block and its undergrounds cannot pass under modules; 4 was enough with the widened search on seed 11 (20 alone did not move the chain: the window, not the weight, was the limit). | no (policy weight) |
 | Fluid segment margin | `planner/plan.ts` `PIPE_EXTENT_MARGIN` | 8 tiles under `default_pipeline_extent` | Agent guess (M7c.8): a 320-tile pump-to-pump segment carried nothing on seed 11; 16 left the sulfur tap unroutable in two replays. | no |
+| Pocket search size | `jobs/crew.ts` `POCKET_MAX_TILES` | 900 tiles | Agent guess (M7c.8): a 30 × 30 enclosure; a larger walkable area is not treated as a pocket. | no |
+| Escape ghost delay | `jobs/crew.ts` `UNBOX_GHOST_DELAY` | 1800 ticks (30 s) | Agent guess (M7c.8): time to walk out of a pocket before the picked-up entity's ghost (and its place job) appears. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

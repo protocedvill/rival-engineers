@@ -1,4 +1,4 @@
-import { BoundingBoxArray, LuaEntity, LuaInventory } from "factorio:runtime"
+import { BoundingBoxArray, LuaEntity, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
 import { cancel, cancelAll, enqueue, getAction } from "../character/controller"
 import { ActionRecord, ActionStatus } from "../character/types"
 import { Config, getConfig } from "../config"
@@ -38,6 +38,7 @@ declare global {
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { badSpotRects, recordBadSpot } from "./bad-spots"
 import { countEntities, countWork, findEntities } from "../work"
+import { tkey } from "../planner/grid"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
@@ -378,7 +379,10 @@ const UNBOX_TREES_PER_ESCAPE = 16
 /** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
 const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
 /** B22: own structures big enough to trap a member (walls, machines); picked up like the small ones, last. */
-const UNBOX_BIG_TYPES = ["wall", "furnace", "boiler", "lab", "mining-drill", "burner-generator", "steam-engine", "assembling-machine", "storage-tank", "radar"]
+// M7c.8: a steam engine's type is "generator" ("steam-engine" is its name); an offshore pump last (it feeds every boiler).
+const UNBOX_BIG_TYPES = ["wall", "furnace", "lab", "mining-drill", "burner-generator", "generator", "assembling-machine", "storage-tank", "radar", "boiler", "offshore-pump"]
+/** M7c.8: ticks before an escape pick-up's ghost goes in (agent guess: 30 s, enough to walk out of a pocket). */
+const UNBOX_GHOST_DELAY = 1800
 /** B22: after an escape attempt that found nothing the member could clear, wait this long before trying again. */
 const UNBOX_RETRY_TICKS = 600
 
@@ -425,6 +429,71 @@ function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
   return trees
 }
 
+/** M7c.8: most tiles the pocket search floods; a bigger open area is not a pocket (agent guess: a 30 × 30 enclosure). */
+const POCKET_MAX_TILES = 900
+const DX4 = [0, 1, 0, -1]
+const DY4 = [-1, 0, 1, 0]
+
+/** M7c.8: whether a character fits at tile (x, y)'s centre (the engine's own check: tiles, entities, cliffs). */
+function walkableTile(surface: LuaSurface, x: number, y: number): boolean {
+  countWork("entityScans")
+  return surface.can_place_entity({ name: "character", position: { x: x + 0.5, y: y + 0.5 } })
+}
+
+/**
+ * M7c.8: a member walled into a pocket (the tiles it can walk to, flooded up to `POCKET_MAX_TILES`): the own entity on
+ * the pocket's edge to pick up — small types first, then the one whose far side is outside the pocket, then the
+ * nearest — and the pocket tile beside it to stand on. Undefined when the flood is not closed (not a pocket) or no own
+ * entity borders it.
+ */
+function pocketEscape(faction: FactionState, member: CrewMember): { entity: LuaEntity; stand: MapPosition } | undefined {
+  const surface = factionSurface(faction)
+  const p = member.character.position
+  const sx = math.floor(p.x)
+  const sy = math.floor(p.y)
+  const seen: Record<number, boolean> = { [tkey(sx, sy)]: true }
+  const queue: [number, number][] = [[sx, sy]]
+  const edge: [number, number, number, number][] = []
+  for (let i = 0; i < queue.length; i++) {
+    if (queue.length > POCKET_MAX_TILES) {
+      log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${sx},${sy}: no pocket (more than ${POCKET_MAX_TILES} tiles to walk)`)
+      return undefined
+    }
+    const [x, y] = queue[i]
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX4[d]
+      const ny = y + DY4[d]
+      const k = tkey(nx, ny)
+      if (seen[k]) continue
+      if (walkableTile(surface, nx, ny)) {
+        seen[k] = true
+        queue.push([nx, ny])
+      } else edge.push([nx, ny, x, y])
+    }
+  }
+  let best: { entity: LuaEntity; stand: MapPosition; rank: number } | undefined
+  for (const [bx, by, fx, fy] of edge) {
+    for (const e of findEntities(surface, { force: faction.force, area: [[bx + 0.1, by + 0.1], [bx + 0.9, by + 0.9]] })) {
+      let slot = UNBOX_TYPES.indexOf(e.type)
+      if (slot < 0) slot = UNBOX_BIG_TYPES.indexOf(e.type) >= 0 ? UNBOX_TYPES.length + UNBOX_BIG_TYPES.indexOf(e.type) : -1
+      if (slot < 0) continue
+      const ox = bx + (bx - fx)
+      const oy = by + (by - fy)
+      const opens = !seen[tkey(ox, oy)] && walkableTile(surface, ox, oy)
+      const rank = slot * 1000 + (opens ? 0 : 500) + math.abs(fx - sx) + math.abs(fy - sy)
+      if (best === undefined || rank < best.rank) best = { entity: e, stand: { x: fx + 0.5, y: fy + 0.5 }, rank }
+    }
+  }
+  if (best === undefined) {
+    const types: Record<string, boolean> = {}
+    for (const [bx, by] of edge) for (const e of findEntities(surface, { area: [[bx + 0.1, by + 0.1], [bx + 0.9, by + 0.9]] })) types[`${e.type}/${e.force.name}`] = true
+    const names: string[] = []
+    for (const [t] of pairs(types)) names.push(t as string)
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${sx},${sy}: a pocket of ${queue.length} tiles, nothing of its own to pick up on its edge (${names.join(", ")})`)
+  }
+  return best === undefined ? undefined : { entity: best.entity, stand: best.stand }
+}
+
 /**
  * M6/B22: like a player walled in by their own build, a boxed-in member clears a way out — picks up an own entity
  * around it, or mines the trees and rocks it reaches — then walks on; its dropped jobs go back to the board, so it
@@ -433,8 +502,18 @@ function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
  */
 function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   if (!member.character.valid) return
-  const plan = escapePlan(faction, member)
+  let plan = escapePlan(faction, member)
   const p = member.character.position
+  // M7c.8 (fresh seed 11): walled into a pocket wider than its reach (water on three sides, the factory's own modules on
+  // the fourth, every blocker 5+ tiles away): it walks to the pocket's edge and picks up an own entity there.
+  let stand: MapPosition | undefined
+  if (plan.length === 0) {
+    const pocket = pocketEscape(faction, member)
+    if (pocket !== undefined) {
+      plan = [{ entity: pocket.entity, act: "pickUp", rank: 0 }]
+      stand = pocket.stand
+    }
+  }
   if (plan.length === 0) {
     if (tick < (member.unboxRetryAt ?? 0)) return
     member.unboxRetryAt = tick + UNBOX_RETRY_TICKS
@@ -443,6 +522,10 @@ function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   }
   resetMember(faction, member, tick)
   member.stats.unboxed = (member.stats.unboxed ?? 0) + 1
+  if (stand !== undefined) {
+    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: stand, radius: 0.4 }) })
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is walled into a pocket at ${math.floor(p.x)},${math.floor(p.y)}: walks to ${stand.x},${stand.y} at its edge`)
+  }
   if (plan.length > 1 || (plan.length === 1 && plan[0].act === "mine")) {
     for (const t of plan) {
       member.actions.push({ action: enqueue(member.controller, { kind: "mine", target: t.entity }) })
@@ -483,6 +566,12 @@ export function placeUnboxGhosts(tick: number): void {
     const faction = storage.factions[g.faction]
     if (faction === undefined) continue
     const surface = factionSurface(faction)
+    // M7c.8: not before the member had time to walk out through the gap: re-placed at once, the member that picked it up
+    // (still beside it) took the place job and walled itself in again (fresh seed 11, steam engines, four rounds).
+    if (tick - g.tick < UNBOX_GHOST_DELAY) {
+      keep.push(g)
+      continue
+    }
     const pos = g.params.position as { x: number; y: number }
     const still = findEntities(surface, { name: g.params.inner_name as string, position: pos, force: faction.force, limit: 1 })[0]
     if (still !== undefined) {
