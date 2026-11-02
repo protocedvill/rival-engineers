@@ -502,6 +502,43 @@ science (36.7 min in both), production built at 35.8 instead of 34.7 min, `logis
 thinks (8 before the fix). Tests on the final code (`3b33426`): T1 47/47, full T2 171/171, T4 determinism (seed 11)
 PASS. Not run: the M7 acceptance soaks.
 
+#### M7c.8: seed 11 to the blue line (debugging the chain after M7c.7)
+
+Seed 11 (m7.toml) planned the blue chain (goal g49) but never built it. Its blockers, in the order they showed up, and
+what was changed; runs resumed from saves in the new save library (`out/saves/manual/`, soak `--save-at`,
+`--resume-from`):
+
+- **The oil field's fixed spot read "terrain unknown"** (agent design, proposed): the pumpjack field's box reached past
+  the explored chunks. A field chosen from seen wells now marks the chunks under its footprint known (`explore.ts`
+  `knowRect`).
+- **The blue line's iron smelter was starved, so no steel and no pumpjacks.** Its replacement iron mine was shared with
+  consumers drawing more than planned (n27 0.5/s against 0.29 planned, n28 0.3 against 0.18), and the design kept
+  tapping a mine about to run dry. The user asked why the expected ore differed from reality and approved both fixes
+  in-session (2026-11-01):
+  - (a) a mine with less than `MINE_TAP_LIFE_LEADS` mine leads of ore left at nameplate output gets no new consumers
+    (`stage.ts` `oreRunsOut`; `fuel.ts` records `f.oreLeft` and logs the transition once);
+  - (b) a production goal that feeds an input of a module still being built, which no graph edge feeds yet, is not held
+    by the one-production-goal lock (`goal-holds.ts` `feedsBuilding`).
+- **Measured draw sizes shared providers** (user-approved in-session, 2026-11-01): spare capacity and shared-provider
+  demand use `max(planned, measured)` per edge (`logical.ts` `edgeDraw`, `design.ts` `expandShared`); measured
+  overdraws above a step of 1/`DRAW_KEY_STEPS` per second are part of the design cache key, as are the running-out mines.
+  Expected churn: draw-420 planned a run of parallel power goals (g59–g67) once real draws were counted.
+- **A stalled building goal held up the growth that would unblock it** (user-approved in-session, 2026-11-02): g49 placed
+  nothing for hours while the iron-mine growth waited for it (B52 reroute wait, B98 growth waits). A building goal that
+  has placed nothing for `stall-ticks` (existing setting; `FactoryGoal.progressTick` set at plan time and on each
+  placement) no longer blocks growths (`goal-holds.ts` `goalStalled`).
+  First version released the goal-kind ordering lock too. Resumed from minutes 540 and 300, that let the second blue
+  cluster (`labs#2`) plan a full copy of the stalled chain, whose oil module failed at the same fixed spot ("no room at
+  its fixed spot: occupied at -375,28") 8 times, and fail-fast stopped both runs. Reverted: the kind lock still holds;
+  feeders pass by (b), growths by the stall rule. From minute 540 the stall rule did let six goals through (power g69,
+  g72; production g70, g71, g74) before that failure.
+- Harness: the probes' on-tick handler was replaced by the speed-up script's `on_event(on_tick)`; it now uses
+  `on_nth_tick(60)`. New remotes `milestones()` and `design_debug(name, filter?)`.
+
+Open (not changed): a module buffer chest takes 200 plates before downstream modules get any; outposts N2/N3/S2/S3 fail
+with "no pole path"; crew time reached 0.86 ms/tick late in the 731-min run. Two oil modules on one fixed spot are
+possible in the design (the `labs#2` case above) once the lock is released for any reason.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |
@@ -519,4 +556,6 @@ PASS. Not run: the M7 acceptance soaks.
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |
 | Whole-patch search work scale | `planner/mine-plan.ts` `FILL_TILES_PER_UNIT` / `OPS_PER_UNIT` | 4 tiles / 16 operations a unit | Measured (T1 replays, Lua 5.4) so a unit costs about what a placement or route unit does (~5 µs): a tile read ~1.5 µs, a drill position or stamped tile ~0.3 µs. | no |
 | Whole-patch preparation work scale | `planner/whole-patch.ts` `CLAIM_TILE_WORK` / `LANE_STATES_PER_UNIT` | 3 units a claimed tile / 2 flood states a unit | Measured the same way: materialising and checking ~17 µs a claimed tile, a lane flood ~2.4 µs a state. | no |
+| Mine tap life | `strategy/fuel.ts` `MINE_TAP_LIFE_LEADS` | 2 mine leads (`factory-mine-lead-minutes`; power mines `factory-power-fuel-minutes`) | Agent guess (fix a, user-approved 2026-11-01): a new consumer needs the mine to outlive the time to build its replacement, with one lead of margin. | no (the lead is a setting) |
+| Measured-draw cache step | `strategy/stage.ts` `DRAW_KEY_STEPS` | 4 steps per item/s | Agent guess: the design is recomputed when an edge's overdraw moves by 0.25/s, not on every sample. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

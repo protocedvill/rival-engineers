@@ -594,11 +594,11 @@ export interface FactoryGoalSelectionSnapshot {
 function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
   const active: Partial<Record<GoalKind, boolean>> = {}
   const completed: Partial<Record<GoalKind, boolean>> = {}
-  // M7c: a stalled building goal (`goalStalled`) holds no ordering lock.
-  const now = game.tick
-  const stallTicks = getConfig().stallTicks
+  // M7c: a stalled building goal still holds its kind's lock here. Released, it let the next blue cluster plan a second
+  // copy of the stalled chain (seed 11, two oil modules on one field). Its feeders pass by `feedsBuilding`; the
+  // growth waits (B52/B98, `startGrow`) skip it.
   for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar"] as GoalKind[]) {
-    active[kind] = f.goals.some((g) => g.kind === kind && (g.status === "planning" || (g.status === "building" && !GH.goalStalled(now, stallTicks, g))))
+    active[kind] = f.goals.some((g) => g.kind === kind && (g.status === "planning" || g.status === "building"))
     completed[kind] = built(f, kind)
   }
   const activeGrowth = activeGoal(f, "grow")
