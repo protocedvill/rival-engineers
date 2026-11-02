@@ -736,6 +736,15 @@ data.extend([
     order: "m-a",
   },
   {
+    // D51: gear rows feed the crew's crafts; M7c.8 (user, 2026-11-02): engine units for pumps (not hand-craftable).
+    type: "string-setting",
+    name: Settings.moduleBufferRows,
+    setting_type: "runtime-global",
+    default_value: "iron-gear-wheel,engine-unit",
+    allow_blank: true,
+    order: "m-a-b",
+  },
+  {
     type: "int-setting",
     name: Settings.moduleBufferSlots,
     setting_type: "runtime-global",

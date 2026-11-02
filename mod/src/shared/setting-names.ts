@@ -86,6 +86,7 @@ export const Settings = {
   logisticsSplitterCompare: "rival-engineers-logistics-splitter-compare",
   moduleBuffer: "rival-engineers-module-buffer",
   moduleBufferSlots: "rival-engineers-module-buffer-slots",
+  moduleBufferRows: "rival-engineers-module-buffer-rows",
   bootstrapFactories: "rival-engineers-bootstrap-factories",
   bootstrapFactoryWaitSeconds: "rival-engineers-bootstrap-factory-wait-seconds",
   bootstrapTempCellFeedPriority: "rival-engineers-bootstrap-temp-cell-feed-priority",

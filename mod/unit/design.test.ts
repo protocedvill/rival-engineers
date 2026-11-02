@@ -101,6 +101,23 @@ test("D51: of the assembler rows only gear rows carry a buffer (M7c.8: a pack ro
   }
 })
 
+test("M7c.8 (user, 2026-11-02): rows of the listed products get a buffer depot: engine units for pumps", () => {
+  const blue = ctx({
+    buffer: "iron-chest",
+    bufferRows: ["iron-gear-wheel", "engine-unit"],
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  })
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const engine = d.nodes.find((n) => n.item === "engine-unit")!
+  eq(engine.params.buffer, "iron-chest", "the engine row has a buffer")
+  const pack = d.nodes.find((n) => n.item === "chemical-science-pack")!
+  eq(pack.params.buffer, "", "the pack row has none")
+})
+
 test("D54: once electric drills are researched the steam block's coal comes from an electric mine", () => {
   const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))

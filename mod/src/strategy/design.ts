@@ -70,6 +70,8 @@ export interface DesignContext {
   resources: string[]
   /** D42 / D51: the chest for module buffer depots (smelter columns, assembler rows, circuit blocks), "" or absent = none. */
   buffer?: string
+  /** D51 / M7c.8: the products whose assembler rows get that buffer (absent: gear rows only). */
+  bufferRows?: string[]
   /** Burner fuel (coal) and entity choices (config defaults, from prototypes). */
   fuel: string
   assembler: string
@@ -335,9 +337,10 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
   } else if (gen === "assembler-row") {
     const recipe = ctx.facts.recipeForItem(item)!
     const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? ctx.assembler
-    // D51: of the assembler rows only gear rows get a buffer. M7c.8 (seed 11): a chemical science pack row had one; its
-    // 2 slots hold 400 packs, so the starved row's every pack went into the chest and none reached the labs.
-    const buffer = item === "iron-gear-wheel" ? ctx.buffer ?? "" : ""
+    // D51: of the assembler rows only those of `bufferRows` get a buffer (gears; M7c.8, the user: engine units, which
+    // pumps need and only an assembler makes). M7c.8 (seed 11): a chemical science pack row had one; its 2 slots hold
+    // 400 packs, so the starved row's every pack went into the chest and none reached the labs.
+    const buffer = (ctx.bufferRows ?? ["iron-gear-wheel"]).indexOf(item) >= 0 ? ctx.buffer ?? "" : ""
     for (let n = 2; n <= 24; n += 2) out.push({ recipe, count: n, machine, buffer })
   } else if (gen === "fluid-chain") {
     // Fewest machines first: plants, then refineries for them.

@@ -807,8 +807,12 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       4 in each slot (`bootstrap.ts` `registerSupplies`, `factory-report.ts` `moduleAssemblers`, `supply.ts`). Resumed
       from minute 720: the crew claimed the crafts at once and g108 was built at tick 2601270 (minute ~722.5). T2
       `bootstrap-sources` "M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler
-      output, below the minimum take". **Proposed** (agent decision, not approved): taking from a production module
-      only for products with no other source; B36's broader `supply-module-furnaces` stays off.
+      output, below the minimum take". **Approved by the user in-session (2026-11-02), SPEC D80:** taking from a
+      production module only for products with no other source; B36's broader `supply-module-furnaces` stays off. The
+      user added an engine supply point: engine-unit rows now get a buffer depot like gear rows (`design.ts`, new
+      setting `module-buffer-rows`, default `iron-gear-wheel,engine-unit`; T1 `design` "M7c.8 (user, 2026-11-02): rows
+      of the listed products get a buffer depot"). Rows built before keep no buffer until replanned or grown; the
+      `module-out` source covers them.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

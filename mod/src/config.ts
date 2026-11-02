@@ -177,6 +177,8 @@ export interface Config {
   moduleBuffer: string
   /** D42 / B5: usable slots of a buffer chest (the rest are barred). */
   moduleBufferSlots: number
+  /** D51 / M7c.8: the products whose assembler rows get a buffer depot (comma-separated items). */
+  moduleBufferRows: string
   /** D38: temporary chest-fed assembler cells per product (item=count, empty = none). */
   bootstrapFactories: string
   /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */

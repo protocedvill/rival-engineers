@@ -406,6 +406,8 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
   resources.sort()
   const packs: string[] = []
   for (const [p] of string.gmatch(ctx.config.researchSciencePacks, "[^,%s]+")) packs.push(p)
+  const bufferRows: string[] = []
+  for (const [p] of string.gmatch(ctx.config.moduleBufferRows, "[^,%s]+")) bufferRows.push(p)
   const e = ctx.entities
   return {
     facts: prototypeFacts,
@@ -415,6 +417,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     plannable,
     resources,
     buffer: ctx.config.moduleBuffer,
+    bufferRows,
     fuel: brain.catalog.fuel,
     assembler: e.assembler ?? "assembling-machine-1",
     assemblers: [e.assembler ?? "assembling-machine-1", e["assembler-2"] ?? "assembling-machine-2"],
