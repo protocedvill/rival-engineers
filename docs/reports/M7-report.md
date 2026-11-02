@@ -678,9 +678,14 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       the second was never built, and the build check counted it as built (same name there). The search state is
       tile plus heading, so a path may come back to a tile on another heading; nothing rejects a tile already on the
       path. That starves the "labs" chain's sulfur plant, so its packs (x 403.5/406.5) get no sulfur, its circuits
-      (x 411.5) back up behind them, and plastic and the refineries back up further. Not fixed. The `conflicts.ts`
-      direction check (`141c68f`) would now report the second piece as misdirected, but picking up the first to place
-      the second breaks the route the other way: the route has to be replanned.
+      (x 411.5) back up behind them, and plastic and the refineries back up further. Fixed: a found path that takes
+      a tile twice (any step, a pump's both tiles) is skipped and the search goes on (`pipe-router.ts`
+      `crossesItself`); T1 `pipe-router` rebuilds the seed 11 shape (the old router returned `ug-out@4,4 ... ug-in@4,4`).
+      A first version also checked each expansion against its 32 nearest ancestors: 4x slower on the flooding search
+      of the pocket test (0.86 s to 4.3 s) and +15% on the seed 11 replays, so only the arrival check stayed (pocket
+      test back to base, replays 116 s against 120 s). A path whose cheapest state is a crossing one can still miss a
+      dearer non-crossing path to the same tile and heading; not seen in the tests. Layouts planned before keep their
+      crossing routes until replanned.
     - *A backed-up one-lane belt reads as broken.* An inserter loads one lane, and that lane stopped holds 4 items per
       tile, under the probe's full mark (`FULL_TILE_ITEMS` 7 of 8). A stopped line then reads 0/s and not full at both
       ends, and the reconciler asks for a repair that finds "nothing missing" (the "labs" circuits to packs edge three

@@ -72,6 +72,20 @@ test("pipe router: a straight line is mostly pipe-to-ground pairs", () => {
   ok(r.steps.length <= 12, `few entities (${r.steps.length})`)
 })
 
+test("pipe router: M7c.8 a route never comes back to a tile it already took", () => {
+  // Seed 11 minute 780: an underground arrives heading west at (4, 4); the port is three tiles north of it. The cheapest
+  // state path loops (3,4) -> (3,5) -> (4,5) and enters (4, 4) again heading north for an underground up, but the exit
+  // already stands there. The route has to take the longer loop through row 6 and go under from (4, 5).
+  const rows = ["##########", "####.#####", "##########", "##########", "###..##.##", "###..#####", "###..#####", "##########"]
+  const req = request(rows, { x: 7, y: 4, dir: 3 }, { x: 4, y: 1, dir: 0 }, { maxUnderground: 4, under: () => true })
+  const r = route(req)
+  const seen: Record<number, boolean> = {}
+  for (const st of r.steps) {
+    ok(seen[tkey(st.x, st.y)] !== true, `tile ${st.x},${st.y} used twice: ${r.steps.map((q) => `${q.kind}@${q.x},${q.y}`).join(" ")}`)
+    seen[tkey(st.x, st.y)] = true
+  }
+})
+
 test("pipe router: a plain pipe never stands next to another fluid", () => {
   // Another fluid's pipes run along row 1 from x = 5 to 50; this line passes right next to them along row 2 (only
   // underground ends may stand there), then turns down to its port on row 4.

@@ -544,11 +544,34 @@ function stepsTo(s: PipeSearch, i: number): PipeStep[] {
   return steps
 }
 
-function found(s: PipeSearch, i: number, last: PipeStep[], cost: number): void {
+/** Accepts the path to node `i` plus `last`, unless it crosses itself (then the search goes on). */
+function found(s: PipeSearch, i: number, last: PipeStep[], cost: number): boolean {
   const steps = stepsTo(s, i)
   for (const st of last) steps.push(st)
+  if (crossesItself(steps)) return false
   s.status = "found"
   s.result = { steps, cost, expansions: s.work }
+  return true
+}
+
+/**
+ * M7c.8: a found path is checked for a tile it takes twice (seed 11 minute 780: a water route came back to the tile of
+ * its own underground exit on another heading, and only one pipe-to-ground can stand there). The search state is
+ * (tile, heading), so nothing else stops a path from crossing itself; such an arrival is skipped and the search goes on.
+ * (Checking each expansion against its ancestors cost 4x on a flooding search.)
+ */
+/** Whether a path uses a tile twice (any step's tiles, a pump's both). */
+function crossesItself(steps: PipeStep[]): boolean {
+  const used: Record<number, boolean> = {}
+  for (const st of steps) {
+    const ks = [tkey(st.x, st.y)]
+    if (st.kind === "pump") ks.push(tkey(st.x + DX[st.dir], st.y + DY[st.dir]))
+    for (const k of ks) {
+      if (used[k]) return true
+      used[k] = true
+    }
+  }
+  return false
 }
 
 /** Expands node `i`. */
@@ -563,10 +586,10 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const back = tkey(x - DX[d0], y - DY[d0])
   const c = cachedCost(s, cb, x, y)
   if (c < 0) return
+  // This node's piece goes on its own tile: not on one the path already took.
   // Arrived: a plain pipe on the goal tile joins the port.
   if (x === goal.x && y === goal.y && run + 1 + (p.goalRun ?? 0) <= p.extent && pipeClear(cb, x, y, back, tkey(x + DX[goal.dir], y + DY[goal.dir]))) {
-    found(s, i, [{ kind: "pipe", x, y, dir: d0 }], g0 + c)
-    return
+    if (found(s, i, [{ kind: "pipe", x, y, dir: d0 }], g0 + c)) return
   }
   // A plain pipe here, turning any way but back.
   if (run + 1 <= p.extent) {
@@ -590,11 +613,13 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
     const g = g0 + c + ce + p.ugCost
     // The exit on the goal tile, facing into the port, arrives too.
     if (ex === goal.x && ey === goal.y && d0 === goal.dir && run + k + 1 + (p.goalRun ?? 0) <= p.extent) {
-      found(s, i, [
-        { kind: "ug-in", x, y, dir: d0 },
-        { kind: "ug-out", x: ex, y: ey, dir: d0 },
-      ], g)
-      return
+      if (
+        found(s, i, [
+          { kind: "ug-in", x, y, dir: d0 },
+          { kind: "ug-out", x: ex, y: ey, dir: d0 },
+        ], g)
+      )
+        return
     }
     visit(s, ex + DX[d0], ey + DY[d0], d0, g, run + k + 1, i, MV_UG)
   }
