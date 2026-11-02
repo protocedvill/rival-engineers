@@ -799,7 +799,16 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.
-    - *n32's coal line to the power plant never delivers* ("0/s reach n1"): its splitters cannot be placed. **Open.**
+    - *A rerouted tap left the trunk's belt under its new splitter.* The coal line n32 → power plant read "0/s reach
+      n1" for several repairs: reroutes g101 and g103 "cannot place splitter@574,-25.5" (and 418,-4.5), and only the
+      next repair (g104) found the trunk's belt there as stale, picked it up and placed the splitter; by minute 645 the
+      edge carried 1.6/s (probes `split-645`, `split2-645`). The splitters could always be placed: a reroute or growth
+      diffs only the routes it rips and lays, and a tap laid on a trunk it leaves alone replaces that trunk's belt
+      (`routeEntities`), so nothing picked the belt up and the ghost could not be created; a tap moved off a trunk left
+      a gap where its old splitter stood. `bystanderDiff` (`build-list.ts`) adds the untouched routes' changes to both
+      plans' diffs (`reroute.ts`, `grow.ts`). T1 `grow` "M7c.8: a tap rerouted onto a trunk that stays …" (on the old
+      code: "left standing: transport-belt@54.5,30.5"). The older "cannot place splitter@508.5,-100" lines (g56,
+      minute ~400) are the same case.
     - T2: a shard that creates more than ~60 factions ran out of forces ("Too many forces"). Near the limit
       (`STALE_FORCE_LIMIT`, 56) a new lab merges the forces of destroyed factions into neutral (`test/lab.ts`); only
       near it, because the engine frees a merged force at the end of the tick and the reconciler tests recreate

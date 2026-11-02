@@ -5,7 +5,7 @@
 
 import { ProtoFacts } from "../modules/facts"
 import type { RouteId } from "../shared/ids"
-import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
+import { BuildParts, bystanderDiff, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { isPoleTag } from "./claim-tags"
 import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
@@ -83,5 +83,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   const parts: BuildParts = { modules: [], routes, poles: [] }
   const after = partEntities(job.layout, parts)
   const d = entityDiff(before, after)
-  return { ok: true, layout: job.layout, remove: d.remove, add: d.add, routes }
+  const changed: Record<string, boolean> = {}
+  for (const [rid] of pairs(seen)) changed[rid as string] = true
+  for (const rid of routes) changed[rid] = true
+  const by = bystanderDiff(base, job.layout, changed)
+  return { ok: true, layout: job.layout, remove: [...d.remove, ...by.remove], add: [...d.add, ...by.add], routes }
 }

@@ -41,6 +41,19 @@ export function entityDiff(before: EntitySpec[], after: EntitySpec[]): { remove:
   return { remove: before.filter((e) => !has[diffKey(e)]), add: after.filter((e) => !had[diffKey(e)]) }
 }
 
+/**
+ * M7c.8: what changes on the routes a rebuild leaves alone (`changed` holds the route ids it rips and lays): a splitter
+ * tap laid on one of them replaces that route's belt there, and a tap moved off one gives its belt back. A reroute or
+ * growth that diffed only its own routes left the trunk's belt under the new splitter, so the splitter ghost could not
+ * be created (fixes-360 seed 11: g101 and g103 "cannot place splitter@574,-25.5", the power plant's coal cut until the
+ * next repair picked the belt up as stale), and left a gap where the old splitter stood.
+ */
+export function bystanderDiff(before: LayoutState, after: LayoutState, changed: Record<string, boolean>): { remove: EntitySpec[]; add: EntitySpec[] } {
+  const was = routeEntities(before).filter((e) => !changed[e.owner] && after.routes[e.owner as RouteId] !== undefined)
+  const now = routeEntities(after).filter((e) => !changed[e.owner] && before.routes[e.owner as RouteId] !== undefined)
+  return entityDiff(was, now)
+}
+
 export function moduleEntities(layout: LayoutState): EntitySpec[] {
   const out: EntitySpec[] = []
   for (const m of layout.modules) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
