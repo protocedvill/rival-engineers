@@ -1,5 +1,5 @@
 import { eq, run, test } from "./harness"
-import { FailedPlanFacts, learnFromFailure, strongestReplan } from "../src/strategy/failure-rules"
+import { FailedPlanFacts, learnFromFailure, retryCannotHelp, strongestReplan } from "../src/strategy/failure-rules"
 import { planFailure } from "../src/shared/plan-failure"
 
 // T1: D69 failure rule. What a failed plan teaches the design, from typed failures (was six detectors in
@@ -56,6 +56,13 @@ test("the strongest replan wins, in the order the factory always reported", () =
   eq(strongestReplan(["without taps", "without that merge"]), "without that merge")
   eq(strongestReplan(["without taps", "parallel providers"]), "parallel providers")
   eq(strongestReplan([]), undefined)
+})
+
+test("M7c.8: an outpost whose only failure is its pole line is not retried", () => {
+  eq(retryCannotHelp(true, [{ key: "power:n351" }]), true, "outpost, pole line only")
+  eq(retryCannotHelp(false, [{ key: "power:n351" }]), false, "not an outpost: the region ladder may help")
+  eq(retryCannotHelp(true, [{ key: "power:n351" }, { key: "module:n351" }]), false, "a placement failure too")
+  eq(retryCannotHelp(true, []), false, "no failure recorded")
 })
 
 run("failure-rules")

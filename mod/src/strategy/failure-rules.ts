@@ -90,3 +90,13 @@ export function strongestReplan(added: Replan[]): Replan | undefined {
   for (const r of ["parallel providers", "without that merge", "a mine of its own", "without taps"] as Replan[]) if (added.indexOf(r) >= 0) return r
   return undefined
 }
+
+/**
+ * M7c.8: an outpost goal (one with a fixed site) whose only failures are pole lines (`power:<owner>`) fails the same way
+ * on every attempt: the region radius ladder doesn't bound the pole search, the ground between site and base does.
+ */
+export function retryCannotHelp(outpost: boolean, failures: { key: string }[]): boolean {
+  if (!outpost || failures.length === 0) return false
+  for (const f of failures) if (string.find(f.key, "^power:")[0] === undefined) return false
+  return true
+}

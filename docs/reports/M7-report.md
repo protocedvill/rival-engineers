@@ -823,6 +823,18 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       provider". Resumed from minute 720 (`blue2-720`): 42 chemical packs by minute 736, then the faction explored for
       crude, and the run stopped on the open D62 problem below: radar outposts g112 and g113 (arms toward 484,936) fail
       "power: no pole path (window margin 112)" on all 4 attempts each (8 failed plans in a row: the harness fail-fast).
+    - *Radar outposts on lake-cut arms spent 4 plans each (resume `blue2-720`, minute 736–747).* Diagnosed from the
+      failed-plan inputs (replayed with a temporary trace of the pole search): both arms are cut by real water. The S
+      arm (radar at 470,935) has a lake 120–300 tiles deep across its whole strip from y = 375; the pole search from the
+      base's south edge stalls at 474,374, 563 tiles short. The E arm's centre (1472,-52) lies in a lake, so the radar
+      took the nearest land, an island near 1473,27 behind a ~90-tile water band; the search stalls at 1248,28. No pole
+      crosses either (a small pole reaches 7.5 tiles). The search and placement are right; the waste was the retry: the
+      region-radius ladder (112 → 378) cannot change a pole line's ground, so each arm failed the same way 4 times,
+      and 8 failed plans in a row tripped the harness fail-fast before the W arm was tried. An outpost goal whose only
+      failures are pole lines (`power:<owner>`) now fails on its first attempt and the exploration moves to the next
+      arm (`failure-rules.ts` `retryCannotHelp`; T1 `failure-rules`). Not done (proposed): skipping an arm whose strip
+      is known to be cut by water before planning its outpost, or stepping the outpost back to the last land the base
+      reaches.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

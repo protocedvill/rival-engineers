@@ -1360,7 +1360,10 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       EX.exploreFor(ctx, g, gone.what)
       return
     }
-    if (g.attempts >= MAX_PLAN_ATTEMPTS) {
+    // M7c.8: a radar outpost whose pole line can't reach the base (seed 11: lakes 90-300 tiles wide across the E and S
+    // arms) fails the same way on every attempt: the region radius doesn't bound the pole search. It fails at once, so
+    // the exploration tries the next arm instead of spending 4 plans per arm (8 failed plans in a row stopped the soak).
+    if (g.attempts >= MAX_PLAN_ATTEMPTS || FR.retryCannotHelp(g.site !== undefined, failures)) {
       transitionGoal(g, "failed")
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
       // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.
