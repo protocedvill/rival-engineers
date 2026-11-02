@@ -52,6 +52,12 @@ export interface BuildCheck {
 }
 
 const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
+/**
+ * M7c.8: route pieces that block a planned piece on their tile like a stale belt does: pipes too (seed 11, minute 780:
+ * an older copy of a water route left a pipe-to-ground facing west where the new route's exit goes; the new entrance
+ * connected to nothing and the sulfur plant had no water for an hour, "nothing missing").
+ */
+const ROUTE_TYPES = [...BELT_TYPES, "pipe", "pipe-to-ground", "pump"]
 
 /**
  * B56: the faction's own belts, undergrounds and splitters on `e`'s tiles that are not `e` itself (seed 3333: a reroute
@@ -64,7 +70,7 @@ export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpe
   for (const k of specTiles(e)) {
     const x = keyX(k)
     const y = keyY(k)
-    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: BELT_TYPES, force })) {
+    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: ROUTE_TYPES, force })) {
       if (b.unit_number === undefined || seen[b.unit_number]) continue
       seen[b.unit_number] = true
       // The planned piece itself (B52's misdirected check handles a wrong direction of the same name).
@@ -75,8 +81,11 @@ export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpe
   return out
 }
 
-/** Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side). */
-const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true }
+/**
+ * Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side; M7c.8: the side a
+ * pipe-to-ground goes underground, a pump's flow).
+ */
+const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true, "pipe-to-ground": true, pump: true }
 
 /** B52: an own entity of `e`'s name at its position that faces another way (or is the other underground end). */
 function ownMisdirected(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
