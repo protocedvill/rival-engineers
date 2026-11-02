@@ -571,6 +571,12 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   that fluid (a pipe beside one would join it), and the fluid-chain generator puts the second fluid's input on the east
   end of its manifold, opposite the raw fluid's (`generators.ts` `fluidChain`). The replay keeps the captured module
   geometry, so it is pinned as an expected failure on the sulfur crude line only.
+- **Every plan with a pumped crude line was discarded** (latent since M7b; seen only once a ~900-tile line routed):
+  a fluid route's pump poles are tagged `x:pump:<route>`, and the claim checks read every `x:` tag other than
+  `x:poles:` as a module's interaction tile, so plan adoption rejected it ("invalid-layout-claims: missing interaction
+  owner pump:route:..."). They are now a (non-evictable) pole line (`claims.ts` `occupancyClaim`). The T1 replays
+  never caught it: a replay that finishes now checks the layout's claim owners too, ignoring problems the captured base
+  already had (`r333968-second-power` has some).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
