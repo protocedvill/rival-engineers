@@ -629,7 +629,10 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     pocket tile beside it (small types first, then one that opens outward, then the nearest; engines before the
     offshore pump), and the pick-up's ghost waits `UNBOX_GHOST_DELAY` before it goes in: placed at once, the member
     took its place job from inside and walled itself in again. From the minute-360 save the member got out after
-    two pick-ups and g42 was built (302 placements).
+    two pick-ups and g42 was built (302 placements). Open: the planner still routes and grows into ground the crew
+    cannot walk to (a copper growth later rerouted belts through the same pocket under the steam block; B20 abandoned
+    it after 10 rounds). Treating walk-unreachable ground (water, cliffs and own buildings around it) as blocked
+    needs a reachability flood per plan: not done.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
