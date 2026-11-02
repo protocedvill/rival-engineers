@@ -609,6 +609,11 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     at 400), then stopped again at a pump-to-pump segment the router had made exactly 320 tiles: the engine counts a
     little more than the router's path. The router now keeps `PIPE_EXTENT_MARGIN` (8) tiles under the extent; 16 made
     the sulfur chain's tap unroutable in two replays.
+  - *A tap made the first segment too long*: with the margin, the first segment failed again although shorter: the
+    sulfur chain's crude tap joined the trunk beside the field and ran its own pipes 600 tiles to its first pump, all
+    one fluid segment with the trunk's first (a pipe probe found crude up to that pump, none past the trunk's). A tap
+    now starts with the length of the trunk segment it joins counted (`plan.ts` `segmentLengths`, `PipeParams.starts
+    [].run`), so it must put a pump at once or join a segment with room. T1 `pipe-router` pins it.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):

@@ -41,7 +41,8 @@ export interface PipeParams {
    * B120: start tiles instead of `start` (a tap: tiles beside a line of the same fluid, heading away from it; the first
    * pipe placed there joins the line).
    */
-  starts?: { x: number; y: number; dir: number }[]
+  /** M7c.8: `run` is the length of the existing segment a tap joins (the joined segment's tiles count toward its extent). */
+  starts?: { x: number; y: number; dir: number; run?: number }[]
   /** Tile outside the `pipe-in` port, and the direction from it into the machine. */
   goal: { x: number; y: number; dir: number }
   /** Farthest a pipe-to-ground exit may be from its entrance (`max_underground_distance`). */
@@ -191,7 +192,7 @@ function heapPop(s: { hs: number[]; hf: number[] }): number {
   return top
 }
 
-function startsOf(p: PipeParams): { x: number; y: number; dir: number }[] {
+function startsOf(p: PipeParams): { x: number; y: number; dir: number; run?: number }[] {
   return p.starts ?? [p.start]
 }
 
@@ -517,7 +518,7 @@ function seedTiles(s: PipeSearch): void {
   s.hs = []
   s.hf = []
   s.best = {}
-  for (const st of startsOf(s.p)) visit(s, st.x, st.y, st.dir, 0, s.p.startRun ?? 0, -1, MV_START)
+  for (const st of startsOf(s.p)) visit(s, st.x, st.y, st.dir, 0, st.run ?? s.p.startRun ?? 0, -1, MV_START)
 }
 
 /** The steps from the start to node `i` (each move placed something on or from its parent's tile). */

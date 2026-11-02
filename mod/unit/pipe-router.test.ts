@@ -122,6 +122,13 @@ test("pipe router: M7c.8 the source's and consumer's own pipes count toward the 
   ok(96 - (pumps[pumps.length - 1].x + 2) + 10 <= 100, "the last segment with the consumer's pipes within the extent")
 })
 
+test("pipe router: M7c.8 a tap joining a nearly full segment puts a pump right away", () => {
+  const rows = [".".repeat(120), ".".repeat(120), ".".repeat(120)]
+  const r = route(request(rows, { x: 1, y: 1, dir: 1 }, { x: 60, y: 1, dir: 1 }, { extent: 100, starts: [{ x: 1, y: 1, dir: 1, run: 95 }] }))
+  const pumps = r.steps.filter((s) => s.kind === "pump")
+  ok(pumps.length >= 1 && pumps[0].x - 1 + 95 <= 100, `the first pump within the joined segment's last 5 tiles (${pumps[0]?.x})`)
+})
+
 test("pipe router: B120 a tap starts beside an existing line of the same fluid", () => {
   // The line runs along row 1 (x 2..30); a tap may start on row 2 below any of its pipes, heading south.
   const starts: PipeRequest["starts"] = []

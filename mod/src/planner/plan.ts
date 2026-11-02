@@ -556,16 +556,21 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
   // B120: a line of this fluid already leaves the source port (a second consumer of one pumpjack field): tap it. The
   // route starts beside any plain pipe of that line (a pipe joins every neighbouring pipe), not at the port.
   const trunk: Record<number, string> = {}
-  const starts: { x: number; y: number; dir: number }[] = []
+  const starts: { x: number; y: number; dir: number; run: number }[] = []
   if (fromRef !== undefined) {
     const lines = sameSource(job, fromRef, c.id).filter((rid) => job.layout.routes[rid].fluid?.name === f.name)
     for (const rid of lines) for (const k of job.layout.routes[rid].tiles) trunk[k] = rid
     for (const rid of lines) {
-      for (const st of job.layout.routes[rid].steps) {
+      const route = job.layout.routes[rid]
+      // M7c.8: a tap joins the trunk's segment there: it starts with that whole segment's length counted (seed 11: a
+      // sulfur tap from beside the field merged 600 tiles into the first segment, which then carried nothing).
+      const seg = segmentLengths(route.steps, moduleFluidRun(fm))
+      for (let i = 0; i < route.steps.length; i++) {
+        const st = route.steps[i]
         if (st.kind !== "pipe") continue
         for (let d = 0; d < 4; d++) {
           const k = tkey(st.x + DX[d], st.y + DY[d])
-          if (trunk[k] === undefined) starts.push({ x: st.x + DX[d], y: st.y + DY[d], dir: d })
+          if (trunk[k] === undefined) starts.push({ x: st.x + DX[d], y: st.y + DY[d], dir: d, run: seg[i] })
         }
       }
     }
@@ -608,6 +613,29 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     corridorCells: w.corridorCells,
   })
   return { conn: c.id, search, trunk, fluids, costReq }
+}
+
+/**
+ * M7c.8: for each step of a fluid route, the length of the segment (between pumps) it belongs to, the first segment
+ * starting with `first` tiles inside the source module; a pipe-to-ground pair counts its span.
+ */
+function segmentLengths(steps: RouteStep[], first: number): number[] {
+  const segOf: number[] = []
+  const len: number[] = [first]
+  let seg = 0
+  for (let i = 0; i < steps.length; i++) {
+    const st = steps[i]
+    if (st.kind === "pump") {
+      seg++
+      len[seg] = 0
+      segOf.push(-1)
+      continue
+    }
+    segOf.push(seg)
+    const prev = steps[i - 1]
+    len[seg] += st.kind === "pipe-ug-out" && prev !== undefined ? math.abs(st.x - prev.x) + math.abs(st.y - prev.y) : 1
+  }
+  return segOf.map((s) => (s < 0 ? 0 : len[s]))
 }
 
 /**
