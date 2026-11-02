@@ -532,6 +532,17 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   its fixed spot: occupied at -375,28") 8 times, and fail-fast stopped both runs. Reverted: the kind lock still holds;
   feeders pass by (b), growths by the stall rule. From minute 540 the stall rule did let six goals through (power g69,
   g72; production g70, g71, g74) before that failure.
+- **A drill ghost on mined-out ground made the blue chain give up its location** (agent design, proposed): resumed from
+  minute 300, one electric drill of goal g54 stood on ground whose ore was mined out after the plan (probe: no resource
+  in its mining area, nothing overlapping, `surface.can_place_entity` true). The character's check refused it for 10
+  rounds and B20 relocated the module: 1,734 built entities to deconstruct, and the faction-owned entities it left
+  blocked the oil field's fixed spot for every later plan ("blocked (terrain own) at -373,39"). A drill place job that
+  fails `cannot-place` with no resource in the mining area now drops its ghost (`no-ore-left`; `jobs/crew.ts`); from the
+  minute-360 save g54 was built in one extra round. Open: a relocation can still leave own entities on a fixed spot.
+- Seed 11 status on `f9a464c`: from minute 540 (no drill fix needed there) the blue goal g49 was built at tick 2,979,630
+  (~minute 828). From minute 360 the next goal, the sulfur module, failed every attempt: "no pipe path (budget exhausted,
+  200000 expansions)" for its 125-tile water line inside the base and for a ~900-tile crude line from the oil field
+  (`taps 0`: it found nothing on g54's crude line to tap); AI 12 ms/tick during those searches. Not fixed yet.
 - Harness: the probes' on-tick handler was replaced by the speed-up script's `on_event(on_tick)`; it now uses
   `on_nth_tick(60)`. New remotes `milestones()` and `design_debug(name, filter?)`.
 
