@@ -335,7 +335,10 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
   } else if (gen === "assembler-row") {
     const recipe = ctx.facts.recipeForItem(item)!
     const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? ctx.assembler
-    for (let n = 2; n <= 24; n += 2) out.push({ recipe, count: n, machine, buffer: ctx.buffer ?? "" })
+    // D51: of the assembler rows only gear rows get a buffer. M7c.8 (seed 11): a chemical science pack row had one; its
+    // 2 slots hold 400 packs, so the starved row's every pack went into the chest and none reached the labs.
+    const buffer = item === "iron-gear-wheel" ? ctx.buffer ?? "" : ""
+    for (let n = 2; n <= 24; n += 2) out.push({ recipe, count: n, machine, buffer })
   } else if (gen === "fluid-chain") {
     // Fewest machines first: plants, then refineries for them.
     const recipe = ctx.facts.recipeForItem(item)!

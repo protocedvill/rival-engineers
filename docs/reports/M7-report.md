@@ -697,6 +697,13 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       edge is not a stopped one-lane belt; chem packs still rose 14 to 100 in the window. It newly flags the
       "labs~3" ore edge (n41 iron ore piled up, 0/s to the smelter n42): one repair re-placed an entity, a second
       found nothing missing. The coal edges did not come up in this window in either run. Open.
+    - *The "labs#2" packs went into a buffer chest.* The reconciler's "repair n315 to n31 -> nothing missing" (twice
+      per window) was real: the 57-tile pack belt holds no item at either end and measures 0/s. The pack row's head
+      inserter lifts every pack off the output belt into its iron-chest buffer (14 packs at minute 780, 24 ten
+      minutes later). Its 2 slots hold 400 packs, and the row is starved of advanced circuits (~0.06 packs/s), so
+      nothing passes the chest for about 2 game-hours. D51 puts buffers on smelter columns, circuit blocks and gear
+      rows; the design gave one to every assembler row. Fixed: only gear rows (`design.ts`, T1 `design` "D51").
+      Rows built before keep their chest until replanned.
     - *A sixth steam block finds no shore.* The fresh lineage ended (min ~770-805) with power goals g114 and g115
       failing every attempt ("no feasible position", region radius 112 to 378). Replay `m7c-11-power6-nofit`: the
       search stays 96 tiles around its target whatever the region (the only lake in the 504-tile view is within it);

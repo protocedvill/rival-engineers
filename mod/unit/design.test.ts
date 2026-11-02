@@ -91,6 +91,16 @@ test("10 red/min to labs: 4 labs, a red line, two smelters fed by ore and coal o
   ok(d.techs.indexOf("automation") >= 0, "needs automation")
 })
 
+test("D51: of the assembler rows only gear rows carry a buffer (M7c.8: a pack row's buffer swallowed its packs)", () => {
+  for (const item of ["iron-gear-wheel", "pipe"]) {
+    const d = design(ctx({ buffer: "iron-chest", enabled: { ...ELECTRIC, pipe: true } }), { item, perSecond: 1 })
+    eq(d.errors.length, 0, d.errors.join("; "))
+    const row = byRole(d.nodes, `${item}>labs`)
+    ok(row !== undefined && row.generator === "assembler-row", `${item}: ${d.nodes.map((n) => `${n.role}:${n.generator}`).join(" | ")}`)
+    eq(row!.params.buffer, item === "iron-gear-wheel" ? "iron-chest" : "", `${item} row buffer`)
+  }
+})
+
 test("D54: once electric drills are researched the steam block's coal comes from an electric mine", () => {
   const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
