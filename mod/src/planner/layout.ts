@@ -402,13 +402,21 @@ export function removeModule(state: LayoutState, id: string, facts: ProtoFacts):
   return n
 }
 
+/**
+ * A port whose outside and approach tiles are kept for its route: belt ports, and (M7c.8, seed 11) pipe ports, whose
+ * entry tiles belt routes and poles otherwise took before the fluid lines were routed.
+ */
+function isLanePort(p: Port): boolean {
+  return p.kind === "belt-in" || p.kind === "belt-out" || p.kind === "pipe-in" || p.kind === "pipe-out"
+}
+
 export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {
   // B37: pole lines on the module's ground (footprint, interaction tiles, port lanes, a mine's claim) give way.
   if ((state.poles?.length ?? 0) > 0) {
     const keys = [...moduleTiles(m)]
     for (const t of interactionTiles(m.def, facts)) keys.push(tkey(m.origin.x + t.x, m.origin.y + t.y))
     for (const p of m.def.ports) {
-      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      if (!isLanePort(p)) continue
       const o = portOutside(m, p)
       const a = portApproach(m, p)
       keys.push(tkey(o.x, o.y), tkey(a.x, a.y))
@@ -426,7 +434,7 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     claimInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    if (!isLanePort(p)) continue
     const o = portOutside(m, p)
     reserveTile(state, tkey(o.x, o.y), portTag(m.id, p.id))
     // The approach tile beyond it too (P5 lane): later routes must not box in a port, built or not yet connected.
@@ -562,7 +570,7 @@ export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
     releaseInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    if (!isLanePort(p)) continue
     const o = portOutside(m, p)
     releaseReservation(state, tkey(o.x, o.y), portTag(m.id, p.id))
     const a = portApproach(m, p)

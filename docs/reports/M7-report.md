@@ -543,6 +543,17 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   (~minute 828). From minute 360 the next goal, the sulfur module, failed every attempt: "no pipe path (budget exhausted,
   200000 expansions)" for its 125-tile water line inside the base and for a ~900-tile crude line from the oil field
   (`taps 0`: it found nothing on g54's crude line to tap); AI 12 ms/tick during those searches. Not fixed yet.
+- **Pipe ports were invisible to placement and to port reservations** (agent fix; follows the belt-port rules):
+  the sulfur chain's failures above reproduced in a T1 replay captured from the minute-360 save
+  (`m7-seed11-sulfur`, region 2,478 × 2,169; it needed the capture limit raised). A failed pipe search now says where
+  it stood (pass, nodes, closest approach, a 5 × 5 map of the goal's neighbourhood). The water line got within one
+  tile of its goal: placement had put the chain with both pipe inputs facing a row of built belts (the blue chain's
+  coal fuel route and a copper route), because placement's candidate port checks covered belt ports only. Pipe ports
+  now get the same outside-tile and lane checks (`placement.ts` `tdefOf`); the replay plans with the normal budget
+  (2.47M work units against 3.58M failing). The live resume then failed with the search reaching the goal tile itself
+  and finding it taken: only belt ports reserved their outside and approach tiles when a module was placed, so belt
+  routes and poles took a pipe port's entry. Pipe ports now reserve them too (`layout.ts` `isLanePort`). The lane
+  sealing checks (B45/B57 `openPortEnds`, `openLanes`, growth port checks) are still belt-only.
 - Harness: the probes' on-tick handler was replaced by the speed-up script's `on_event(on_tick)`; it now uses
   `on_nth_tick(60)`. New remotes `milestones()` and `design_debug(name, filter?)`.
 
