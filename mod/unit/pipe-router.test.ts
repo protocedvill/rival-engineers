@@ -111,6 +111,17 @@ test("pipe router: a pump at least every extent; none on a short line", () => {
   eq(route(request(OPEN, { x: 1, y: 2, dir: 1 }, { x: 40, y: 2, dir: 1 }, { extent: 100 })).steps.filter((s) => s.kind === "pump").length, 0, "no pump within the extent")
 })
 
+test("pipe router: M7c.8 the source's and consumer's own pipes count toward the first and last segments", () => {
+  const rows = [".".repeat(200), ".".repeat(200), ".".repeat(200)]
+  // 95 tiles apart with extent 100: no pump alone; a source holding 30 tiles of its own pipe needs one, early enough.
+  eq(route(request(rows, { x: 1, y: 1, dir: 1 }, { x: 96, y: 1, dir: 1 }, { extent: 100 })).steps.filter((s) => s.kind === "pump").length, 0, "no pump without")
+  const r = route(request(rows, { x: 1, y: 1, dir: 1 }, { x: 96, y: 1, dir: 1 }, { extent: 100, startRun: 30, goalRun: 10 }))
+  const pumps = r.steps.filter((s) => s.kind === "pump")
+  ok(pumps.length >= 1, `a pump (${pumps.length})`)
+  ok(pumps[0].x - 1 + 30 <= 100, `the first segment with the source's pipes within the extent (pump at ${pumps[0].x})`)
+  ok(96 - (pumps[pumps.length - 1].x + 2) + 10 <= 100, "the last segment with the consumer's pipes within the extent")
+})
+
 test("pipe router: B120 a tap starts beside an existing line of the same fluid", () => {
   // The line runs along row 1 (x 2..30); a tap may start on row 2 below any of its pipes, heading south.
   const starts: PipeRequest["starts"] = []

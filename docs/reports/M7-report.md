@@ -599,6 +599,13 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     Each pump pole is now its own consumer (`power.ts` `layoutPoles`, `powerRoles`); T1 `power` pins it, and a
     replay that finishes checks that it leaves nothing new unpowered. Layouts built before keep the island until
     replanned.
+  - *The first segment carried nothing*: with both pumps powered, a pipe probe found crude in every pipe from the field
+    to the first pump at 29/100, the pumps empty and the pumpjacks full: the M7b engine finding (a segment longer
+    than `default_pipeline_extent` carries nothing). The router counted the segment from the field's port (321 tiles
+    to the pump); the field's own collector pipes made it longer. A search now starts its first segment with the
+    source module's pipe tiles counted and must reach the consumer with room for its pipes (`PipeParams.startRun`,
+    `goalRun`; `plan.ts` `moduleFluidRun`: every pipe tile of the module, pipe-to-ground spans included, an upper
+    bound). T1 `pipe-router` pins it.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):

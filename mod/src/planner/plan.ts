@@ -12,7 +12,7 @@ import { claimPoleTile, releaseLaneReservation, reserveFreeTile } from "./claims
 import { dirIndex, DX, DY, FREE, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -597,6 +597,8 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
     maxUnderground: f.maxUnderground,
     extent: f.extent,
+    startRun: starts.length > 0 ? 0 : moduleFluidRun(fm),
+    goalRun: moduleFluidRun(tm),
     minCost: minTileCost(policy),
     ugCost: w.pipeUnderground ?? 2,
     pumpCost: w.pump ?? 10,
@@ -606,6 +608,31 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     corridorCells: w.corridorCells,
   })
   return { conn: c.id, search, trunk, fluids, costReq }
+}
+
+/**
+ * M7c.8: an upper bound on the path a module's fluid takes inside it toward a port: every pipe tile of the module
+ * (pipe-to-ground pairs count their span, as the engine does). Over-counts a module with two fluid networks.
+ */
+function moduleFluidRun(m: PlacedModule): number {
+  let n = 0
+  const under: { x: number; y: number }[] = []
+  for (const e of m.def.entities) {
+    if (e.name === "pipe") n++
+    else if (string.find(e.name, "pipe-to-ground", 1, true)[0] !== undefined) under.push({ x: e.x, y: e.y })
+  }
+  // Pairs: each end and the tiles between it and its partner (the nearest end on the same row or column).
+  for (let i = 0; i < under.length; i++) {
+    let best = math.huge
+    for (let j = 0; j < under.length; j++) {
+      if (i === j) continue
+      const a = under[i]
+      const b = under[j]
+      if (a.x === b.x || a.y === b.y) best = math.min(best, math.abs(a.x - b.x) + math.abs(a.y - b.y))
+    }
+    n += best === math.huge ? 1 : (best + 1) / 2
+  }
+  return math.ceil(n)
 }
 
 /** Steps the running fluid connection (`job.pipe`); commits its route or records the failure when the search ends. */

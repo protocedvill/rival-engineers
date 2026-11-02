@@ -48,6 +48,13 @@ export interface PipeParams {
   maxUnderground: number
   /** Most tiles of path in one fluid segment (`default_pipeline_extent`); a pump starts a new one. */
   extent: number
+  /**
+   * M7c.8: tiles of the first segment already used inside the source module (its collector pipes), and of the last
+   * one inside the consumer. Seed 11: a crude line's first pump stood 321 tiles from the field's port; with the field's
+   * own pipes the segment passed the extent and carried nothing.
+   */
+  startRun?: number
+  goalRun?: number
   /** The cheapest a tile can cost (keeps the heuristic honest). */
   minCost: number
   /** Extra cost of a pipe-to-ground pair, and of a pump (they are dearer items than a pipe). */
@@ -510,7 +517,7 @@ function seedTiles(s: PipeSearch): void {
   s.hs = []
   s.hf = []
   s.best = {}
-  for (const st of startsOf(s.p)) visit(s, st.x, st.y, st.dir, 0, 0, -1, MV_START)
+  for (const st of startsOf(s.p)) visit(s, st.x, st.y, st.dir, 0, s.p.startRun ?? 0, -1, MV_START)
 }
 
 /** The steps from the start to node `i` (each move placed something on or from its parent's tile). */
@@ -556,7 +563,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const c = cachedCost(s, cb, x, y)
   if (c < 0) return
   // Arrived: a plain pipe on the goal tile joins the port.
-  if (x === goal.x && y === goal.y && run + 1 <= p.extent && pipeClear(cb, x, y, back, tkey(x + DX[goal.dir], y + DY[goal.dir]))) {
+  if (x === goal.x && y === goal.y && run + 1 + (p.goalRun ?? 0) <= p.extent && pipeClear(cb, x, y, back, tkey(x + DX[goal.dir], y + DY[goal.dir]))) {
     found(s, i, [{ kind: "pipe", x, y, dir: d0 }], g0 + c)
     return
   }
@@ -581,7 +588,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
     if (ce < 0) continue
     const g = g0 + c + ce + p.ugCost
     // The exit on the goal tile, facing into the port, arrives too.
-    if (ex === goal.x && ey === goal.y && d0 === goal.dir) {
+    if (ex === goal.x && ey === goal.y && d0 === goal.dir && run + k + 1 + (p.goalRun ?? 0) <= p.extent) {
       found(s, i, [
         { kind: "ug-in", x, y, dir: d0 },
         { kind: "ug-out", x: ex, y: ey, dir: d0 },
