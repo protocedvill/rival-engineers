@@ -171,6 +171,10 @@ function inWireReach(a: PoleNode, b: PoleNode): boolean {
   return dx * dx + dy * dy <= r * r + 1e-9
 }
 
+function isPumpLine(line: string): boolean {
+  return string.sub(line, 1, 5) === "pump:"
+}
+
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
 function layoutPoles(layout: LayoutState, facts: ProtoFacts, dropped?: Record<number, boolean>): PoleNode[] {
   const out: PoleNode[] = []
@@ -186,7 +190,10 @@ function layoutPoles(layout: LayoutState, facts: ProtoFacts, dropped?: Record<nu
   }
   for (const p of layout.poles ?? []) {
     if (dropped !== undefined && dropped[tkey(p.x, p.y)] === true) continue
-    out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+    // M7c.8: each pump pole is its own consumer: one pump's pole beside the network does not power a pump 300 tiles
+    // down the same line (seed 11: the far pump of a 900-tile crude line stood unpowered).
+    const owner = isPumpLine(p.line) ? p.id : p.line
+    out.push({ owner, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
   }
   return out
 }
@@ -204,7 +211,7 @@ export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: M
     else if (port) consumers.push(m.id)
   }
   // M7b: fluid route pumps, each with a pole beside it (`pumpPoleLine`): joined like a module.
-  for (const l of layout.poleLines ?? []) if (l.from === "pump") consumers.push(l.id as unknown as ModuleId)
+  for (const l of layout.poleLines ?? []) if (l.from === "pump") for (const id of l.poles) consumers.push(id as unknown as ModuleId)
   return { sources, consumers }
 }
 

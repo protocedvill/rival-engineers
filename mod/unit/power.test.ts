@@ -3,7 +3,7 @@ import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { moduleId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
 import { CLIFF, FREE, OWN, TerrainView, tkey, UNKNOWN, WATER } from "../src/planner/grid"
-import { commitModule, growthArea, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { commitModule, growthArea, LayoutState, newLayout, PlacedModule, pumpPoleLine } from "../src/planner/layout"
 import { newPoleJob, polesNow, powerRoles, stepPoles, unpoweredModules } from "../src/planner/power"
 import { selectPolicy } from "../src/planner/policy"
 import { RouteRequest, tileCost } from "../src/planner/router"
@@ -70,6 +70,25 @@ test("a line of small poles joins a lab array 40 tiles from the steam block; eac
   eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
   eq(layout.poleLines?.length, 1, "one line")
   eq(layout.poleLines![0].to, "labs", "joined the labs")
+})
+
+test("M7c.8: each pump pole of a fluid route needs its own path to the network, not just one pump of the line", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  const line = pumpPoleLine("route:crude")
+  // One pump beside the steam block's pole, the other 60 tiles down the same line.
+  const sp = steam.entities.find((e) => F.entity(e.name)?.type === "electric-pole")!
+  const sx = math.floor(2 + sp.x)
+  const sy = math.floor(2 + sp.y)
+  const near = { id: poleId(`${line}:1`), name: "small-electric-pole", x: sx + 3, y: sy, line }
+  const far = { id: poleId(`${line}:2`), name: "small-electric-pole", x: sx + 60, y: sy, line }
+  layout.poles = [near, far]
+  for (const p of layout.poles) layout.occ[tkey(p.x, p.y)] = layoutClaimTag(`x:${line}`)
+  layout.poleLines = [{ id: line, to: moduleId("route:crude"), from: "pump", poles: [near.id, far.id] }]
+  eq(unpoweredModules(layout, F).join(","), far.id, "only the far pump's pole is off the network")
+  const job = polesNow(layout, terrain(100, 30), F, POLICY)
+  eq(job.phase, "done", "done")
+  eq(unpoweredModules(layout, F).length, 0, "both pumps powered after")
 })
 
 test("D52 (3): a mining outpost's room to grow is a hard claim: the pole line goes around it", () => {

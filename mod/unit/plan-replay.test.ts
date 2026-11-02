@@ -15,6 +15,7 @@ import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placeme
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { newSearch, RouteRequest, stepSearch } from "../src/planner/router"
 import { checkClaimOwners } from "../src/planner/claims"
+import { unpoweredModules } from "../src/planner/power"
 import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -162,6 +163,11 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       if (fx.base !== undefined) for (const p of checkClaimOwners(fx.base)) before[p] = true
       const claims = checkClaimOwners(job.layout).filter((p) => !before[p])
       ok(claims.length === 0, `layout claims valid: ${claims.slice(0, 3).join("; ")}`)
+      // M7c.8: nothing the plan adds is left off the network (each pump pole counts on its own).
+      const wasOff: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const id of unpoweredModules(fx.base, F)) wasOff[id] = true
+      const off = unpoweredModules(job.layout, F).filter((id) => !wasOff[id])
+      ok(off.length === 0, `everything powered: ${off.slice(0, 3).join("; ")}`)
     }
   })
 }

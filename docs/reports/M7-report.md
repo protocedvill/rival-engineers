@@ -592,6 +592,13 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     job added; pump poles are added when the pipe route is committed, so none was ever built. They are now part of the
     delta (`plan-delta.ts`), and a fluid edge's repair checks its pump poles too (`factory.ts`), for layouts built
     before.
+  - *The far pump stayed unpowered*: resumed from minute 360 on that fix, g61 was built (767 placements) and both pumps
+    got a pole, but the pump 330 tiles from the base stood alone on its own electric network (a network-map probe: the
+    main network 803 poles, the pump pole an island of one). A fluid route's pumps share one pole line, and the pole
+    planner counts a consumer as powered when any of its poles is: the pump beside the base powered the whole line.
+    Each pump pole is now its own consumer (`power.ts` `layoutPoles`, `powerRoles`); T1 `power` pins it, and a
+    replay that finishes checks that it leaves nothing new unpowered. Layouts built before keep the island until
+    replanned.
   - Not covered yet: measurement has no flow probe for pipes, so a fluid edge reads "0/s" whatever flows (the
     reconciler's crude repairs said "nothing missing" while the pumps were unpowered).
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
