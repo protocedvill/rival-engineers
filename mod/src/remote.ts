@@ -7,7 +7,7 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
-import { factoryDesignDebug, factoryEdgeDebug, factoryRouteDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
+import { factoryCheckDebug, factoryDesignDebug, factoryEdgeDebug, factoryRouteDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
 import { tkey } from "./planner/grid"
@@ -101,6 +101,8 @@ export function registerRemoteInterface(): void {
     edge_debug: (name: string, filter?: string) => factoryEdgeDebug(name, filter),
     /** Debug probe (M7c.8): layout routes on tile (x, y) or carrying `item`, with their ends and port tiles. */
     route_debug: (name: string, x?: number, y?: number, item?: string) => factoryRouteDebug(name, x, y, item),
+    /** Debug (M7c.8): the build check of the belt edges whose role contains `filter` (what a repair would find). */
+    check_debug: (name: string, filter: string) => factoryCheckDebug(name, filter),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
     goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
     /** T4 determinism: the canonical state (sorted storage, the factions' entities) to script-output/`file`. */

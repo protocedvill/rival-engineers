@@ -14,7 +14,7 @@ import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
 import { keyX, keyY, tkey, Vec } from "./grid"
-import { findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
+import { dependentRoutes, findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
@@ -144,6 +144,24 @@ export function staleUnderRoutes(surface: LuaSurface, force: string, layout: Lay
     for (const b of staleBeltsUnder(surface, force, e)) push(b)
   }
   return out
+}
+
+/**
+ * M7c.8 (seed 11): what to check for a belt edge's routes: those routes, plus the pieces other routes stand on their
+ * tiles (the splitters of taps off them and of merges onto them), which carry the edge's items too. A merge splitter
+ * onto an ore branch stood unbuilt over the branch's old belt; the branch's own pieces all stood, so its repair found
+ * "nothing missing" while only the merge route's check (never run: its edge looked fine) saw the stale belt.
+ */
+export function routeCheck(layout: LayoutState, routes: RouteId[]): { routes: RouteId[]; only?: (this: void, e: EntitySpec) => boolean } {
+  const deps = dependentRoutes(layout, routes)
+  if (deps.length <= routes.length) return { routes }
+  const own: Record<string, boolean> = {}
+  const tiles: Record<number, boolean> = {}
+  for (const rid of routes) {
+    own[rid] = true
+    for (const k of layout.routes[rid]?.tiles ?? []) tiles[k] = true
+  }
+  return { routes: deps, only: (e) => own[e.owner] === true || specTiles(e).some((k) => tiles[k] === true) }
 }
 
 /** Checks `parts` of `layout` against the world (see the file comment). */

@@ -18,7 +18,7 @@ import { preparePlanDelta } from "../planner/plan-delta"
 import type { PlanDelta } from "../planner/plan-delta"
 import { recordDiagnostic } from "../diagnostic-events"
 import * as IDS from "../shared/ids"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, obstaclesFor } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, obstaclesFor, routeCheck } from "../planner/conflicts"
 import { planReroute } from "../planner/reroute"
 import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, ModuleRequest, PlanEvidence, PlanRequest, portFedByOther } from "../planner/plan"
 import { sealedInputs } from "../planner/placement"
@@ -676,6 +676,24 @@ export function factoryEdgeDebug(name: string, filter = ""): unknown {
   return { probe: f.meter?.probe?.edge, probes: f.meter?.probes, edges: out }
 }
 
+/** Debug probe (M7c.8): the build check of an edge's routes (what a repair would find). */
+export function factoryCheckDebug(name: string, edgeFilter: string): unknown {
+  const f = storage.factories?.[name]
+  const faction = storage.factions?.[name]
+  if (f === undefined || faction === undefined) return undefined
+  const out: unknown[] = []
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e === undefined || e.kind !== "belt" || string.find(e.role, edgeFilter, 1, true)[0] === undefined) continue
+    const parts: BuildParts = { modules: [], routes: [], poles: [] }
+    for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
+    const c = checkBuild(game.get_surface(faction.surface)!, faction.force, f.layout, parts)
+    const at = (s: EntitySpec): string => `${s.name}@${s.x},${s.y}:${s.dir ?? 0}`
+    out.push({ edge: id, physical: e.physical, missing: c.missing.map((s) => at(s)), misdirected: c.misdirected.map((m) => at(m.spec)), stale: c.stale.map((m) => at(m.spec)), intruders: c.intruders.length, conflicts: c.conflicts.length })
+  }
+  return out
+}
+
 /** Debug probe (M7c.8): the layout routes with a step on tile (x, y), or whose item contains `item`: ends and ports. */
 export function factoryRouteDebug(name: string, x?: number, y?: number, item?: string): unknown {
   const f = storage.factories?.[name]
@@ -693,7 +711,7 @@ export function factoryRouteDebug(name: string, x?: number, y?: number, item?: s
       const p = m !== undefined ? LO.findPort(m, ref.port) : undefined
       return m !== undefined && p !== undefined ? { module: ref.module, port: ref.port, tile: LO.portTile(m, p), outside: LO.portOutside(m, p) } : { module: ref.module, port: ref.port, missing: true }
     }
-    out.push({ id, item: r.item, conn: r.conn, from: portAt(r.from), to: portAt(r.to), steps: r.steps.length, first, last, tapOf: r.tapOf, fixed: (r as { fixed?: boolean }).fixed, all: r.steps.length <= 40 ? r.steps.map((st) => `${st.kind}@${st.x},${st.y}:${st.dir}`).join(" ") : undefined })
+    out.push({ id, item: r.item, conn: r.conn, from: portAt(r.from), to: portAt(r.to), steps: r.steps.length, first, last, tapOf: r.tapOf, fixed: (r as { fixed?: boolean }).fixed, all: r.steps.length <= 400 ? r.steps.map((st) => `${st.kind}@${st.x},${st.y}:${st.dir}`).join(" ") : undefined })
   }
   return out
 }
@@ -2339,7 +2357,14 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       // M7c.8: a fluid route's pump poles are part of it (plan deltas before the fix never built them).
       for (const p of f.layout.poles ?? []) if (e.physical.some((rid) => p.line === LO.pumpPoleLine(rid))) parts.poles.push(p.id)
     }
-    const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts)
+    // M7c.8: with the splitters other routes stand on its tiles (`routeCheck`).
+    let only: ((this: void, s: EntitySpec) => boolean) | undefined
+    if (e.kind === "belt") {
+      const rc = routeCheck(f.layout, parts.routes)
+      parts.routes = rc.routes
+      only = rc.only
+    }
+    const check = checkBuild(ctx.surface, ctx.faction.force, f.layout, parts, only)
     let clogged: { spec: EntitySpec; entity: LuaEntity }[] = []
     if (e.kind === "power") {
       // B47: built modules' own poles carry the network too (a completed mine's poles linked two new modules): missing

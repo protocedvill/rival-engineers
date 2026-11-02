@@ -704,6 +704,16 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       nothing passes the chest for about 2 game-hours. D51 puts buffers on smelter columns, circuit blocks and gear
       rows; the design gave one to every assembler row. Fixed: only gear rows (`design.ts`, T1 `design` "D51").
       Rows built before keep their chest until replanned.
+    - *A merge splitter left unbuilt over an ore branch.* The "labs~3" ore edge (n41 to smelter n42) that the lane fix
+      newly flagged is cut: every ore route into n42 is empty at n42. The n41 branch runs south at x 525; route
+      "labs~5" (n47) joins it with a merge splitter on its tile (525,-55). In game that splitter is missing, the
+      branch's old belt stands under it, and the branch's belt at (525,-56) is missing. The branch's repair checked
+      only its own routes and its trunk: it re-placed (525,-56), then found "nothing missing" while the flow still
+      stopped at the merge (the merge route's own check sees the stale belt, but its edge never looked broken).
+      Changed: a belt edge's repair also checks the pieces other routes stand on its tiles, the splitters of taps
+      off it and merges onto it (`conflicts.ts` `routeCheck`, over B91's `dependentRoutes`); T2 `conflicts` "M7c.8:
+      a branch's check takes in a merge splitter". In-game check of the repair: pending (`merge-780`). New debug remote `check_debug(name, filter)`:
+      the build check of the belt edges whose role contains `filter`.
     - *A sixth steam block finds no shore.* The fresh lineage ended (min ~770-805) with power goals g114 and g115
       failing every attempt ("no feasible position", region radius 112 to 378). Replay `m7c-11-power6-nofit`: the
       search stays 96 tiles around its target whatever the region (the only lake in the 504-tile view is within it);
@@ -713,7 +723,10 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       block lists its pump column (every tile but the pump's). The replay then places it at 434,41 on the curved east
       shore (1 feasible of 24k at radius 24). A wider search (192, like outposts) found nothing more for 4x the work,
       so it was not kept. The plan then fails on its coal: the design taps `coal>power~3` (n28, ~130 tiles north),
-      and the router's flood from its tap points is sealed after 13 tiles. Open.
+      and the router's flood from its tap points is sealed after 13 tiles. In game (minute-780 resume `wet-780`, with
+      the buffer fix below): power goal g116 places on its second attempt (region 168), plans its coal route, and is
+      built at tick 2905200; chem packs made in the 54-min window went 14 to 212 (`lane-780`: 14 to 100). The
+      replay's coal seal is therefore a capture artifact or depends on the region; not followed further.
     - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
       short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
       (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter

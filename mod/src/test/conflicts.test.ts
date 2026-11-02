@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, staleUnderRoutes } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, routeCheck, staleUnderRoutes } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -327,6 +327,42 @@ describe("faction conflicts", () => {
     check = checkBuild(s, a.force, layout, { modules: [], routes: [r.id], poles: [] })
     assert(check.missing.length === 0, `the pair stands (${check.missing.length} missing)`)
     assert(check.intruders.length === 1 && check.intruders[0] === intruder, `the underground inside the span (${check.intruders.length})`)
+  })
+
+  test("M7c.8: a branch's check takes in a merge splitter onto it, unbuilt over the branch's own old belt", () => {
+    // Seed 11 (min 780): an ore branch's every piece stood, but a merge splitter onto it stood unbuilt over its belt, so
+    // the branch was cut and every repair of its edge said "nothing missing".
+    const lab = createLab(32)
+    const a = faction(lab, "merge", 30, 0)
+    const s = lab.surface
+    const x0 = math.floor(lab.origin.x) + 4
+    const y0 = math.floor(lab.origin.y) + 4
+    const layout = newLayout()
+    const route = (id: string, steps: { kind: "belt" | "splitter"; x: number; y: number; dir: number; x2?: number; y2?: number }[], tiles: number[], extra: Record<string, unknown>) => {
+      const r = { id: routeId(id), conn: connectionId(id), item: "iron-ore", to: { module: moduleId("x"), port: "in" }, steps, tiles, spans: [], belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: steps.length, undergrounds: 0, cost: 1, ripped: 0, ...extra }
+      layout.routes[r.id] = r as never
+      layout.routeOrder.push(r.id)
+      return r
+    }
+    const aSteps: { kind: "belt"; x: number; y: number; dir: number }[] = []
+    const aTiles: number[] = []
+    for (let i = 0; i < 6; i++) {
+      aSteps.push({ kind: "belt", x: x0 + i, y: y0, dir: 1 })
+      aTiles.push(tkey(x0 + i, y0))
+    }
+    const branch = route("route:branch", aSteps, aTiles, {})
+    const ms = { x: x0 + 3, y: y0, dir: 1, x2: x0 + 3, y2: y0 + 1 }
+    route("route:merge", [{ kind: "belt", x: x0 + 2, y: y0 + 1, dir: 1 }, { kind: "splitter", ...ms }], [tkey(x0 + 2, y0 + 1), tkey(x0 + 3, y0 + 1)], { mergeSplitter: ms })
+    // Every belt of the branch stands, the one under the merge splitter too; the splitter is missing.
+    for (let i = 0; i < 6; i++) s.create_entity({ name: "transport-belt", position: { x: x0 + i + 0.5, y: y0 + 0.5 }, direction: 4 as never, force: a.force })
+    // The merge route's own belt off the branch is missing too: not the branch's to repair.
+    const own = checkBuild(s, a.force, layout, { modules: [], routes: [branch.id], poles: [] })
+    assert(own.missing.length === 0 && own.stale.length === 0, `the branch alone: nothing missing (${own.missing.length} missing, ${own.stale.length} stale)`)
+    const rc = routeCheck(layout, [branch.id])
+    assert(rc.routes.length === 2, `the merge route joins the check (${rc.routes.length})`)
+    const check = checkBuild(s, a.force, layout, { modules: [], routes: rc.routes, poles: [] }, rc.only)
+    assert(check.stale.length === 1 && check.stale[0].spec.name === "splitter", `the merge splitter over the old belt (${check.stale.length} stale: ${check.stale.map((x) => x.spec.name).join(",")})`)
+    assert(check.missing.length === 0, `the merge route's own belt off the branch is not checked (${check.missing.length} missing)`)
   })
 
   test("a module whose ground another force took is given up: built entities deconstructed, parts dropped", () => {
