@@ -93,6 +93,9 @@ export interface EdgeProbe {
   capacity: number
   /** M7c.8: a fluid edge (pipe ports): `to`/`from` are fluid entities at the port tiles, sampled for fill. */
   fluid?: string
+  /** M7c.8: each port tile's lanes at the last sample (item ids), to tell a stopped full lane from a moving one. */
+  laneTo?: string[]
+  laneFrom?: string[]
 }
 
 export interface MeterState {
@@ -117,6 +120,8 @@ const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
 const TILE_ITEMS = 8
 /** A port tile holding at least this many items counts as full (one gap allowed). */
 const FULL_TILE_ITEMS = 7
+/** Items one lane of a belt tile holds (game data: 4 per lane on a straight belt). */
+const LANE_ITEMS = 4
 /** Probe samples are this fraction of the time an item takes to cross the tile apart, so none is missed. */
 const PROBE_SAMPLE_FRACTION = 0.75
 const FLUID_TYPES = ["pipe", "pipe-to-ground", "pump", "storage-tank", "offshore-pump"]
@@ -533,6 +538,25 @@ function tileCount(e: LuaEntity): number {
   return e.get_transport_line(1).get_item_count() + e.get_transport_line(2).get_item_count()
 }
 
+/**
+ * M7c.8: whether a port tile is backed up: nearly full on both lanes, or one lane full with the same items as at the last
+ * sample (stopped). An inserter loads one lane, so a stopped single-item line holds 4 of 8 and never read as full: a
+ * backed-up line read 0/s and not full at both ends, and the reconciler asked for repairs that found "nothing missing"
+ * (seed 11: the circuits-to-packs and coal-to-plastic edges). `last` holds the lanes' item ids between samples.
+ */
+function backedUp(e: LuaEntity, last: string[]): boolean {
+  let full = tileCount(e) >= FULL_TILE_ITEMS
+  for (const i of [1, 2]) {
+    const line = e.get_transport_line(i)
+    const ids: number[] = []
+    for (const item of line.get_detailed_contents()) ids.push(item.unique_id)
+    const sig = ids.join(",")
+    if (ids.length >= LANE_ITEMS && last[i - 1] === sig) full = true
+    last[i - 1] = sig
+  }
+  return full
+}
+
 /** Samples the running probe when due; finishes it into the edge's measured values. */
 export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number): void {
   const p = meter.probe
@@ -560,8 +584,10 @@ export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number):
   if (p.first === undefined) p.first = tick
   p.last = tick
   p.samples++
-  if (tileCount(p.to) >= FULL_TILE_ITEMS) p.fullTo++
-  if (p.from !== undefined && p.from.valid && tileCount(p.from) >= FULL_TILE_ITEMS) p.fullFrom++
+  p.laneTo ??= []
+  p.laneFrom ??= []
+  if (backedUp(p.to, p.laneTo)) p.fullTo++
+  if (p.from !== undefined && p.from.valid && backedUp(p.from, p.laneFrom)) p.fullFrom++
   if (tick < p.end) return
   const span = p.last - p.first
   edge.measuredRate = span > 0 ? (p.arrivals * 60) / span : 0

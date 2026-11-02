@@ -690,7 +690,9 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       tile, under the probe's full mark (`FULL_TILE_ITEMS` 7 of 8). A stopped line then reads 0/s and not full at both
       ends, and the reconciler asks for a repair that finds "nothing missing" (the "labs" circuits to packs edge three
       times at ~min 1470-1515 of log time; the coal edges into the plastic plants the same way in both lineages).
-      Proposed: count a tile full when the lane carrying the edge's item is full. Not changed.
+      Changed: a port tile also counts as backed up when one lane holds 4 items with the same ids as at the last
+      sample (`measure.ts` `backedUp`; a compressed lane that moves changes ids between samples, so it stays "not
+      full"). T2 reconciler and measurement tests pass; checked in a minute-780 resume (below).
     - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
       short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
       (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter
