@@ -796,6 +796,19 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       `heldBy`); the whole-path check stays. Both routes are found now; the plan still fails, on an ordinary rip-up
       limit (a later attempt re-places). Every other replay gives the same plan with slightly less work (`m7-seed11-crude`
       routing 8 % less).
+    - *The crude line's pumps waited 85 game-min for engine units (resume `fixed3-645`, minute 657–743, stopped by the
+      fail-fast stall check).* g108 (the blue chain's production, 780 placements) had 4 open pump place jobs and 4 open
+      pump crafts, both crew members idle. A pump needs an engine unit, which only an assembler can make; the economy
+      had no source for it (no hand recipe, no temporary cell, not smelted or mined). The faction's two engine
+      assemblers had made 244 (226 on the belt to the chemical-pack row, which waits on the same oil chain, and the
+      rest in their full output slots), but a production assembler was never a supply point. Now the output slots of
+      built modules' assemblers are supply points (`module-out`, last) for products the crew can't hand-craft, and they
+      count at any amount: the slot holds a few at most, under `supply-min-take` (5), and the first try still waited with
+      4 in each slot (`bootstrap.ts` `registerSupplies`, `factory-report.ts` `moduleAssemblers`, `supply.ts`). Resumed
+      from minute 720: the crew claimed the crafts at once and g108 was built at tick 2601270 (minute ~722.5). T2
+      `bootstrap-sources` "M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler
+      output, below the minimum take". **Proposed** (agent decision, not approved): taking from a production module
+      only for products with no other source; B36's broader `supply-module-furnaces` stays off.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

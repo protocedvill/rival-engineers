@@ -11,7 +11,7 @@ import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-index"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
+import { moduleAssemblers, moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
 import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
@@ -1025,6 +1025,15 @@ function registerSupplies(ctx: Ctx): void {
   }
   // B36 (proposed, default off): smelter modules' furnace outputs, last (buffers and bootstrap furnaces first).
   if (ctx.config.supplyModuleFurnaces) for (const e of moduleFurnaces(ctx.faction.name)) add(e, defines.inventory.furnace_result, "module-furnace")
+  // M7c.8 (seed 11, minute 657–743: g108's four crude-line pumps waited 85 game-min for engine units while the faction's
+  // engine assemblers stood full with 244 made): a product nothing else supplies and the crew can't hand-craft (engine
+  // units, an assembler-only recipe) is taken from the output slots of the modules making it, last.
+  for (const e of moduleAssemblers(ctx.faction.name)) {
+    const [recipe] = e.get_recipe()
+    const product = recipe?.products[0]
+    if (product === undefined || product.type !== "item" || handRecipe(ctx.force, product.name) !== undefined) continue
+    add(e, defines.inventory.crafter_output, "module-out", product.name)
+  }
   setSupplies(ctx.faction, points)
 }
 

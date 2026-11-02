@@ -335,6 +335,44 @@ describe("B17 material sources", () => {
     })
   })
 
+  test("M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler output, below the minimum take", () => {
+    // Seed 11 minute 657-743: g108's four crude-line pumps waited 85 game-min for engine units while the faction's engine
+    // assemblers stood full (244 made), and each output slot held fewer than the minimum take.
+    const lab = createLab(32)
+    const faction = createFaction("m7c8-engines", { position: at(lab, 0, 0), crew: 2, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    depot.insert({ name: "steel-plate", count: 2 })
+    depot.insert({ name: "pipe", count: 2 })
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    game.forces[faction.force].recipes["pump"].enabled = true
+    const f = startFactory(faction)
+    const def = generatedModule("assembler-row", { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" })
+    const o = { x: math.floor(at(lab, 6, -12).x), y: math.floor(at(lab, 6, -12).y) }
+    const m: PlacedModule = { id: moduleId("engines"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+    commitModule(f.layout, m, prototypeFacts, 1)
+    addNode(f.graph, { id: moduleId("engines"), role: "engine-unit#1", kind: "module", module: def.id, generator: "assembler-row", recipe: "engine-unit", item: "engine-unit", capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: game.tick, builtTick: game.tick })
+    let machine: LuaEntity | undefined
+    for (const e of stampModule(lab.surface, faction.force, def, m.origin)) if (e !== undefined && e.type === "assembling-machine") machine ??= e
+    assert(machine !== undefined, "the engine assembler stands")
+    machine!.get_inventory(defines.inventory.crafter_output)!.insert({ name: "engine-unit", count: 3 })
+    brain.nextThink = game.tick
+    addJob(faction.board, {
+      kind: "craft",
+      pos: depot.position,
+      materials: [{ item: "engine-unit", count: 2 }, { item: "steel-plate", count: 2 }, { item: "pipe", count: 2 }],
+      payload: { kind: "craft", recipe: "pump", count: 2, item: "pump", deliverTo: depot },
+    }, game.tick)
+    waitFor(3600, () => depot.get_item_count("pump") >= 2, () => `two pumps at the depot (takes ${describeTakes(faction)})`, () => {
+      assert(takesOf(faction, "module-out") === 2, `the engines came out of the assembler (takes ${describeTakes(faction)})`)
+      assert(machine!.get_item_count("engine-unit") === 1, "one engine is left")
+    })
+  })
+
   test("a busy crew takes the furnace's plates for a new craft at its next plan, without preempting", () => {
     const lab = createLab(48)
     const faction = createFaction("b17-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })

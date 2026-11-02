@@ -144,6 +144,29 @@ export function moduleFurnaces(factionName: string): LuaEntity[] {
   return out
 }
 
+/**
+ * M7c.8: the assemblers of built factory modules (the crew may take a product the economy has no other source for from
+ * their output slots; `bootstrap.ts` registers them).
+ */
+export function moduleAssemblers(factionName: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const f = getFactory(factionName)
+  if (f === undefined) return out
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph)) {
+    if (n.lifecycle !== "built") continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    let any = false
+    for (const e of m.def.entities) if (prototypes.entity[e.name]?.type === "assembling-machine") any = true
+    if (!any) continue
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    for (const e of findEntities(surface, { type: "assembling-machine", force: faction.force, area })) out.push(e)
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Reports
 
