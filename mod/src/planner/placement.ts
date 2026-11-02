@@ -61,7 +61,7 @@ export interface SitePatch {
 interface TDef {
   t: Transform
   def: ModuleDef
-  /** Belt ports: local outside tile, outward normal, port id. */
+  /** Belt and pipe ports: local outside tile, outward normal, port id. */
   ports: { id: string; ox: number; oy: number; nx: number; ny: number }[]
 }
 
@@ -156,10 +156,12 @@ function tdefOf(def: ModuleDef, t: Transform): TDef {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
   const ports: TDef["ports"] = []
   for (const p of d.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    // M7c.8 (seed 11): pipe ports too. Without them a sulfur chain was placed with both fluid inputs facing a row of
+    // built belts, and its water and crude lines searched the whole region for an entry that did not exist.
+    if (p.kind !== "belt-in" && p.kind !== "belt-out" && p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
     const dx = DX[math.floor(p.dir / 4)]
     const dy = DY[math.floor(p.dir / 4)]
-    const sign = p.kind === "belt-in" ? -1 : 1
+    const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
     ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy })
   }
   return { t, def: d, ports }

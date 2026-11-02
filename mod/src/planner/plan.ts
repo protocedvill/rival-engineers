@@ -18,7 +18,7 @@ import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, l
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
-import { newPipeSearch, stepPipeSearch } from "./pipe-router"
+import { newPipeSearch, pipeFailureNotes, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef } from "../modules/types"
@@ -612,7 +612,7 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budg
     const routeTerrain = pipeTerrain(terrain, f)
     const k = tkey(st.x, st.y)
     const g = s.p.goal
-    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0})`)
+    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}; ${pipeFailureNotes(s, pipeCallbacks(job, terrain, policy, pj))})`)
     return used
   }
   const r = s.result!

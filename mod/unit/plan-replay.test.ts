@@ -150,6 +150,9 @@ function replay(name: string, opts: ReplayOptions = {}): void {
 // without a single rip-up.
 replay("seed222-production", { undergrounds: true })
 replay("m7-seed11-blue-wide", { expect: "failed", failureIncludes: "chemical-science-pack>labs", failureExcludes: "no pipe path" })
+// M7c.8 (seed 11, minute ~380 from the minute-360 save, goal g61): the sulfur module's water and crude lines (the oil
+// field ~900 tiles west of the hub) failed "no pipe path (budget exhausted, 200000 expansions)" on every attempt.
+replay("m7-seed11-sulfur")
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
