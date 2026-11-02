@@ -35,6 +35,9 @@ export interface ClaimConflict {
 function occupancyClaim(tag: string): SpatialClaim {
   if (string.sub(tag, 1, 2) === "m:") return { kind: "module", owner: string.sub(tag, 3), strength: "hard", index: "occ" }
   if (isPoleTag(tag)) return { kind: "pole-line", owner: string.sub(tag, 3), strength: "evictable", index: "occ" }
+  // M7c.8: a fluid route's pump poles ("x:pump:<route>", `pumpPoleLine`) are a pole line too, not evictable. Read as an
+  // interaction tile, every plan whose crude line needed a pump was discarded (seed 11: "missing interaction owner").
+  if (string.sub(tag, 1, 7) === "x:pump:") return { kind: "pole-line", owner: string.sub(tag, 3), strength: "hard", index: "occ" }
   if (string.sub(tag, 1, 2) === "x:") return { kind: "interaction", owner: string.sub(tag, 3), strength: "hard", index: "occ" }
   return { kind: "interaction", owner: tag, strength: "hard", index: "occ" }
 }

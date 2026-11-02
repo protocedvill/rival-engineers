@@ -14,6 +14,7 @@ import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPla
 import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { newSearch, RouteRequest, stepSearch } from "../src/planner/router"
+import { checkClaimOwners } from "../src/planner/claims"
 import { finishReplay, startTrace } from "./dump"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -154,6 +155,14 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
     if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
     if (opts.failureExcludes !== undefined) ok(string.find(why.join("; "), opts.failureExcludes, 1, true)[0] === undefined, `failure excludes ${opts.failureExcludes}: ${why.join("; ")}`)
+    // M7c.8: the game discards a finished plan whose claims name a missing owner (plan-delta); so does a replay.
+    // Problems the captured base already had are not the plan's (r333968-second-power: overlapping soft and mine claims).
+    if (job.phase === "done") {
+      const before: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const p of checkClaimOwners(fx.base)) before[p] = true
+      const claims = checkClaimOwners(job.layout).filter((p) => !before[p])
+      ok(claims.length === 0, `layout claims valid: ${claims.slice(0, 3).join("; ")}`)
+    }
   })
 }
 
