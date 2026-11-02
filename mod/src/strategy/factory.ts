@@ -676,6 +676,28 @@ export function factoryEdgeDebug(name: string, filter = ""): unknown {
   return { probe: f.meter?.probe?.edge, probes: f.meter?.probes, edges: out }
 }
 
+/** Debug probe (M7c.8): the layout routes with a step on tile (x, y), or whose item contains `item`: ends and ports. */
+export function factoryRouteDebug(name: string, x?: number, y?: number, item?: string): unknown {
+  const f = storage.factories?.[name]
+  if (f === undefined) return undefined
+  const out: unknown[] = []
+  for (const [id, r] of pairs(f.layout.routes)) {
+    let hit = item !== undefined && string.find(r.item, item, 1, true)[0] !== undefined
+    if (!hit && x !== undefined && y !== undefined) for (const st of r.steps) if (st.x === x && st.y === y) hit = true
+    if (!hit) continue
+    const first = r.steps[0]
+    const last = r.steps[r.steps.length - 1]
+    const portAt = (ref: LO.PortRef | undefined): unknown => {
+      if (ref === undefined) return undefined
+      const m = LO.findModule(f.layout, ref.module)
+      const p = m !== undefined ? LO.findPort(m, ref.port) : undefined
+      return m !== undefined && p !== undefined ? { module: ref.module, port: ref.port, tile: LO.portTile(m, p), outside: LO.portOutside(m, p) } : { module: ref.module, port: ref.port, missing: true }
+    }
+    out.push({ id, item: r.item, conn: r.conn, from: portAt(r.from), to: portAt(r.to), steps: r.steps.length, first, last, tapOf: r.tapOf, fixed: (r as { fixed?: boolean }).fixed, all: r.steps.length <= 40 ? r.steps.map((st) => `${st.kind}@${st.x},${st.y}:${st.dir}`).join(" ") : undefined })
+  }
+  return out
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {

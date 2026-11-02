@@ -668,6 +668,35 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     resumed from minute 780, the reconciler never asked for a repair of that edge. The fluid probe gave it 0.50/s
     used (probably crafts from earlier in the window), with neither port pipe full, so it was not called broken. T2
     passed 170 of 171; the miss ("Too many forces" in a mining-arena crew test) passes alone.
+  - The other gaps, traced on the same save (belt followers, the new `route_debug(name, x?, y?, item?)` remote: the
+    layout routes on a tile or of an item, with their ends, port tiles and, up to 40, their steps). The two chains
+    are "labs" (sulfur plant n294 at (410, 25), packs n291 at x 403.5/406.5, advanced circuits n292 at x 411.5) and
+    "labs#2" (sulfur n321, packs n315 at x 386.5, advanced circuits n319 at x 393.5):
+    - *The water route crosses itself (pipe router bug).* Its 13 steps are `pipe-ug-in@424,40 pipe-ug-out@414,40
+      pipe@413,40 pipe@413,41 pipe@414,41 pipe-ug-in@414,40 pipe-ug-out@414,37 ...`: tile (414, 40) twice, as an exit
+      facing west and then, after a three-pipe loop, as an entrance going north. One tile holds one pipe-to-ground, so
+      the second was never built, and the build check counted it as built (same name there). The search state is
+      tile plus heading, so a path may come back to a tile on another heading; nothing rejects a tile already on the
+      path. That starves the "labs" chain's sulfur plant, so its packs (x 403.5/406.5) get no sulfur, its circuits
+      (x 411.5) back up behind them, and plastic and the refineries back up further. Not fixed. The `conflicts.ts`
+      direction check (`141c68f`) would now report the second piece as misdirected, but picking up the first to place
+      the second breaks the route the other way: the route has to be replanned.
+    - *A backed-up one-lane belt reads as broken.* An inserter loads one lane, and that lane stopped holds 4 items per
+      tile, under the probe's full mark (`FULL_TILE_ITEMS` 7 of 8). A stopped line then reads 0/s and not full at both
+      ends, and the reconciler asks for a repair that finds "nothing missing" (the "labs" circuits to packs edge three
+      times at ~min 1470-1515 of log time; the coal edges into the plastic plants the same way in both lineages).
+      Proposed: count a tile full when the lane carrying the edge's item is full. Not changed.
+    - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
+      short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
+      (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter
+      n329 runs flat out, and both attempts to grow it failed with "port in-fuel outside tile blocked". Not fixed.
+    - *The "labs" circuit route was being rebuilt.* Its first pieces beside circuit module n287 (x 562, y -67) are
+      belt ghosts with place jobs: growth goal g112 picked up 182 entities and is placing 189. Both crew members were
+      busy with other jobs (refuels, inserts, walks), so the ghosts waited. Not a bug, but the chain's circuit supply
+      is off while a growth reroutes it.
+    - Not traced to the plan: two green circuit assemblers (x 463.5/467.5, y -23.5) put circuits on a belt that ends
+      at (434.5, -27.5) with gears on its other lane, on no layout route; four others insert straight into
+      neighbouring assemblers that are full. Neither is on the pack chain's routes.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
