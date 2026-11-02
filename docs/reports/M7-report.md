@@ -651,6 +651,15 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     tap stands over an old belt ("picks up stale belts under"), and after the repairs the probe still sees no coal
     arrive. The plastic plants are fed by the chain's other coal edge (same port), so packs are not held up. Not
     diagnosed yet.
+  - Open, fresh lineage after its first packs: 30 packs by ~min 793 (tick 2,854,800), sulfur flat at ~470. Probes on
+    the minute-780 save (`out/saves/manual/pocket5-360-min-0780.zip`) show the chain fed piecewise. The sulfur belt is
+    full up to the first pack column (x 386.5: four assemblers with sulfur and engines, almost no advanced circuits).
+    The two grown pack assemblers (x 403.5/406.5) hold six advanced circuits each but get no sulfur: the sulfur belt
+    ends at the first column. The advanced circuit column at x 393.5 has plastic and cable but no green circuits,
+    while most green circuit and cable assemblers sit at `full_output`; two advanced circuit assemblers at x 411.5
+    are full and never emptied. So growth units and later modules get only some of their inputs, and the plastic,
+    sulfur and refinery modules back up behind them. The reconciler does not catch it: the sulfur edge's port probe
+    reads the first column's port (0/s, not full). Not fixed yet.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
