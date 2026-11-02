@@ -712,7 +712,10 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       stopped at the merge (the merge route's own check sees the stale belt, but its edge never looked broken).
       Changed: a belt edge's repair also checks the pieces other routes stand on its tiles, the splitters of taps
       off it and merges onto it (`conflicts.ts` `routeCheck`, over B91's `dependentRoutes`); T2 `conflicts` "M7c.8:
-      a branch's check takes in a merge splitter". In-game check of the repair: pending (`merge-780`). New debug remote `check_debug(name, filter)`:
+      a branch's check takes in a merge splitter". In game (minute-780 resume `merge-780`): the repair picked up the stale belt and placed the merge splitter
+      and the branch's belt (both standing by tick 2887200); n42's ore inputs then measured 1.50/s on three edges
+      (labs~3, ~4, ~5), all 0/s before. A second repair, sampled before the build finished, said "nothing missing".
+      Full T2: 172 passed. New debug remote `check_debug(name, filter)`:
       the build check of the belt edges whose role contains `filter`.
     - *A sixth steam block finds no shore.* The fresh lineage ended (min ~770-805) with power goals g114 and g115
       failing every attempt ("no feasible position", region radius 112 to 378). Replay `m7c-11-power6-nofit`: the
