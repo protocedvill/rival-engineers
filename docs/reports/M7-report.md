@@ -692,7 +692,11 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       times at ~min 1470-1515 of log time; the coal edges into the plastic plants the same way in both lineages).
       Changed: a port tile also counts as backed up when one lane holds 4 items with the same ids as at the last
       sample (`measure.ts` `backedUp`; a compressed lane that moves changes ids between samples, so it stays "not
-      full"). T2 reconciler and measurement tests pass; checked in a minute-780 resume (below).
+      full"). T2 reconciler and measurement tests pass. Minute-780 resume (`lane-780`, 54 game-min, against `ptgfix-780`):
+      it did not remove the "labs#2" packs to labs repair (n315 to n31, "nothing missing" twice in both runs), so that
+      edge is not a stopped one-lane belt; chem packs still rose 14 to 100 in the window. It newly flags the
+      "labs~3" ore edge (n41 iron ore piled up, 0/s to the smelter n42): one repair re-placed an entity, a second
+      found nothing missing. The coal edges did not come up in this window in either run. Open.
     - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
       short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
       (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter
