@@ -660,6 +660,14 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     are full and never emptied. So growth units and later modules get only some of their inputs, and the plastic,
     sulfur and refinery modules back up behind them. The reconciler does not catch it: the sulfur edge's port probe
     reads the first column's port (0/s, not full). Not fixed yet.
+  - One cause found there: the second chain's sulfur plant has had no water for over an hour. Its water route's
+    pipe-to-ground entrance at (414.5, 37.5) connects to nothing: the exit tile holds a pipe-to-ground facing west,
+    left by an older copy of the route (its pipes end in a dead end). The build check matched built pieces by name
+    only, so repairs found "nothing missing". It now compares direction for pipe-to-ground and pumps too, and treats
+    stray pipes under a route as stale pieces to pick up (`planner/conflicts.ts`, `141c68f`). Not proven in a run:
+    resumed from minute 780, the reconciler never asked for a repair of that edge. The fluid probe gave it 0.50/s
+    used (probably crafts from earlier in the window), with neither port pipe full, so it was not called broken. T2
+    passed 170 of 171; the miss ("Too many forces" in a mining-arena crew test) passes alone.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)
