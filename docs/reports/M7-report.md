@@ -562,6 +562,15 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
   distance to its connection counts `pipePort` times a belt port's, and a module with a pipe port fed from beyond the
   largest search radius scans every radius before choosing (`placement.ts` `remotePipe`). The replay plans: 1.08M
   work units, no rip-ups, 2,285 route tiles.
+- **At the base edge, the crude lines failed on their last tiles** (replay `m7-seed11-edge`, resume goal g71): the
+  plan routed short connections first, so its belt routes had walled in the plastic chain's pipe entry before the
+  900-tile crude line was searched. Fluid connections now route before belts (`plan.ts` queue order: a pipe cannot rip
+  up, side-load or pass under a module). The plastic line then routes. The sulfur chain's crude line still failed:
+  its crude and water inputs sat two tiles apart on one edge, facing a 2-wide gap beside the steam block, and the water
+  line ran past the crude port's outside tile. Two changes: a pipe search treats another fluid's port outside tiles as
+  that fluid (a pipe beside one would join it), and the fluid-chain generator puts the second fluid's input on the east
+  end of its manifold, opposite the raw fluid's (`generators.ts` `fluidChain`). The replay keeps the captured module
+  geometry, so it is pinned as an expected failure on the sulfur crude line only.
 - Captured plan inputs run-length encode their terrain rows (`exportPlanInput` `rle`, read by `plan-replay.test.ts`):
   the two seed 11 captures went from 12.8 MB to 2.5 MB each. (The first, unencoded copy of `m7-seed11-sulfur` is in
   the branch history.)

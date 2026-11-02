@@ -438,8 +438,13 @@ function startRouting(job: PlanJob): void {
     return manhattan({ x: ma.rect.x, y: ma.rect.y }, { x: mb.rect.x, y: mb.rect.y })
   }
   // Short connections first (they have the fewest alternatives); ids break ties. B75: a provider-group merge goes
-  // after every plain connection: it ends on another route's belt, which must be routed first.
+  // after every plain connection: it ends on another route's belt, which must be routed first. M7c.8: fluid lines go
+  // before belts: a pipe cannot rip up, side-load or pass under a module, and on seed 11 the belts routed first boxed in
+  // a remote crude line's last tile.
   conns.sort((a, b) => {
+    const fa = a.fluid !== undefined ? 0 : 1
+    const fb = b.fluid !== undefined ? 0 : 1
+    if (fa !== fb) return fa - fb
     const ma = a.merge === true ? 1 : 0
     const mb = b.merge === true ? 1 : 0
     if (ma !== mb) return ma - mb
@@ -576,6 +581,13 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       if ((p.kind !== "pipe-in" && p.kind !== "pipe-out") || (m.id === fm.id && p.id === fp.id) || (m.id === tm.id && p.id === tp.id)) continue
       const t = portTile(m, p)
       fluids[tkey(t.x, t.y)] = true
+      // M7c.8: and, for another fluid, the tile its own pipe will take outside the port: a pipe beside it would join
+      // that line (seed 11: a sulfur chain's water line ran past its crude port's outside tile, two tiles away).
+      if (p.item !== f.name) {
+        const o = portOutside(m, p)
+        const ko = tkey(o.x, o.y)
+        if (trunk[ko] === undefined) fluids[ko] = true
+      }
     }
   }
   const w = policy.router

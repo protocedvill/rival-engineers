@@ -169,6 +169,11 @@ replay("m7-seed11-sulfur")
 // M7c.8: the same chain after the pipe-port fixes (resume from minute 360, goal g62 attempt 2): the plastic chain sat
 // ~100 tiles inside the base's built block, and the ~900-tile crude line from the oil field stalled at its west edge.
 replay("m7-seed11-crude")
+// M7c.8: after the remote-pipe placement (resume from minute 360, goal g71 attempt 4): the chains at the base's west
+// edge, their crude lines failing one tile short of the ports. Routing fluid lines first routes the plastic one. The
+// captured sulfur chain still has both pipe inputs on its west edge (the generator now puts water on the east end),
+// facing a 2-wide gap by the steam block that cannot hold two fluids: its crude line stays unroutable here.
+replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-science-pack>labs.in-crude-oil", failureExcludes: "=>plastic-bar>advanced-circuit>chemical-science-pack>labs.in-crude-oil" })
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.

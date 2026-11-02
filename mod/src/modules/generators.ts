@@ -938,7 +938,7 @@ function boxTile(facts: ProtoFacts, entity: string, production: "input" | "outpu
  * port at x = 0), inserters (one feeding, one long-handed taking out per plant), chemical plants facing south, their
  * intermediate risers, the intermediate manifold, the refineries' risers, refineries facing north, raw-fluid risers, the
  * raw-fluid manifold (`pipe-in` port at x = 0); with a second fluid (sulfur's water) pipe-to-ground pairs run from each
- * plant's other box under everything to a manifold at the bottom (`pipe-in`). Only risers touch a machine's box, so the
+ * plant's other box under everything to a manifold at the bottom (`pipe-in` port at its east end). Only risers touch a machine's box, so the
  * boxes a recipe does not use touch no pipe and two fluids never meet.
  */
 export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
@@ -1006,7 +1006,10 @@ export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
     { id: "power", kind: "power", pos: { x: 2.5, y: 2.5 }, dir: NORTH },
   ]
   if (solidsIn.length > 0) ports.push({ id: `in-${solidsIn[0].name}`, kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: EAST, item: solidsIn[0].name })
-  if (other !== undefined) ports.push({ id: `in-${other.name}`, kind: "pipe-in", pos: { x: 0.5, y: 17.5 }, dir: EAST, item: other.name })
+  // M7c.8: the other fluid's port is on the east end of its manifold, so the two lines come from opposite sides. Both
+  // on the west edge, two tiles apart, the second line could only pass beside the first port's outside tile (and join
+  // it); on seed 11 a 2-wide gap held both approaches.
+  if (other !== undefined) ports.push({ id: `in-${other.name}`, kind: "pipe-in", pos: { x: W - 0.5, y: 17.5 }, dir: WEST, item: other.name })
   const draft: ModuleDraft = {
     id: `fluid-chain/${p.recipe}/${C}/${R}`,
     source: "generated",
