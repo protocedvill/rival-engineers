@@ -6,9 +6,9 @@ import type { GoalSpec } from "./design"
 import type { FactoryGoal, FactoryState } from "./factory"
 
 /**
- * M7c (user-approved 2026-11-02): a building goal that has placed nothing for `stallTicks`. It holds no ordering lock:
- * the goals that would unblock it may start (seed 11: the blue line waited ~6 game-hours on 3 pumpjacks needing steel,
- * while the iron mine feeding its steel waited for it to finish).
+ * M7c (user-approved 2026-11-02): a building goal that has placed nothing for `stallTicks`. Growths stop waiting for it
+ * (B52/B98 in `startGrow`), so the ones that would unblock it may start (seed 11: the blue line waited ~6 game-hours on
+ * 3 pumpjacks needing steel, while the iron mine feeding its steel waited for it). It keeps its kind's ordering lock.
  */
 export function goalStalled(tick: number, stallTicks: number, g: FactoryGoal | undefined): boolean {
   if (g === undefined || g.status !== "building") return false
