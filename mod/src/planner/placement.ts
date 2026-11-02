@@ -1785,7 +1785,7 @@ function grownPortBlocker(state: LayoutState, terrain: TerrainView, m: PlacedMod
     const occ = state.occ[tkey(o.x, o.y)]
     if (occ !== undefined && occ !== `m:${m.id}` && occ !== `x:${m.id}` && !isPoleTag(occ)) return `port ${p.id} outside tile occupied`
     const b = terrain.block(o.x, o.y)
-    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return `port ${p.id} outside tile blocked`
+    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return `port ${p.id} outside tile ${o.x},${o.y} blocked (terrain ${b})`
   }
   return undefined
 }

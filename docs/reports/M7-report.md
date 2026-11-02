@@ -733,7 +733,12 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
     - *"labs#2" lacks copper upstream.* Its cable assemblers (x 459/467, y 12.5) are empty, so its green circuits are
       short of cable, its advanced circuit column (x 393.5) has plastic and cable but no green circuits, and its packs
       (x 386.5) get sulfur and engines but almost no advanced circuits. The reconciler found it: the copper smelter
-      n329 runs flat out, and both attempts to grow it failed with "port in-fuel outside tile blocked". Not fixed.
+      n329 runs flat out, and both attempts to grow it failed with "port in-fuel outside tile blocked". Diagnosed
+      (the message now names the tile and its terrain): growing moves the fuel port 4 tiles east, onto (453,11), where
+      the underground exit of another route (coal to steam block power#4, n168) stands; the smelter's own fuel route
+      is ripped and freed, that one is not. The block is real. After `GROW_MAX_FAILS` (3) the design would plan a
+      parallel copper provider, but in three 54-min resumes from minute 780 the third attempt never came (failure 2
+      at the start of each, then no copper growth). Why the reconciler does not retry is open.
     - *The "labs" circuit route was being rebuilt.* Its first pieces beside circuit module n287 (x 562, y -67) are
       belt ghosts with place jobs: growth goal g112 picked up 182 entities and is placing 189. Both crew members were
       busy with other jobs (refuels, inserts, walks), so the ghosts waited. Not a bug, but the chain's circuit supply
