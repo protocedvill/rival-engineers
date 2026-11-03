@@ -1065,6 +1065,19 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
    modular armour with personal roboports for the crew.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
+7. **In-place upgrades (D82 a, user request in-session 2026-11-03).** Once a better entity is researched and the mall
+   stockpile holds enough of it, existing modules are upgraded where they stand rather than rebuilt: red belts
+   (30/s) along a belt whose flow needs them, steel furnaces in smelter columns, assembling machine 2 in assembler
+   rows, fast inserters, medium (steel) power poles so the crew stops mining wood. Research: mining productivity
+   (+10% per level for every mine) and research productivity. *Proposed approach:* an upgrade is a build job that
+   swaps entity for entity (same position and direction; the old one goes back to the stockpile), so no plan or route
+   changes; the module's declared rates are recomputed with the new entities; a belt is upgraded only where the
+   measured or planned flow exceeds a yellow lane, a module only when its output is short.
+8. **Modular armour, batteries and an exoskeleton (D82 b)** so the crew walks faster (and carries the personal
+   roboport of item 5).
+9. **Solar panels and accumulators (D82 c)** where adding or upgrading steam power costs more; panels are meant to be
+   easy to move. *Proposed:* a solar-field module (panels, accumulators, poles) placed like other modules, picked up and
+   re-placed when its ground is needed.
 
 ### Magic numbers for the user (M7)
 
