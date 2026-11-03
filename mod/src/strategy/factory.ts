@@ -1134,11 +1134,13 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
   const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
+  // M7c.8: wells of the layout's fields (planned too) and of this goal's earlier fields are taken.
+  const takenWells = OIL.moduleWells(f.layout.modules.map((x) => x.canonical))
   for (const m of modules) {
     if (m.def.generator !== "pumpjack-field") continue
     const n = g.nodes.find((x) => x.id === m.id)!
     const resource = (n.params.resource as string | undefined) ?? "crude-oil"
-    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params))
+    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells)
     if (field === undefined) {
       transitionGoal(g, "failed")
       g.deferred = true
@@ -1148,6 +1150,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     }
     m.def = field.def
     m.at = field.at
+    OIL.moduleWells([field.def], takenWells)
     EX.knowRect(f, { x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
   }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }

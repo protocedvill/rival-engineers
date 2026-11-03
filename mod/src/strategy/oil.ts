@@ -3,7 +3,7 @@
 // generated again from a real field near the plan's centre and placed exactly there (`ModuleRequest.at`).
 
 import { LuaSurface } from "factorio:runtime"
-import { encodeWells } from "../modules/generators"
+import { decodeWells, encodeWells } from "../modules/generators"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import type { Rect, Vec } from "../planner/grid"
@@ -54,7 +54,7 @@ function wellTaken(surface: LuaSurface, at: Vec): boolean {
   return findEntities(surface, { type: "mining-drill", area, limit: 1 }).length > 0 || findEntities(surface, { ghost_type: "mining-drill", area, limit: 1 }).length > 0
 }
 
-export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
+export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, taken?: Record<string, boolean>): { def: ModuleDef; at: Vec } | undefined {
   // B115: only known ground (the plan's chunk rule), generated now if it is not yet: a mine's patch search generates its
   // chunks through the planner's terrain scan, this search reads the surface directly.
   const chunks: Vec[] = []
@@ -76,7 +76,7 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     for (const e of findEntities(surface, { type: "resource", name: resource, area })) {
       // B118: an area search matches boxes that overlap it: a well on a chunk border was found in both chunks.
       if (math.floor(e.position.x / 32) !== c.x || math.floor(e.position.y / 32) !== c.y) continue
-      if (wellTaken(surface, e.position)) continue
+      if (wellTaken(surface, e.position) || taken?.[`${math.floor(e.position.x)},${math.floor(e.position.y)}`] === true) continue
       wells.push({ x: math.floor(e.position.x), y: math.floor(e.position.y), perSecond: wellRate(resource, e.amount, pumpjack) })
     }
   }
@@ -178,4 +178,17 @@ function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack
     return undefined
   }
   return { def: def as ModuleDef, at: { x: at.x, y: at.y } }
+}
+
+/**
+ * M7c.8: wells (tile `x,y`) of pumpjack-field modules, planned or built: a new field must not take them. A goal with two
+ * crude providers picked the same free field twice (seed 11, g164/g165: "no room at its fixed spot", 8 plans), since
+ * `wellTaken` sees only pumpjacks already on the ground.
+ */
+export function moduleWells(defs: ModuleDef[], into: Record<string, boolean> = {}): Record<string, boolean> {
+  for (const d of defs) {
+    if (d.generator !== "pumpjack-field" || typeof d.params?.wells !== "string") continue
+    for (const w of decodeWells(d.params.wells as string)) into[`${w.x},${w.y}`] = true
+  }
+  return into
 }

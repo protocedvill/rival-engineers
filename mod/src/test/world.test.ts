@@ -4,7 +4,7 @@ import { clearConfigOverrides, getConfig } from "../config"
 import { destroyFaction } from "../jobs/faction"
 import { exploreNow, positionDistance } from "../world/resources"
 import { hasWater, repairStartingLake } from "../world/spawn"
-import { fieldModule } from "../strategy/oil"
+import { fieldModule, moduleWells } from "../strategy/oil"
 import { generatedModule } from "../modules/library"
 import { ModuleDef } from "../modules/types"
 import { at, createLab } from "./lab"
@@ -104,5 +104,20 @@ describe("oil fields", () => {
     assert(wellCount(find()) === 1, `a ghost's well too (${wellCount(find())})`)
     s.create_entity({ name: "pumpjack", position: wells[2], force: "player" })
     assert(find() === undefined, "no free well: no field")
+  })
+
+  test("M7c.8: wells of a planned field (not built yet) are taken too", () => {
+    // Seed 11, minute 947: a goal with two crude providers picked the same free field for both (g164/g165, "no room at
+    // its fixed spot", 8 plans): only pumpjacks on the ground counted as taken.
+    const lab = createLab(24)
+    const s = lab.surface
+    for (const w of [at(lab, -6.5, 0.5), at(lab, 0.5, 0.5)]) s.create_entity({ name: "crude-oil", position: w, amount: 300000 })
+    const region = { x: math.floor(lab.origin.x) - 24, y: math.floor(lab.origin.y) - 24, w: 48, h: 48 }
+    const taken: Record<string, boolean> = {}
+    const find = () => fieldModule(s, region, () => true, lab.origin, "crude-oil", 1, "pumpjack", (params) => generatedModule("pumpjack-field", params), taken)
+    const first = find()
+    assert(wellCount(first) === 2, `a field of two wells (${wellCount(first)})`)
+    moduleWells([first!.def], taken)
+    assert(find() === undefined, "its wells are taken by the planned field: no second field there")
   })
 })

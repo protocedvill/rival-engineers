@@ -1218,7 +1218,7 @@ export function encodeWells(wells: { x: number; y: number; perSecond: number }[]
   return wells.map((w) => string.format("%d,%d,%g", w.x, w.y, w.perSecond)).join(";")
 }
 
-function decodeWells(s: string): { x: number; y: number; perSecond: number }[] {
+export function decodeWells(s: string): { x: number; y: number; perSecond: number }[] {
   const out: { x: number; y: number; perSecond: number }[] = []
   for (const [x, y, r] of string.gmatch(s, "(-?%d+),(-?%d+),([%d%.e%-]+)")) out.push({ x: tonumber(x)!, y: tonumber(y)!, perSecond: tonumber(r)! })
   return out

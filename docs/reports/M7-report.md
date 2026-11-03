@@ -870,6 +870,13 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       - With every arm cut (see above), the search now ends (`EXPLORE (D62) over`) and B53's pause holds the failed
         kind for `factory-site-retry-minutes`; before, it waited in its outpost phase and held production for good.
       P50 (SPEC §11) is withdrawn as framed: the hold only mattered because a free field read as none.
+      Resumed from minute 900 (`field-900`): the 4-well field was found at once, the search ended ("EXPLORE (D62)
+      over: goal g161 planned after 12 radar outposts"), g161 (9 modules) was built by minute ~927 and g162 by 947;
+      no stall. Then g164 and g165 failed 4 plans each "no room at its fixed spot: occupied at -366,47": each goal
+      had two crude providers (n483, n484), and both picked the same free field, because `wellTaken` sees only
+      pumpjacks on the ground. Wells of the layout's pumpjack-field modules (planned or built) and of the goal's
+      earlier fields now count as taken (`oil.ts` `moduleWells`, passed to `fieldModule`). T2 `world` "M7c.8: wells of
+      a planned field (not built yet) are taken too".
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.
