@@ -241,6 +241,38 @@ describe("job board", () => {
     })
   })
 
+  test("a batch tours a long belt line: several standing spots per haul (user request 2026-11-03)", () => {
+    // One member, 90 belt ghosts in a line from a stockpile at its start: with tours a batch walks on to the next spots,
+    // so the line takes fewer batches than one spot per batch (24 jobs from one spot reach at most ~17 tiles of a line).
+    // Config overrides are global, so the two runs go one after the other.
+    const lab = createLab(64)
+    const start = (spots: number, y: number): number => {
+      setConfigOverride("batchMaxSpots", spots)
+      const faction = createFaction(newFactionName(`tour${spots}`), { position: at(lab, -50, y + 4), crew: 1 })
+      for (let x = -45; x < 45; x++) assert(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, x + 0.5, y + 0.5), direction: defines.direction.east, force: faction.force }), `ghost at ${x}`)
+      stockpile(lab, faction, -50.5, y + 2.5, { "transport-belt": 90 })
+      assert(planGhosts(faction, {}) === 90, "90 place jobs")
+      return faction.crew[0]
+    }
+    const finished = (id: number): boolean => storage.crew[id].claims.length === 0 && storage.crew[id].stats.jobsDone >= 90
+    const one = start(1, -20)
+    let four: number | undefined
+    async(30000)
+    on_tick(() => {
+      if (four === undefined) {
+        if (finished(one)) four = start(4, 10)
+        return
+      }
+      if (!finished(four)) return
+      const b1 = storage.crew[one].stats.batches
+      const b4 = storage.crew[four].stats.batches
+      log(`[tour] batches: 1 spot ${b1}, 4 spots ${b4}`)
+      clearConfigOverrides()
+      assert(b4 < b1, `tours take fewer batches (${b4} against ${b1})`)
+      done()
+    })
+  })
+
   test("a blocked ghost fails with a reason after bounded retries and blocks nothing else", () => {
     const lab = createLab(32)
     const faction = createFaction(newFactionName("blocked"), { position: at(lab, 0, 12), crew: 2 })

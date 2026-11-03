@@ -27,6 +27,12 @@ export interface Config {
   jobRetryTicks: number
   /** Most jobs one crew member claims as one locality batch. */
   batchMaxJobs: number
+  /** Most standing spots one place / fuel batch walks to in a row (1 = one spot, the M2 batch). */
+  batchMaxSpots: number
+  /** A batch's next standing spot serves the nearest ready job within this many tiles of the last spot. */
+  batchSpotHop: number
+  /** D66 prefetch (materials for ready jobs beyond the batch) only when the source is at least this many tiles away. */
+  prefetchMinDistance: number
   /** Ticks a job waits after a transient failure (e.g. a character standing in the way). */
   jobBlockedRetryTicks: number
   /** Hand speed: ticks a crew member takes to place one entity once in reach (SPEC §5.7). */

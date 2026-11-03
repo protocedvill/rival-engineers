@@ -945,6 +945,17 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
         and double its limits: `batch-max-jobs` 12 → 24 (place jobs from one standing spot; the reach stays the
         engine's build distance), `trip-max-jobs` 20 → 40 and `trip-radius` 16 → 32 tiles (clear and wood trips; the
         bootstrap's wood jobs are crew × `trip-max-jobs`, so they double too).
+      - *Batch tours (user request in-session, 2026-11-03: "let them walk to more batching spots").* A place or fuel
+        batch walks on to further standing spots (`planTour`, `jobs/board.ts`): the first spot is the unchanged
+        batch; each next spot serves the nearest ready job of the kind within `batch-spot-hop` tiles of the last spot,
+        up to `batch-max-spots` spots, while the whole load fits the inventory (`trip-inventory-fill` of the free
+        stacks) and the jobs past the first spot stay within the member's share of the ready jobs of that kind
+        (ready / live crew, minus the first spot's `batch-max-jobs`). T2 `jobs` "a batch tours a long belt line": 90
+        belt ghosts from a stockpile at one end took 10 batches from one spot each, 4 with tours. T1 `board` "planTour".
+      - *Prefetch kept materials from the other member.* With 24-job batches the M2 two-crew build failed its idle bar
+        (crew 3 idle 40%): the first member's batch plus the D66 prefetch reserved the whole bill from a stockpile a few
+        tiles away, and the second member found 16 ready jobs whose materials were all taken. D66 was for far sources
+        (a 500-tile walk); prefetch now runs only when the source is at least `prefetch-min-distance` tiles away.
       - *A second crude field's box took in the first field.* g166/g167 failed 8 plans in a row ("no room at its
         fixed spot: structure at -442,-169"): the free wells north of a one-well field (pumpjack at -437.5,-164.5)
         formed one field whose box (wells + 2-tile margin) covered that pumpjack and two of its poles (probe
@@ -1012,5 +1023,8 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Max jobs per place batch | `settings.ts` `batch-max-jobs` | 24 (was 12) | User decision in-session 2026-11-03: doubled. | yes |
 | Max jobs per clear/wood trip | `settings.ts` `trip-max-jobs` | 40 (was 20) | User decision in-session 2026-11-03: doubled (bootstrap wood jobs = crew × this). | yes |
 | Clear/wood trip radius | `settings.ts` `trip-radius` | 32 tiles (was 16) | User decision in-session 2026-11-03: doubled. | yes |
+| Standing spots per batch tour | `settings.ts` `batch-max-spots` | 4 | Agent guess for the user's request (proposed): about 70 tiles of belt line per haul with 24-job spots. | yes |
+| Batch tour hop | `settings.ts` `batch-spot-hop` | 32 tiles | Agent guess (proposed): twice the trip radius; a gap wider than this ends the tour. | yes |
+| Prefetch minimum source distance | `settings.ts` `prefetch-min-distance` | 64 tiles | Agent guess (proposed): a source this near is a short round trip, so nothing is carried for unclaimed jobs. | yes |
 | Pipe corridor budget share | `planner/pipe-router.ts` `PIPE_CORRIDOR_SHARE` | 0.5 of the pipe search budget | Agent guess (M7c.9): leaves the whole-area search half the budget after a corridor dead end; g160 routes with it. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

@@ -14,7 +14,7 @@ import {
   ItemCount,
   Job,
   missingMaterials,
-  planBatch,
+  planTour,
   planTrip,
   Pos,
   prefetchJobs,
@@ -913,6 +913,8 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
 
   let jobs: CrewJob[] = [anchor]
   let spot: Pos | undefined
+  // Further standing spots of a tour (their jobs follow the first spot's in `jobs`).
+  const legSpots: { jobs: number[]; spot?: Pos }[] = []
   if (anchor.kind === "place" || anchor.kind === "fuel") {
     // Stand where every job of the batch is in reach. Plan from the stockpile when the member must fetch
     // materials first, since that is where it will walk from.
@@ -921,16 +923,32 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     if (missing.length > 0) from = nearestSource(faction, pos, missing[0].item, config)?.position ?? pos
     const reach = (anchor.kind === "place" ? character.build_distance : character.reach_distance) - 1.5
     const surface = character.surface
-    const batch = planBatch(board, anchor, from, tick, {
+    // User request (in-session, 2026-11-03): the batch walks on to more standing spots (`planTour`), taking no more
+    // than this member's share of the ready jobs of its kind beyond the first spot, and no more than the inventory holds.
+    let ready = 0
+    for (const id of board.active) {
+      const j = board.jobs[id]
+      if (j.kind === anchor.kind && j.status === "open" && isReady(board, j, tick)) ready++
+    }
+    let alive = 0
+    for (const id of faction.crew) if (!storage.crew[id].dead) alive++
+    const legs = planTour(board, anchor, from, tick, {
       reach,
       maxJobs: config.batchMaxJobs,
       accept,
       isFree: (p) => surface.can_place_entity({ name: "character", position: p }),
       extraAvoid: otherSpots(faction, member),
+      maxSpots: config.batchMaxSpots,
+      hop: config.batchSpotHop,
+      maxTotal: math.max(0, math.ceil(ready / math.max(1, alive)) - config.batchMaxJobs),
+      slots: character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill,
+      slotsFor: stacksFor,
+      held,
     })
     jobs = []
-    for (const id of batch.jobs) jobs.push(board.jobs[id])
-    spot = batch.spot
+    for (const leg of legs) for (const id of leg.jobs) jobs.push(board.jobs[id])
+    spot = legs[0].spot
+    for (let i = 1; i < legs.length; i++) legSpots.push(legs[i])
   } else if (isTripJob(faction, anchor)) {
     // B3: chain nearby clears and wood gathers into one trip instead of a depot round trip per job.
     const inv = character.get_main_inventory()!
@@ -970,7 +988,9 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (anchor.kind === "place" && missing.length > 0) {
     const source = nearestSource(faction, pos, missing[0].item, config)
     const to = spot ?? anchor.pos
-    if (source !== undefined) {
+    // A near source is no long round trip, and prefetched items are kept from the other members (M2 two-crew build:
+    // a 24-job batch plus prefetch carried the whole bill; the other member idled 40% on "materials").
+    if (source !== undefined && distance(source.position, to) >= config.prefetchMinDistance) {
       const slots = character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill
       const extra = prefetchJobs(board, jobs, to, distance(source.position, to), tick, held, slots, stacksFor, accept)
       if (extra.length > 0) missing = missingMaterials([...jobs, ...extra, ...crafts], held)
@@ -985,7 +1005,19 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }), spot })
   }
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
-  else for (const job of jobs) enqueueWork(faction, member, job)
+  else {
+    // A tour: the first spot's jobs, then for each further spot a walk there and its jobs (those still in `jobs`
+    // after the materials fit).
+    const inLeg: Record<number, boolean> = {}
+    for (const leg of legSpots) for (const id of leg.jobs) inLeg[id] = true
+    for (const job of jobs) if (!inLeg[job.id]) enqueueWork(faction, member, job)
+    for (const leg of legSpots) {
+      const kept = jobs.filter((j) => leg.jobs.indexOf(j.id) >= 0)
+      if (kept.length === 0) continue
+      if (leg.spot !== undefined) member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: leg.spot, radius: 0.4 }), spot: leg.spot })
+      for (const job of kept) enqueueWork(faction, member, job)
+    }
+  }
   for (const c of crafts) finishCraft(member, c)
 }
 
