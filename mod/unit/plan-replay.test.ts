@@ -17,6 +17,7 @@ import { newSearch, RouteRequest, stepSearch } from "../src/planner/router"
 import { checkClaimOwners } from "../src/planner/claims"
 import { unpoweredModules } from "../src/planner/power"
 import { finishReplay, startTrace } from "./dump"
+import { planTrace } from "../src/planner/trace"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -67,7 +68,8 @@ declare function loadfile(this: void, path: string): ((this: void) => unknown) |
 
 function load(name: string, captured = false): PlanInput {
   // $UNIT_SRC: mod/unit (set by the T1 runner, whatever the build dir); else relative to mod/build-unit.
-  const chunk = loadfile(`${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
+  // REPLAY_ADHOC passes capture files by absolute path (a soak's plans/slow/*.input.lua).
+  const chunk = loadfile(string.sub(name, 1, 1) === "/" ? name : `${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
   if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
   const fx = chunk() as PlanInput
   // M7c.8 captures run-length encode their rows (runtime.ts exportPlanInput).
@@ -110,8 +112,8 @@ interface ReplayOptions {
   undergrounds?: boolean
   /** Tiles (x1, y1, x2, y2 inclusive) the capture saw as own ground that hold nothing: free them (stale reservations). */
   free?: [number, number, number, number][]
-  /** Expected outcome (default done). */
-  expect?: "done" | "failed"
+  /** Expected outcome (default done; "any": an ad-hoc replay, reported only). */
+  expect?: "done" | "failed" | "any"
   /** Text required in a failed replay's certificate. */
   failureIncludes?: string
   /** Text forbidden in a failed replay's certificate. */
@@ -187,6 +189,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       },
       ore: (x, y) => view.ore(x, y),
     }
+    if (os.getenv("REPLAY_SEARCHES") !== undefined) planTrace.searches = (line) => print(`  SEARCH ${line}`)
     startTrace()
     const stopProfile = os.getenv("REPLAY_PROFILE") !== undefined ? startProfile() : undefined
     runJob(job, terrain, F, fx.policy, 100000)
@@ -195,8 +198,10 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
     if (os.getenv("REPLAY_DUMP") !== undefined) for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h} rot ${m.transform.rot}${m.transform.mirror ? " mirror" : ""}`)
-    finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === (opts.expect ?? "done"))
-    ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
+    planTrace.searches = undefined
+    const expected = opts.expect === "any" ? job.phase : opts.expect ?? "done"
+    finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === expected)
+    ok(job.phase === expected, `plan ${expected} (${job.phase}: ${why.join("; ")})`)
     if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
     if (opts.failureExcludes !== undefined) ok(string.find(why.join("; "), opts.failureExcludes, 1, true)[0] === undefined, `failure excludes ${opts.failureExcludes}: ${why.join("; ")}`)
     // M7c.8: the game discards a finished plan whose claims name a missing owner (plan-delta); so does a replay.
@@ -851,5 +856,8 @@ replay("m7-seed11-g78-a3", { expect: "done" })
 // all its belts can leave together within `portEgress` tiles (egress.ts), and a connection that rips the same route
 // again moves a module at once: 2.8M work, no rip-ups, no re-placements.
 replay("m7-seed11-g104-slow", { expect: "done" })
+// REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
+// line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
+for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })
 
 run("plan-replay")

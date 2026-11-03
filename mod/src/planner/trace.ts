@@ -83,7 +83,11 @@ export interface PlacementAcc {
   rejected: Record<string, { count: number; examples: { ti: number; ox: number; oy: number; dist: number }[] }>
 }
 
-export const planTrace: { sink?: PlanTraceSink } = {}
+/**
+ * `sink`: the decision trace (above). `searches`: one line per finished route search (connection, outcome, rip-up mode,
+ * window, work units, and what a rip-up displaced), for replays (`REPLAY_SEARCHES=1`); the mod never sets either.
+ */
+export const planTrace: { sink?: PlanTraceSink; searches?: (this: void, line: string) => void } = {}
 
 export function newTraceSink(maxTop = 8, maxExamples = 3): PlanTraceSink {
   return { placements: [], routeFailures: [], events: [], maxTop, maxExamples }

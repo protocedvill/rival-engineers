@@ -201,7 +201,7 @@ export interface PlanJob {
   ripPairs?: Record<string, boolean>
   /** M7: the fluid connection being routed (its search runs over several steps). */
   pipe?: PipeJob
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
   failures: Record<string, string>
   /** D69: the same failures, typed (the factory decides from `kind`, never from the text). */
   failed?: Record<string, PlanFailure>
@@ -521,6 +521,8 @@ export interface PipeJob {
   /** Tiles of other fluids (other routes, other pipe ports). */
   fluids: Record<number, boolean>
   costReq: RouteRequest
+  /** Work so far (only kept while `planTrace.searches` is set). */
+  work?: number
 }
 
 /** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
@@ -684,6 +686,10 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budg
   const used = stepPipeSearch(s, pipeCallbacks(job, terrain, policy, pj), budget)
   job.stats.routeWork += used
   job.stats.expansions += used
+  if (planTrace.searches !== undefined) {
+    pj.work = (pj.work ?? 0) + used
+    if (s.status !== "running") planTrace.searches(`pipe ${pj.conn} ${s.status} work=${math.floor(pj.work)}`)
+  }
   if (s.status === "running") return used
   job.pipe = undefined
   const c = connection(job, pj.conn)
@@ -1298,6 +1304,13 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   job.stats.routeWork += used
   job.stats.expansions += used
   const st = cur.search.status
+  if (planTrace.searches !== undefined) {
+    cur.work = (cur.work ?? 0) + used
+    if (st !== "running") {
+      planTrace.searches(`belt ${cur.conn} ${st} rip=${cur.rip} win=${cur.winScale ?? 1} work=${math.floor(cur.work)} ${cur.search.reason ?? ""}`)
+      cur.work = 0
+    }
+  }
   if (st === "running") return used
   if (st === "failed") searchFailed(job, terrain, facts, policy, cur)
   else searchFound(job, terrain, facts, policy, cur)
@@ -1488,6 +1501,7 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     const vr = job.layout.routes[v]
     if (vr !== undefined) (job.ripPairs ??= {})[`${cur.conn}>${vr.conn}`] = true
   }
+  if (planTrace.searches !== undefined && res.victims.length > 0) planTrace.searches(`  rips ${res.victims.join(" ")}`)
   for (const v of res.victims) {
     for (const removed of ripRoute(job.layout, routeId(v))) {
       const conn = removed.substring("route:".length)
