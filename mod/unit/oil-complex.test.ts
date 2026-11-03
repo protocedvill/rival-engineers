@@ -1,4 +1,4 @@
-import { oilComplex } from "../src/modules/generators"
+import { chemRow, oilComplex } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { rateOf } from "../src/modules/rates"
 import { ModuleDef } from "../src/modules/types"
@@ -33,7 +33,7 @@ interface Net {
   unpaired: string[]
 }
 
-/** Flood the module's pipe networks (all machines face north, as the generator places them). */
+/** Flood the module's pipe networks (machines face north or south, as the generators place them). */
 function networks(def: ModuleDef): Net {
   const kind: Record<string, { name: string; dir: number }> = {}
   for (const e of def.entities) if (e.name === "pipe" || e.name === "pipe-to-ground") kind[key(math.floor(e.x), math.floor(e.y))] = { name: e.name, dir: (e.dir ?? 0) / 4 }
@@ -109,9 +109,14 @@ function networks(def: ModuleDef): Net {
     for (const b of f.fluidBoxes) {
       counts[b.production] = (counts[b.production] ?? 0) + 1
       const c = b.connections[0]
-      const tile = key(math.floor(e.x) + c.x + DX[c.dir], math.floor(e.y) + c.y + DY[c.dir])
+      // Facing north or south (the generators place no other): south turns offsets and directions by 180°.
+      const south = (e.dir ?? 0) === 8
+      const cx = south ? -c.x : c.x
+      const cy = south ? -c.y : c.y
+      const d = south ? (c.dir + 2) % 4 : c.dir
+      const tile = key(math.floor(e.x) + cx + DX[d], math.floor(e.y) + cy + DY[d])
       const fluid = fluidInBox(b.production === "input" ? r.ingredients : r.products, counts[b.production])
-      label(tile, fluid, (c.dir + 2) % 4)
+      label(tile, fluid, (d + 2) % 4)
     }
   }
   for (const p of def.ports) {
@@ -199,6 +204,41 @@ test("oil complex: the network check catches a cut manifold and a pipe joining t
   ok(!def.entities.some((e) => math.floor(e.x) === 1 && math.floor(e.y) === 2), "the join tile is free")
   const joined = { ...def, entities: [...def.entities, { name: "pipe", x: 1.5, y: 2.5 }] }
   ok(networks(joined).mixed.length > 0, "a pipe joining water and heavy oil is a mixed network")
+})
+
+test("chem row: plastic, sulfur, sulfuric acid and batteries fed by pipe, 1–4 plants", () => {
+  const cases: [string, string, string][] = [
+    // recipe, product port kind, the expected port list
+    ["plastic-bar", "belt-out", "belt-in:coal belt-out:plastic-bar pipe-in:petroleum-gas power:"],
+    ["sulfur", "belt-out", "belt-out:sulfur pipe-in:petroleum-gas pipe-in:water power:"],
+    ["sulfuric-acid", "pipe-out", "belt-in:iron-plate belt-in:sulfur pipe-in:water pipe-out:sulfuric-acid power:"],
+    ["battery", "belt-out", "belt-in:copper-plate belt-in:iron-plate belt-out:battery pipe-in:sulfuric-acid power:"],
+  ]
+  for (const [recipe, outKind, kinds] of cases) {
+    let last = 0
+    for (let c = 1; c <= 4; c++) {
+      const def = chemRow(F, { recipe, chemPlants: c })
+      const tag = `${recipe} × ${c}`
+      eq(def.ports.map((p) => `${p.kind}:${p.item ?? ""}`).sort().join(" "), kinds, `${tag}: ports`)
+      eq(def.ports.find((p) => p.item === recipe)?.kind, outKind, `${tag}: product port`)
+      const net = networks(def)
+      eq(net.unpaired.join(" "), "", `${tag}: pairs`)
+      eq(net.mixed.join("; "), "", `${tag}: one fluid per network`)
+      eq(net.unusedTouched.join(" "), "", `${tag}: unused boxes`)
+      for (const [fl, set] of pairs(net.fluids)) eq(components(set).length, 1, `${tag}: ${fl as string} connected (${components(set).join(" ")})`)
+      const power = powerCheck(def.entities, F)
+      eq(power.unpowered.join(", "), "", `${tag}: powered`)
+      eq(power.networks, 1, `${tag}: one pole network`)
+      const out = rateOf(def.rates.outputs, recipe)
+      ok(out > last, `${tag}: output ${out} grows with the plants (was ${last})`)
+      last = out
+      for (const p of def.ports) if (p.kind === "pipe-in") eq(def.rates.inputs.find((r) => r.item === p.item)?.kind, "fluid", `${tag}: ${p.item} is a fluid input`)
+    }
+  }
+  // Batteries: 4 s per craft, no inserter limit: 0.25/s per plant, 5 acid/s.
+  const bat = chemRow(F, { recipe: "battery", chemPlants: 2 })
+  near(rateOf(bat.rates.outputs, "battery"), 0.5, 1e-6, "batteries")
+  near(rateOf(bat.rates.inputs, "sulfuric-acid"), 10, 1e-6, "acid")
 })
 
 run("oil-complex")

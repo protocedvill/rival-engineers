@@ -1538,7 +1538,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   EX.exploreDone(ctx, g)
   // With frame dumps on (soaks), every adopted plan's input too (before its layout becomes the base): plan-replay
   // fixtures for planner changes (D36 / B2).
-  if (ctx.config.frameDumpIntervalTicks > 0) RT.exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`)
+  if (ctx.config.frameDumpIntervalTicks > 0) RT.exportPlanInput(entry, `rival-engineers/plans/${ctx.faction.name}/${g.id}-a${g.attempts}-t${ctx.tick}.input.lua`, 3000)
   f.layout = layout
   const parts = delta.add
   for (const n of g.nodes) {

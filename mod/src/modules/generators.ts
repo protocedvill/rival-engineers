@@ -1028,6 +1028,112 @@ export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Chemistry row (M7d.3)
+
+export interface ChemRowParams extends CommonParams {
+  /** A chemical-plant recipe: 1–2 fluid ingredients, 0–2 solid ingredients, one product (solid or fluid). */
+  recipe: string
+  chemPlants: number
+  chemPlant?: string
+  pipe?: string
+  pipeToGround?: string
+  longInserter?: string
+}
+
+/**
+ * Chemical plants fed by pipe (petroleum gas from an oil complex, water, sulfuric acid), so they need no refinery of
+ * their own (unlike `fluid-chain`). Rows, top to bottom, with T = 1 when the product is a fluid and 0 otherwise:
+ *   0          product: a belt flowing west (port at x = 0), or a pipe manifold (`pipe-out` port at x = 0)
+ *   1          (T = 1) the product risers' pipe-to-ground exits, under the solid-input belt
+ *   T+1        solid-input belt flowing west, fed at the east tail column (two solids: one per lane, as assembler rows)
+ *   T+2        inserters: input from the belt, a long-handed one taking a solid product to row 0; a pole per plant;
+ *              with a fluid product the riser's pipe-to-ground entrance on the plant's output box
+ *   T+3..T+5   chemical plants facing south (inputs at the bottom)
+ *   T+6        input risers: a pipe into the first fluid's manifold, or a pipe-to-ground entrance for the second
+ *   T+7        first fluid's manifold (`pipe-in` at x = 0)
+ *   T+8, T+9   (two fluids) the second fluid's pipe-to-ground exits and its manifold (`pipe-in` at the east end)
+ * Only risers touch a machine's fluid boxes, so boxes the recipe does not use touch nothing.
+ */
+export function chemRow(facts: ProtoFacts, p: ChemRowParams): ModuleDef {
+  const chem = p.chemPlant ?? "chemical-plant"
+  const pipe = p.pipe ?? "pipe"
+  const ptg = p.pipeToGround ?? "pipe-to-ground"
+  const long = p.longInserter ?? "long-handed-inserter"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  const recipe = solidRecipe(facts, p.recipe)
+  const fluidsIn = recipe.ingredients.filter((i) => i.fluid === true)
+  const solidsIn = recipe.ingredients.filter((i) => i.fluid !== true)
+  if (fluidsIn.length < 1 || fluidsIn.length > 2 || solidsIn.length > 2 || recipe.products.length !== 1) {
+    error(`chem-row: ${p.recipe} needs 1–2 fluids, at most 2 solids and one product`)
+  }
+  const product = recipe.products[0]
+  const fluidOut = product.fluid === true
+  const T = fluidOut ? 1 : 0
+  const C = math.max(1, p.chemPlants)
+  const xt = 1 + 3 * C
+  const W = xt + 1
+  const two = fluidsIn.length === 2
+  const H = T + (two ? 10 : 8)
+  const cy = T + 4.5
+  const firstBox = fluidInBox(recipe.ingredients, 1) === fluidsIn[0].name ? 1 : 2
+  for (let j = 0; j < C; j++) {
+    const c0 = 1 + 3 * j
+    L.add(chem, c0 + 1.5, cy, SOUTH, { recipe: recipe.name })
+    L.poleAt(c0 + 1.5, T + 2.5)
+    let insX = c0 + 0.5
+    if (fluidOut) {
+      const o = boxTile(facts, chem, "output", 1, c0 + 1.5, cy, 2)
+      L.add(ptg, o.x + 0.5, o.y + 0.5, SOUTH)
+      L.add(ptg, o.x + 0.5, 1.5, NORTH)
+      insX = o.x === c0 ? c0 + 2.5 : c0 + 0.5
+    } else {
+      L.add(long, c0 + 2.5, T + 2.5, SOUTH)
+    }
+    if (solidsIn.length > 0) L.ins(insX, T + 2.5, NORTH)
+    for (let b = 1; b <= fluidsIn.length; b++) {
+      const t = boxTile(facts, chem, "input", b, c0 + 1.5, cy, 2)
+      if (b === firstBox) L.add(pipe, t.x + 0.5, t.y + 0.5)
+      else {
+        L.add(ptg, t.x + 0.5, t.y + 0.5, NORTH)
+        L.add(ptg, t.x + 0.5, T + 8.5, SOUTH)
+      }
+    }
+  }
+  // Product: belt or manifold on row 0 up to the tail column.
+  for (let x = 0; x < xt; x++) {
+    if (fluidOut) L.add(pipe, x + 0.5, 0.5)
+    else L.beltAt(x + 0.5, 0.5, WEST)
+  }
+  for (let x = 0; x < W; x++) L.add(pipe, x + 0.5, T + 7.5)
+  if (two) for (let x = 0; x < W; x++) L.add(pipe, x + 0.5, T + 9.5)
+  const ports: Port[] = [
+    { id: `out-${product.name}`, kind: fluidOut ? "pipe-out" : "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name },
+    { id: `in-${fluidsIn[0].name}`, kind: "pipe-in", pos: { x: 0.5, y: T + 7.5 }, dir: EAST, item: fluidsIn[0].name },
+    { id: "power", kind: "power", pos: { x: 2.5, y: T + 2.5 }, dir: NORTH },
+  ]
+  if (two) ports.push({ id: `in-${fluidsIn[1].name}`, kind: "pipe-in", pos: { x: W - 0.5, y: T + 9.5 }, dir: WEST, item: fluidsIn[1].name })
+  if (solidsIn.length > 0) {
+    // From the tail to the first plant (column 0 would leak items out of the west edge).
+    for (let x = 1; x < xt; x++) L.beltAt(x + 0.5, T + 1.5, WEST)
+    for (const port of rowTail(L, xt, solidsIn.map((i) => i.name), T + 1)) ports.push(port)
+  }
+  const draft: ModuleDraft = {
+    id: `chem-row/${p.recipe}/${C}`,
+    source: "generated",
+    generator: "chem-row",
+    provenance: "generator chem-row (Rival Engineers)",
+    description: `${C} ${chem} (${p.recipe}) fed by pipe`,
+    footprint: { w: W, h: H },
+    entities: L.entities,
+    ports,
+    rotatable: true,
+    mirrorable: false,
+    params: { recipe: p.recipe, chemPlants: C },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Oil complex (M7d, D81)
 
 export interface OilComplexParams extends CommonParams {
@@ -1445,7 +1551,7 @@ export function decodeWells(s: string): { x: number; y: number; perSecond: numbe
 /** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
 const PUMPJACK_FIELD_MARGIN = 2
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1463,7 +1569,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "water-pump") return waterPump(facts, P)
   if (name === "pumpjack-field") return pumpjackField(facts, P)
   if (name === "oil-complex") return oilComplex(facts, P)
+  if (name === "chem-row") return chemRow(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]

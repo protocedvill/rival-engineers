@@ -1021,6 +1021,19 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      petroleum 36.6/s of 37.3 declared, lubricant 5.0/3.33; 4 + 0: petroleum 78.1/78.0.
 3. **Chemistry rows fed by pipe** (plastic, sulfur, sulfuric acid, batteries) and an assembler row with a fluid input
    (electric engines take lubricant).
+   - **Chemistry rows: done.** Generator `chem-row` (`recipe`, `chemPlants`): chemical plants facing south, fed from
+     one or two fluid manifolds below them (the second through pipe-to-ground pairs under the first, its port on the
+     opposite end, as M7c.8), up to two solids on one input belt (one per lane, the assembler-row tail), the product on
+     a belt (long-handed inserters) or, for a fluid product, a manifold above the belt reached by pipe-to-ground risers.
+     Unlike `fluid-chain` it has no refinery: the petroleum comes from the oil complex. T1 (`oil-complex` file): the
+     network check (now for south-facing machines too), power and ports for the four recipes at 1–4 plants. T2
+     validation lab, 2 plants each: plastic 2.40/2.40 bars/s, sulfur 2.40/2.40, sulfuric acid 12.79/12.60 per s
+     (101.5%), batteries 0.50/0.50. The lab now measures fluid outputs: a pump (its own fluid segment) into a pipe
+     drained every tick.
+   - **Sulfuric acid is inserter-bound:** one inserter per plant feeds 6 items per craft, so a plant makes 6.3 acid/s of
+     its 50. Enough for about one battery plant per acid plant (5 acid/s each); more input inserters need the pole and
+     riser moved off the inserter row (later, if acid is short).
+   - The assembler row with lubricant (electric engines) is still to do.
 4. **Design** switches to the oil complex and piped rows once `advanced-oil-processing` is researched.
 5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
    modular armour with personal roboports for the crew.
@@ -1038,6 +1051,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Pumpjack field margin | `modules/generators.ts` `PUMPJACK_FIELD_MARGIN` | 2 tiles | Agent guess: room around the pumpjacks for the collector pipes and poles. | no |
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
+| Slow-plan capture | `planner/runtime.ts` `SLOW_PLAN_TICKS` | 3600 ticks (1 game-min) | Agent guess (diagnostics only, soaks with frame dumps): most plans finish well within a game-minute; one still planning then is captured to `plans/slow/` for a replay. Adopted plans are now captured up to a 3,000-tile side like failed ones (was 400: production regions are 768² and were never kept). | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |

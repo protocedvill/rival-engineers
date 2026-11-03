@@ -52,6 +52,8 @@ const RECIPES: RecipeFacts[] = [
   { name: "advanced-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "water", amount: 50, fluid: true }, { name: "crude-oil", amount: 100, fluid: true }], products: [{ name: "heavy-oil", amount: 25, fluid: true }, { name: "light-oil", amount: 45, fluid: true }, { name: "petroleum-gas", amount: 55, fluid: true }] },
   { name: "heavy-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "heavy-oil", amount: 40, fluid: true }], products: [{ name: "light-oil", amount: 30, fluid: true }] },
   { name: "light-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "light-oil", amount: 30, fluid: true }], products: [{ name: "petroleum-gas", amount: 20, fluid: true }] },
+  { name: "sulfuric-acid", energy: 1, category: "chemistry", ingredients: [{ name: "sulfur", amount: 5 }, { name: "iron-plate", amount: 1 }, { name: "water", amount: 100, fluid: true }], products: [{ name: "sulfuric-acid", amount: 50, fluid: true }] },
+  { name: "battery", energy: 4, category: "chemistry", ingredients: [{ name: "sulfuric-acid", amount: 20, fluid: true }, { name: "iron-plate", amount: 1 }, { name: "copper-plate", amount: 1 }], products: [{ name: "battery", amount: 1 }] },
   { name: "lubricant", energy: 1, category: "chemistry", ingredients: [{ name: "heavy-oil", amount: 10, fluid: true }], products: [{ name: "lubricant", amount: 10, fluid: true }] },
 ]
 

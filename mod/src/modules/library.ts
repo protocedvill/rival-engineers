@@ -115,6 +115,11 @@ export const V1_CATALOG: CatalogEntry[] = [
   // M7b: refineries under chemical plants (crude and water from infinity pipes in the lab).
   { name: "fluid-chain plastic 2/2", generator: "fluid-chain", params: { recipe: "plastic-bar", chemPlants: 2, refineries: 2 } },
   { name: "fluid-chain sulfur 1/1", generator: "fluid-chain", params: { recipe: "sulfur", chemPlants: 1, refineries: 1 } },
+  // M7d.3: chemistry rows fed by pipe (petroleum, water, sulfuric acid from infinity pipes; acid leaves by pipe).
+  { name: "chem-row plastic 2", generator: "chem-row", params: { recipe: "plastic-bar", chemPlants: 2 } },
+  { name: "chem-row sulfur 2", generator: "chem-row", params: { recipe: "sulfur", chemPlants: 2 } },
+  { name: "chem-row sulfuric-acid 2", generator: "chem-row", params: { recipe: "sulfuric-acid", chemPlants: 2 } },
+  { name: "chem-row battery 2", generator: "chem-row", params: { recipe: "battery", chemPlants: 2 }, slow: true },
   // M7c: three-ingredient rows (assembler 2; the third ingredient on its own belt).
   { name: "assembler-row engine 2", generator: "assembler-row", params: { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" }, slow: true },
   { name: "lab-array 4 blue", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack", "chemical-science-pack"] }, slow: true },

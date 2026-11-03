@@ -266,10 +266,16 @@ export function stepEntry(entry: PlannerEntry, budget?: number): void {
     countWork("placementCandidates", (st.candidates ?? 0) - c0)
     countWork("routerExpansions", st.expansions - e0)
     if (finished) entry.phase = entry.job!.phase === "done" ? "done" : "failed"
+    // Soaks (frame dumps on): a plan still planning after a game-minute is captured once, so a slow plan can be replayed
+    // and profiled whether it is adopted or not.
+    else if (entry.planTicks === SLOW_PLAN_TICKS && c.frameDumpIntervalTicks > 0) exportPlanInput(entry, `rival-engineers/plans/slow/${entry.id}-t${game.tick}.input.lua`, 3000)
     return
   }
   if (entry.build !== undefined && entry.build.phase !== "done") stepBuild(entry)
 }
+
+/** Plans still planning after this many ticks have their input captured in soaks (`plans/slow/`). */
+const SLOW_PLAN_TICKS = 3600
 
 /**
  * The planner's work budget (`planner-work-per-tick`) is the whole mod's, shared by the jobs planning this tick (user,
