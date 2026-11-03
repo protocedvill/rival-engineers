@@ -941,6 +941,10 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
         lift had to clear). A finished clear is now a step too (`jobs/crew.ts`). A clear phase that finishes nothing
         within the stall window is still a stall and still recovers. **Open:** clearing is walk-bound
         (nearest-first, two members), and ghosts wait for every clear of their build, not only the ones under them.
+      - *Bigger batches and trips (user decision in-session, 2026-11-03).* The user asked to keep the batching logic
+        and double its limits: `batch-max-jobs` 12 → 24 (place jobs from one standing spot; the reach stays the
+        engine's build distance), `trip-max-jobs` 20 → 40 and `trip-radius` 16 → 32 tiles (clear and wood trips; the
+        bootstrap's wood jobs are crew × `trip-max-jobs`, so they double too).
       - *A second crude field's box took in the first field.* g166/g167 failed 8 plans in a row ("no room at its
         fixed spot: structure at -442,-169"): the free wells north of a one-well field (pumpjack at -437.5,-164.5)
         formed one field whose box (wells + 2-tile margin) covered that pumpjack and two of its poles (probe
@@ -1005,5 +1009,8 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Lost-items minimum | `strategy/reconcile.ts` `LOST_MIN_ITEMS` | 3 items per edge probe | Agent guess (M7c.8): a belt owed fewer items in one probe (600 ticks by default) can show none by chance; 3 keeps a real break (B69: 2/s lost) detected in one probe. | no |
 | Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
 | Site targets per placement | `planner/placement.ts` `MAX_SITE_TARGETS` | 4 | Agent guess (M7c.8): each is a full window scan (radius 96); four shores before a placement fails. | no |
+| Max jobs per place batch | `settings.ts` `batch-max-jobs` | 24 (was 12) | User decision in-session 2026-11-03: doubled. | yes |
+| Max jobs per clear/wood trip | `settings.ts` `trip-max-jobs` | 40 (was 20) | User decision in-session 2026-11-03: doubled (bootstrap wood jobs = crew × this). | yes |
+| Clear/wood trip radius | `settings.ts` `trip-radius` | 32 tiles (was 16) | User decision in-session 2026-11-03: doubled. | yes |
 | Pipe corridor budget share | `planner/pipe-router.ts` `PIPE_CORRIDOR_SHARE` | 0.5 of the pipe search budget | Agent guess (M7c.9): leaves the whole-area search half the budget after a corridor dead end; g160 routes with it. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |
