@@ -460,34 +460,46 @@ export interface AssemblerRowParams extends CommonParams {
  * neither the two-lane belt nor that belt's merge column.
  */
 export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDef {
-  const machine = p.machine ?? "assembling-machine-1"
-  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
   const recipe = solidRecipe(facts, p.recipe)
-  if (recipe.ingredients.length < 1 || recipe.ingredients.length > 3) error(`assembler-row: ${p.recipe} needs 1–3 ingredients`)
-  if (recipe.ingredients.some((i) => i.fluid === true)) error(`assembler-row: ${p.recipe} takes a fluid`)
+  // M7d.3: one fluid ingredient (electric engines take lubricant) comes by pipe from a manifold below the row.
+  const fluidsIn = recipe.ingredients.filter((i) => i.fluid === true)
+  const solids = recipe.ingredients.filter((i) => i.fluid !== true)
+  const fluid = fluidsIn[0]
+  const machine = p.machine ?? (fluid !== undefined ? "assembling-machine-2" : "assembling-machine-1")
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  if (solids.length < 1 || solids.length > 3) error(`assembler-row: ${p.recipe} needs 1–3 solid ingredients`)
+  if (fluidsIn.length > 1 || (fluid !== undefined && solids.length > 2)) error(`assembler-row: ${p.recipe} takes more than one fluid, or a fluid and three solids`)
   if (p.count < 2 || p.count % 2 !== 0) error(`assembler-row: count must be a positive even number, got ${p.count}`)
   const product = mainProduct(recipe)
   const crafts = machineSpeed(facts, machine) / recipe.energy
   let perCraftIn = 0
-  for (const i of recipe.ingredients) perCraftIn += i.amount
+  for (const i of solids) perCraftIn += i.amount
   const caps = inserterCaps(facts, L.inserter)
-  const three = recipe.ingredients.length === 3
+  const three = solids.length === 3
   // Three ingredients: the one used most per craft rides its own belt (row 7), the other two share the lanes of row 6.
-  const sorted = [...recipe.ingredients].sort((a, b) => (a.amount !== b.amount ? a.amount - b.amount : a.name < b.name ? -1 : 1))
+  const sorted = [...solids].sort((a, b) => (a.amount !== b.amount ? a.amount - b.amount : a.name < b.name ? -1 : 1))
   const third = three ? sorted[2] : undefined
-  const nIn = three ? 1 : clampInt((crafts * perCraftIn) / caps.belt, 1, 2)
+  // With a fluid the machines face south and their fluid input sits on row 5 under the middle column: one input
+  // inserter, beside it (the pole takes the first column).
+  const nIn = three || fluid !== undefined ? 1 : clampInt((crafts * perCraftIn) / caps.belt, 1, 2)
   const nOut = clampInt((crafts * product.amount) / caps.machine, 1, 2)
-  const inputs = (three ? sorted.slice(0, 2) : recipe.ingredients).map((i) => i.name)
+  const inputs = (three ? sorted.slice(0, 2) : solids).map((i) => i.name)
   const long = p.longInserter ?? "long-handed-inserter"
+  const ptg = "pipe-to-ground"
   const units = p.count / 2
   const xt = 6 * units
   for (let u = 0; u < units; u++) {
     const ux = 6 * u
     for (const j of [0, 1]) {
       const x0 = ux + 3 * j
-      L.add(machine, x0 + 1.5, 3.5, undefined, { recipe: p.recipe })
+      L.add(machine, x0 + 1.5, 3.5, fluid !== undefined ? SOUTH : undefined, { recipe: p.recipe })
       for (let k = 0; k < nOut; k++) L.ins(x0 + 1.5 + k, 1.5, SOUTH)
-      for (let k = 0; k < nIn; k++) L.ins(x0 + 1.5 + k, 5.5, SOUTH)
+      if (fluid !== undefined) {
+        const b = boxTile(facts, machine, "input", 1, x0 + 1.5, 3.5, 2)
+        L.add(ptg, b.x + 0.5, b.y + 0.5, NORTH)
+        L.add(ptg, b.x + 0.5, 7.5, SOUTH)
+        L.ins(b.x === x0 + 2 ? x0 + 1.5 : x0 + 2.5, 5.5, SOUTH)
+      } else for (let k = 0; k < nIn; k++) L.ins(x0 + 1.5 + k, 5.5, SOUTH)
       if (three) L.add(long, x0 + 2.5, 5.5, SOUTH)
       for (let dx = 0; dx < 3; dx++) {
         L.beltAt(x0 + dx + 0.5, 0.5, WEST)
@@ -527,11 +539,21 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   const buffered = rowBufferHead(facts, L, ports, p.buffer)
   const head = buffered ? ROW_BUFFER_W : 0
   W += head
-  const H = three ? 9 : inputs.length === 1 ? 7 : 8
+  const H = three || fluid !== undefined ? 9 : inputs.length === 1 ? 7 : 8
+  if (fluid !== undefined) {
+    // The fluid manifold on row 8 under the machines (each unit's slice carries its part), its port at the west end.
+    for (let x = 0; x < xt + head; x++) L.add("pipe", x + 0.5, 8.5)
+    ports.push({ id: `in-${fluid.name}`, kind: "pipe-in", pos: { x: 0.5, y: 8.5 }, dir: EAST, item: fluid.name })
+    if (inputs.length === 2) {
+      // The lanes' first input entered at row 7 (its outside tile inside the footprint): it starts on the edge.
+      L.beltAt(xt + head + 1.5, 8.5, NORTH)
+      for (const port of ports) if (port.kind === "belt-in" && port.item === inputs[0]) port.pos = { x: xt + head + 1.5, y: 8.5 }
+    }
+  }
   // Growth cap: each input lane (two inputs) or the whole belt (one input), and the output belt.
   const lane = laneCapacity(facts, L.belt)
   let maxMachines = (2 * lane) / (crafts * product.amount)
-  for (const i of recipe.ingredients) maxMachines = Math.min(maxMachines, (inputs.length === 1 || i === third ? 2 * lane : lane) / (crafts * i.amount))
+  for (const i of solids) maxMachines = Math.min(maxMachines, (inputs.length === 1 || i === third ? 2 * lane : lane) / (crafts * i.amount))
   const draft: ModuleDraft = {
     id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",

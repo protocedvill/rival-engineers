@@ -54,7 +54,14 @@ const RECIPES: RecipeFacts[] = [
   { name: "light-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "light-oil", amount: 30, fluid: true }], products: [{ name: "petroleum-gas", amount: 20, fluid: true }] },
   { name: "sulfuric-acid", energy: 1, category: "chemistry", ingredients: [{ name: "sulfur", amount: 5 }, { name: "iron-plate", amount: 1 }, { name: "water", amount: 100, fluid: true }], products: [{ name: "sulfuric-acid", amount: 50, fluid: true }] },
   { name: "battery", energy: 4, category: "chemistry", ingredients: [{ name: "sulfuric-acid", amount: 20, fluid: true }, { name: "iron-plate", amount: 1 }, { name: "copper-plate", amount: 1 }], products: [{ name: "battery", amount: 1 }] },
+  { name: "electric-engine-unit", energy: 10, category: "crafting-with-fluid", ingredients: [{ name: "engine-unit", amount: 1 }, { name: "electronic-circuit", amount: 2 }, { name: "lubricant", amount: 15, fluid: true }], products: [{ name: "electric-engine-unit", amount: 1 }] },
   { name: "lubricant", energy: 1, category: "chemistry", ingredients: [{ name: "heavy-oil", amount: 10, fluid: true }], products: [{ name: "lubricant", amount: 10, fluid: true }] },
+]
+
+/** M7d.3: assembling machines 2/3 (2.0): one input box on the north side, one output box on the south. */
+const ASSEMBLER_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: 0, y: -1, dir: 0 }] },
+  { production: "output", connections: [{ x: 0, y: 1, dir: 2 }] },
 ]
 
 /** Fluid boxes of a north-facing refinery and chemical plant (entities.lua): offsets from the centre, direction index. */
@@ -101,7 +108,7 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
   e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
-  e({ name: "assembling-machine-2", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.75, craftingCategories: ["advanced-crafting", "basic-crafting", "crafting", "crafting-with-fluid"], energyPerTick: 2500, electric: true }),
+  e({ name: "assembling-machine-2", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.75, craftingCategories: ["advanced-crafting", "basic-crafting", "crafting", "crafting-with-fluid"], energyPerTick: 2500, electric: true, fluidBoxes: ASSEMBLER_BOXES }),
   e({ name: "oil-refinery", type: "assembling-machine", tileW: 5, tileH: 5, craftingSpeed: 1, craftingCategories: ["oil-processing"], energyPerTick: 7000, electric: true, fluidBoxes: REFINERY_BOXES }),
   e({ name: "chemical-plant", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 1, craftingCategories: ["chemistry"], energyPerTick: 3500, electric: true, fluidBoxes: CHEMICAL_BOXES }),
   e({ name: "pipe-to-ground", type: "pipe-to-ground", tileW: 1, tileH: 1, maxPipeUnderground: 10 }),

@@ -1055,7 +1055,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    - **Sulfuric acid is inserter-bound:** one inserter per plant feeds 6 items per craft, so a plant makes 6.3 acid/s of
      its 50. Enough for about one battery plant per acid plant (5 acid/s each); more input inserters need the pole and
      riser moved off the inserter row (later, if acid is short).
-   - The assembler row with lubricant (electric engines) is still to do.
+   - **Assembler rows with a fluid: done.** `assembler-row` takes a recipe with one fluid ingredient: the machines
+     (assembling machine 2 by default) face south, so their fluid input is on the input side; a pipe-to-ground riser
+     passes under the input belt to a manifold on row 8 (`pipe-in` at the west end), one input inserter beside it, and
+     the lanes' first input belt starts on the bottom edge. The manifold is part of each unit's slice, so it grows with
+     the row. T1: ports, pipe networks, power and rates for 2–6 machines with and without a buffer head. T2 validation:
+     2 machines, electric engines 0.153/0.150 per s (102%).
 4. **Design** switches to the oil complex and piped rows once `advanced-oil-processing` is researched.
 5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
    modular armour with personal roboports for the crew.

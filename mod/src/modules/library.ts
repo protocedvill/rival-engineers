@@ -120,6 +120,7 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "chem-row sulfur 2", generator: "chem-row", params: { recipe: "sulfur", chemPlants: 2 } },
   { name: "chem-row sulfuric-acid 2", generator: "chem-row", params: { recipe: "sulfuric-acid", chemPlants: 2 } },
   { name: "chem-row battery 2", generator: "chem-row", params: { recipe: "battery", chemPlants: 2 }, slow: true },
+  { name: "assembler-row electric-engine 2 lubricant", generator: "assembler-row", params: { recipe: "electric-engine-unit", count: 2 }, slow: true },
   // M7c: three-ingredient rows (assembler 2; the third ingredient on its own belt).
   { name: "assembler-row engine 2", generator: "assembler-row", params: { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" }, slow: true },
   { name: "lab-array 4 blue", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack", "chemical-science-pack"] }, slow: true },

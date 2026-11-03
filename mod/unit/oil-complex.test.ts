@@ -1,4 +1,4 @@
-import { chemRow, oilComplex } from "../src/modules/generators"
+import { assemblerRow, chemRow, oilComplex } from "../src/modules/generators"
 import { powerCheck } from "../src/modules/poles"
 import { rateOf } from "../src/modules/rates"
 import { ModuleDef } from "../src/modules/types"
@@ -239,6 +239,35 @@ test("chem row: plastic, sulfur, sulfuric acid and batteries fed by pipe, 1–4 
   const bat = chemRow(F, { recipe: "battery", chemPlants: 2 })
   near(rateOf(bat.rates.outputs, "battery"), 0.5, 1e-6, "batteries")
   near(rateOf(bat.rates.inputs, "sulfuric-acid"), 10, 1e-6, "acid")
+})
+
+test("assembler row with lubricant: electric engines fed by pipe, 2–6 machines and a buffer head", () => {
+  for (const count of [2, 4, 6]) {
+    for (const buffer of ["", "iron-chest"]) {
+      const def = assemblerRow(F, { recipe: "electric-engine-unit", count, buffer })
+      const tag = `${count} machines${buffer !== "" ? " buffered" : ""}`
+      eq(def.ports.map((p) => `${p.kind}:${p.item ?? ""}`).sort().join(" "), "belt-in:electronic-circuit belt-in:engine-unit belt-out:electric-engine-unit pipe-in:lubricant power:", `${tag}: ports`)
+      const net = networks(def)
+      eq(net.unpaired.join(" "), "", `${tag}: pairs`)
+      eq(net.mixed.join("; "), "", `${tag}: one fluid per network`)
+      eq(net.unusedTouched.join(" "), "", `${tag}: unused boxes`)
+      eq(components(net.fluids["lubricant"]).length, 1, `${tag}: lubricant connected (${components(net.fluids["lubricant"]).join(" ")})`)
+      const power = powerCheck(def.entities, F)
+      eq(power.unpowered.join(", "), "", `${tag}: powered`)
+      eq(power.networks, 1, `${tag}: one pole network`)
+      // Assembling machine 2 (0.75): 0.075 engines/s each, 15 lubricant per engine.
+      near(rateOf(def.rates.outputs, "electric-engine-unit"), 0.075 * count, 1e-6, `${tag}: engines`)
+      near(rateOf(def.rates.inputs, "lubricant"), 0.075 * count * 15, 1e-6, `${tag}: lubricant`)
+      // Every belt-in port's outside tile is outside the footprint.
+      for (const p of def.ports) {
+        if (p.kind !== "belt-in") continue
+        const v = p.dir === 0 ? [0, -1] : p.dir === 4 ? [1, 0] : p.dir === 8 ? [0, 1] : [-1, 0]
+        const ox = p.pos.x - v[0]
+        const oy = p.pos.y - v[1]
+        ok(ox < 0 || oy < 0 || ox > def.footprint.w || oy > def.footprint.h, `${tag}: ${p.id} enters from outside (${ox},${oy})`)
+      }
+    }
+  }
 })
 
 run("oil-complex")
