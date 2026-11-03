@@ -48,6 +48,11 @@ const RECIPES: RecipeFacts[] = [
   { name: "basic-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "crude-oil", amount: 100, fluid: true, box: 2 }], products: [{ name: "petroleum-gas", amount: 45, fluid: true, box: 3 }] },
   { name: "plastic-bar", energy: 1, category: "chemistry", ingredients: [{ name: "coal", amount: 1 }, { name: "petroleum-gas", amount: 20, fluid: true }], products: [{ name: "plastic-bar", amount: 2 }] },
   { name: "sulfur", energy: 1, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "petroleum-gas", amount: 30, fluid: true }], products: [{ name: "sulfur", amount: 2 }] },
+  // M7d: advanced oil processing, cracking and lubricant (2.0 recipes; no fluidbox_index: boxes in ingredient order).
+  { name: "advanced-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "water", amount: 50, fluid: true }, { name: "crude-oil", amount: 100, fluid: true }], products: [{ name: "heavy-oil", amount: 25, fluid: true }, { name: "light-oil", amount: 45, fluid: true }, { name: "petroleum-gas", amount: 55, fluid: true }] },
+  { name: "heavy-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "heavy-oil", amount: 40, fluid: true }], products: [{ name: "light-oil", amount: 30, fluid: true }] },
+  { name: "light-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "light-oil", amount: 30, fluid: true }], products: [{ name: "petroleum-gas", amount: 20, fluid: true }] },
+  { name: "lubricant", energy: 1, category: "chemistry", ingredients: [{ name: "heavy-oil", amount: 10, fluid: true }], products: [{ name: "lubricant", amount: 10, fluid: true }] },
 ]
 
 /** Fluid boxes of a north-facing refinery and chemical plant (entities.lua): offsets from the centre, direction index. */

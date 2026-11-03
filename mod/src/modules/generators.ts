@@ -1028,6 +1028,224 @@ export function fluidChain(facts: ProtoFacts, p: FluidChainParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Oil complex (M7d, D81)
+
+export interface OilComplexParams extends CommonParams {
+  refineries: number
+  /** Lubricant plants (0: none, the complex makes only petroleum gas). */
+  lubePlants: number
+  refinery?: string
+  chemPlant?: string
+  pipe?: string
+  pipeToGround?: string
+  /** Recipes (2.0 defaults). */
+  processing?: string
+  heavyCracking?: string
+  lightCracking?: string
+  lubricant?: string
+}
+
+/** M7d: the fluid of a recipe in fluid box `box` (1-based) on the input or output side: `box` if pinned, else order. */
+function fluidInBox(list: { name: string; fluid?: boolean; box?: number }[], box: number): string | undefined {
+  let n = 0
+  for (const x of list) {
+    if (x.fluid !== true) continue
+    n++
+    if ((x.box ?? n) === box) return x.name
+  }
+  return undefined
+}
+
+function fluidAmount(list: { name: string; amount: number }[], name: string): number {
+  for (const x of list) if (x.name === name) return x.amount
+  return 0
+}
+
+/**
+ * D81 (the user, in-session 2026-11-03): one module for advanced oil processing. Advanced-oil refineries, heavy-oil and
+ * light-oil cracking plants, and lubricant plants; crude and water piped in, petroleum gas and lubricant piped out.
+ * Crackers are sized to take all the heavy and light oil, so no refinery output backs up; lubricant plants come first
+ * for heavy oil (the rates assume so; on the ground the plants share the manifold).
+ *
+ * Rows, top to bottom (every machine faces north: a refinery's inputs are below it and its outputs above, a chemical
+ * plant's inputs above and its outputs below):
+ *    0 water, 2 heavy, 4 light            the plants' input manifolds (1, 3: their pipe-to-ground exits)
+ *    5                                    the plants' input boxes (risers)
+ *    6–8 chemical plants                  (cracking, lubricant)
+ *    9                                    the plants' output boxes
+ *   10 lubricant, 12 light, 14 petroleum, 16 heavy   (11, 13, 15: exits)
+ *   17                                    the refineries' output boxes
+ *   18–22 refineries
+ *   23                                    their input boxes
+ *   24 crude, 26 water                    (25: exits)
+ * A box's riser is a plain pipe into the nearest manifold, or a pipe-to-ground pair under the nearer ones, so only risers
+ * touch a machine and two fluids never meet. Columns 0, 2 and 4 carry water (0–26), heavy oil (2–16) and light oil
+ * (4–12) up to the plants' manifolds; each of those manifolds starts at its column, the others at column 6 or later.
+ * Poles: in the gaps between machines and a relay column at x = 5.
+ */
+export function oilComplex(facts: ProtoFacts, p: OilComplexParams): ModuleDef {
+  const refinery = p.refinery ?? "oil-refinery"
+  const chem = p.chemPlant ?? "chemical-plant"
+  const pipe = p.pipe ?? "pipe"
+  const ptg = p.pipeToGround ?? "pipe-to-ground"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  const proc = solidRecipe(facts, p.processing ?? "advanced-oil-processing")
+  const hc = solidRecipe(facts, p.heavyCracking ?? "heavy-oil-cracking")
+  const lc = solidRecipe(facts, p.lightCracking ?? "light-oil-cracking")
+  const lube = solidRecipe(facts, p.lubricant ?? "lubricant")
+  const water = need(fluidInBox(proc.ingredients, 1), `${proc.name}: no fluid in input box 1`)
+  const crude = need(fluidInBox(proc.ingredients, 2), `${proc.name}: no fluid in input box 2`)
+  const heavy = need(fluidInBox(proc.products, 1), `${proc.name}: no fluid in output box 1`)
+  const light = need(fluidInBox(proc.products, 2), `${proc.name}: no fluid in output box 2`)
+  const petroleum = need(fluidInBox(proc.products, 3), `${proc.name}: no fluid in output box 3`)
+  const lubricant = need(lube.products.find((x) => x.fluid === true), `${lube.name} makes no fluid`).name
+  const R = math.max(1, p.refineries)
+  const lp = math.max(0, p.lubePlants)
+  const refSpeed = facts.entity(refinery)?.craftingSpeed ?? 1
+  const chemSpeed = facts.entity(chem)?.craftingSpeed ?? 1
+  // Per second at full speed.
+  const procRate = (R * refSpeed) / proc.energy
+  const heavyMade = procRate * fluidAmount(proc.products, heavy)
+  const lightMade = procRate * fluidAmount(proc.products, light)
+  const petMade = procRate * fluidAmount(proc.products, petroleum)
+  const lubeHeavyCap = (lp * chemSpeed * fluidAmount(lube.ingredients, heavy)) / lube.energy
+  const hcHeavyPer = (chemSpeed * fluidAmount(hc.ingredients, heavy)) / hc.energy
+  const hcLightPer = (chemSpeed * fluidAmount(hc.products, light)) / hc.energy
+  const lcLightPer = (chemSpeed * fluidAmount(lc.ingredients, light)) / lc.energy
+  // Enough crackers for every drop: all heavy oil (no lubricant drawn) and all light oil that makes.
+  const nHC = math.ceil(heavyMade / hcHeavyPer - 1e-9)
+  const nLC = math.ceil((lightMade + (heavyMade * hcLightPer) / hcHeavyPer) / lcLightPer - 1e-9)
+  // Plants into slots 4 tiles apart from x = 6. A light cracker's petroleum exits on row 13 at its box-1 column, where a
+  // refinery's light-oil exit may be: such a slot takes another plant.
+  const refLightCols: Record<number, boolean> = {}
+  for (let i = 0; i < R; i++) refLightCols[8 + 6 * i] = true
+  const plants: { recipe: RecipeFacts; slot: number }[] = []
+  let leftLC = nLC
+  let leftOther: RecipeFacts[] = []
+  for (let i = 0; i < nHC; i++) leftOther.push(hc)
+  for (let i = 0; i < lp; i++) leftOther.push(lube)
+  for (let slot = 0; leftLC > 0 || leftOther.length > 0; slot++) {
+    if (slot > 200) error("oil-complex: no slots")
+    const okLC = !refLightCols[6 + 4 * slot]
+    if (leftLC > 0 && okLC) {
+      plants.push({ recipe: lc, slot })
+      leftLC--
+    } else if (leftOther.length > 0) {
+      plants.push({ recipe: leftOther[0], slot })
+      leftOther = leftOther.slice(1)
+    }
+  }
+  let slots = 0
+  for (const pl of plants) slots = math.max(slots, pl.slot + 1)
+  const W = math.max(6 + 4 * slots, 6 + 6 * R) + 1
+  const H = 27
+  const rows: Record<string, number> = { [water]: 0, [heavy]: 2, [light]: 4 }
+  const outRows: Record<string, number> = { [lubricant]: 10, [light]: 12, [petroleum]: 14, [heavy]: 16 }
+  // Manifolds.
+  const run = (y: number, from: number): void => {
+    for (let x = from; x < W; x++) L.add(pipe, x + 0.5, y + 0.5)
+  }
+  run(0, 0)
+  run(2, 2)
+  run(4, 4)
+  if (lp > 0) run(10, 6)
+  run(12, 4)
+  run(14, 6)
+  run(16, 2)
+  run(24, 6)
+  run(26, 0)
+  // Connector columns.
+  for (let y = 1; y < 26; y++) L.add(pipe, 0.5, y + 0.5)
+  for (let y = 3; y < 16; y++) L.add(pipe, 2.5, y + 0.5)
+  for (let y = 5; y < 12; y++) L.add(pipe, 4.5, y + 0.5)
+  // A riser from a box tile (x, y0) to the manifold at row `to`: a plain pipe when it is the next row, else a
+  // pipe-to-ground pair whose exit sits beside the manifold. `up`: the manifold is above the box tile.
+  const riser = (x: number, y0: number, to: number): void => {
+    const up = to < y0
+    if (math.abs(to - y0) === 1) {
+      L.add(pipe, x + 0.5, y0 + 0.5)
+      return
+    }
+    L.add(ptg, x + 0.5, y0 + 0.5, up ? SOUTH : NORTH)
+    L.add(ptg, x + 0.5, (up ? to + 1 : to - 1) + 0.5, up ? NORTH : SOUTH)
+  }
+  // Chemical plants (centre 7.5 + 4 slot, 7.5) and their gap poles.
+  for (const pl of plants) {
+    const cx = 7 + 4 * pl.slot
+    L.add(chem, cx + 0.5, 7.5, NORTH, { recipe: pl.recipe.name })
+    for (let b = 1; b <= 2; b++) {
+      const fin = fluidInBox(pl.recipe.ingredients, b)
+      if (fin !== undefined) {
+        const t = boxTile(facts, chem, "input", b, cx + 0.5, 7.5, 0)
+        riser(t.x, t.y, need(rows[fin], `oil-complex: no input manifold for ${fin}`))
+      }
+      const fout = fluidInBox(pl.recipe.products, b)
+      if (fout !== undefined) {
+        const t = boxTile(facts, chem, "output", b, cx + 0.5, 7.5, 0)
+        riser(t.x, t.y, need(outRows[fout], `oil-complex: no output manifold for ${fout}`))
+      }
+    }
+  }
+  for (let slot = 0; slot < slots; slot++) L.poleAt(9.5 + 4 * slot, 7.5)
+  // Refineries (centre x0 + 0.5, 20.5) and their gap poles.
+  for (let i = 0; i < R; i++) {
+    const x0 = 8 + 6 * i
+    L.add(refinery, x0 + 0.5, 20.5, NORTH, { recipe: proc.name })
+    for (let b = 1; b <= 3; b++) {
+      const t = boxTile(facts, refinery, "output", b, x0 + 0.5, 20.5, 0)
+      riser(t.x, t.y, outRows[need(fluidInBox(proc.products, b), `${proc.name}: output box ${b}`)])
+    }
+    for (let b = 1; b <= 2; b++) {
+      const t = boxTile(facts, refinery, "input", b, x0 + 0.5, 20.5, 0)
+      riser(t.x, t.y, need(fluidInBox(proc.ingredients, b), `${proc.name}: input box ${b}`) === water ? 26 : 24)
+    }
+    L.poleAt(x0 + 3.5, 20.5)
+  }
+  for (const y of [7.5, 13.5, 20.5]) L.poleAt(5.5, y)
+  // Rates: the lubricant plants and the heavy crackers draw from one heavy-oil manifold, and the engine splits it
+  // between them (no priority without circuits): declare the lubricant plants' share in proportion to their draw (T2
+  // measured more than that: 5 of 10 heavy/s against 1 cracker), the crackers take the rest. The crackers are sized for
+  // all the heavy oil so that unused lubricant never backs heavy oil up into the refineries.
+  const lubeHeavy = lp === 0 ? 0 : math.min(lubeHeavyCap, (heavyMade * lubeHeavyCap) / (lubeHeavyCap + nHC * hcHeavyPer))
+  const crackHeavy = heavyMade - lubeHeavy
+  const hcCrafts = crackHeavy / fluidAmount(hc.ingredients, heavy)
+  const lightAll = lightMade + hcCrafts * fluidAmount(hc.products, light)
+  const lcCrafts = lightAll / fluidAmount(lc.ingredients, light)
+  const lubeCrafts = lubeHeavy / fluidAmount(lube.ingredients, heavy)
+  const waterIn = procRate * fluidAmount(proc.ingredients, water) + hcCrafts * fluidAmount(hc.ingredients, water) + lcCrafts * fluidAmount(lc.ingredients, water)
+  const outputs = [{ item: petroleum, perSecond: petMade + lcCrafts * fluidAmount(lc.products, petroleum), kind: "fluid" as const }]
+  if (lp > 0) outputs.push({ item: lubricant, perSecond: lubeCrafts * fluidAmount(lube.products, lubricant), kind: "fluid" as const })
+  const ports: Port[] = [
+    { id: `out-${petroleum}`, kind: "pipe-out", pos: { x: W - 0.5, y: 14.5 }, dir: EAST, item: petroleum },
+    { id: `in-${crude}`, kind: "pipe-in", pos: { x: W - 0.5, y: 24.5 }, dir: WEST, item: crude },
+    { id: `in-${water}`, kind: "pipe-in", pos: { x: 0.5, y: 26.5 }, dir: EAST, item: water },
+    { id: "power", kind: "power", pos: { x: 5.5, y: 13.5 }, dir: NORTH },
+  ]
+  if (lp > 0) ports.push({ id: `out-${lubricant}`, kind: "pipe-out", pos: { x: W - 0.5, y: 10.5 }, dir: EAST, item: lubricant })
+  const draft: ModuleDraft = {
+    id: `oil-complex/${R}/${lp}`,
+    source: "generated",
+    generator: "oil-complex",
+    provenance: "generator oil-complex (Rival Engineers)",
+    description: `${R} ${refinery} (${proc.name}), ${nHC} + ${nLC} crackers, ${lp} lubricant plants`,
+    footprint: { w: W, h: H },
+    entities: L.entities,
+    ports,
+    rotatable: true,
+    mirrorable: false,
+    params: { refineries: R, lubePlants: lp },
+    rates: {
+      inputs: [
+        { item: crude, perSecond: procRate * fluidAmount(proc.ingredients, crude), kind: "fluid" },
+        { item: water, perSecond: waterIn, kind: "fluid" },
+      ],
+      outputs,
+    },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Water pump (M7b)
 
 export interface WaterPumpParams extends CommonParams {
@@ -1227,7 +1445,7 @@ export function decodeWells(s: string): { x: number; y: number; perSecond: numbe
 /** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
 const PUMPJACK_FIELD_MARGIN = 2
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1244,7 +1462,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "fluid-chain") return fluidChain(facts, P)
   if (name === "water-pump") return waterPump(facts, P)
   if (name === "pumpjack-field") return pumpjackField(facts, P)
+  if (name === "oil-complex") return oilComplex(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex"]

@@ -1,0 +1,204 @@
+import { oilComplex } from "../src/modules/generators"
+import { powerCheck } from "../src/modules/poles"
+import { rateOf } from "../src/modules/rates"
+import { ModuleDef } from "../src/modules/types"
+import { DX, DY } from "../src/planner/grid"
+import { eq, near, ok, run, test } from "./harness"
+import { vanillaFacts as F } from "./vanilla-facts"
+
+// T1: M7d oil complex (D81). Rates from the recipes with crackers sized to take all the oil; one fluid per pipe network
+// (a flood over pipes, pipe-to-ground pairs and machine fluid boxes); every used box on its fluid's network.
+
+/** Fluid in box `box` (1-based) of a recipe side: pinned `box`, else fluid order. */
+function fluidInBox(list: { name: string; fluid?: boolean; box?: number }[], box: number): string | undefined {
+  let n = 0
+  for (const x of list) {
+    if (x.fluid !== true) continue
+    n++
+    if ((x.box ?? n) === box) return x.name
+  }
+  return undefined
+}
+
+function key(x: number, y: number): string {
+  return `${x},${y}`
+}
+
+interface Net {
+  /** Per fluid: the set of component roots its boxes and ports reach. */
+  fluids: Record<string, Record<string, boolean>>
+  /** Per component root: the fluids on it. */
+  mixed: string[]
+  unusedTouched: string[]
+  unpaired: string[]
+}
+
+/** Flood the module's pipe networks (all machines face north, as the generator places them). */
+function networks(def: ModuleDef): Net {
+  const kind: Record<string, { name: string; dir: number }> = {}
+  for (const e of def.entities) if (e.name === "pipe" || e.name === "pipe-to-ground") kind[key(math.floor(e.x), math.floor(e.y))] = { name: e.name, dir: (e.dir ?? 0) / 4 }
+  const parent: Record<string, string> = {}
+  const find = (k: string): string => {
+    let r = k
+    while (parent[r] !== undefined && parent[r] !== r) r = parent[r]
+    return r
+  }
+  const union = (a: string, b: string): void => {
+    parent[a] ??= a
+    parent[b] ??= b
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent[ra] = rb
+  }
+  // Which sides a pipe-like tile connects above ground (0 N, 1 E, 2 S, 3 W).
+  const sides = (k: string): number[] => {
+    const t = kind[k]
+    if (t === undefined) return []
+    return t.name === "pipe" ? [0, 1, 2, 3] : [t.dir]
+  }
+  const unpaired: string[] = []
+  for (const [k, t] of pairs(kind)) {
+    parent[k] ??= k
+    const [xs, ys] = string.match(k, "^(-?%d+),(-?%d+)$")
+    const x = tonumber(xs)!
+    const y = tonumber(ys)!
+    for (const d of sides(k)) {
+      const n = key(x + DX[d], y + DY[d])
+      if (sides(n).indexOf((d + 2) % 4) >= 0) union(k, n)
+    }
+    if (t.name === "pipe-to-ground") {
+      // Underground: away from its connection, the first pipe-to-ground on the axis within 10 tiles must face back.
+      const u = (t.dir + 2) % 4
+      let paired = false
+      for (let i = 1; i <= 10; i++) {
+        const n = key(x + DX[u] * i, y + DY[u] * i)
+        const o = kind[n]
+        if (o === undefined || o.name !== "pipe-to-ground") continue
+        if (o.dir === (t.dir + 2) % 4) {
+          union(k, n)
+          paired = true
+        }
+        break
+      }
+      if (!paired) unpaired.push(k)
+    }
+  }
+  const labels: Record<string, Record<string, boolean>> = {}
+  const fluids: Record<string, Record<string, boolean>> = {}
+  const unusedTouched: string[] = []
+  const label = (tile: string, fluid: string | undefined, toward: number): void => {
+    // `toward`: the side of the tile facing the machine. The tile connects if it is a pipe or faces it.
+    const connects = sides(tile).indexOf(toward) >= 0
+    if (fluid === undefined) {
+      if (connects) unusedTouched.push(tile)
+      return
+    }
+    if (!connects) {
+      ;(fluids[fluid] ??= {})[`missing ${tile}`] = true
+      return
+    }
+    const r = find(tile)
+    ;(labels[r] ??= {})[fluid] = true
+    ;(fluids[fluid] ??= {})[r] = true
+  }
+  for (const e of def.entities) {
+    const f = F.entity(e.name)
+    if (f?.fluidBoxes === undefined || e.recipe === undefined) continue
+    const r = F.recipe(e.recipe)!
+    const counts: Record<string, number> = { input: 0, output: 0 }
+    for (const b of f.fluidBoxes) {
+      counts[b.production] = (counts[b.production] ?? 0) + 1
+      const c = b.connections[0]
+      const tile = key(math.floor(e.x) + c.x + DX[c.dir], math.floor(e.y) + c.y + DY[c.dir])
+      const fluid = fluidInBox(b.production === "input" ? r.ingredients : r.products, counts[b.production])
+      label(tile, fluid, (c.dir + 2) % 4)
+    }
+  }
+  for (const p of def.ports) {
+    if ((p.kind !== "pipe-in" && p.kind !== "pipe-out") || p.item === undefined) continue
+    const t = key(math.floor(p.pos.x), math.floor(p.pos.y))
+    const r = find(t)
+    ;(labels[r] ??= {})[p.item] = true
+    ;(fluids[p.item] ??= {})[r] = true
+  }
+  const mixed: string[] = []
+  for (const [r, set] of pairs(labels)) {
+    const names: string[] = []
+    for (const [n] of pairs(set)) names.push(n as string)
+    if (names.length > 1) mixed.push(`${r as string}: ${names.sort().join("+")}`)
+  }
+  return { fluids, mixed, unusedTouched, unpaired }
+}
+
+function components(set: Record<string, boolean> | undefined): string[] {
+  const out: string[] = []
+  for (const [k] of pairs(set ?? {})) out.push(k as string)
+  return out.sort()
+}
+
+test("oil complex: 2 refineries with lubricant: rates, crackers for all the oil, one fluid per network", () => {
+  const def = oilComplex(F, { refineries: 2, lubePlants: 1 })
+  // 2 refineries: 0.4 crafts/s → 10 heavy, 18 light, 22 petroleum per s; 40 crude, 20 water.
+  near(rateOf(def.rates.inputs, "crude-oil"), 40, 1e-6, "crude")
+  // Lubricant and the heavy cracker share the 10 heavy/s by draw (10/s against 20/s): 3.33 heavy → 3.33 lubricant/s.
+  near(rateOf(def.rates.outputs, "lubricant"), 10 / 3, 1e-6, "lubricant")
+  // The cracker: 6.67 heavy/s → 5 light/s; light 18 + 5 = 23/s → 15.33 petroleum; 22 + 15.33.
+  near(rateOf(def.rates.outputs, "petroleum-gas"), 22 + 46 / 3, 1e-6, "petroleum")
+  // Water: 20 (refineries) + 5 (heavy cracking) + 23 (light cracking).
+  near(rateOf(def.rates.inputs, "water"), 48, 1e-6, "water")
+  ok(rateOf(def.rates.inputs, "electricity") > 0, "electric demand")
+  const machines: Record<string, number> = {}
+  for (const e of def.entities) if (e.recipe !== undefined) machines[e.recipe] = (machines[e.recipe] ?? 0) + 1
+  // All 10 heavy/s may go to cracking (20/s per plant): 1; light then 18 + 7.5 = 25.5/s (15/s per plant): 2.
+  eq(machines["heavy-oil-cracking"], 1, "heavy crackers")
+  eq(machines["light-oil-cracking"], 2, "light crackers")
+  eq(machines["lubricant"], 1, "lubricant plants")
+  const kinds = def.ports.map((p) => `${p.kind}:${p.item ?? ""}`).sort().join(" ")
+  eq(kinds, "pipe-in:crude-oil pipe-in:water pipe-out:lubricant pipe-out:petroleum-gas power:", "ports")
+  const net = networks(def)
+  eq(net.unpaired.join(" "), "", "every pipe-to-ground has its partner")
+  eq(net.mixed.join("; "), "", "no network carries two fluids")
+  eq(net.unusedTouched.join(" "), "", "unused boxes touch nothing")
+  for (const fl of ["crude-oil", "water", "heavy-oil", "light-oil", "petroleum-gas", "lubricant"]) {
+    const c = components(net.fluids[fl])
+    eq(c.length, 1, `${fl}: one network for every box and port (${c.join(" ")})`)
+  }
+  const power = powerCheck(def.entities, F)
+  eq(power.unpowered.join(", "), "", "every machine powered")
+  eq(power.networks, 1, "one pole network")
+})
+
+test("oil complex: sizes from 1 to 6 refineries stay one fluid per network; no lubricant plants means no lubricant port", () => {
+  for (let r = 1; r <= 6; r++) {
+    for (const lp of [0, 1, 2]) {
+      const def = oilComplex(F, { refineries: r, lubePlants: lp })
+      const net = networks(def)
+      const tag = `${r} refineries, ${lp} lubricant`
+      eq(net.unpaired.join(" "), "", `${tag}: pairs`)
+      eq(net.mixed.join("; "), "", `${tag}: one fluid per network`)
+      eq(net.unusedTouched.join(" "), "", `${tag}: unused boxes`)
+      for (const fl of ["crude-oil", "water", "heavy-oil", "light-oil", "petroleum-gas"]) eq(components(net.fluids[fl]).length, 1, `${tag}: ${fl} connected`)
+      eq(def.ports.some((p) => p.item === "lubricant"), lp > 0, `${tag}: lubricant port`)
+      const power = powerCheck(def.entities, F)
+      eq(power.unpowered.join(", "), "", `${tag}: powered`)
+      eq(power.networks, 1, `${tag}: one pole network`)
+      // With no lubricant drawn, petroleum is 11/s per refinery plus every cracked drop: 11 + 9 × 2/3 + 5 × 3/4 × 2/3.
+      if (lp === 0) near(rateOf(def.rates.outputs, "petroleum-gas"), r * (11 + 6 + 2.5), 1e-6, `${tag}: petroleum`)
+    }
+  }
+})
+
+test("oil complex: the network check catches a cut manifold and a pipe joining two fluids", () => {
+  const def = oilComplex(F, { refineries: 2, lubePlants: 1 })
+  // Cut: drop the crude manifold's pipe next to its port.
+  const crude = def.ports.find((p) => p.item === "crude-oil")!
+  const cut = { ...def, entities: def.entities.filter((e) => !(e.name === "pipe" && math.floor(e.x) === math.floor(crude.pos.x) - 1 && math.floor(e.y) === math.floor(crude.pos.y))) }
+  ok(cut.entities.length === def.entities.length - 1, "one pipe removed")
+  ok(components(networks(cut).fluids["crude-oil"]).length > 1, "a cut crude manifold splits its network")
+  // Join: one pipe between the water connector (column 0) and the heavy-oil manifold's start (2, 2).
+  ok(!def.entities.some((e) => math.floor(e.x) === 1 && math.floor(e.y) === 2), "the join tile is free")
+  const joined = { ...def, entities: [...def.entities, { name: "pipe", x: 1.5, y: 2.5 }] }
+  ok(networks(joined).mixed.length > 0, "a pipe joining water and heavy oil is a mixed network")
+})
+
+run("oil-complex")

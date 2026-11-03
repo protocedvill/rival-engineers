@@ -25,6 +25,11 @@ export interface ModuleDraft {
   params?: Record<string, number | string>
   expand?: { unit: ModuleExpand["unit"]; axis: "x" | "y"; insertAt: number; maxUnits: number }
   notes?: string[]
+  /**
+   * M7d: rates the generator computed itself (the oil complex: multi-product refineries and crackers sized to take all
+   * the oil, which the generic model cannot balance). The module's electric demand still comes from `computeRates`.
+   */
+  rates?: ModuleRates
 }
 
 /** Rate options a module carries in its params: `resource`, `unitTime`, `packs` (comma-separated). */
@@ -129,6 +134,13 @@ export function requiredTech(entities: ModuleEntity[], facts: ProtoFacts): strin
  * `checkBelts` (B25): refuse a layout whose belts run out of the footprint with no belt-out port. Only growth of a
  * module that already leaks turns it off (a module planned before the B25 fix and kept in an old save's storage).
  */
+/** `own` with the electricity input of `computed` (M7d: a generator's own rates keep the generic electric demand). */
+function withElectricity(own: ModuleRates, computed: ModuleRates): ModuleRates {
+  const inputs = own.inputs.filter((r) => r.item !== "electricity")
+  for (const r of computed.inputs) if (r.item === "electricity") inputs.push(r)
+  return { inputs, outputs: [...own.outputs] }
+}
+
 export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts, checkBelts = true): ModuleDef {
   occupancy(draft.entities, facts) // errors on overlaps
   const outside = outsideFootprint(draft, facts)
@@ -155,7 +167,7 @@ export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts, checkBelts
     recipe: draft.recipe,
     recipes: recipeList,
     machines: report.machines,
-    rates: report.rates,
+    rates: draft.rates !== undefined ? withElectricity(draft.rates, report.rates) : report.rates,
     requiresTech: requiredTech(draft.entities, facts),
     rotatable: draft.rotatable,
     mirrorable: draft.mirrorable,
@@ -167,7 +179,7 @@ export function finalizeModule(draft: ModuleDraft, facts: ProtoFacts, checkBelts
   const areas = miningAreas(draft.entities, facts)
   if (areas.length > 0) def.anchor = { ...(def.anchor ?? {}), miningAreas: areas }
   if (report.upkeepFuel.length > 0) def.upkeep = { fuel: report.upkeepFuel }
-  if (report.warnings.length > 0) def.notes = [...(def.notes ?? []), ...report.warnings.map((w) => `rates: ${w}`)]
+  if (report.warnings.length > 0 && draft.rates === undefined) def.notes = [...(def.notes ?? []), ...report.warnings.map((w) => `rates: ${w}`)]
   if (draft.expand) {
     const grown = expandLayout(draft, draft.expand, 1)
     const grownReport = computeRates(grown.entities, grown.ports, facts, opts)

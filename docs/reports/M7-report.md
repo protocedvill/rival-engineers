@@ -998,8 +998,27 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    deconstruction in 526 ticks. A player-less character's personal roboport (modular armour, battery) built 8 ghosts
    from its inventory and removed a tree in 160 ticks. The player force did the same in both scenes. T2
    `engine-capabilities` "M7d (P48): …" (two tests).
-2. **Oil complex (D81, user decision in-session 2026-11-03).** One generated module: advanced-oil refineries, heavy and
-   light cracking and lubricant plants, crude and water piped in, petroleum gas and lubricant piped out.
+2. **Oil complex (D81, user decision in-session 2026-11-03): generator done, not yet used by design.** Generator
+   `oil-complex` (`modules/generators.ts` `oilComplex`, params `refineries`, `lubePlants`): advanced-oil refineries
+   facing north at the bottom, chemical plants (light crackers, heavy crackers, lubricant plants) facing north above them,
+   one manifold per fluid between and around the two rows (water and crude below the refineries; heavy, light, petroleum
+   and lubricant between the rows; water, heavy and light again above the plants, fed by connector columns at x = 0, 2
+   and 4). Every machine box connects by a riser: a pipe into the adjacent manifold, or a pipe-to-ground pair under the
+   nearer ones, so only risers touch a machine and boxes a recipe does not use touch nothing. Crude enters from the east,
+   water from the west, petroleum and lubricant leave east.
+   - **Crackers are sized for every drop:** enough heavy crackers for all the heavy oil (as if no lubricant were drawn) and
+     light crackers for all the light oil that makes. Unused lubricant then never backs heavy oil up into the refineries
+     and stops their petroleum.
+   - **Rates are the module's own** (`ModuleDraft.rates`, new): the generic rate balance cannot share one product between
+     two consumers. Without circuits (stamped modules carry none) the engine splits heavy oil between the lubricant
+     plants and the heavy crackers. The declared lubricant is the plants' share in proportion to their draw; T2 measured
+     more (5.0/s against 3.33/s declared with 2 refineries, 1 lubricant plant and 1 heavy cracker). A design that needs
+     more lubricant adds plants.
+   - **Tests.** T1 `oil-complex` floods the pipe networks (pipes, pipe-to-ground pairs, machine boxes): every fluid's
+     boxes and ports share one network, no network carries two fluids, unused boxes touch nothing, power reaches every
+     machine on one pole network, for 1–6 refineries × 0–2 lubricant plants; a cut manifold and a joining pipe are caught.
+     T2 `modules` "oil complex validation" runs it from infinity-pipe sources into pumped, drained outputs: 2 + 1:
+     petroleum 36.6/s of 37.3 declared, lubricant 5.0/3.33; 4 + 0: petroleum 78.1/78.0.
 3. **Chemistry rows fed by pipe** (plastic, sulfur, sulfuric acid, batteries) and an assembler row with a fluid input
    (electric engines take lubricant).
 4. **Design** switches to the oil complex and piped rows once `advanced-oil-processing` is researched.
