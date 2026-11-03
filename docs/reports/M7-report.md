@@ -931,6 +931,22 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       gain on synthetic 800-tile lines, where the router already needs ~3300-4200 work); and a dominance check that
       also compares the segment's length toward the pipeline extent (frontier nodes in the base had 256+ of 312 tiles
       used; no effect on the outcome, 2% less route work without it).
+    - *After the router fix (soak `route-900`, from the minute-900 save):* g160 planned on its first attempt (5159
+      ticks, 11 modules, 17 routes) and was built by minute 988, the first crude line. Two more findings:
+      - *A long build's clear phase read as a stall.* Its 21 clear jobs lay along ~2000 tiles of routes; two members
+        cleared about 7 trees per 5 game-min, mostly walking (probe `probe-930`, `board.lua`). Only finished crafts and
+        placements counted as steps, so at minute 941 the stall check fired, and its recovery failed every open
+        non-place job, the clears too: the build then stamped its ghosts over the standing trees and a tapped belt
+        ("1 ghosts could not be created: … splitter@422.5,-69", and later a pumpjack ghost over a tree that the M7c.9
+        lift had to clear). A finished clear is now a step too (`jobs/crew.ts`). A clear phase that finishes nothing
+        within the stall window is still a stall and still recovers. **Open:** clearing is walk-bound
+        (nearest-first, two members), and ghosts wait for every clear of their build, not only the ones under them.
+      - *A second crude field's box took in the first field.* g166/g167 failed 8 plans in a row ("no room at its
+        fixed spot: structure at -442,-169"): the free wells north of a one-well field (pumpjack at -437.5,-164.5)
+        formed one field whose box (wells + 2-tile margin) covered that pumpjack and two of its poles (probe
+        `probe-oil`), and a fixed module only claims open ground. `layField` (`strategy/oil.ts`) now leaves out the well
+        nearest each structure (any force, or a module of the layout) inside the box until the box is clear. T2
+        `world` "M7c.9: wells next to a structure in the field's box are left out until the box is clear".
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

@@ -7,6 +7,7 @@ import { hasWater, repairStartingLake } from "../world/spawn"
 import { fieldModule, moduleWells } from "../strategy/oil"
 import { generatedModule } from "../modules/library"
 import { ModuleDef } from "../modules/types"
+import type { Rect } from "../planner/grid"
 import { at, createLab } from "./lab"
 
 // M5a.2: every faction spawned with a starting area (D32) has water near its spawn, like a player's starting lake.
@@ -119,5 +120,27 @@ describe("oil fields", () => {
     assert(wellCount(first) === 2, `a field of two wells (${wellCount(first)})`)
     moduleWells([first!.def], taken)
     assert(find() === undefined, "its wells are taken by the planned field: no second field there")
+  })
+
+  test("M7c.9: wells next to a structure in the field's box are left out until the box is clear", () => {
+    // Seed 11, minute 995: a second crude provider's field box took in the poles and pumpjack of a one-well field next
+    // to it ("no room at its fixed spot: structure at -442,-169", 8 plans in a row).
+    const lab = createLab(24)
+    const s = lab.surface
+    for (const w of [at(lab, 0.5, 0.5), at(lab, 0.5, 6.5)]) s.create_entity({ name: "crude-oil", position: w, amount: 300000 })
+    const region = { x: math.floor(lab.origin.x) - 24, y: math.floor(lab.origin.y) - 24, w: 48, h: 48 }
+    const find = (avoid?: Rect[]) => fieldModule(s, region, () => true, lab.origin, "crude-oil", 1, "pumpjack", (params) => generatedModule("pumpjack-field", params), undefined, avoid)
+    assert(wellCount(find()) === 2, `a field of two wells (${wellCount(find())})`)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // A planned module over the box's south edge: the south well goes.
+    const south = find([{ x: ox - 6, y: oy + 9, w: 4, h: 4 }])
+    assert(wellCount(south) === 1 && south!.at.y + south!.def.footprint.h <= oy + 9, `the box ends above the module (${wellCount(south)} wells)`)
+    // A pole (another force's structure counts too) at the box's south-east corner.
+    const pole = s.create_entity({ name: "small-electric-pole", position: at(lab, 3.5, 9.5), force: "player" })!
+    const f = find()
+    assert(wellCount(f) === 1, `the well next to the pole is left out (${wellCount(f)})`)
+    assert(f!.at.y + f!.def.footprint.h <= oy + 9, "the box ends above the pole")
+    pole.destroy()
   })
 })

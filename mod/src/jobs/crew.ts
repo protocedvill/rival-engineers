@@ -644,8 +644,10 @@ function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, acti
   countWork("jobsProcessed")
   removeClaim(member, job.id)
   if (job.kind !== "haul") member.stats.jobsDone++
-  // A finished craft is a plan step for the strategy layer's stall detection.
-  if (faction.brain && job.payload.kind === "craft") faction.brain.steps++
+  // A finished craft is a plan step for the strategy layer's stall detection. M7c.9: so is a finished clear (route-900
+  // seed 11, minute 910–941: a build's clear phase took 30 game-min over 21 trees along 2000 tiles of routes; the stall
+  // check saw no step, and its recovery failed the open clear jobs, so the ghosts went down over the trees and a belt).
+  if (faction.brain && (job.payload.kind === "craft" || job.payload.kind === "clear")) faction.brain.steps++
 }
 
 /**

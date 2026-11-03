@@ -1146,7 +1146,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     if (m.def.generator !== "pumpjack-field") continue
     const n = g.nodes.find((x) => x.id === m.id)!
     const resource = (n.params.resource as string | undefined) ?? "crude-oil"
-    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells)
+    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells, f.layout.modules.map((x) => x.rect))
     if (field === undefined) {
       transitionGoal(g, "failed")
       g.deferred = true

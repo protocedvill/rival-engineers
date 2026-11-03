@@ -113,6 +113,11 @@ function resourceId(t: TerrainState, name: string): number {
   return i
 }
 
+/** M7c.9: whether an entity of `type` is a structure the planner never plans over (OWN or FOREIGN in the scan). */
+export function isStructureType(type: string): boolean {
+  return !IGNORED[type] && type !== "tree" && type !== "simple-entity" && type !== "cliff" && type !== "resource"
+}
+
 function classify(t: TerrainState, e: LuaEntity): number | undefined {
   const type = e.type
   if (IGNORED[type]) return undefined

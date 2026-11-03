@@ -8,6 +8,7 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import type { Rect, Vec } from "../planner/grid"
 import type { ConnectionRequest } from "../planner/plan"
+import { isStructureType } from "../planner/terrain"
 import { findEntities } from "../work"
 
 /** Wells this close (Chebyshev tiles) belong to one field (agent guess: vanilla fields space wells a few tiles apart). */
@@ -54,7 +55,7 @@ function wellTaken(surface: LuaSurface, at: Vec): boolean {
   return findEntities(surface, { type: "mining-drill", area, limit: 1 }).length > 0 || findEntities(surface, { ghost_type: "mining-drill", area, limit: 1 }).length > 0
 }
 
-export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, taken?: Record<string, boolean>): { def: ModuleDef; at: Vec } | undefined {
+export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, taken?: Record<string, boolean>, avoid: Rect[] = []): { def: ModuleDef; at: Vec } | undefined {
   // B115: only known ground (the plan's chunk rule), generated now if it is not yet: a mine's patch search generates its
   // chunks through the planner's terrain scan, this search reads the surface directly.
   const chunks: Vec[] = []
@@ -127,13 +128,13 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     }
     if (best === undefined) return undefined
     tried[best.i] = true
-    const built = layField(surface, wells.filter((_, i) => field[i] === best!.i), resource, pumpjack, make)
+    const built = layField(surface, wells.filter((_, i) => field[i] === best!.i), resource, pumpjack, make, avoid)
     if (built !== undefined) return built
   }
 }
 
 /** One field's module: its wells minus those on cliffs or water (B119); undefined when none is left or no layout fits. */
-function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
+function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, avoid: Rect[]): { def: ModuleDef; at: Vec } | undefined {
   let chosen = wells
   // B119: cliffs and water in the field's box (seed 11's wells sit in a ring of cliffs). Pumpjacks on them are left
   // out; the generator routes pipes and poles around the rest.
@@ -170,6 +171,34 @@ function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack
     return true
   })
   if (chosen.length === 0) return undefined
+  // M7c.9 (seed 11, g166/g167: "no room at its fixed spot: structure at -442,-169", 8 plans): the module is placed at
+  // its wells' box exactly, and only open ground there is its own; a structure in the box (another field's pumpjack and
+  // poles 4 tiles off its edge well, a planned module) blocks it. Wells next to one are left out until the box is clear.
+  const blockers: Rect[] = []
+  for (const r of avoid) if (r.x < b.x + b.w && r.x + r.w > b.x && r.y < b.y + b.h && r.y + r.h > b.y) blockers.push(r)
+  for (const e of findEntities(surface, { area: fieldArea })) {
+    if (!isStructureType(e.type)) continue
+    const bb = e.bounding_box
+    const x = math.floor(bb.left_top.x)
+    const y = math.floor(bb.left_top.y)
+    blockers.push({ x, y, w: math.ceil(bb.right_bottom.x) - x, h: math.ceil(bb.right_bottom.y) - y })
+  }
+  for (;;) {
+    const bx = box(chosen)
+    let worst: { i: number; d: number } | undefined
+    for (const r of blockers) {
+      if (!(r.x < bx.x + bx.w && r.x + r.w > bx.x && r.y < bx.y + bx.h && r.y + r.h > bx.y)) continue
+      // The well nearest the blocker (Manhattan distance from its centre to the rect) goes; ties keep sort order.
+      for (let i = 0; i < chosen.length; i++) {
+        const w = chosen[i]
+        const d = math.max(r.x - (w.x + 0.5), w.x + 0.5 - (r.x + r.w), 0) + math.max(r.y - (w.y + 0.5), w.y + 0.5 - (r.y + r.h), 0)
+        if (worst === undefined || d < worst.d) worst = { i, d }
+      }
+    }
+    if (worst === undefined) break
+    chosen = chosen.filter((_, i) => i !== worst!.i)
+    if (chosen.length === 0) return undefined
+  }
   const at = box(chosen)
   // The generator leaves out wells it cannot pipe to the port; none left means no field here.
   const [ok, def] = pcall(make, { wells: encodeWells(chosen), resource, pumpjack, obstacles: tiles.length > 0 ? tiles.join(";") : undefined })
