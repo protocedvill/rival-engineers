@@ -71,6 +71,7 @@ GHOST_ROUND = re.compile(r"goal (g\d+) \d+ ghosts left \(round (\d+)\)")
 TICK_LINE = re.compile(r"\[re-telemetry\] tick=(\d+)")
 MILESTONE_LINE = re.compile(r"milestone (\S+) at tick (\d+)")
 # D62: a search for ore past the home zone (radar outposts) starts and ends.
+EXPLORE_ANY = re.compile(r"EXPLORING \(D62\)")
 EXPLORE_START = re.compile(r"EXPLORING \(D62\) since tick (\d+)(?: \((required|extra capacity)\))?")
 EXPLORE_OVER = re.compile(r"EXPLORE \(D62\) over")
 FAILURE_LOG_TAIL_LINES = 200
@@ -400,6 +401,7 @@ class FailFast:
         self.plan_failures = 0
         self.tick = 0
         self.exploring_since = None
+        self.exploring = False
 
     def poll(self):
         if not self.log_file.exists():
@@ -427,8 +429,13 @@ class FailFast:
                 # D70 (user, 2026-10-30): exploring for extra capacity never fails a run; only a required search
                 # (something the factory can't run without) starts the clock. Logs without the tag count as required.
                 self.exploring_since = None if m.group(2) == "extra capacity" else int(m.group(1))
+            # Any search under way (either tag; on a resumed save, any outpost line) means plan failures are knowledge
+            # failures: radar outposts on lake-cut arms (seed 11, M7c.8) are not the design failing.
+            if EXPLORE_ANY.search(line):
+                self.exploring = True
             if EXPLORE_OVER.search(line):
                 self.exploring_since = None
+                self.exploring = False
             limit = self.rules.get("exploring_minutes")
             if limit and self.exploring_since is not None and self.tick - self.exploring_since > limit * 3600:
                 reason = reason or f"exploring for ore (D62) for over {limit} game-min since tick {self.exploring_since}"
@@ -439,7 +446,7 @@ class FailFast:
             # A knowledge failure ("no free <ore> patch in the region", "no feasible position") is not the design
             # failing: the mod is exploring for ground (D62), and its own exploring_minutes deadline bounds that.
             # Counting these killed seed 1376111 one attempt before its first exploration started.
-            if PLAN_OK.search(line) or self.exploring_since is not None:
+            if PLAN_OK.search(line) or self.exploring_since is not None or self.exploring:
                 self.plan_failures = 0
             elif PLAN_FAILED.search(line):
                 self.plan_failures += 1

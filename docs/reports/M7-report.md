@@ -840,6 +840,22 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       `cut` (`arms.cut`) and skipped from then on: every later outpost on it needs a line through the same water
       (`arms.ts` `nextArm`; T1 `arms`). With every arm cut the search waits. Not done (proposed): stepping an outpost
       back to the last land the base reaches, so a cut arm still explores up to its lake.
+      Resumed from minute 900 (`arms-900`): E12 found no radar spot (4 attempts), and the next outposts on S, W and N
+      each found no pole path, so all four arms were marked cut within 7 game-min. Checked with a traced replay (N13):
+      genuine, the radar's land lies past a lake ~100 tiles deep across the strip (y ≈ -2790 northward). So on seed 11
+      every arm ends at water by outpost 12-13. The harness fail-fast still stopped the run (8 failed plans in a row):
+      it skipped plan failures only during a *required* search, and a resumed run never saw the search's start line.
+      `soak.py` now resets the count during any D62 search (either tag, recognised from any `EXPLORING (D62)` line),
+      in line with D62/D70: a search for ground is not the design failing. Both stopping logs (`blue3-720`,
+      `arms-900`) pass the check now.
+    - *Blue science stays at ~5 chemical packs/min because extra-capacity exploration holds production growth.*
+      `blue3-720` probes: the plastic and sulfur chemical plants and two engine assemblers sit at `full_output`;
+      the 2 chemical-pack assemblers and both advanced-circuit assemblers always work. The chemical-pack assemblers
+      are the cap, not crude. The design's next production goal (g141, minute ~821) asked for a parallel crude provider
+      (D70 "extra capacity": the faction already pumps crude), found no free field, and started a D62 search. D62 holds
+      production goals while a search builds or scans an outpost, so from minute 821 to 907 the faction planned only
+      radar goals (g142-g163) and no production growth. Proposed (SPEC §11, for the user): an extra-capacity search
+      does not hold production goals that don't need the searched resource.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.
