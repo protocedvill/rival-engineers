@@ -908,6 +908,29 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       tree that already had an open clear job (another goal's) and so did not wait for it before placing ghosts; it now
       waits on that job (`runtime.ts` `queueClear`, like the growth path already did). Whether that is how this tree
       was missed in the first place is not confirmed (the goal was planned in the earlier run).
+    - *Long crude lines into the base exhausted the pipe router's budget (g160/g161, "budget exhausted, 200000
+      expansions").* Captured as `m7-seed11-g160-crude` (an ~870-tile line from the field at -346,57 to a plastic chain
+      at 521,21). Where the work went: ~20 nodes per 16 tiles over the 600 tiles of open ground, then 1437 → 56069 per
+      16-tile column from x 240 to 415, at the base edge; nearest 110 tiles from the goal. Two faults:
+      - The coarse pass counted any tile an underground may pass under as traversable, so a band of belts wider than a
+        pipe-to-ground span read as open. The corridor ran north of a module block into ground closed by such bands;
+        open ground just south of it (row 26 straight into the goal's pocket) was outside the corridor. A tile only an
+        underground passes now counts when its run of unplaceable tiles on an axis fits one span between placeable
+        tiles (`pipe-router.ts` `crossable`); every tile a real route uses still qualifies, so a coarse "no path"
+        stays sound.
+      - The corridor search could take the whole budget before the search dropped the corridor. It now gets half
+        (`PIPE_CORRIDOR_SHARE`), then the search goes on without it.
+      Ablation on the replay: the budget share is what makes the plan succeed (without it the plan fails whatever else
+      changes); the coarse fix alone does not, but saves 24% of route work (378219 against 498614). Before both: failed,
+      839636 route work, 91 s replay; after: done, 378219, 46 s. T1 `pipe-router` "M7c.9 a band of belts wider than a
+      span is no coarse passage" (3341 expansions; 112297 with the old coarse check) and `plan-replay`
+      "m7-seed11-g160-crude".
+      Also tried, not kept (on `proto/pipeline-segments`, local): a ten-fold budget (still running after an hour per
+      replay); a wider corridor (`corridorCells` 2: still failed); a segment move laying several longest
+      pipe-to-ground pairs as one expansion (the user's prefab-pipeline idea: no change on g160, ±10% work and no CPU
+      gain on synthetic 800-tile lines, where the router already needs ~3300-4200 work); and a dominance check that
+      also compares the segment's length toward the pipeline extent (frontier nodes in the base had 256+ of 312 tiles
+      used; no effect on the outcome, 2% less route work without it).
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.
@@ -966,4 +989,5 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Lost-items minimum | `strategy/reconcile.ts` `LOST_MIN_ITEMS` | 3 items per edge probe | Agent guess (M7c.8): a belt owed fewer items in one probe (600 ticks by default) can show none by chance; 3 keeps a real break (B69: 2/s lost) detected in one probe. | no |
 | Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
 | Site targets per placement | `planner/placement.ts` `MAX_SITE_TARGETS` | 4 | Agent guess (M7c.8): each is a full window scan (radius 96); four shores before a placement fails. | no |
+| Pipe corridor budget share | `planner/pipe-router.ts` `PIPE_CORRIDOR_SHARE` | 0.5 of the pipe search budget | Agent guess (M7c.9): leaves the whole-area search half the budget after a corridor dead end; g160 routes with it. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

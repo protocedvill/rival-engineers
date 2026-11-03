@@ -195,6 +195,11 @@ replay("m7-seed11-crude")
 // fails on an ordinary rip-up limit (a later attempt re-places).
 replay("m7-seed11-g107", { expect: "failed", failureExcludes: "crosses itself" })
 replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-science-pack>labs.in-crude-oil", failureExcludes: "=>plastic-bar>advanced-circuit>chemical-science-pack>labs.in-crude-oil" })
+// M7c.9 (seed 11 minute ~930, g160): an ~870-tile crude line into the base. The coarse corridor ran north of a module
+// block into ground closed by belt bands wider than a pipe-to-ground span, and the corridor search took the whole
+// 200000-unit budget there ("budget exhausted, nearest 110 at 415,17"); open ground just south reached the goal. The
+// coarse pass now counts only crossable bands, and the corridor search gets half the budget.
+replay("m7-seed11-g160-crude")
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.

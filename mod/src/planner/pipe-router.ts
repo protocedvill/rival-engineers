@@ -25,6 +25,8 @@ import { DX, DY, keyX, keyY, opposite, tkey } from "./grid"
 const PIPE_HEURISTIC_WEIGHT = 4
 /** M7c.8: how many of a node's ancestors a move checks for its tiles (`heldBy`); `found` checks whole paths. */
 const PIPE_CROSS_DEPTH = 24
+/** M7c.9: the share of the work budget the corridor search may use before the search drops the corridor (agent guess). */
+const PIPE_CORRIDOR_SHARE = 0.5
 
 /** What the search reads from the layout and terrain. Passed to every step, never stored (the search stays plain data). */
 export interface PipeCallbacks {
@@ -135,6 +137,8 @@ export interface PipeSearch {
   /** Caches for the search's life (the layout does not change while it runs). */
   tc: Record<number, number>
   uc: Record<number, boolean>
+  /** M7c.9: `crossable` per tile and axis (optional: searches stored before it have none). */
+  xc?: Record<number, boolean>
   coarse?: PipeCoarse
   /** Cell keys the tile search keeps to (a long line after the coarse pass). */
   corridor?: Record<number, boolean>
@@ -223,7 +227,40 @@ function cachedUnder(s: PipeSearch, cb: PipeCallbacks, x: number, y: number, axi
 
 /** A tile any route move can use: placeable, or passable under along either axis. */
 function traversable(s: PipeSearch, cb: PipeCallbacks, x: number, y: number): boolean {
-  return cachedCost(s, cb, x, y) >= 0 || cachedUnder(s, cb, x, y, 0) || cachedUnder(s, cb, x, y, 1)
+  if (cachedCost(s, cb, x, y) >= 0) return true
+  return crossable(s, cb, x, y, 0) || crossable(s, cb, x, y, 1)
+}
+
+/**
+ * M7c.9: whether a pipe-to-ground pair along `axis` (0 = N/S, 1 = E/W) can pass under the unplaceable tile x, y: its
+ * run of unplaceable tiles on that axis is at most `maxUnderground - 1` long, every one may be passed under, and both
+ * ends are placeable tiles. Every tile a real route uses qualifies, so the coarse graph still has a path whenever the
+ * tile graph has one. Before, any tile an underground could pass under counted, so a band of belts wider than a span
+ * (seed 11's base edge) read as open: the corridor ran into it and the tile search flooded the ground in front of it.
+ */
+function crossable(s: PipeSearch, cb: PipeCallbacks, x: number, y: number, axis: number): boolean {
+  const k = tkey(x, y) * 2 + axis
+  const xc = (s.xc ??= {})
+  const known = xc[k]
+  if (known !== undefined) return known
+  const dx = axis === 1 ? 1 : 0
+  const dy = axis === 0 ? 1 : 0
+  const max = s.p.maxUnderground - 1
+  let run = 1
+  let ok = cachedUnder(s, cb, x, y, axis)
+  for (const sign of [-1, 1]) {
+    let n = 1
+    while (ok) {
+      const tx = x + sign * dx * n
+      const ty = y + sign * dy * n
+      if (cachedCost(s, cb, tx, ty) >= 0) break
+      run++
+      if (run > max || !cachedUnder(s, cb, tx, ty, axis)) ok = false
+      n++
+    }
+  }
+  xc[k] = ok
+  return ok
 }
 
 /** A plain pipe at (x, y) touches no other fluid except through its own previous and next tiles. */
@@ -685,9 +722,13 @@ export function stepPipeSearch(s: PipeSearch, cb: PipeCallbacks, budget: number)
       used += stepDistances(s, cb, budget - used)
       continue
     }
-    if (s.hs.length === 0) {
+    // M7c.9: the corridor search gets a share of the budget; then the rest searches without it. Seed 11's g160: the
+    // corridor led north of a module block into ground closed by belt bands wider than a span, took the whole budget
+    // there, and open ground just outside it reached the goal.
+    const widen = s.corridor !== undefined && s.work + used >= s.p.budget * PIPE_CORRIDOR_SHARE
+    if (s.hs.length === 0 || widen) {
       if (s.corridor !== undefined) {
-        // The corridor search ran out: search without it (the coarse path exists, so there is one).
+        // The corridor search ran out (or used its share): search without it (the coarse path exists, so there is one).
         s.corridor = undefined
         s.cd = undefined
         s.widened = true

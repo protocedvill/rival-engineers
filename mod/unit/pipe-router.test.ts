@@ -231,4 +231,28 @@ test("pipe router: M7 a resumed search keeps to the step budget and finds the on
   eq(s.result!.cost, whole.cost)
 })
 
+/** M7c.9: a band only undergrounds may pass under (belts), wider than a span, with one gap far to the south. */
+function wideBand(): { rows: string[]; under: (this: void, x: number, y: number) => boolean } {
+  const rows: string[] = []
+  for (let y = 0; y < 120; y++) {
+    let row = ""
+    for (let x = 0; x < 300; x++) row += x >= 150 && x <= 163 && y < 110 ? "b" : "."
+    rows.push(row)
+  }
+  return { rows, under: () => true }
+}
+
+test("pipe router: M7c.9 a band of belts wider than a span is no coarse passage (the corridor goes round it)", () => {
+  const band = wideBand()
+  const t = asciiTerrain(band.rows)
+  // `b` is a belt: no pipe on it, but an underground may pass under (asciiTerrain reads it as free; cost says no).
+  const req = request(band.rows, { x: 2, y: 10, dir: 1 }, { x: 290, y: 10, dir: 1 }, { cost: (x, y) => (t.block(x, y) === UNKNOWN || band.rows[y]?.substring(x, x + 1) === "b" ? -1 : 1), under: band.under, budget: 400000, ...COARSE })
+  const r = routePipe(req)
+  ok(r !== undefined, `routed (${req.failure?.reason ?? ""})`)
+  ok(r!.steps.some((st) => st.y >= 110), "through the gap")
+  // Before, the coarse pass read the band as open: the corridor ran straight at it and the search flooded the ground
+  // in front of it (112297 expansions, against 3341).
+  ok(r!.expansions < 20000, `a bounded search (${r!.expansions} expansions)`)
+})
+
 run("pipe-router")
