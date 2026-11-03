@@ -482,8 +482,14 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
   const surface = game.surfaces[entry.surface]
   const clearJobs: JobId[] = []
   // Re-entrant: an adoption resumed after a Lua error must not queue the same target twice.
+  // M7c.9: a target with an open clear job (another goal's, or a resumed adoption's) is waited on too: before, the
+  // build skipped it and placed its ghosts while the tree still stood.
   const queueClear = (e: LuaEntity): void => {
-    if (e.valid && clearJobFor(faction, e) !== undefined) return
+    const open = e.valid ? (clearJobFor(faction, e) as JobId | undefined) : undefined
+    if (open !== undefined) {
+      if (clearJobs.indexOf(open) < 0) clearJobs.push(open)
+      return
+    }
     clearJobs.push(addClearJob(faction, e, opts.priority))
   }
   for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) queueClear(e)

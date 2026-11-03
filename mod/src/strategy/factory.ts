@@ -10,7 +10,8 @@ import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
 import { BuildParts, EntitySpec, partEntities, partTiles } from "../planner/build-list"
 import * as GROW from "../planner/grow"
-import { destroyEntity, markDirty, scanChunk, terrainView } from "../planner/terrain"
+import { destroyEntity, markDirty, newTerrain, scanChunk, terrainView } from "../planner/terrain"
+import * as LIFT from "./lifted"
 import { DX, DY, keyX, keyY, Rect, tkey, Vec } from "../planner/grid"
 import * as LO from "../planner/layout"
 import type { LayoutState, PlacedModule, PlannedPole } from "../planner/layout"
@@ -24,7 +25,6 @@ import { CompareOptions, CompareResult, ConnectionRequest, logisticsFirst, Modul
 import { sealedInputs } from "../planner/placement"
 import * as PW from "../planner/power"
 import { claimOreField, claimOwner, foreignEntitiesOn } from "../world/claims"
-import { newTerrain } from "../planner/terrain"
 import { researchGoal } from "./research-queue"
 import { newReconcileState, probeMaxAgeFor, reconcile, ReconcileParams, ReconcileState, recordRemedy, Remedy } from "./reconcile"
 import type { RemedyKind } from "./reconcile"
@@ -123,6 +123,11 @@ export interface FactoryGoal {
   lastRound?: number
   /** Clear jobs for trees/rocks found under leftover ghosts, by obstacle position. */
   clearing?: Record<string, IDS.JobId>
+  /**
+   * M7c.9: leftover ghosts lifted off a tree or rock they cover (a ghost's selection wins over the tree's, so the crew
+   * can't mine it: seed 11's pumpjack ghost over tree-08-brown, 10 rounds). Each comes back once its clear job ends.
+   */
+  lifted?: LIFT.LiftedGhost[]
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   /** A growth or repair build: `poles` (D71 b) places the new poles before the old ones in `breakAfter` are picked up. */
@@ -1020,6 +1025,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     g.progressTick = ctx.tick
   }
   if (open) return
+  if (LIFT.restoreLifted(g, ctx.faction, b.ghosts)) return
   const left = b.ghosts.filter((gh) => gh.valid)
   if (left.length > 0) {
     if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
@@ -1734,8 +1740,9 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   if (g.rework !== undefined && !rework(ctx, g, b)) return
   if (b.phase !== "done") return
   // Every job finished: ghosts left over (failed jobs, a replan dropping jobs) get new place jobs.
+  if (LIFT.restoreLifted(g, ctx.faction, (b.ghosts ??= []))) return
   const left: LuaEntity[] = []
-  for (const gh of b.ghosts ?? []) if (gh.valid) left.push(gh)
+  for (const gh of b.ghosts) if (gh.valid) left.push(gh)
   if (left.length > 0 && ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
   // Before a retry round and before calling the build done: is any part blocked by something the faction doesn't own?
   if (resolveConflicts(ctx, g, entry)) {
@@ -2010,8 +2017,16 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
       const old = g.clearing[k]
       const j = old !== undefined ? getJob(faction.board, old) : undefined
       if (j !== undefined && j.status !== "done" && j.status !== "failed") continue
-      g.clearing[k] = addClearJob(faction, e, b!.priority)
+      const job = addClearJob(faction, e, b!.priority)
+      g.clearing[k] = job
       log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: clearing ${e.name} at ${k} under a leftover ${gh.ghost_name} ghost${j !== undefined ? ` (last clear job ${j.status}: ${j.reason ?? "?"})` : ""}`)
+      // M7c.9: cleared once already and still there: the ghost may cover it (the crew refuse to mine a selected
+      // ghost). Lift the ghost until this clear job ends, as a player would cancel it, mine, and place it again.
+      if (old !== undefined && gh.valid) {
+        const l = LIFT.liftGhost(gh, job)
+        ;(g.lifted ??= []).push(l)
+        log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: lifted the ${l.name} ghost at ${l.position.x},${l.position.y} until what it covers is cleared`)
+      }
     }
   }
   // B42: one of the faction's own entities the layout no longer plans (an obsolete route piece put back) blocks a

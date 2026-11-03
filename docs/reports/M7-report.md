@@ -897,6 +897,17 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       ring search goes on to the next site point outside the searched windows, up to `MAX_SITE_TARGETS` targets
       (`placement.ts`). Replay of the captured g164 plan: power#7 placed at 739,187. T1 `planner` "placement M7c.8: a
       steam block whose nearest shore is built out goes on to the next lake" (on the old code: "no feasible position").
+    - *A tree inside a pumpjack ghost could never be cleared.* After the two fixes above the run reached minute 1080
+      (`clus-960`), but g163 left one ghost for 10 rounds: "pumpjack at -363,58: cannot-place". tree-08-brown at
+      -361.875,59.25 stands inside the 3×3 ghost, and its clear job failed "not-minable: a ghost or another entity covers
+      the target": the ghost is selected at every point of the tree's selection box, and the crew refuse to mine a
+      selected ghost (a player's mining would cancel it). A tree under a leftover ghost that was already cleared once
+      now lifts the ghost until the new clear job ends, then puts it back with its direction, recipe and belt type, as
+      a player would (`strategy/lifted.ts`, `FactoryGoal.lifted`). T2 `controller` "M7c.9: a tree inside a 3×3 ghost
+      can't be mined; lifted, it is, and the ghost goes back with its settings". Also: a build's clear phase skipped a
+      tree that already had an open clear job (another goal's) and so did not wait for it before placing ghosts; it now
+      waits on that job (`runtime.ts` `queueClear`, like the growth path already did). Whether that is how this tree
+      was missed in the first place is not confirmed (the goal was planned in the earlier run).
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

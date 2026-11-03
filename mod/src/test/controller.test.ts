@@ -11,6 +11,7 @@ import {
 } from "../character/controller"
 import { distance } from "../character/steering"
 import { ActionRecord } from "../character/types"
+import { liftGhost, restoreGhost } from "../strategy/lifted"
 import { at, createLab, itemCount, Lab, spawnEngineer } from "./lab"
 
 // M1 acceptance (SPEC §8): the Character Controller drives a player-less character through every
@@ -203,6 +204,43 @@ describe("character controller", () => {
       assert(a.status === "failed" && a.reason === "not-minable", describeAction(a))
       assert(belt.valid, "the belt is still there")
       assert(itemCount(character, "transport-belt") === 0, "no belt picked up")
+    })
+  })
+
+  test("M7c.9: a tree inside a 3×3 ghost can't be mined; lifted, it is, and the ghost goes back with its settings", () => {
+    // Seed 11: tree-08-brown at (+0.625, +0.75) from a pumpjack ghost's centre; the ghost is selected at every point
+    // of the tree's selection box, and its clear job failed "not-minable" for 10 build rounds.
+    const lab = createLab(16)
+    const centre = at(lab, 0.5, 0.5)
+    const tree = lab.surface.create_entity({ name: "tree-08-brown", position: { x: centre.x + 0.625, y: centre.y + 0.75 } })!
+    const ghost = lab.surface.create_entity({ name: "entity-ghost", inner_name: "assembling-machine-2", position: centre, direction: defines.direction.east, recipe: "iron-gear-wheel", force: "player" })!
+    const character = spawnEngineer(lab, -5, 0)
+    const ctl = createController(character)
+    let first: number | undefined = enqueue(ctl, { kind: "mine", target: tree })
+    let second: number | undefined
+    let kept: ReturnType<typeof liftGhost> | undefined
+    async(1800)
+    on_tick(() => {
+      if (first !== undefined) {
+        const a = getAction(first)!
+        if (a.status === "queued" || a.status === "running") return
+        assert(a.status === "failed" && a.reason === "not-minable", `refused under the ghost: ${describeAction(a)}`)
+        assert(tree.valid && ghost.valid, "tree and ghost still there")
+        first = undefined
+        const lifted = liftGhost(ghost, 0)
+        assert(!ghost.valid, "the ghost is lifted")
+        kept = lifted
+        second = enqueue(ctl, { kind: "mine", target: tree })
+        return
+      }
+      const b = getAction(second!)!
+      if (b.status === "queued" || b.status === "running") return
+      assert(b.status === "succeeded" && !tree.valid, `the tree is mined once the ghost is gone: ${describeAction(b)}`)
+      const back = restoreGhost(kept!, "player")
+      assert(back !== undefined && back.valid && back.ghost_name === "assembling-machine-2", "the ghost is back")
+      assert(back!.direction === defines.direction.east, `its direction (${back!.direction})`)
+      assert(back!.get_recipe()[0]?.name === "iron-gear-wheel", "its recipe")
+      done()
     })
   })
 
