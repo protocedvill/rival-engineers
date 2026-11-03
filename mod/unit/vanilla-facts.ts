@@ -159,5 +159,5 @@ export const vanillaFacts: ProtoFacts = {
     return undefined
   },
   itemToPlace: (entity) => entity,
-  isFluid: (name) => name === "crude-oil" || name === "water" || name === "petroleum-gas" || name === "steam",
+  isFluid: (name) => ["crude-oil", "water", "petroleum-gas", "steam", "heavy-oil", "light-oil", "lubricant", "sulfuric-acid"].indexOf(name) >= 0,
 }

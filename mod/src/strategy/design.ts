@@ -95,6 +95,19 @@ export interface DesignContext {
   pumpjack?: string
   /** The fluid an offshore pump gives (water). */
   pumpedFluid?: string
+  /**
+   * M7d.4 (D81): once this recipe (advanced oil processing) is enabled, petroleum gas and lubricant come from one oil
+   * complex per cluster (role `oil-complex`), chemistry recipes from pipe-fed chemistry rows and fluid assembler recipes
+   * (electric engines) from assembler rows with a manifold. Default "advanced-oil-processing".
+   */
+  advancedOil?: string
+  /** M7d.4: the fluids the oil complex makes (default petroleum gas and lubricant). */
+  oilComplexOutputs?: string[]
+  /**
+   * M7d.4: generators of the roles already in the factory graph. A built (or building) fluid chain keeps its role as
+   * a fluid chain after the switch to the oil complex: only new providers and parallel ones use the new modules.
+   */
+  builtGenerators?: Record<string, string>
   /** Science packs the labs take (one belt port each). */
   packs: string[]
   /** Seconds per research unit the lab count is sized for. */
@@ -275,11 +288,27 @@ function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefi
   // M7c: a fluid resource is pumped (pumpjack field), the offshore-pumped fluid comes from a water pump, and other fluids
   // are made and used inside a module (a fluid chain's petroleum): no producer of their own.
   if (resourceFor(ctx, item) !== undefined) return fluid ? "pumpjack-field" : "mining-outpost"
-  if (fluid) return item === (ctx.pumpedFluid ?? "water") ? "water-pump" : undefined
-  const rn = ctx.facts.recipeForItem(item)
-  const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
+  const adv = advancedOil(ctx)
+  if (fluid) {
+    if (item === (ctx.pumpedFluid ?? "water")) return "water-pump"
+    if (!adv) return undefined
+    if ((ctx.oilComplexOutputs ?? OIL_COMPLEX_OUTPUTS).indexOf(item) >= 0) return "oil-complex"
+    // M7d.4: a chemistry fluid (sulfuric acid) comes from a chemistry row's manifold.
+    const fr = recipeOf(ctx, item)
+    return fr !== undefined && chemRowFits(ctx, fr) ? "chem-row" : undefined
+  }
+  const r = recipeOf(ctx, item)
   if (r === undefined) return undefined
-  if (r.ingredients.some((i) => i.fluid === true)) return fluidSourceFor(ctx, r) !== undefined ? "fluid-chain" : undefined
+  if (r.ingredients.some((i) => i.fluid === true)) {
+    if (adv) {
+      // M7d.4: fluids by pipe from their own providers (the oil complex, a water pump, an acid row).
+      if (chemRowFits(ctx, r)) return "chem-row"
+      const fluids = r.ingredients.filter((i) => i.fluid === true).length
+      const solids = r.ingredients.length - fluids
+      if (fluids === 1 && solids >= 1 && solids <= 2 && machineFor(ctx, r.category) !== undefined) return "assembler-row"
+    }
+    return fluidSourceFor(ctx, r) !== undefined ? "fluid-chain" : undefined
+  }
   const furnaceCats = ctx.facts.entity(ctx.furnace)?.craftingCategories ?? []
   if (furnaceCats.indexOf(r.category) >= 0 && r.ingredients.length === 1) return "smelter-column"
   if (r.ingredients.length === 2) {
@@ -296,6 +325,25 @@ function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefi
   return undefined
 }
 
+/** M7d.4: the fluids the oil complex makes, by default. */
+const OIL_COMPLEX_OUTPUTS = ["petroleum-gas", "lubricant"]
+
+function advancedOil(ctx: DesignContext): boolean {
+  return ctx.enabled[ctx.advancedOil ?? "advanced-oil-processing"] === true
+}
+
+function recipeOf(ctx: DesignContext, item: string): RecipeFacts | undefined {
+  const rn = ctx.facts.recipeForItem(item)
+  return rn !== undefined ? ctx.facts.recipe(rn) : undefined
+}
+
+/** M7d.4: a chemical-plant recipe a chemistry row takes (1–2 fluids, at most 2 solids, one product). */
+function chemRowFits(ctx: DesignContext, r: RecipeFacts): boolean {
+  if ((ctx.facts.entity(ctx.chemPlant ?? "chemical-plant")?.craftingCategories ?? []).indexOf(r.category) < 0) return false
+  const fluids = r.ingredients.filter((i) => i.fluid === true).length
+  return fluids >= 1 && fluids <= 2 && r.ingredients.length - fluids <= 2 && r.products.length === 1
+}
+
 /** M7c: the first assembler whose crafting categories include `category`. */
 function machineFor(ctx: DesignContext, category: string): string | undefined {
   for (const m of ctx.assemblers ?? [ctx.assembler]) if ((ctx.facts.entity(m)?.craftingCategories ?? []).indexOf(category) >= 0) return m
@@ -309,6 +357,11 @@ function fluidSourceFor(ctx: DesignContext, r: RecipeFacts): RecipeFacts | undef
   for (const p of src.products) if (p.fluid === true && r.ingredients.some((i) => i.name === p.name)) return src
   return undefined
 }
+
+/** M7d.4: the largest oil complex the design plans (refineries); a bigger need takes a parallel complex. */
+const OIL_COMPLEX_MAX_REFINERIES = 12
+/** M7d.4: the most lubricant plants an oil complex sizing tries. */
+const OIL_COMPLEX_MAX_LUBE = 6
 
 /** M7c: crude per second of a nominal well (100% yield) when a pumpjack field is sized before its field is known. */
 const NOMINAL_WELL = 10
@@ -346,6 +399,13 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
     // Fewest machines first: plants, then refineries for them.
     const recipe = ctx.facts.recipeForItem(item)!
     for (let c = 1; c <= 8; c++) for (let r = 1; r <= 2 * c + 1; r++) out.push({ recipe, chemPlants: c, refineries: r, source: ctx.fluidSource ?? "basic-oil-processing", refinery: ctx.refinery ?? "oil-refinery", chemPlant: ctx.chemPlant ?? "chemical-plant" })
+  } else if (gen === "chem-row") {
+    const recipe = ctx.facts.recipeForItem(item)!
+    for (let c = 1; c <= 12; c++) out.push({ recipe, chemPlants: c, chemPlant: ctx.chemPlant ?? "chemical-plant" })
+  } else if (gen === "oil-complex") {
+    // Petroleum: refineries only; lubricant: one plant per 2 refineries at least (`expandOilComplex` sizes both at once).
+    const lube = item === "lubricant"
+    for (let r = 1; r <= OIL_COMPLEX_MAX_REFINERIES; r++) out.push({ refineries: r, lubePlants: lube ? math.max(1, math.ceil(r / 2)) : 0, refinery: ctx.refinery ?? "oil-refinery", chemPlant: ctx.chemPlant ?? "chemical-plant" })
   } else if (gen === "pumpjack-field") {
     // Sized on nominal wells (100%, in a row 7 tiles apart): the runtime generates the module from a real field when it
     // plans it, and that field must yield at least this much.
@@ -512,7 +572,13 @@ function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
  */
 function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], shared = false, sharedRole?: string, fixedCapacity?: number, mergePorts?: Record<string, boolean>, newSite = false): void {
   const ctx = w.ctx
-  const gen = producerFor(ctx, item)
+  let gen = producerFor(ctx, item)
+  // M7d.4: a fluid chain already in the factory stays one under its role after the switch to pipe-fed rows.
+  const builtRole = sharedRole ?? (ctx.policy.topology === "splitter-tap" || shared ? `${item}${w.suffix}` : `${item}>${consumers[0].to}`)
+  if (gen === "chem-row" && ctx.builtGenerators?.[builtRole] === "fluid-chain") {
+    const r = recipeOf(ctx, item)
+    if (r !== undefined && fluidSourceFor(ctx, r) !== undefined) gen = "fluid-chain"
+  }
   if (gen === undefined) {
     w.errors.push(`no module makes ${item}`)
     return
@@ -749,7 +815,91 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
 }
 
 /** Expands every pending demand for `item` (point-to-point: one producer each; splitter-tap: one for all). */
+/**
+ * M7d.4 (D81): one oil complex per cluster makes every petroleum and lubricant demand pending in the walk (they are
+ * fluids, expanded together in the walk's leftover passes): sized for both at once, each consumer fed from its
+ * product's port. A built complex too small for the need keeps what it can feed; the rest goes to a parallel complex.
+ */
+function expandOilComplex(w: Walk): void {
+  const ctx = w.ctx
+  const outs = ctx.oilComplexOutputs ?? OIL_COMPLEX_OUTPUTS
+  const mine: Demand[] = []
+  const rest: Demand[] = []
+  for (const d of w.demands) (outs.indexOf(d.item) >= 0 ? mine : rest).push(d)
+  if (mine.length === 0) return
+  w.demands = rest
+  const role = `oil-complex${w.suffix}`
+  const cap = ctx.providerCaps?.[role]
+  if (ctx.providerShort?.[role] === true && cap !== undefined && cap > EPS && !w.nodes.some((n) => n.role === role)) {
+    // The built complex: petroleum consumers up to its capacity, everything else to the parallel one.
+    const pet = mine.filter((d) => d.item === outs[0])
+    const split = splitDemand(pet, cap)
+    addOilComplex(w, role, split.keep, cap)
+    const others = mine.filter((d) => d.item !== outs[0])
+    for (const d of split.rest) others.push(d)
+    if (others.length > 0) addOilComplex(w, parallelRole(w, role, true), others)
+    return
+  }
+  addOilComplex(w, w.nodes.some((n) => n.role === role) ? parallelRole(w, role, true) : role, mine)
+}
+
+function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity?: number): void {
+  const ctx = w.ctx
+  const outs = ctx.oilComplexOutputs ?? OIL_COMPLEX_OUTPUTS
+  const need: Record<string, number> = {}
+  for (const d of consumers) need[d.item] = (need[d.item] ?? 0) + d.rate
+  const pet = outs[0]
+  let chosen: { params: Record<string, unknown>; def: ModuleDef } | undefined
+  let short = true
+  for (let r = 1; r <= OIL_COMPLEX_MAX_REFINERIES && short; r++) {
+    for (let lp = 0; lp <= ((need[outs[1]] ?? 0) > EPS ? OIL_COMPLEX_MAX_LUBE : 0); lp++) {
+      const params: Record<string, unknown> = { refineries: r, lubePlants: lp, refinery: ctx.refinery ?? "oil-refinery", chemPlant: ctx.chemPlant ?? "chemical-plant" }
+      const [ok, def] = pcall(ctx.make, "oil-complex", params)
+      if (!ok) continue
+      const d = def as ModuleDef
+      chosen = { params, def: d }
+      const fits = outs.every((o) => outputRate(d, o) + EPS >= (need[o] ?? 0))
+      // A built complex keeps the size that matches its capacity.
+      if (fixedCapacity !== undefined ? outputRate(d, pet) + EPS >= fixedCapacity : fits) {
+        short = false
+        break
+      }
+    }
+  }
+  if (chosen === undefined) {
+    w.errors.push("oil-complex: no valid size")
+    return
+  }
+  if (short) w.short = true
+  let util = 0
+  for (const o of outs) {
+    const c = outputRate(chosen.def, o)
+    if (c > EPS) util = math.max(util, (need[o] ?? 0) / c)
+  }
+  util = math.min(1, util)
+  const node: DesignNode = {
+    role,
+    kind: "module",
+    generator: "oil-complex",
+    params: chosen.params,
+    def: chosen.def,
+    item: pet,
+    need: need[pet] ?? 0,
+    capacity: fixedCapacity ?? outputRate(chosen.def, pet),
+    inputs: inputPorts(chosen.def, util),
+    powerW: powerOf(chosen.def.rates.inputs) * util,
+    cluster: w.cluster,
+  }
+  w.nodes.push(node)
+  for (const c of consumers) w.edges.push(edge(w, role, outPort(chosen.def, c.item), c))
+  for (const p of node.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+}
+
 function expandItem(w: Walk, item: string): void {
+  if (producerFor(w.ctx, item) === "oil-complex") {
+    expandOilComplex(w)
+    return
+  }
   const mine: Demand[] = []
   const rest: Demand[] = []
   for (const d of w.demands) (d.item === item ? mine : rest).push(d)

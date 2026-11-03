@@ -1061,7 +1061,17 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      the lanes' first input belt starts on the bottom edge. The manifold is part of each unit's slice, so it grows with
      the row. T1: ports, pipe networks, power and rates for 2–6 machines with and without a buffer head. T2 validation:
      2 machines, electric engines 0.153/0.150 per s (102%).
-4. **Design** switches to the oil complex and piped rows once `advanced-oil-processing` is researched.
+4. **Design: done.** Once the `advanced-oil-processing` recipe is enabled, `generatorRule` (`strategy/design.ts`) picks:
+   petroleum gas and lubricant from one `oil-complex` per cluster; every chemistry recipe that fits a `chem-row` (plastic,
+   sulfur, sulfuric acid, batteries) from a pipe-fed row; a recipe with one fluid and one or two solids that an assembler
+   makes (electric engines) from a fluid `assembler-row`. `expandOilComplex` sizes the complex for both outputs at once
+   (the smallest refinery and lubricant-plant counts that cover both draws, up to 12 refineries and 6 lubricant plants)
+   and wires each consumer to its output port. A built oil complex that is short keeps what it can feed; the rest goes to a
+   parallel complex. A `fluid-chain` already built before the research keeps its role and generator (the design reads
+   the built graph's generators, `stage.ts` `builtGenerators`), so the switch never rips a working chain. T1 `design`:
+   three tests (one complex, pipe-fed rows and no fluid chains after the research; electric engines and plastic share
+   one complex for lubricant and petroleum; a built fluid chain stays one). Not yet seen in a soak: no run has reached
+   advanced oil processing.
 5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
    modular armour with personal roboports for the crew.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
@@ -1096,6 +1106,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Slow-plan capture | `planner/runtime.ts` `SLOW_PLAN_TICKS` | 3600 ticks (1 game-min) | Agent guess (diagnostics only, soaks with frame dumps): most plans finish well within a game-minute; one still planning then is captured to `plans/slow/` for a replay. Adopted plans are now captured up to a 3,000-tile side like failed ones (was 400: production regions are 768² and were never kept). | no |
+| Oil complex size cap | `strategy/design.ts` `OIL_COMPLEX_MAX_REFINERIES`, `OIL_COMPLEX_MAX_LUBE` | 12 refineries, 6 lubricant plants | Agent guess (proposed): a 12-refinery complex makes ~230 petroleum/s (T2: 19.5/s per refinery with cracking), far above a first blue/robot base; a larger draw adds a parallel complex rather than one unbounded footprint. Lubricant: 6 plants can make 60/s, though heavy oil (5/s per refinery) limits it first; a 6-machine electric-engine row draws ~6.75/s. | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |

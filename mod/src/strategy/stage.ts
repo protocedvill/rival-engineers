@@ -234,6 +234,17 @@ export function providerCaps(f: FactoryState | undefined): Record<string, number
   return out
 }
 
+/** M7d.4: the generator of every role in the factory graph (any lifecycle), for `DesignContext.builtGenerators`. */
+export function builtGenerators(f: FactoryState | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (f === undefined) return out
+  for (const id of f.graph.nodeOrder) {
+    const n = f.graph.nodes[id]
+    if (n.generator !== undefined) out[n.role] = n.generator
+  }
+  return out
+}
+
 /** B97: the consumer ports (`role.port`) each built provider role feeds over its belt edges. */
 export function providerFeeds(f: FactoryState | undefined): Record<string, Record<string, boolean>> {
   const out: Record<string, Record<string, boolean>> = {}

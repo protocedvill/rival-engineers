@@ -1,5 +1,6 @@
 import { generate, GeneratorName } from "../src/modules/generators"
 import { ModuleDef } from "../src/modules/types"
+import { rateOf } from "../src/modules/rates"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
@@ -884,6 +885,70 @@ test("M7c.9: an edge more clusters do not shrink stops the split", () => {
   ok(string.find(overflow[edge.role] ?? "", "more clusters do not split it", 1, true) !== undefined, `the overflow says why (${overflow[edge.role]})`)
   edge.rate = 20
   ok(checkEdges(c, w, {}, false, {}, rates) > 1, "a rate that did shrink may split again")
+})
+
+test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry rows, no fluid chains", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true }
+  const blue = ctx({
+    enabled,
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  })
+  eq(generatorFor(blue, "petroleum-gas"), "oil-complex", "petroleum")
+  eq(generatorFor(blue, "lubricant"), "oil-complex", "lubricant")
+  eq(generatorFor(blue, "plastic-bar"), "chem-row", "plastic")
+  eq(generatorFor(blue, "sulfur"), "chem-row", "sulfur")
+  eq(generatorFor(blue, "sulfuric-acid"), "chem-row", "sulfuric acid (a fluid)")
+  eq(generatorFor(blue, "battery"), "chem-row", "batteries")
+  eq(generatorFor(blue, "electric-engine-unit"), "assembler-row", "electric engines (lubricant by pipe)")
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const gens: Record<string, string[]> = {}
+  for (const n of d.nodes) (gens[n.generator] ??= []).push(n.role)
+  eq(gens["fluid-chain"], undefined, "no fluid chains")
+  eq((gens["oil-complex"] ?? []).join(","), "oil-complex", "one oil complex")
+  ok((gens["chem-row"] ?? []).length >= 2, `plastic and sulfur rows (${(gens["chem-row"] ?? []).join(", ")})`)
+  const complex = d.nodes.find((n) => n.generator === "oil-complex")!
+  // Every petroleum edge comes from the complex's petroleum port; the complex takes crude and water.
+  const pet = d.edges.filter((e) => e.item === "petroleum-gas")
+  ok(pet.length >= 2, `petroleum to both rows (${pet.length})`)
+  for (const e of pet) eq(`${e.from}.${e.fromPort}`, "oil-complex.out-petroleum-gas", e.role)
+  let petNeed = 0
+  for (const e of pet) petNeed += e.rate
+  ok(rateOf(complex.def.rates.outputs, "petroleum-gas") + 1e-9 >= petNeed, `complex covers ${petNeed} petroleum/s`)
+  ok(d.edges.some((e) => e.to === "oil-complex" && e.item === "crude-oil"), "crude into the complex")
+  ok(d.edges.some((e) => e.to === "oil-complex" && e.item === "water"), "water into the complex")
+  eq(complex.params.lubePlants, 0, "no lubricant asked for: no lubricant plants")
+})
+
+test("M7d.4: electric engines and plastic: one oil complex makes the lubricant and the petroleum", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "plastic-bar": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "electric-engine-unit": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 3, packs: ["electric-engine-unit"] })
+  const d = design(c, { item: "electric-engine-unit", perSecond: 0.1 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const complexes = d.nodes.filter((n) => n.generator === "oil-complex")
+  eq(complexes.map((n) => n.role).join(","), "oil-complex", "one oil complex")
+  const lube = d.edges.filter((e) => e.item === "lubricant")
+  ok(lube.length >= 1, "lubricant is delivered")
+  for (const e of lube) eq(`${e.from}.${e.fromPort}`, "oil-complex.out-lubricant", e.role)
+  let need = 0
+  for (const e of lube) need += e.rate
+  ok(rateOf(complexes[0].def.rates.outputs, "lubricant") + 1e-9 >= need, `lubricant ${need}/s covered (${complexes[0].params.lubePlants} plants)`)
+  const engines = d.nodes.find((n) => n.item === "electric-engine-unit" && n.generator === "assembler-row")
+  ok(engines !== undefined, "an electric engine row")
+})
+
+test("M7d.4: a fluid chain already built keeps its role as a fluid chain after the switch", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true }
+  const base = { enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 3, packs: [RED, "logistic-science-pack", "chemical-science-pack"] }
+  const first = design(ctx(base), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const plastic = first.nodes.find((n) => n.item === "plastic-bar")!
+  eq(plastic.generator, "chem-row", "new: a chemistry row")
+  const again = design(ctx({ ...base, builtGenerators: { [plastic.role]: "fluid-chain" } }), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(again.nodes.find((n) => n.role === plastic.role)?.generator, "fluid-chain", "built: still a fluid chain")
+  eq(again.errors.length, 0, again.errors.join("; "))
 })
 
 run("design")
