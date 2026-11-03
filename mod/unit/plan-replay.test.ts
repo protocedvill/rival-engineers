@@ -832,5 +832,6 @@ test("B106: a new mine whose own output the router proves walled in is placed ag
 // walked a state's 24 ancestors once per move; marked once per expansion now, the replay takes 101 s instead of
 // 179 s with the same searches. The plan still fails: its copper feed's goal is sealed in by own ground.
 replay("m7-seed11-g51-slow", { expect: "failed", failureIncludes: "no path" })
+replay("m7-seed11-g78-slow", { expect: "failed", failureIncludes: "no path" })
 
 run("plan-replay")
