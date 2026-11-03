@@ -812,6 +812,18 @@ test("placement: steam block lands on a shore (anchor water tiles are water)", (
   for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) eq(terrain.block(x, y), FREE, "footprint on land")
 })
 
+test("placement M7c.8: a steam block whose nearest shore is built out goes on to the next lake (seed 11)", () => {
+  // A pond at x 4..9 ringed by own buildings (the base lake after six steam blocks), and a free lake at x 340..359.
+  const rows = field(360, 40)
+  for (let y = 0; y < 40; y++) rows[y] = string.rep("#", 22) + rows[y].substring(22, 340) + string.rep("~", 20)
+  for (let y = 14; y < 26; y++) rows[y] = string.rep("#", 4) + string.rep("~", 6) + rows[y].substring(10)
+  const def = steamBlock(F, { boilers: 1 })
+  const s = placeNow({ id: "steam", def, targets: {}, center: { x: 30, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }, newLayout(), asciiTerrain(rows), policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 300, `on the far shore (x ${s.result!.origin.x})`)
+  eq(s.deadSites?.length, 1, "the built-out pond was searched once")
+})
+
 test("placement: mining outpost lands on its patch with its drills over ore", () => {
   const rows = field(60, 60)
   for (let y = 40; y < 56; y++) rows[y] = string.rep(".", 35) + string.rep("i", 14) + string.rep(".", 11)

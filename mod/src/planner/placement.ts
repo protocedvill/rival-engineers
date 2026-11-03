@@ -73,6 +73,8 @@ export interface PlacementSearch {
   /** Next point of the current ring (`ringPoint` index): a ring is scanned across ticks under the budget. */
   ringIdx?: number
   target?: Vec
+  /** M7c.8: site targets whose windows found no room (a built-out lake shore); the ring search skips their windows. */
+  deadSites?: Vec[]
   /** D57 (mines): the ranked free-ore patches, the next one to try, the one being searched, and those found full. */
   patches?: SitePatch[]
   patchIdx?: number
@@ -349,6 +351,18 @@ function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): 
  * OUTPOST_FAR_RADIUS (within the plan's region): the ore near the core runs out once several clusters mine it.
  */
 const OUTPOST_FAR_RADIUS = 192
+
+/** M7c.8: site targets (shores) a placement searches around before it fails (agent guess; each is a full window scan). */
+const MAX_SITE_TARGETS = 4
+
+/** M7c.8: whether `p` lies in the window already searched around a dead site target (its largest radius). */
+function inDeadSite(s: PlacementSearch, policy: LayoutPolicy, p: Vec): boolean {
+  if (s.deadSites === undefined) return false
+  let R = 0
+  for (const r of radii(s, policy)) R = math.max(R, r)
+  for (const d of s.deadSites) if (math.abs(p.x - d.x) <= R && math.abs(p.y - d.y) <= R) return true
+  return false
+}
 function radii(s: PlacementSearch, policy: LayoutPolicy): number[] {
   // D57: a mine searches one window over the patch it is trying.
   if (s.patch !== undefined) return [s.patch.r]
@@ -1097,7 +1111,7 @@ function siteStep(s: PlacementSearch, state: LayoutState, terrain: TerrainView, 
     i++
     if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
     used += 0.5
-    if (sitePoint(s.req.def, terrain, p.x, p.y)) found = p
+    if (sitePoint(s.req.def, terrain, p.x, p.y) && !inDeadSite(s, policy, p)) found = p
   }
   if (found === undefined && i < n) {
     s.ringIdx = i
@@ -1210,6 +1224,15 @@ function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, p
   } else if (s.radiusIdx + 1 < radii(s, policy).length) {
     s.radiusIdx++
     startWindow(s, state, policy)
+  } else if (s.patch === undefined && s.req.def.site !== undefined && s.req.def.site !== "resource-patch" && (s.deadSites?.length ?? 0) + 1 < MAX_SITE_TARGETS) {
+    // M7c.8: no room around the nearest site (seed 11: the base lake's shore was built out by six steam blocks, and
+    // power#7 failed 8 plans "no feasible position" with other lakes in the region). The ring search goes on past the
+    // windows already searched, to the next site point.
+    s.deadSites ??= []
+    s.deadSites.push(s.target!)
+    s.target = undefined
+    s.radiusIdx = 0
+    s.phase = "site"
   } else if (s.patch !== undefined) {
     // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
     noteDeadPatch(s, state, terrain)

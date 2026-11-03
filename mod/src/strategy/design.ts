@@ -964,10 +964,13 @@ function addSteam(ctx: DesignContext, w: Walk, role: string, extraW: number, fix
   expandItem(w, ctx.fuel)
 }
 
-function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>, sharedPower = false): number {
+export function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>, sharedPower = false, splitRates: Record<string, number> = {}, prevRates: Record<string, number> = {}): number {
   const available = availableTiers(ctx.tiers, ctx.researched)
   let split = 1
   for (const e of w.edges) {
+    // M7c.9: a fluid edge is a pipe, not a belt (a pipe carries ~1000/s within the pipeline extent, M7b finding): belt
+    // capacity never limits it. Seed 11 split a 54/s crude edge into ×4 clusters per attempt (2 → 1250 clusters).
+    if (ctx.facts.isFluid?.(e.item) === true) continue
     if (sharedPower && isPowerRole(e.to)) {
       // Still a faster tier when researched; never a cluster split.
       const tier = ctx.tiers[0]
@@ -988,13 +991,23 @@ function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string
     if (d.action === "upgrade-tier") {
       e.belt = d.belt
       overflow[e.role] = `upgrade-tier → ${d.belt}`
-    } else if (d.action === "parallel-route") {
-      split = math.max(split, d.routes)
-      overflow[e.role] = `parallel-route × ${d.routes} (as production clusters)`
-    } else if (d.action === "new-producer-cluster") {
-      const usable = tier.laneCapacity * 2 * ctx.policy.utilization
-      split = math.max(split, math.ceil(e.rate / usable - EPS))
-      overflow[e.role] = `new-producer-cluster: ${d.reason}`
+    } else if (d.action === "parallel-route" || d.action === "new-producer-cluster") {
+      // M7c.9: more clusters only help an edge whose rate they split. One that did not shrink since the previous
+      // attempt (cluster 1 capped by cluster1Max, a provider shared by every cluster) stays as it is.
+      const prev = prevRates[e.role]
+      if (prev !== undefined && e.rate >= prev - EPS) {
+        overflow[e.role] = `${d.action}: more clusters do not split it (${string.format("%.4g", e.rate)}/s)`
+        continue
+      }
+      splitRates[e.role] = e.rate
+      if (d.action === "parallel-route") {
+        split = math.max(split, d.routes)
+        overflow[e.role] = `parallel-route × ${d.routes} (as production clusters)`
+      } else {
+        const usable = tier.laneCapacity * 2 * ctx.policy.utilization
+        split = math.max(split, math.ceil(e.rate / usable - EPS))
+        overflow[e.role] = `new-producer-cluster: ${d.reason}`
+      }
     }
   }
   return split
@@ -1049,10 +1062,12 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
   let clusters = ctx.cluster1Max !== undefined && ctx.cluster1Max < 1 ? 2 : 1
   let walks: Walk[] = []
   let electric = 0
+  let prevRates: Record<string, number> = {}
   for (let attempt = 0; attempt < 4; attempt++) {
     walks = []
     electric = 0
     let split = clusters
+    const splitRates: Record<string, number> = {}
     let short = false
     for (let c = 1; c <= clusters; c++) walks.push(designCluster(ctx, target, order, c, clusters))
     // One steam block (in cluster 1) for every cluster: the other clusters mine their own fuel (their electric coal
@@ -1081,12 +1096,13 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     }
     for (const w of walks) {
       // A shared steam block's flows don't shrink with more clusters: they never split the target.
-      split = math.max(split, clusters * checkEdges(ctx, w, overflow, shared))
+      split = math.max(split, clusters * checkEdges(ctx, w, overflow, shared, splitRates, prevRates))
       if (w.short) short = true
     }
     if (short && split === clusters) split = clusters + 1
     if (split <= clusters) break
     clusters = split
+    prevRates = splitRates
   }
   const nodes: DesignNode[] = []
   const edges: DesignEdge[] = []

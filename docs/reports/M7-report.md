@@ -877,6 +877,26 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       pumpjacks on the ground. Wells of the layout's pumpjack-field modules (planned or built) and of the goal's
       earlier fields now count as taken (`oil.ts` `moduleWells`, passed to `fieldModule`). T2 `world` "M7c.8: wells of
       a planned field (not built yet) are taken too".
+    - *Power goals of 123 steam blocks (the crude edge split the design into 1250 clusters).* At minute ~980 g164 had
+      246 nodes (123 steam blocks `power#6` … `power#128`, each with its own coal outpost of 0.058/s, ~230 kW) and
+      g165 490; power#7 failed 8 plans "no feasible position" and the run stopped. A design log (temporary, not
+      committed) showed `clusters=512` and then `1250`, from `crude-oil*>plastic-bar>…~3=>…~2.in-crude-oil=
+      new-producer-cluster: belt over capacity (54.4/s > 14.85/s usable)`. Two faults:
+      - `checkEdges` held every edge to a yellow belt's capacity, crude oil too, though a fluid edge is a pipe (~1000/s
+        within the pipeline extent, M7b.1). Fluid edges are now skipped there.
+      - The edge's rate did not shrink with more clusters (a cluster 1 group fed by providers every cluster taps; it
+        rose from 54 to 65/s), and each attempt multiplied the cluster count by ⌈rate / usable⌉ = 4: 2 → 8 → 32 → 128
+        → 512. An edge whose rate did not fall since the previous attempt no longer splits (overflow note "more
+        clusters do not split it").
+      T1 `design` "M7c.9: a crude edge over a belt's capacity is a pipe …" (on the old code: `parallel-route × 2` on
+      the crude edge) and "M7c.9: an edge more clusters do not shrink stops the split" (`checkEdges` is exported for it).
+    - *A steam block whose nearest shore is built out failed instead of trying another lake.* Placement's site search
+      finds the site point nearest the request's centre and searches windows of `searchRadii` (24/48/96) around it,
+      then fails; seed 11's base lake was built out by six steam blocks, and power#7 failed "no feasible position" with
+      other lakes in the region. A site target whose windows found no room is now remembered (`deadSites`), and the
+      ring search goes on to the next site point outside the searched windows, up to `MAX_SITE_TARGETS` targets
+      (`placement.ts`). Replay of the captured g164 plan: power#7 placed at 739,187. T1 `planner` "placement M7c.8: a
+      steam block whose nearest shore is built out goes on to the next lake" (on the old code: "no feasible position").
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.
@@ -934,4 +954,5 @@ possible in the design (the `labs#2` case above) once the lock is released for a
 | Test force cleanup threshold | `test/lab.ts` `STALE_FORCE_LIMIT` | 56 forces | Test harness only: below Factorio's 64-force limit, high enough that ordinary shards never merge a force a test may recreate in the same tick. | no |
 | Lost-items minimum | `strategy/reconcile.ts` `LOST_MIN_ITEMS` | 3 items per edge probe | Agent guess (M7c.8): a belt owed fewer items in one probe (600 ticks by default) can show none by chance; 3 keeps a real break (B69: 2/s lost) detected in one probe. | no |
 | Pipe edge capacity | `strategy/measure.ts` `PIPE_CAPACITY` | 1000/s | From the M7b engine finding (~1000-1170/s within the extent); used for the "full" verdict. | no |
+| Site targets per placement | `planner/placement.ts` `MAX_SITE_TARGETS` | 4 | Agent guess (M7c.8): each is a full window scan (radius 96); four shores before a placement fails. | no |
 | Soak exploring limit (M7) | `tools/harness/m7.toml` `exploring_minutes` | 120 game-min | Was 60. Seed 11's nearest crude is ~830 tiles from the hub, at the 12th radar outpost in arm order (west arm, outpost 3). | harness config |

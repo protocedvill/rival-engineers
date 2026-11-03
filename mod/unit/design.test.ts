@@ -4,7 +4,7 @@ import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { design, DesignContext, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, stuckRounds } from "../src/strategy/design"
+import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, stuckRounds } from "../src/strategy/design"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -852,6 +852,38 @@ test("M7c: nodes behind an unresearched trigger technology go in a later goal; t
   ok(later.edges.some((e) => e.item === "crude-oil"), "the crude edge belongs to the part that builds its consumer")
   // Without the callback (v1) nothing is split.
   eq(goalsFrom(diff, {}).filter((g) => g.kind === "production").length < prod.length, true, "v1: no split")
+})
+
+test("M7c.9: a crude edge over a belt's capacity is a pipe: it never splits the design into clusters", () => {
+  const blue = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  })
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 0.25 })
+  let crude = 0
+  for (const e of d.edges) if (e.item === "crude-oil") crude += e.rate
+  ok(crude > 14.85, `the crude demand is over a yellow belt's usable 14.85/s (${crude})`)
+  for (const [role, why] of pairs(d.overflow)) ok(string.find(role as string, "crude-oil", 1, true) === undefined, `no overflow on a crude edge: ${role} ${why}`)
+  eq(d.clusters, 1, "one cluster")
+})
+
+test("M7c.9: an edge more clusters do not shrink stops the split", () => {
+  // Seed 11: an edge fed by a provider every cluster shares kept its rate (54 → 65/s) while the clusters went 2 → 1250.
+  const c = ctx()
+  const edge = { role: "iron-plate>x", item: "iron-plate", from: "a", fromPort: "out", to: "x", toPort: "in", rate: 40, headroomRate: 40, belt: "transport-belt", decision: { action: "none" } } as unknown as DesignEdge
+  const w = { ctx: c, cluster: 1, suffix: "", nodes: [], edges: [edge], demands: [], errors: [], short: false } as unknown as Parameters<typeof checkEdges>[1]
+  const rates: Record<string, number> = {}
+  const first = checkEdges(c, w, {}, false, rates)
+  ok(first > 1, `40/s on a yellow belt splits (${first})`)
+  near(rates[edge.role], 40, 1e-9, "the split edge's rate is recorded")
+  const overflow: Record<string, string> = {}
+  eq(checkEdges(c, w, overflow, false, {}, rates), 1, "the same rate after the split: no further split")
+  ok(string.find(overflow[edge.role] ?? "", "more clusters do not split it", 1, true) !== undefined, `the overflow says why (${overflow[edge.role]})`)
+  edge.rate = 20
+  ok(checkEdges(c, w, {}, false, {}, rates) > 1, "a rate that did shrink may split again")
 })
 
 run("design")
