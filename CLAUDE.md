@@ -211,6 +211,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   reached ring 4); the chunk is only marked requested for charting, never charted or generated (D62 (a) uses the event). `force.chart` on such a force only requests too. (A forum post quotes a
   developer: charting is skipped for forces without players.) Pinned by two engine-capabilities tests ("D62 finding").
   A script-created `electric-energy-interface` makes no power until `power_production` and `electric_buffer_size` are set.
+- **Construction robots work for a force with no players** (unlike radars, D62): a script-created force's roboport
+  network builds ghosts from a storage chest and removes trees marked for deconstruction, and a player-less character's
+  personal roboport (modular armour grid) builds from its main inventory. Pinned by two engine-capabilities tests ("M7d").
 - **A 2.0 fluid segment longer than the pipeline extent carries nothing** (utility constant `default_pipeline_extent`,
   320 tiles; a fluid box may override it). Pipe-to-ground pairs count their whole span. A pump starts a new segment
   (~1040-1140/s through 2200 tiles with a pump every 220); within the extent a line carries ~1000-1170/s. Pinned by the

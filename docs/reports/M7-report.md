@@ -989,6 +989,24 @@ Open (not changed): a module buffer chest takes 200 plates before downstream mod
 with "no pole path"; crew time reached 0.86 ms/tick late in the 731-min run. Two oil modules on one fixed spot are
 possible in the design (the `labs#2` case above) once the lock is released for any reason.
 
+## M7d: advanced oil, robots and the full mall
+
+Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
+
+1. **Engine tests first (P48): done.** Construction robots work for a force with no players, unlike radars (D62). A
+   script-created force's roboport network built 11 ghosts from a storage chest and removed a tree marked for
+   deconstruction in 526 ticks. A player-less character's personal roboport (modular armour, battery) built 8 ghosts
+   from its inventory and removed a tree in 160 ticks. The player force did the same in both scenes. T2
+   `engine-capabilities` "M7d (P48): …" (two tests).
+2. **Oil complex (D81, user decision in-session 2026-11-03).** One generated module: advanced-oil refineries, heavy and
+   light cracking and lubricant plants, crude and water piped in, petroleum gas and lubricant piped out.
+3. **Chemistry rows fed by pipe** (plastic, sulfur, sulfuric acid, batteries) and an assembler row with a fluid input
+   (electric engines take lubricant).
+4. **Design** switches to the oil complex and piped rows once `advanced-oil-processing` is researched.
+5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
+   modular armour with personal roboports for the crew.
+6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
+
 ### Magic numbers for the user (M7)
 
 | Name | Where | Value | Why | Setting? |

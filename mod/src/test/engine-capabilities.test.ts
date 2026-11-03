@@ -208,6 +208,88 @@ describe("player-less character", () => {
       assert(!researched, "the engine fired the trigger: the crew's emulation (strategy/factory.ts) is no longer needed")
     })
   })
+  // M7d (P48: "engine tests first: robots and personal roboports must work for a force with no players (radars do not,
+  // D62)"). Each test sets the same scene up for a script-created force and for the player force, and logs both.
+  test("M7d (P48): a roboport network builds ghosts and removes trees for a force with no players", () => {
+    const lab = createLab(48)
+    const npf = game.forces["m7d-net"] ?? game.create_force("m7d-net")
+    const scene = (f: LuaForce, ox: number): { ghosts: LuaEntity[]; tree: LuaEntity } => {
+      const p = (dx: number, dy: number): MapPosition => at(lab, ox + dx, dy)
+      const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: p(-6, 0), force: f })!
+      eei.electric_buffer_size = 1e9
+      eei.power_production = 1e7
+      lab.surface.create_entity({ name: "medium-electric-pole", position: p(-4, 2), force: f })
+      const port = lab.surface.create_entity({ name: "roboport", position: p(0, 0), force: f })!
+      port.get_inventory(defines.inventory.roboport_robot)!.insert({ name: "construction-robot", count: 10 })
+      const chest = lab.surface.create_entity({ name: "storage-chest", position: p(3.5, 3.5), force: f })!
+      chest.insert({ name: "transport-belt", count: 20 })
+      chest.insert({ name: "iron-chest", count: 2 })
+      const ghosts: LuaEntity[] = []
+      for (let x = -5; x < 5; x++) ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: p(x + 0.5, 10.5), force: f })!)
+      ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "iron-chest", position: p(6.5, 12.5), force: f })!)
+      const tree = lab.surface.create_entity({ name: "tree-01", position: p(-8, 14) })!
+      tree.order_deconstruction(f)
+      return { ghosts, tree }
+    }
+    const np = scene(npf, -22)
+    const pl = scene(game.forces.player, 22)
+    const count = (sc: { ghosts: LuaEntity[] }): number => sc.ghosts.filter((g) => !g.valid).length
+    async(3600 * 2)
+    const start = game.tick
+    on_tick(() => {
+      const t = game.tick - start
+      if (t % 600 === 0) log(`[m7d-net] ${t / 60}s: player-less built ${count(np)}/11 tree ${np.tree.valid ? "standing" : "gone"}; player built ${count(pl)}/11 tree ${pl.tree.valid ? "standing" : "gone"}`)
+      const finished = count(np) === 11 && !np.tree.valid
+      if (!finished && t < 3600 * 2 - 10) return
+      assert(count(pl) === 11 && !pl.tree.valid, `the scene works for the player force (${count(pl)}/11, tree ${pl.tree.valid})`)
+      assert(finished, `player-less force: robots built ${count(np)}/11 ghosts, tree ${np.tree.valid ? "standing" : "gone"}`)
+      done()
+      return false
+    })
+  })
+
+  test("M7d (P48): a player-less character's personal roboport builds ghosts from its inventory", () => {
+    const lab = createLab(48)
+    const npf = game.forces["m7d-personal"] ?? game.create_force("m7d-personal")
+    const scene = (f: LuaForce, ox: number): { ghosts: LuaEntity[]; ch: LuaEntity; tree: LuaEntity } => {
+      const p = (dx: number, dy: number): MapPosition => at(lab, ox + dx, dy)
+      const ch = lab.surface.create_entity({ name: "character", position: p(0, 0), force: f })!
+      const armor = ch.get_inventory(defines.inventory.character_armor)!
+      armor.insert({ name: "modular-armor" })
+      const grid = armor[0].grid!
+      grid.put({ name: "personal-roboport-equipment" })
+      grid.put({ name: "battery-equipment" })
+      ch.get_main_inventory()!.insert({ name: "construction-robot", count: 10 })
+      ch.get_main_inventory()!.insert({ name: "transport-belt", count: 20 })
+      const ghosts: LuaEntity[] = []
+      for (let x = -4; x < 4; x++) ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: p(x + 0.5, 6.5), force: f })!)
+      const tree = lab.surface.create_entity({ name: "tree-01", position: p(-6, -6) })!
+      tree.order_deconstruction(f)
+      return { ghosts, ch, tree }
+    }
+    const np = scene(npf, -22)
+    const pl = scene(game.forces.player, 22)
+    const charge = (ch: LuaEntity): void => {
+      const grid = ch.get_inventory(defines.inventory.character_armor)![0].grid!
+      for (const e of grid.equipment) e.energy = e.max_energy
+    }
+    const count = (sc: { ghosts: LuaEntity[] }): number => sc.ghosts.filter((g) => !g.valid).length
+    async(3600 * 2)
+    const start = game.tick
+    on_tick(() => {
+      const t = game.tick - start
+      charge(np.ch)
+      charge(pl.ch)
+      if (t % 600 === 0) log(`[m7d-personal] ${t / 60}s: player-less built ${count(np)}/8 tree ${np.tree.valid ? "standing" : "gone"} robots in inventory ${np.ch.get_main_inventory()!.get_item_count("construction-robot")}; player built ${count(pl)}/8 tree ${pl.tree.valid ? "standing" : "gone"}`)
+      const finished = count(np) === 8 && !np.tree.valid
+      if (!finished && t < 3600 * 2 - 10) return
+      assert(count(pl) === 8 && !pl.tree.valid, `the scene works for the player force (${count(pl)}/8, tree ${pl.tree.valid})`)
+      assert(finished, `player-less character: personal robots built ${count(np)}/8 ghosts, tree ${np.tree.valid ? "standing" : "gone"}`)
+      done()
+      return false
+    })
+  })
+
   test("D62 finding: a player-less force's radar still sector-scans (events fire) but charts and generates nothing, even through force.chart", () => {
     async(3600 * 4)
     const surface = game.create_surface("d62-diag", { seed: 4242, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
