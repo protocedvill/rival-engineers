@@ -832,9 +832,14 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       region-radius ladder (112 → 378) cannot change a pole line's ground, so each arm failed the same way 4 times,
       and 8 failed plans in a row tripped the harness fail-fast before the W arm was tried. An outpost goal whose only
       failures are pole lines (`power:<owner>`) now fails on its first attempt and the exploration moves to the next
-      arm (`failure-rules.ts` `retryCannotHelp`; T1 `failure-rules`). Not done (proposed): skipping an arm whose strip
-      is known to be cut by water before planning its outpost, or stepping the outpost back to the last land the base
-      reaches.
+      arm (`failure-rules.ts` `retryCannotHelp`; T1 `failure-rules`). Resumed from minute 720 (`blue3-720`): E and S
+      failed once each, W and N5 were built, and blue science ran at a steady 5 chemical packs/min (896 by minute 907,
+      research on to worker-robots-speed-2). The run stopped on the fail-fast again: every exploration round tried E and
+      S once more (E11, S11: the same lakes), and with W11's 4 placement retries (each 12 tiles off: those can find
+      land, so they stay) that made 8 failed plans in a row. An arm whose outpost found no pole path is now marked
+      `cut` (`arms.cut`) and skipped from then on: every later outpost on it needs a line through the same water
+      (`arms.ts` `nextArm`; T1 `arms`). With every arm cut the search waits. Not done (proposed): stepping an outpost
+      back to the last land the base reaches, so a cut arm still explores up to its lake.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

@@ -225,6 +225,14 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
     for (const x of f.goals) if (x.id === ex.goal) g = x
     if (g === undefined || g.status === "failed") {
       log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): outpost goal ${ex.goal} failed (${g?.reason ?? "gone"}); trying the next arm`)
+      // M7c.8: no pole path from the base (seed 11: lakes 90-300 tiles wide across arms E and S). Every later outpost on
+      // that arm needs a line through the same water, so the arm is skipped from then on.
+      const arm = g?.site?.arm
+      if (arm !== undefined && f.arms !== undefined && string.find(g?.reason ?? "", "no pole path", 1, true)[0] !== undefined) {
+        f.arms.cut ??= [false, false, false, false]
+        f.arms.cut[arm] = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): arm ${Arms.ARM_NAMES[arm]} is cut off (no pole path from the base); skipped from now on`)
+      }
       ex.goal = undefined
       return
     }
@@ -252,7 +260,11 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
   }
   f.arms ??= { next: 0, steps: [0, 0, 0, 0], strips: [], outposts: [] }
   const arms = f.arms
-  const arm = arms.next
+  const arm = Arms.nextArm(arms.next, arms.cut)
+  if (arm === undefined) {
+    ctx.waiting.push(`exploring for ${ex.resource} (D62): every arm is cut off (no pole path from the base)`)
+    return
+  }
   const step = arms.steps[arm]
   arms.next = (arm + 1) % 4
   arms.steps[arm] = step + 1

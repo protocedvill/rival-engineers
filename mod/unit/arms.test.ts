@@ -1,4 +1,4 @@
-import { ARM_FIRST, ARM_SPACING, ARM_STRIP_HALF, armStrip, armTarget, chunkKnown, chunksAround, homeRect, rectUnion } from "../src/strategy/arms"
+import { ARM_FIRST, ARM_SPACING, ARM_STRIP_HALF, armStrip, armTarget, chunkKnown, chunksAround, homeRect, nextArm, rectUnion } from "../src/strategy/arms"
 import { tkey } from "../src/planner/grid"
 import { eq, ok, run, test } from "./harness"
 
@@ -53,6 +53,14 @@ test("D62: a radar's nearby square", () => {
   eq(chunksAround({ x: 40, y: -1 }, 1).length, 9)
   same(chunksAround({ x: 40, y: -1 }, 3)[0], { x: -2, y: -4 })
   same(rectUnion({ x: 0, y: 0, w: 10, h: 10 }, { x: -5, y: 20, w: 2, h: 2 }), { x: -5, y: 0, w: 15, h: 22 })
+})
+
+test("M7c.8: arms cut off by water are skipped in the round robin", () => {
+  eq(nextArm(1, undefined), 1, "nothing cut")
+  eq(nextArm(1, [false, true, true, false]), 3, "E and S cut: W")
+  eq(nextArm(3, [false, true, true, false]), 3, "W itself")
+  eq(nextArm(0, [true, true, true, false]), 3, "wraps past the cut arms")
+  eq(nextArm(2, [true, true, true, true]), undefined, "every arm cut")
 })
 
 run("arms")

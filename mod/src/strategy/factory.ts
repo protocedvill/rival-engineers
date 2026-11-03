@@ -217,8 +217,11 @@ export interface FactoryState {
    * nearby square is charted (`scan`), then plan again (`retry`); a plan of that kind ends the search.
    */
   explore?: { resource: string; kind: GoalKind; since: number; phase: "outpost" | "scan" | "retry"; goal?: string; radar?: Vec; scanUntil?: number; outposts: number; need?: "required" | "extra capacity" }
-  /** D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. */
-  arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[] }
+  /**
+   * D62: the next arm (N, E, S, W round robin), the outposts built per arm, and their explored strips. M7c.8: `cut`
+   * marks arms whose outpost found no pole path from the base (skipped from then on).
+   */
+  arms?: { next: number; steps: number[]; strips: Rect[]; outposts: Vec[]; cut?: boolean[] }
   /** P43 (a): chunks the faction's radars scanned (sector scans, and powered outposts' nearby squares), by `tkey`. */
   radarChunks?: Record<number, boolean>
   /**
