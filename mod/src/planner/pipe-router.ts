@@ -23,7 +23,7 @@ import { DX, DY, keyX, keyY, opposite, tkey } from "./grid"
 
 /** M7 B120: weighted A* keeps remote oil routes bounded when many near-equivalent pipe layouts exist. */
 const PIPE_HEURISTIC_WEIGHT = 4
-/** M7c.8: how many of a node's ancestors a move checks for its tiles (`heldBy`); `found` checks whole paths. */
+/** M7c.8: how many of a node's ancestors a move checks for its tiles (`markHeld`); `found` checks whole paths. */
 const PIPE_CROSS_DEPTH = 24
 /** M7c.9: the share of the work budget the corridor search may use before the search drops the corridor (agent guess). */
 const PIPE_CORRIDOR_SHARE = 0.5
@@ -613,26 +613,32 @@ function crossesItself(steps: PipeStep[]): boolean {
   return false
 }
 
+/** Scratch marks for `markHeld` (not in `storage`: a stamp is only compared within one expansion). */
+const pipeHeld: Record<number, number> = {}
+let pipeHeldStamp = 0
+
 /**
- * M7c.8: whether tile `k` holds a piece of the path to node `i` within its last `PIPE_CROSS_DEPTH` nodes (each node's
+ * M7c.8: marks the tiles that hold a piece of the path to node `i` within its last `PIPE_CROSS_DEPTH` nodes (each node's
  * own tile, and the exit or pump tile one behind a node an underground or pump move made). Seed 11 minute 654 (g107):
  * a cheap path looped round to turn north under a wall through its own underground exit; it reached that (tile,
  * heading) first, so every path the search kept descended from the loop and each of its goal arrivals crossed itself,
  * and the search flooded its whole 200000-expansion budget (76 s of planner time in a game minute). Rejecting such a
  * move where it is made keeps the loop from owning the state; `found` still checks the whole path.
  */
-function heldBy(s: PipeSearch, i: number, k: number): boolean {
+function markHeld(s: PipeSearch, i: number): number {
+  // M7 (seed 11 g51): marked once per expansion and looked up per move, as the belt router (`router.ts` `markHeld`).
+  pipeHeldStamp++
   let n = i
   for (let depth = 0; depth < PIPE_CROSS_DEPTH && n >= 0; depth++) {
     const x = s.nx[n]
     const y = s.ny[n]
-    if (tkey(x, y) === k) return true
+    pipeHeld[tkey(x, y)] = pipeHeldStamp
     const mv = s.nmv[n]
-    if ((mv === MV_UG || mv === MV_PUMP) && tkey(x - DX[s.nd[n]], y - DY[s.nd[n]]) === k) return true
-    if (mv === MV_START) return false
+    if (mv === MV_UG || mv === MV_PUMP) pipeHeld[tkey(x - DX[s.nd[n]], y - DY[s.nd[n]])] = pipeHeldStamp
+    if (mv === MV_START) break
     n = s.npar[n]
   }
-  return false
+  return pipeHeldStamp
 }
 
 /** Expands node `i`. */
@@ -647,6 +653,8 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const back = tkey(x - DX[d0], y - DY[d0])
   const c = cachedCost(s, cb, x, y)
   if (c < 0) return
+  const held = markHeld(s, i)
+  const heldBy = (k: number): boolean => pipeHeld[k] === held
   // This node's piece goes on its own tile: not on one the path already took.
   // Arrived: a plain pipe on the goal tile joins the port.
   if (x === goal.x && y === goal.y && run + 1 + (p.goalRun ?? 0) <= p.extent && pipeClear(cb, x, y, back, tkey(x + DX[goal.dir], y + DY[goal.dir]))) {
@@ -658,7 +666,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
       if (d === opposite(d0)) continue
       const nx = x + DX[d]
       const ny = y + DY[d]
-      if (cb.fluidNear(nx, ny) || !pipeClear(cb, x, y, back, tkey(nx, ny)) || heldBy(s, i, tkey(nx, ny))) continue
+      if (cb.fluidNear(nx, ny) || !pipeClear(cb, x, y, back, tkey(nx, ny)) || heldBy(tkey(nx, ny))) continue
       visit(s, nx, ny, d, g0 + c, run + 1, i, MV_PIPE)
     }
   }
@@ -682,7 +690,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
       )
         return
     }
-    if (heldBy(s, i, tkey(ex, ey)) || heldBy(s, i, tkey(ex + DX[d0], ey + DY[d0]))) continue
+    if (heldBy(tkey(ex, ey)) || heldBy(tkey(ex + DX[d0], ey + DY[d0]))) continue
     visit(s, ex + DX[d0], ey + DY[d0], d0, g, run + k + 1, i, MV_UG)
   }
   // A pump along the heading: a new segment starts behind it.
@@ -690,7 +698,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const py = y + DY[d0]
   if (run > 0) {
     const cp = cachedCost(s, cb, px, py)
-    if (cp >= 0 && !heldBy(s, i, tkey(px, py)) && !heldBy(s, i, tkey(px + DX[d0], py + DY[d0]))) visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
+    if (cp >= 0 && !heldBy(tkey(px, py)) && !heldBy(tkey(px + DX[d0], py + DY[d0]))) visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
   }
 }
 

@@ -128,6 +128,47 @@ function dumpModules(layout: LayoutState): void {
   }
 }
 
+/**
+ * REPLAY_PROFILE=1: a sampling profiler (a count hook every 10000 VM instructions, 12 frames deep) that prints the 25 hottest functions
+ * by samples, inclusive (on the stack, at most once a sample) and exclusive (running), to find where a slow plan spends
+ * its time (no LuaProfiler outside the game).
+ */
+function startProfile(): () => void {
+  const self: Record<string, number> = {}
+  const incl: Record<string, number> = {}
+  let samples = 0
+  debug.sethook(
+    () => {
+      samples++
+      const seen: Record<string, boolean> = {}
+      for (let level = 2; level < 14; level++) {
+        const info = debug.getinfo(level, "Sn")
+        if (info === undefined) break
+        const k = `${info.short_src}:${info.linedefined} ${info.name ?? "?"}`
+        if (level === 2) self[k] = (self[k] ?? 0) + 1
+        if (!seen[k]) {
+          seen[k] = true
+          incl[k] = (incl[k] ?? 0) + 1
+        }
+      }
+    },
+    "",
+    10000,
+  )
+  return () => {
+    debug.sethook()
+    const top = (m: Record<string, number>, what: string): void => {
+      const list: [string, number][] = []
+      for (const [k, v] of pairs(m)) list.push([k as string, v as number])
+      list.sort((a, b) => b[1] - a[1])
+      print(`  profile (${what}, ${samples} samples):`)
+      for (let i = 0; i < math.min(25, list.length); i++) print(string.format("    %5.1f%% %s", (100 * list[i][1]) / samples, list[i][0]))
+    }
+    top(self, "exclusive")
+    top(incl, "inclusive")
+  }
+}
+
 function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
     const fx = load(name)
@@ -147,7 +188,9 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       ore: (x, y) => view.ore(x, y),
     }
     startTrace()
+    const stopProfile = os.getenv("REPLAY_PROFILE") !== undefined ? startProfile() : undefined
     runJob(job, terrain, F, fx.policy, 100000)
+    if (stopProfile !== undefined) stopProfile()
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
@@ -782,5 +825,12 @@ test("B106: a new mine whose own output the router proves walled in is placed ag
   const mine = findModule(job.layout, "n57")
   ok(mine !== undefined && !(mine.rect.x === 427 && mine.rect.y === -47), `the copper mine moved from its walled-in spot (427,-47): ${mine?.rect.x},${mine?.rect.y}`)
 })
+
+// M7 (seed 11 minute ~226, g51, slow-plan capture from the minute-180 save): a 5-module, 10-connection production plan
+// on the grown base took 27 ms of planner time a tick for ~5 game-minutes (400 work units a tick at ~67 µs each, 27×
+// the usual cost). A sampling profile (REPLAY_PROFILE=1) put 55% of it in the routers' self-crossing check, which
+// walked a state's 24 ancestors once per move; marked once per expansion now, the replay takes 101 s instead of
+// 179 s with the same searches. The plan still fails: its copper feed's goal is sealed in by own ground.
+replay("m7-seed11-g51-slow", { expect: "failed", failureIncludes: "no path" })
 
 run("plan-replay")

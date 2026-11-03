@@ -989,6 +989,28 @@ Open (not changed): a module buffer chest takes 200 plates before downstream mod
 with "no pole path"; crew time reached 0.86 ms/tick late in the 731-min run. Two oil modules on one fixed spot are
 possible in the design (the `labs#2` case above) once the lock is released for any reason.
 
+#### M7c.9 follow-up: production plans on a grown base at 27 ms a tick (the routers' self-crossing check)
+
+The fresh seed 11 run (current build, `m7c-fresh`) went from ~1 ms of AI time a tick to 25–33 ms for every
+production plan after game minute 226 (g51, g52, g54, g55: 5–8 modules, 9–14 connections, region radius 384). The
+planner still did its 400 work units a tick; each unit had become far dearer. Adopted plans of that size were never
+captured (the export cap was a 400-tile side, the regions are 768²), so:
+- **Slow-plan capture:** in soaks a plan still planning after a game-minute writes its input to `plans/slow/`
+  (`SLOW_PLAN_TICKS`), and adopted plans are captured up to a 3,000-tile side like failed ones. The minute-180 save
+  replayed with this build reached g51 at the same tick (809790 for the g50 growth before it) and captured it
+  (`mod/unit/fixtures/m7-seed11-g51-slow.lua`).
+- **Profile:** the replay, run with a new sampling profiler (`REPLAY_PROFILE=1` in `plan-replay`: a Lua count hook),
+  spent 6.9M work units (6.3M routing, 158 searches, 18 rip-ups) in 179 s, 55% of it in the belt router's
+  `heldBy`. That M7c.8 check walks up to 24 ancestors of the state for every move an expansion tries (3 belt moves
+  plus 2 per underground length), about 240 steps an expansion.
+- **Fix:** the ancestors' tiles are marked once per expansion in a scratch table under a stamp, and each move is one
+  lookup (`router.ts` and `pipe-router.ts` `markHeld`). The search is unchanged: the replay makes the same 158
+  searches and the same work in 101 s (−44%). The scratch table is not in `storage`; a stamp is only compared within
+  one expansion.
+- **Still open:** g51 itself fails (its copper feed's goal tile is sealed in by own ground), and the remaining cost is
+  spread over the search (the A* loop, heap, seal check and underground spans each under 10%). A soak on the new build
+  will show the in-game figure.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
