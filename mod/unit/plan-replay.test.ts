@@ -832,6 +832,10 @@ test("B106: a new mine whose own output the router proves walled in is placed ag
 // walked a state's 24 ancestors once per move; marked once per expansion now, the replay takes 101 s instead of
 // 179 s with the same searches. The plan still fails: its copper feed's goal is sealed in by own ground.
 replay("m7-seed11-g51-slow", { expect: "failed", failureIncludes: "no path" })
-replay("m7-seed11-g78-slow", { expect: "failed", failureIncludes: "no path" })
+// M7 (seed 11 m7c-cont, minutes 333+): three coal replacements for a dry mine whose fuel taps run between the smelter
+// columns, sealed in by the base. 21-27 ms a tick while it and its retries planned. Merging above a tap (mergeGoals) now
+// feeds labs~6 through its trunk; the labs' own feed, from a mine 530 tiles west, is still sealed off (cheaply: the seal
+// check fails it with 0 expansions).
+replay("m7-seed11-g78-slow", { expect: "failed", failureIncludes: "no path", failureExcludes: "labs~6.in-fuel" })
 
 run("plan-replay")

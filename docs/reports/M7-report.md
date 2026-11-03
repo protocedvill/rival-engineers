@@ -1011,6 +1011,33 @@ captured (the export cap was a 400-tile side, the regions are 768²), so:
   spread over the search (the A* loop, heap, seal check and underground spans each under 10%). A soak on the new build
   will show the in-game figure.
 
+#### M7c.9 follow-up 2: the router's work units, and a dry mine's sealed fuel taps (seed 11 g73–g79)
+
+The continued seed 11 soak (`m7c-cont`, from the fresh run's minute-300 save on the `markHeld` build) ran at ~0.6 ms of
+AI time a tick until game minute 333, then at 21–27 ms for over an hour of game time. Production goals g73–g79 each
+planned for minutes and failed the same way: coal for three iron smelter columns' fuel ports, "no path". The slow-plan
+capture kept g78 (`mod/unit/fixtures/m7-seed11-g78-slow.lua`).
+- **The budget's unit was wrong for the router.** The planner's 400 units a tick assume ~4–5 µs a unit (placement
+  runs at ~4 µs in T1). The belt router counted one unit per expansion, but an expansion tries three turns and one move
+  per underground length, each with its seal and span checks: 15 µs a unit for g51, ~30 µs for g78 in T1 (longer
+  undergrounds by then), ~65 µs in game. The profile had no hotspot left: the cost is spread over the search.
+  **Fix:** each move an expansion (or a seal step) tries adds half a unit (`router.ts` `ROUTER_MOVE_WORK`). All 36
+  replays end as before; routing now runs at ~3–4 µs a unit in T1, so a slow plan takes longer in ticks rather than
+  more time a tick. The pipe router still counts one unit per expansion (open: its searches are also capped in work
+  units, so re-weighting it shrinks them; no soak has shown it slow).
+- **Why every plan failed.** Coal mine n38 (dry, retiring under D76) fed the three columns through a tree of splitter
+  taps; the last taps run between two 24-furnace columns, sealed in by the base. Every replacement merge (B79 turns a
+  plain connection into a fed port into one) targeted those tap belts, and the seal check proved each enclosed. The
+  nearest free coal is 530–600 tiles away (g70 had already found none nearer after 6 outposts).
+  **Fix:** `mergeGoals` also offers the trunk above each tap's splitter, up to 8 taps up; `routesLand` and
+  `checkLayout` accept a merge whose trunk reaches the port through its taps (`layout.ts` `routeFeedsPort`). T1 `merge`
+  pins it. The g78 replay now feeds labs~6 through the trunk; the labs' own feed, from a mine 530 tiles west, is still
+  sealed off, cheaply (0 expansions).
+- **Design:** when a retiring provider's replacement group is split into one provider per consumer (B61), each kept the
+  D76 merge into the old belt only by accident (B79 in the planner). The split now passes `mergePorts` on (T1 `design`).
+- **Still open:** a base with no coal within ~500 tiles. Retrying placements far away is the only remedy the factory has
+  now; electric smelting (or solar, D82 c) would remove the fuel need. A soak on this build will show the in-game cost.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
@@ -1107,6 +1134,8 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Slow-plan capture | `planner/runtime.ts` `SLOW_PLAN_TICKS` | 3600 ticks (1 game-min) | Agent guess (diagnostics only, soaks with frame dumps): most plans finish well within a game-minute; one still planning then is captured to `plans/slow/` for a replay. Adopted plans are now captured up to a 3,000-tile side like failed ones (was 400: production regions are 768² and were never kept). | no |
 | Oil complex size cap | `strategy/design.ts` `OIL_COMPLEX_MAX_REFINERIES`, `OIL_COMPLEX_MAX_LUBE` | 12 refineries, 6 lubricant plants | Agent guess (proposed): a 12-refinery complex makes ~230 petroleum/s (T2: 19.5/s per refinery with cracking), far above a first blue/robot base; a larger draw adds a parallel complex rather than one unbounded footprint. Lubricant: 6 plants can make 60/s, though heavy oil (5/s per refinery) limits it first; a 6-machine electric-engine row draws ~6.75/s. | no |
+| Router work per move | `planner/router.ts` `ROUTER_MOVE_WORK` | 0.5 units per move an expansion or seal step tries (plus 1 per expansion) | Calibration (proposed): brings the router's unit to ~3–4 µs in T1, the scale of placement's (~4 µs) and of the planner budget (`planner-work-per-tick` 400). | no |
+| Merge search up a tap tree | `planner/merge.ts` `MAX_TAP_DEPTH` | 8 taps | Agent guess (proposed): the deepest seed 11 tree was 4 taps; the bound only stops a pathological chain. | no |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |

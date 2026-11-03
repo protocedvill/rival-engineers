@@ -388,7 +388,9 @@ test("D36: the alternative's work is bounded (capped alternatives are no evidenc
   const job = runJob(newRoutingJob(req, NO_UG, state), terrain, F, policy({ margin: 40 }), 50)
   const r = result(job, "undergrounds")
   eq(r.status, "capped", "capped")
-  ok(r.work <= 5 + 50, `work ${r.work} within the cap plus one step`)
+  // M7: a step may end one expansion past its budget, and an expansion now weighs its moves (router ROUTER_MOVE_WORK:
+  // up to 1 + 0.5 × 7 with yellow undergrounds), plus a seal step of the same size.
+  ok(r.work <= 5 + 50 + 10, `work ${r.work} within the cap plus one step`)
   eq(job.phase, "done", "the plan itself still finishes")
 })
 
