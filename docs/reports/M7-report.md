@@ -1168,6 +1168,44 @@ searches, 13 rip-ups, 2 re-placements, all to plan successfully in the end.
   so it is left as a proposal.
 - **Not yet in game.** The running soak uses the build before this change.
 
+#### M7c.9 follow-up 6: large plans route the same belts again (seed 11 g108, g90, g91)
+
+After g104 the slowest captured plan was g108, the second blue line that `m7c-cont4` was planning (30.2M work units,
+failed). A per-search trace (`REPLAY_SEARCHES=1`, with `REPLAY_ADHOC=<capture paths>` for captures outside the fixtures)
+showed where it goes. Most of it is not finding routes but finding the same routes again:
+
+- **52%: one 400-tile coal tap routed three times.** The new coal mine's belt to the base's logistic-pack smelters is a
+  splitter tap on the coal trunk to the copper-plate smelter. That smelter moved twice. Each move ripped the trunk, and
+  with it every tap, so the 400-tile belt was searched from scratch (~5M each round).
+- **~6M: the narrow window first, every round.** The coal tap needs the 3× window. Each round's window-1 search failed
+  first: its corridor search failed, then the whole window was searched to exhaustion (~2M). The retry after it proved
+  the same "no path" with the uncapped seal check in ~16k.
+- **The rest:** the circuit cluster's modules each moved twice, and every move re-routes every belt touching them.
+  g90 and g91a2 show the same pattern (one belt routed 30 times in g91a2).
+
+Three changes, which the user asked for in-session (2026-11-03). A fourth, moving modules less often or keeping more belts when one moves, is left open:
+
+- **A tap keeps its belt when its trunk's consumer moves** (`layout.ts` `rerootTap`). The longest tap not ending at
+  the moving module takes over the trunk's steps up to its splitter and becomes the route from the trunk's source. The
+  splitter stays, with its trunk-side output left dead (that tile stays reserved and empty), so the splitter sends
+  everything to the tap and no built entity of the kept part changes. Taps on the kept part hang off it; the trunk's
+  tail goes with its other taps as before. The trunk's connection is then routed again as a short tap of the re-rooted
+  route. Only a re-placement does this (a rip-up victim gives up its tiles, possibly the kept ones).
+- **Each connection remembers the window, and rip mode, it was last found with** (`PlanJob.winMemo`, `ripMemo`). Routed
+  again, it starts there; the ladder still widens from it. A first version started in non-rip mode at the remembered
+  window: g91a2 then got worse (15.4M → 18.1M), because two belts that were only ever found by a rip search failed a
+  ~420k non-rip search first each round. Running the uncapped seal check for remembered windows fixed g91a2 but cost
+  g108 ~500k per successful 9× search (the floods run until they meet), so the rip mode is remembered instead.
+- **A failed corridor search runs the uncapped seal check before searching the whole window** (`router.ts`
+  `sealFull`). When that check proves "no path", the search fails at once; when the two floods meet, the window search
+  runs as before.
+
+No new tuning numbers. Results (T1 replays): g108 30.2M → 16.5M work units (routing 27.5M → 14.0M; 240 → 156
+searches), g91a2 15.4M → 12.0M, g90 and g91a1 unchanged (no re-rooting chance, no remembered windows that help), g83
+and g105 unchanged; the fixture replays fall from 45.2M to 42.6M units in total. Every outcome is unchanged: g108 still fails on the circuit cluster's rip-up limit. T1
+`planner` "re-root" pins the re-root: the same entities minus the trunk's tail, the dead output reserved, layout checks
+clean, and the trunk's connection routes again as a tap of the re-rooted route.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

@@ -13,7 +13,7 @@ import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey,
 import { mergeGoals } from "./merge"
 import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -199,6 +199,14 @@ export interface PlanJob {
    * each other round after round, ~12M work units a round, until the rip-up limit moved the module).
    */
   ripPairs?: Record<string, boolean>
+  /**
+   * Window scale each connection last needed (seed 11 g108): a connection routed again after a rip-up or re-placement
+   * starts there instead of failing the narrow windows again (a 400-tile coal tap paid ~2M units at window 1 every
+   * round before widening). Only a hint: the ladder still widens from it.
+   */
+  winMemo?: Record<string, number>
+  /** With `winMemo`: the connection was found in rip mode there (it starts in rip mode). */
+  ripMemo?: Record<string, boolean>
   /** M7: the fluid connection being routed (its search runs over several steps). */
   pipe?: PipeJob
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
@@ -1002,7 +1010,7 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
     for (const rid of [...job.layout.routeOrder]) {
       const r = job.layout.routes[rid]
       if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
-      for (const removed of ripRoute(job.layout, rid)) {
+      for (const removed of rerootOrRip(job.layout, rid, mid)) {
         const conn = removed.substring("route:".length)
         if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
       }
@@ -1024,6 +1032,37 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
     return true
   }
   return false
+}
+
+/**
+ * Takes out route `rid` for module `mid` moving. A trunk whose consumer moves (its source stays) keeps its longest tap
+ * that does not touch `mid` (`rerootTap`); otherwise it goes with all its taps (`ripRoute`).
+ */
+function rerootOrRip(layout: LayoutState, rid: RouteId, mid: string): RouteId[] {
+  const r = layout.routes[rid]
+  if (r !== undefined && r.from !== undefined && r.from.module !== mid) {
+    const at: Record<number, number> = {}
+    for (let i = 0; i < r.steps.length; i++) at[tkey(r.steps[i].x, r.steps[i].y)] = i
+    let best: RouteId | undefined
+    let bestLen = 0
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      const s0 = t.steps[0]
+      if (t.tapOf !== rid || t.to.module === mid || s0?.kind !== "splitter") continue
+      const i = at[tkey(s0.x, s0.y)]
+      if (i === undefined || i + t.length <= bestLen) continue
+      best = id
+      bestLen = i + t.length
+    }
+    if (best !== undefined) {
+      const removed = rerootTap(layout, rid, best)
+      if (removed !== undefined) {
+        if (planTrace.sink !== undefined) traceEvent(`route ${best}: keeps its belt and ${rid}'s first part (that route's consumer ${mid} moves)`)
+        return removed
+      }
+    }
+  }
+  return ripRoute(layout, rid)
 }
 
 function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
@@ -1332,7 +1371,8 @@ function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolic
     if (job.pipe === undefined) return 1
     return pipeStep(job, terrain, policy, budget)
   }
-  const req = routeRequest(job, c, policy, {})
+  const winScale = job.winMemo?.[id]
+  const req = routeRequest(job, c, policy, {}, winScale)
   if (isPlanFailure(req)) {
     fail(job, id, req)
     traceRouteFailure(job.layout, terrain, policy, id, req.reason, job.compareProbe ? "compare" : "plan")
@@ -1346,7 +1386,10 @@ function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolic
     } else commitRoute(job.layout, stub)
     return 1
   }
-  job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
+  // A connection that last needed rip mode starts in it (g91a2: two belts found only by rip searches at window 3 each
+  // failed a ~420k non-rip search there first, every round).
+  const rip = job.winMemo?.[id] !== undefined && job.ripMemo?.[id] === true
+  job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, rip), rip, avoid: {}, retries: 0, winScale, mergeGoals: req.mergeGoals, mergeTry: 0 }
   job.stats.searches++
   return 0
 }
@@ -1521,6 +1564,10 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   }
   if ((res.tunnels?.length ?? 0) > 0) job.stats.tunnels = (job.stats.tunnels ?? 0) + res.tunnels!.length
   commitRoute(job.layout, route)
+  if ((cur.winScale ?? 1) > 1 && !job.compareProbe) {
+    ;(job.winMemo ??= {})[cur.conn] = cur.winScale!
+    ;(job.ripMemo ??= {})[cur.conn] = cur.rip
+  }
   job.current = undefined
 }
 

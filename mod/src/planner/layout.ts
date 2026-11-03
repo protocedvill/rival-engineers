@@ -610,6 +610,75 @@ export function commitRoute(state: LayoutState, route: Route): void {
   bumpLayout(state)
 }
 
+/**
+ * Re-rooting (seed 11 g108): trunk `id` goes (its consumer moves), but tap `tapId` keeps its belt: the tap takes over the
+ * trunk's steps up to its splitter and becomes the route from the trunk's source. The splitter stays where it is with
+ * its trunk-side output left dead (that tile stays reserved, empty), so every built belt of the kept part is unchanged
+ * and the splitter sends everything to the tap. Taps on the kept part now hang off the re-rooted route; the trunk's
+ * tail goes with its other taps, as `ripRoute`. Before this, a 400-tile coal tap was searched again from scratch
+ * (~3M work units) each time the trunk's smelter moved. Returns the removed route ids, or undefined (nothing changed)
+ * if the tap's splitter is not on the trunk.
+ */
+export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId): RouteId[] | undefined {
+  const trunk = state.routes[id]
+  const tap = state.routes[tapId]
+  if (trunk === undefined || tap === undefined || tap.tapOf !== id || trunk.fixed || tap.fixed || trunk.fluid !== undefined) return undefined
+  const sp = tap.steps[0]
+  if (sp === undefined || sp.kind !== "splitter") return undefined
+  let at = -1
+  for (let i = 0; i < trunk.steps.length && at < 0; i++) {
+    const st = trunk.steps[i]
+    if (st.kind === "belt" && st.x === sp.x && st.y === sp.y) at = i
+  }
+  if (at < 0) return undefined
+  const prefix = trunk.steps.slice(0, at)
+  const kept: Record<number, boolean> = {}
+  for (const st of prefix) kept[tkey(st.x, st.y)] = true
+  // Taps on the kept part move to the re-rooted route; the tap leaves the trunk, so the rip below spares them.
+  for (const rid of state.routeOrder) {
+    const r = state.routes[rid]
+    const s0 = r.steps[0]
+    if (rid !== tapId && r.tapOf === id && s0?.kind === "splitter" && kept[tkey(s0.x, s0.y)]) r.tapOf = tapId
+  }
+  tap.tapOf = trunk.tapOf
+  const removed = ripRoute(state, id)
+  const head = tkey(sp.x, sp.y)
+  const dead = tkey(sp.x + DX[sp.dir], sp.y + DY[sp.dir])
+  const tiles: number[] = []
+  for (const st of prefix) tiles.push(tkey(st.x, st.y))
+  tiles.push(head)
+  if (state.routeOcc[dead] === undefined && state.occ[dead] === undefined && state.reserved[dead] === undefined) tiles.push(dead)
+  const spans: Route["spans"] = []
+  let ugs = 0
+  for (let i = 0; i < prefix.length; i++) {
+    const st = prefix[i]
+    const out = prefix[i + 1]
+    if (st.kind !== "ug-in" || out === undefined) continue
+    ugs++
+    const line = lineKey(st.x, st.y, st.dir)
+    const a = st.dir % 2 === 1 ? math.min(st.x, out.x) : math.min(st.y, out.y)
+    const b = st.dir % 2 === 1 ? math.max(st.x, out.x) : math.max(st.y, out.y)
+    spans.push({ line, span: { a, b, route: tapId } })
+  }
+  for (const k of tiles) claimRouteTile(state, k, tapId)
+  for (const sp2 of spans) (state.spans[sp2.line] ??= []).push(sp2.span)
+  tap.steps = [...prefix, ...tap.steps]
+  tap.tiles = [...tiles, ...tap.tiles]
+  tap.spans = [...spans, ...tap.spans]
+  tap.from = trunk.from
+  tap.startDir = trunk.startDir
+  tap.length += prefix.length
+  tap.undergrounds += ugs
+  tap.cost += trunk.cost * (prefix.length / math.max(1, trunk.length))
+  // A tunnel's crossed tile lies between the kept underground pair around it.
+  const own: Record<number, boolean> = {}
+  for (const k of tiles) own[k] = true
+  const tunnels = (trunk.tunnels ?? []).filter((t) => (own[tkey(t.x - 1, t.y)] && own[tkey(t.x + 1, t.y)]) || (own[tkey(t.x, t.y - 1)] && own[tkey(t.x, t.y + 1)]))
+  if (tunnels.length > 0) tap.tunnels = [...tunnels, ...(tap.tunnels ?? [])]
+  bumpLayout(state)
+  return removed
+}
+
 /** Removes a route (and the splitter taps hanging off it). Returns the removed route ids. */
 /**
  * B88: routes `rids` and every route that taps one of them, at any depth (what `ripRoute` takes with each): the routes a

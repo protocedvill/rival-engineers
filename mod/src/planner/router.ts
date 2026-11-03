@@ -110,6 +110,8 @@ export interface Search {
   sealed?: { side: "start" | "goal"; tiles: number; edge: boolean }
   /** Tiles the seal check visited (work). */
   sealSteps?: number
+  /** The seal check ran (or runs) without a cap: a retry's, or the one before a corridor search falls back. */
+  sealFull?: boolean
 }
 
 /**
@@ -421,6 +423,7 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   // skips the wider windows, while a first search only pays the small cap.
   const sealCap = (w.sealCheck ?? 0) <= 0 ? 0 : retry ? (w.sealRetry ?? 0) > 0 ? w.sealRetry! : math.huge : w.sealCheck!
   if (sealCap > 0) s.seal = newSeal(s, state, terrain, policy, sealCap)
+  s.sealFull = sealCap === math.huge
   // Two-level routing: a long connection searches cells first (`stepCoarse`), then tiles inside their corridor.
   const starts: { x: number; y: number }[] = []
   if (req.start) starts.push(req.start)
@@ -845,6 +848,14 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
         s.closed = {}
         s.taps = {}
         seedFine(s)
+        // seed 11 g108: a 400-tile coal tap's corridor failed, then the whole window was searched to exhaustion (~2M
+        // units, every round) where the retry's uncapped seal check proved the same "no path" in ~16k. Run that check
+        // first: the tile search resumes only if the two floods meet.
+        if (!s.sealFull && (w.sealCheck ?? 0) > 0 && s.status === "running") {
+          s.sealFull = true
+          s.seal = newSeal(s, state, terrain, policy, math.huge)
+          if (s.seal !== undefined) return used
+        }
         continue
       }
       s.status = "failed"

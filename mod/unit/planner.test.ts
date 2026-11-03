@@ -7,7 +7,7 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, rerootTap, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
@@ -669,6 +669,47 @@ test("router: splitter tap feeds a second consumer from an existing route (split
   const g = buildGraph(state, policy({ topology: "splitter-tap" }), { tiers: TIERS, researched: {} })
   eq(g.physical.edges.length, 2, "two physical edges")
   eq(g.logical.edges[1].physical.length, 2, "the tapped flow maps to trunk + branch")
+})
+
+test("re-root: a tap keeps its belt and the trunk's first part when the trunk goes (seed 11 g108)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  const req = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  const tp = policy({ topology: "splitter-tap" })
+  runJob(newRoutingJob(req, YELLOW, state, ["ab", "ac"]), terrain, F, tp)
+  const trunk = state.routes["route:ab"]
+  const sp = state.routes["route:ac"].steps[0]
+  let at = 0
+  while (trunk.steps[at].x !== sp.x || trunk.steps[at].y !== sp.y) at++
+  const before = routeEntities(state)
+  const tapLength = state.routes["route:ac"].length
+  const keep = (e: { x: number; y: number }): boolean => {
+    // The trunk's tail (after the splitter) goes; everything else stays as it is.
+    for (let i = at + 1; i < trunk.steps.length; i++) if (math.floor(e.x) === trunk.steps[i].x && math.floor(e.y) === trunk.steps[i].y) return false
+    return true
+  }
+  const fmt = (es: { name: string; x: number; y: number; dir: number }[]) => es.map((e) => `${e.name}@${e.x},${e.y}/${e.dir}`).sort().join(" ")
+  const removed = rerootTap(state, routeId("route:ab"), routeId("route:ac"))
+  eq((removed ?? []).join(","), "route:ab")
+  const r = state.routes["route:ac"]
+  eq(r.tapOf, undefined, "no longer a tap")
+  eq(r.from?.module, "a")
+  eq(r.length, tapLength + at, "the trunk's belts up to the splitter joined it")
+  eq(fmt(routeEntities(state)), fmt(before.filter((e) => keep(e))), "the same entities, minus the trunk's tail")
+  const dead = tkey(sp.x + 1, sp.y)
+  eq(state.routeOcc[dead], "route:ac", "the splitter's dead output stays clear")
+  noProblems(state, terrain, "re-rooted")
+  // The trunk's connection comes back as a tap of the re-rooted route.
+  const job = runJob(newRoutingJob(req, YELLOW, state, ["ab"]), terrain, F, tp)
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  eq(state.routes["route:ab"].tapOf, "route:ac")
+  noProblems(state, terrain, "trunk routed again")
 })
 
 test("plan: a module whose port is walled in is re-placed elsewhere, then routed", () => {
