@@ -1083,7 +1083,7 @@ export interface PumpjackFieldParams extends CommonParams {
 }
 
 /**
- * A pumpjack on every well of a field, all facing north, and plain pipes joining their outputs to one `pipe-out`
+ * A pumpjack on every well of a field, each facing the first way (N, E, S, W) whose output reaches the port (M7c.8), and plain pipes joining their outputs to one `pipe-out`
  * port on the east edge (only one fluid here, so pipes may touch anything). Poles from `placePoles`. The footprint is
  * the pumpjacks' box plus a margin of `PUMPJACK_FIELD_MARGIN` tiles for pipes and poles.
  */
@@ -1111,7 +1111,6 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
   const H = maxY - minY + 3 + 2 * M
   const blocked: Record<string, boolean> = {}
   const entities: ModuleEntity[] = []
-  const outs: { x: number; y: number }[] = []
   const box = need(facts.entity(pumpjack)?.fluidBoxes?.find((b) => b.production === "output"), `${pumpjack} has no output fluid box`)
   const c = box.connections[0]
   if (p.obstacles !== undefined) for (const [x, y] of string.gmatch(p.obstacles, "(-?%d+),(-?%d+)")) blocked[`${tonumber(x)! - ox},${tonumber(y)! - oy}`] = true
@@ -1119,49 +1118,70 @@ export function pumpjackField(facts: ProtoFacts, p: PumpjackFieldParams): Module
     const x = w.x - ox
     const y = w.y - oy
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) blocked[`${x + dx},${y + dy}`] = true
-    outs.push({ x: x + c.x + [0, 1, 0, -1][c.dir], y: y + c.y + [-1, 0, 1, 0][c.dir] })
   }
-  // The port: the east edge, on the row of the first output; the collector grows from it to each output in turn.
-  // B119: the first such row whose edge tile is free (a cliff may stand there).
   const inside = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < W && y < H && !blocked[`${x},${y}`]
-  const portRow = outs.find((o) => inside(W - 1, o.y))
-  if (portRow === undefined) error("pumpjack-field: no free edge tile on a well output's row")
-  const port = { x: W - 1, y: portRow.y }
+  // M7c.8: the output tile of each facing (N, E, S, W). Facing north only, a well 3 tiles south of another put its
+  // output pipe inside that pumpjack (seed 11: the generator threw and the free field read as no field at all).
+  const outFor = (w: { x: number; y: number }, f: number): { x: number; y: number } => {
+    const at = c.positions?.[f] ?? [{ x: c.x, y: c.y }, { x: -c.y, y: c.x }, { x: -c.x, y: -c.y }, { x: c.y, y: -c.x }][f]
+    const d = (c.dir + f) % 4
+    return { x: w.x - ox + at.x + [0, 1, 0, -1][d], y: w.y - oy + at.y + [-1, 0, 1, 0][d] }
+  }
+  // The port: the east edge, on the row of the first free output; the collector grows from it to each output in turn.
+  // B119: the first such row whose edge tile is free (a cliff may stand there).
+  let port: { x: number; y: number } | undefined
+  for (const w of wells) {
+    for (let f = 0; f < 4 && port === undefined; f++) {
+      const o = outFor(w, f)
+      if (inside(o.x, o.y) && inside(W - 1, o.y)) port = { x: W - 1, y: o.y }
+    }
+    if (port !== undefined) break
+  }
+  if (port === undefined) error("pumpjack-field: no free edge tile on a well output's row")
   const pipes: Record<string, boolean> = { [`${port.x},${port.y}`]: true }
   const kept: typeof wells = []
-  for (let i = 0; i < outs.length; i++) {
-    const o = outs[i]
-    const w = wells[i]
-    if (pipes[`${o.x},${o.y}`]) {
-      kept.push(w)
-      continue
-    }
-    // BFS from the output to the nearest collector tile.
-    const prev: Record<string, string> = {}
-    const queue: { x: number; y: number }[] = [o]
-    prev[`${o.x},${o.y}`] = ""
-    let hit: string | undefined
-    while (queue.length > 0 && hit === undefined) {
-      const t = queue.shift()!
-      for (let d = 0; d < 4; d++) {
-        const nx = t.x + [0, 1, 0, -1][d]
-        const ny = t.y + [-1, 0, 1, 0][d]
-        const k = `${nx},${ny}`
-        if (prev[k] !== undefined || !inside(nx, ny)) continue
-        prev[k] = `${t.x},${t.y}`
-        if (pipes[k]) {
-          hit = k
-          break
-        }
-        queue.push({ x: nx, y: ny })
+  const facing: number[] = []
+  for (const w of wells) {
+    // The first facing whose output tile is free and reaches the collector (BFS to the nearest collector tile).
+    for (let f = 0; f < 4; f++) {
+      const o = outFor(w, f)
+      if (!inside(o.x, o.y)) continue
+      if (pipes[`${o.x},${o.y}`]) {
+        kept.push(w)
+        facing.push(f)
+        break
       }
+      const prev: Record<string, string> = {}
+      const queue: { x: number; y: number }[] = [o]
+      prev[`${o.x},${o.y}`] = ""
+      let hit: string | undefined
+      while (queue.length > 0 && hit === undefined) {
+        const t = queue.shift()!
+        for (let d = 0; d < 4; d++) {
+          const nx = t.x + [0, 1, 0, -1][d]
+          const ny = t.y + [-1, 0, 1, 0][d]
+          const k = `${nx},${ny}`
+          if (prev[k] !== undefined || !inside(nx, ny)) continue
+          prev[k] = `${t.x},${t.y}`
+          if (pipes[k]) {
+            hit = k
+            break
+          }
+          queue.push({ x: nx, y: ny })
+        }
+      }
+      if (hit === undefined) continue
+      kept.push(w)
+      facing.push(f)
+      for (let k: string = prev[hit]; k !== ""; k = prev[k]) pipes[k] = true
+      break
     }
-    // B119: a well walled off by cliffs or water is left out.
-    if (hit === undefined) continue
-    kept.push(w)
-    for (let k: string = prev[hit]; k !== ""; k = prev[k]) pipes[k] = true
+    // B119: a well whose every output is walled off (cliffs, water, its neighbours) is left out.
   }
-  for (const w of kept) entities.push({ name: pumpjack, x: w.x - ox + 0.5, y: w.y - oy + 0.5, dir: NORTH, mines: resource, perSecond: w.perSecond })
+  for (let i = 0; i < kept.length; i++) {
+    const w = kept[i]
+    entities.push({ name: pumpjack, x: w.x - ox + 0.5, y: w.y - oy + 0.5, dir: [NORTH, EAST, SOUTH, WEST][facing[i]], mines: resource, perSecond: w.perSecond })
+  }
   for (const [k] of pairs(pipes)) {
     const [xs, ys] = string.match(k as string, "^(-?%d+),(-?%d+)$")
     entities.push({ name: pipe, x: tonumber(xs)! + 0.5, y: tonumber(ys)! + 0.5 })

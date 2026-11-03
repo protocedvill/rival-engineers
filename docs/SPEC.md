@@ -952,11 +952,9 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
   its base and personal roboports for its crew, and robots place most entities built later inside coverage. Engine
   tests first: robots and personal roboports must work for a force with no players (radars do not, D62).
 - **P49, robot count (approved 2026-10-30, magic number):** about 50 construction robots per faction.
-- **P50, extra-capacity searches and production growth (proposed, M7c.8, 2026-11-03):** D62 holds every production goal
-  while a search builds or scans an outpost. For a D70 "extra capacity" search (the faction already makes the
-  resource), production goals that don't need the searched resource keep planning. Seed 11: a search for a second crude
-  field held all production growth for 86 game-min while the plastic and sulfur plants sat at full output and two
-  chemical-pack assemblers capped blue science at ~5/min (`docs/reports/M7-report.md`).
+- **P50, extra-capacity searches and production growth (withdrawn by the agent, 2026-11-03):** proposed that an extra
+  capacity search not hold unrelated production goals. The user asked for the root cause instead: a free crude field
+  read as none because the pumpjack-field generator faced every pumpjack north (fixed, `docs/reports/M7-report.md`).
 - **P51, outposts on lake-cut arms (proposed, M7c.8, 2026-11-03):** an arm whose outpost has no pole path from the base is
   skipped from then on (in code). Proposed on top: place the outpost at the last land the base's poles reach, so the
   arm is still explored up to its lake.

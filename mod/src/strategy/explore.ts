@@ -262,7 +262,14 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
   const arms = f.arms
   const arm = Arms.nextArm(arms.next, arms.cut)
   if (arm === undefined) {
-    ctx.waiting.push(`exploring for ${ex.resource} (D62): every arm is cut off (no pole path from the base)`)
+    // M7c.8: no outpost can be powered any more. The search ends (waiting in "outpost" would hold its kind's goals for
+    // good), and B53's pause keeps the failed goal from re-planning into a new search at once.
+    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORE (D62) over: every arm is cut off (no pole path from the base) after ${ex.outposts} radar outposts, ${math.floor((ctx.tick - ex.since) / 3600)} game-min exploring for ${ex.resource}`)
+    if (ctx.config.factorySiteRetryMinutes > 0) {
+      f.siteRetry ??= {}
+      f.siteRetry[ex.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+    }
+    f.explore = undefined
     return
   }
   const step = arms.steps[arm]

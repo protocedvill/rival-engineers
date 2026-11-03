@@ -848,14 +848,28 @@ what was changed; runs resumed from saves in the new save library (`out/saves/ma
       `soak.py` now resets the count during any D62 search (either tag, recognised from any `EXPLORING (D62)` line),
       in line with D62/D70: a search for ground is not the design failing. Both stopping logs (`blue3-720`,
       `arms-900`) pass the check now.
-    - *Blue science stays at ~5 chemical packs/min because extra-capacity exploration holds production growth.*
-      `blue3-720` probes: the plastic and sulfur chemical plants and two engine assemblers sit at `full_output`;
-      the 2 chemical-pack assemblers and both advanced-circuit assemblers always work. The chemical-pack assemblers
-      are the cap, not crude. The design's next production goal (g141, minute ~821) asked for a parallel crude provider
-      (D70 "extra capacity": the faction already pumps crude), found no free field, and started a D62 search. D62 holds
-      production goals while a search builds or scans an outpost, so from minute 821 to 907 the faction planned only
-      radar goals (g142-g163) and no production growth. Proposed (SPEC §11, for the user): an extra-capacity search
-      does not hold production goals that don't need the searched resource.
+    - *Blue science stays at ~5 chemical packs/min: a free crude field read as none (root cause).* `blue3-720` probes:
+      the plastic and sulfur chemical plants and two engine assemblers sit at `full_output`; the 2 chemical-pack
+      assemblers and both advanced-circuit assemblers always work, so those are the cap, not crude. The chemical-pack
+      cluster can't grow in place ("blocked at 528,-117"), so the design plans parallel providers, and the next
+      production goal (g141, minute ~821) asked for a second crude field. D62 holds production goals while a search
+      builds or scans an outpost, so from minute 821 to 907 the faction planned only radar goals (g142-g163), 2000+
+      tiles out. The search should never have started: the log line just before it reads `pumpjack field at -366,47:
+      entities overlap at 4,9: pumpjack@5.5,8.5 and pipe@4.5,9.5`. A probe of the minute-900 save found the first
+      field's 7 wells split in two fields (`FIELD_JOIN` 12): 3 taken, and 4 free at (-353,50) (-350,51) (-361,55)
+      (-363,58), whose box (from y = 47) is clear of the first field. The generator faced every pumpjack north; the
+      north output of the well at (-363,58) is the tile (-362,56) inside the pumpjack at (-361,55), so it laid a pipe
+      there and threw, and `fieldModule` caught the error and returned "no field". Fixed at both ends:
+      - `pumpjackField` gives each pumpjack the first facing (N, E, S, W) whose output tile is free and reaches the
+        collector, from the prototype's own per-facing positions (2.0 pumpjack: (1,-1) facing N or E, (-1,1) facing S
+        or W: not a rotation of the north one; `FluidBoxFacts` connections now carry `positions`). A well with no such
+        facing is left out. T1 `fluid-chain` "M7c.8: a pumpjack whose north output lies in its neighbour faces another
+        way" (these 4 wells; fails on the old generator).
+      - `fieldModule` tries the fields in order of preference and skips one it can't lay out, instead of reading one
+        failure as no field.
+      - With every arm cut (see above), the search now ends (`EXPLORE (D62) over`) and B53's pause holds the failed
+        kind for `factory-site-retry-minutes`; before, it waited in its outpost phase and held production for good.
+      P50 (SPEC §11) is withdrawn as framed: the hold only mattered because a free field read as none.
     - *The steam block on a curved shore seals a land pocket.* The offshore pump at 422.5,93.5 plugs the pocket's only
       exit; a member walking in is trapped (the pocket escape, 6e29576, picks up a steam engine to get out). **Open,
       not redesigned:** the steam block's placement should keep a walkable exit.

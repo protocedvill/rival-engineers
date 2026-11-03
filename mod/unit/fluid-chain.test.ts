@@ -112,6 +112,47 @@ test("pumpjack field: a pumpjack on every well, one pipe network to the pipe-out
   ok(port.pos.x === def.footprint.w - 0.5, "the port is on the east edge")
 })
 
+test("M7c.8: a pumpjack whose north output lies in its neighbour faces another way (seed 11's free field)", () => {
+  // Seed 11, minute 821: wells (-361,55) and (-363,58). Facing north, the second one's output (-362,56) is inside the
+  // first pumpjack: the generator threw "entities overlap", and the field read as no field (2000 tiles of exploring).
+  const wells = [
+    { x: -353, y: 50, perSecond: 3 },
+    { x: -350, y: 51, perSecond: 3 },
+    { x: -361, y: 55, perSecond: 3 },
+    { x: -363, y: 58, perSecond: 3 },
+  ]
+  const def = pumpjackField(F, { wells })
+  occupancy(def.entities, F)
+  const jacks = def.entities.filter((e) => e.name === "pumpjack")
+  eq(jacks.length, 4, "every well kept")
+  ok(jacks.some((e) => e.dir !== 0), "one turned away from its neighbour")
+  const p = pipes(def)
+  const port = def.ports.find((x) => x.kind === "pipe-out")!
+  const start = `${math.floor(port.pos.x)},${math.floor(port.pos.y)}`
+  const seen: Record<string, boolean> = { [start]: true }
+  const queue = [start]
+  while (queue.length > 0) {
+    const k = queue.shift()!
+    const [xs, ys] = string.match(k, "^(-?%d+),(-?%d+)$")
+    for (let d = 0; d < 4; d++) {
+      const n = `${tonumber(xs)! + DX[d]},${tonumber(ys)! + DY[d]}`
+      if (p[n] !== undefined && !seen[n]) {
+        seen[n] = true
+        queue.push(n)
+      }
+    }
+  }
+  // The output tile for each facing (pumpjack prototype: (1,-1) north/east, (-1,1) south/west, pointing that way).
+  const OUT: Record<number, [number, number]> = { 0: [1, -2], 4: [2, -1], 8: [-1, 2], 12: [-2, 1] }
+  for (const e of jacks) {
+    const o = OUT[e.dir ?? 0]
+    const out = `${math.floor(e.x) + o[0]},${math.floor(e.y) + o[1]}`
+    ok(seen[out] === true, `pumpjack at ${e.x},${e.y} facing ${e.dir}: its output ${out} reaches the port`)
+  }
+  const pc = powerCheck(def.entities, F)
+  eq(pc.unpowered.length, 0, pc.unpowered.join(", "))
+})
+
 test("assembler row, three ingredients: engines (steel, gear, pipe) with pipes on their own belt", () => {
   const def = assemblerRow(F, { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" })
   // Assembler 2 (speed 0.75), 10 s: 0.075 engines/s each.

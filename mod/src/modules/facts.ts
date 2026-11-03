@@ -17,8 +17,12 @@ export interface RecipeFacts {
 /** M7b: one fluid box of a north-facing entity: its kind and the tiles it connects to (offset from the centre). */
 export interface FluidBoxFacts {
   production: "input" | "output" | "input-output" | "none"
-  /** Each connection: the entity tile it is on (offset from the centre) and the direction it points (index 0..3). */
-  connections: { x: number; y: number; dir: number }[]
+  /**
+   * Each connection: the entity tile it is on (offset from the centre) and the direction it points (index 0..3), facing
+   * north. `positions`: the tile for each facing (N, E, S, W), when the prototype lists them; they need not be rotations
+   * of the north one (a pumpjack's output is at (1,-1) facing north or east and (-1,1) facing south or west).
+   */
+  connections: { x: number; y: number; dir: number; positions?: { x: number; y: number }[] }[]
 }
 
 export interface EntityFacts {

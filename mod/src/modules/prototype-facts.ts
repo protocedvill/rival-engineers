@@ -68,10 +68,12 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
   if (boxes !== undefined && boxes.length > 0) {
     f.fluidBoxes = []
     for (const b of boxes) {
-      const connections: { x: number; y: number; dir: number }[] = []
+      const connections: { x: number; y: number; dir: number; positions?: { x: number; y: number }[] }[] = []
       for (const c of b.pipe_connections) {
         const pos = c.positions !== undefined ? vec(c.positions[0]) : undefined
-        if (pos !== undefined && c.direction !== undefined && c.connection_type !== "linked") connections.push({ x: pos.x, y: pos.y, dir: math.floor(c.direction / 4) })
+        if (pos === undefined || c.direction === undefined || c.connection_type === "linked") continue
+        const positions = c.positions!.length === 4 ? c.positions!.map((q) => vec(q)!) : undefined
+        connections.push({ x: pos.x, y: pos.y, dir: math.floor(c.direction / 4), positions })
       }
       f.fluidBoxes.push({ production: b.production_type as "input", connections })
     }

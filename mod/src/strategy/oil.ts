@@ -101,25 +101,40 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     }
     fields++
   }
-  let best: { i: number; total: number; d: number } | undefined
-  for (let k = 0; k < fields; k++) {
-    let total = 0
-    let cx = 0
-    let cy = 0
-    let n = 0
-    for (let i = 0; i < wells.length; i++) {
-      if (field[i] !== k) continue
-      total += wells[i].perSecond
-      cx += wells[i].x
-      cy += wells[i].y
-      n++
+  // M7c.8: fields in order of preference; one that can't be laid out (every well on a cliff, or the generator finds no
+  // layout) is skipped for the next, rather than reading as no field at all (seed 11 explored 2000 tiles out for crude
+  // while a free field lay 30 tiles from its first one).
+  const tried: Record<number, boolean> = {}
+  for (;;) {
+    let best: { i: number; total: number; d: number } | undefined
+    for (let k = 0; k < fields; k++) {
+      if (tried[k]) continue
+      let total = 0
+      let cx = 0
+      let cy = 0
+      let n = 0
+      for (let i = 0; i < wells.length; i++) {
+        if (field[i] !== k) continue
+        total += wells[i].perSecond
+        cx += wells[i].x
+        cy += wells[i].y
+        n++
+      }
+      const d = math.abs(cx / n - center.x) + math.abs(cy / n - center.y)
+      const enough = total >= need
+      const better = best === undefined || (enough && (best.total < need || d < best.d)) || (!enough && best.total < need && total > best.total)
+      if (better) best = { i: k, total, d }
     }
-    const d = math.abs(cx / n - center.x) + math.abs(cy / n - center.y)
-    const enough = total >= need
-    const better = best === undefined || (enough && (best.total < need || d < best.d)) || (!enough && best.total < need && total > best.total)
-    if (better) best = { i: k, total, d }
+    if (best === undefined) return undefined
+    tried[best.i] = true
+    const built = layField(surface, wells.filter((_, i) => field[i] === best!.i), resource, pumpjack, make)
+    if (built !== undefined) return built
   }
-  let chosen = wells.filter((_, i) => field[i] === best!.i)
+}
+
+/** One field's module: its wells minus those on cliffs or water (B119); undefined when none is left or no layout fits. */
+function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef): { def: ModuleDef; at: Vec } | undefined {
+  let chosen = wells
   // B119: cliffs and water in the field's box (seed 11's wells sit in a ring of cliffs). Pumpjacks on them are left
   // out; the generator routes pipes and poles around the rest.
   const box = (ws: Well[]): Rect => {

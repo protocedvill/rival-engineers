@@ -100,7 +100,7 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "pipe-to-ground", type: "pipe-to-ground", tileW: 1, tileH: 1, maxPipeUnderground: 10 }),
   e({ name: "pump", type: "pump", tileW: 1, tileH: 2, energyPerTick: 500, electric: true }),
   // Output box positions {{1,-1},{1,-1},{-1,1},{-1,1}} by direction; north: (1, -1) pointing north.
-  e({ name: "pumpjack", type: "mining-drill", tileW: 3, tileH: 3, miningSpeed: 1, energyPerTick: 1500, electric: true, fluidBoxes: [{ production: "output", connections: [{ x: 1, y: -1, dir: 0 }] }] }),
+  e({ name: "pumpjack", type: "mining-drill", tileW: 3, tileH: 3, miningSpeed: 1, energyPerTick: 1500, electric: true, fluidBoxes: [{ production: "output", connections: [{ x: 1, y: -1, dir: 0, positions: [{ x: 1, y: -1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: 1 }] }] }] }),
 ]
 
 const RESOURCES: Record<string, { time: number; product: string }> = {
