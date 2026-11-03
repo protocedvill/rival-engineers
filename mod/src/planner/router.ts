@@ -21,6 +21,7 @@ import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, 
 import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
+import { tunnelSite } from "./tunnel"
 
 export interface RouteRequest {
   id: string
@@ -51,6 +52,12 @@ export interface RouteRequest {
   avoid?: Record<number, boolean>
   /** B28: this edge's search window scale (×the policy margin); a retry after "no path" widens the detour room. */
   windowMargin?: number
+  /**
+   * Tunnel crossings (`tunnel.ts`): this route may cross another route's straight run, which becomes an underground pair
+   * around the crossing, at `cost` extra. `busy`: routes that may not be rebuilt. Only callers that apply the
+   * conversion when they commit the route (`plan.ts`) set it.
+   */
+  tunnel?: { cost: number; busy?: Record<string, boolean> }
 }
 
 interface TapStart {
@@ -71,7 +78,7 @@ export interface Search {
   h: number
   g: Record<number, number>
   par: Record<number, number>
-  /** Move into the state: 0 belt, k ≥ 2 underground of length k, -1 start, -2 splitter tap start. */
+  /** Move into the state: 0 belt, k ≥ 2 underground of length k, -1 start, -2 splitter tap start, -3 tunnel cross. */
   mv: Record<number, number>
   closed: Record<number, boolean>
   hs: number[]
@@ -506,6 +513,19 @@ function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: Terrain
     else sealAdd(seal, true, encode(s, x + DX[nd], y + DY[nd], nd))
   }
   let work = ROUTER_MOVE_WORK * 3
+  // Tunnel crossings (`stepSearch`'s cross move): over the crossed tile to the one past it.
+  const tun = s.req.tunnel
+  if (tun !== undefined) {
+    for (const nd of [d, cw(d), ccw(d)]) {
+      const tx = x + DX[nd]
+      const ty = y + DY[nd]
+      if (state.routeOcc[tkey(tx, ty)] === undefined || sealTile(s, tx, ty) < 0) continue
+      work += ROUTER_MOVE_WORK
+      if (s.req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, s.req.id, tun.busy) === undefined) continue
+      if (sealTile(s, tx + DX[nd], ty + DY[nd]) < 0) seal.fedge = true
+      else sealAdd(seal, true, encode(s, tx + DX[nd], ty + DY[nd], nd))
+    }
+  }
   for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
     work += ROUTER_MOVE_WORK
     if (!underPassable(state, terrain, policy, x + DX[d] * (k - 1), y + DY[d] * (k - 1))) break
@@ -533,10 +553,21 @@ function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: Terrai
     seal.redge = true
     return 0
   }
-  if (!sealPass(s, seal, state, terrain, policy, px, py)) return 0
+  let work = ROUTER_MOVE_WORK * 3
+  // A tunnel cross arriving here: its crossed tile is P (another route's run), entered from P0 = P − d.
+  const tun = s.req.tunnel
+  if (tun !== undefined && state.routeOcc[tkey(px, py)] !== undefined) {
+    work += ROUTER_MOVE_WORK
+    const qx = px - DX[d]
+    const qy = py - DY[d]
+    if (sealTile(s, qx, qy) < 0) seal.redge = true
+    else if (!s.req.avoid?.[tkey(px, py)] && sealPass(s, seal, state, terrain, policy, qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy) !== undefined) {
+      for (const h of [d, cw(d), ccw(d)]) sealAdd(seal, false, encode(s, qx, qy, h))
+    }
+  }
+  if (!sealPass(s, seal, state, terrain, policy, px, py)) return work
   for (const h of [d, cw(d), ccw(d)]) sealAdd(seal, false, encode(s, px, py, h))
   // An underground ending at E = P, entered straight (heading d) at E − k·d.
-  let work = ROUTER_MOVE_WORK * 3
   for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
     work += ROUTER_MOVE_WORK
     if (!underPassable(state, terrain, policy, px - DX[d] * (k - 1), py - DY[d] * (k - 1))) break
@@ -726,6 +757,8 @@ function stepCoarse(s: Search, state: LayoutState, terrain: TerrainView, policy:
 
 /** M7: planner work per move an expansion (or seal step) tries, on top of one unit per expansion (see `stepSearch`). */
 const ROUTER_MOVE_WORK = 0.5
+/** Move code of a tunnel cross: a belt on the state's tile and on the crossed tile, arriving one tile past it. */
+const MV_CROSS = -3
 
 /** Runs up to `budget` expansions. Returns the number used. */
 /** M7c.8: how many of a state's ancestors a move checks for its tiles (`markHeld`); `searchResult` checks whole routes. */
@@ -751,8 +784,9 @@ function markHeld(s: Search, st: number): number {
     const ct = math.floor(cur / 4)
     heldMark[ct] = heldStamp
     const mv = s.mv[cur]
-    if (mv === undefined || mv < 0) break
-    if (mv > 0) {
+    if (mv === undefined || (mv < 0 && mv !== MV_CROSS)) break
+    // An underground's exit, or a tunnel cross's crossed tile, is one behind the state.
+    if (mv > 0 || mv === MV_CROSS) {
       const d = cur % 4
       heldMark[ct - DX[d] - DY[d] * s.w] = heldStamp
     }
@@ -847,6 +881,19 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
       if (inWindow(s, nx, ny) && heldMark[math.floor(encode(s, nx, ny, 0) / 4)] === held) continue
       push(cur, nx, ny, nd, g + c + (nd === d ? 0 : w.turn), 0)
     }
+    // Tunnel crossings: over another route's straight run, which becomes an underground pair around the crossed tile.
+    const tun = req.tunnel
+    if (tun !== undefined) {
+      for (const nd of [d, cw(d), ccw(d)]) {
+        const tx = x + DX[nd]
+        const ty = y + DY[nd]
+        if (state.routeOcc[tkey(tx, ty)] === undefined || !inWindow(s, tx, ty) || !inWindow(s, tx + DX[nd], ty + DY[nd])) continue
+        used += ROUTER_MOVE_WORK
+        if (heldMark[math.floor(encode(s, tx, ty, 0) / 4)] === held || heldMark[math.floor(encode(s, tx + DX[nd], ty + DY[nd], 0) / 4)] === held) continue
+        if (req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, req.id, tun.busy) === undefined) continue
+        push(cur, tx + DX[nd], ty + DY[nd], nd, g + c + (nd === d ? 0 : w.turn) + 1 + tun.cost, MV_CROSS)
+      }
+    }
     // Undergrounds: entered straight, exit k tiles ahead.
     const line = lineKey(x, y, d)
     for (let k = 2; k <= maxK; k++) {
@@ -888,6 +935,8 @@ export interface RouteResult {
   victims: string[]
   /** A tile used twice (the search does not remember its own path): retry avoiding it. */
   selfCross?: number
+  /** Tunnel crossings the route makes (crossed tile, crossing heading): commit converts each crossed run first. */
+  tunnels?: { x: number; y: number; dir: number }[]
 }
 
 /** Turns a found search into a Route (not committed). */
@@ -900,6 +949,8 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
     return { x: s.x0 + (t % s.w), y: s.y0 + math.floor(t / s.w), d: st % 4 }
   }
   const rev: RouteStep[] = []
+  const tunnels: { x: number; y: number; dir: number }[] = []
+  const tunnelTiles: Record<number, boolean> = {}
   let st = s.found
   let tap: TapStart | undefined
   for (;;) {
@@ -913,7 +964,14 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
     const a = decode(p)
     const b = decode(st)
     if (mv === 0) rev.push({ kind: "belt", x: a.x, y: a.y, dir: b.d })
-    else {
+    else if (mv === MV_CROSS) {
+      const tx = a.x + DX[b.d]
+      const ty = a.y + DY[b.d]
+      rev.push({ kind: "belt", x: tx, y: ty, dir: b.d })
+      rev.push({ kind: "belt", x: a.x, y: a.y, dir: b.d })
+      tunnels.push({ x: tx, y: ty, dir: b.d })
+      tunnelTiles[tkey(tx, ty)] = true
+    } else {
       rev.push({ kind: "ug-out", x: a.x + DX[a.d] * mv, y: a.y + DY[a.d] * mv, dir: a.d })
       rev.push({ kind: "ug-in", x: a.x, y: a.y, dir: a.d })
     }
@@ -934,7 +992,8 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
     seen[k] = true
     tiles.push(k)
     const v = state.routeOcc[k]
-    if (v !== undefined) victims[v] = true
+    // A tunnel's crossed tile is freed by converting its route, not by ripping it.
+    if (v !== undefined && !tunnelTiles[k]) victims[v] = true
   }
   const spans: Route["spans"] = []
   let length = 0
@@ -970,6 +1029,7 @@ export function searchResult(s: Search, state: LayoutState, policy: LayoutPolicy
   out.sort()
   return {
     victims: out,
+    tunnels: tunnels.length > 0 ? tunnels : undefined,
     route: {
       id: routeId(req.id),
       conn: connectionId(req.conn),

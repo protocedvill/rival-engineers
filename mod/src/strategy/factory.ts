@@ -1165,6 +1165,21 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   for (const e of g.edges) if (CS.has(f.constraints, "wideJoin", CS.portKey(e.to, e.toPort))) request.windowScale = 3
   // D57 (c): patches earlier plans' mines found no room on.
   if (f.deadPatches !== undefined) request.deadPatches = { ...f.deadPatches }
+  // Tunnel crossings may not rebuild routes other goals are still building (their ghosts are out already): a plan's
+  // build parts, and the routes a growth, reroute or repair rebuilds (its entities' owners). Inline: factory.lua is at
+  // its main-chunk local limit.
+  const busy: Record<string, boolean> = {}
+  for (const o of f.goals) {
+    if (o === g || o.status !== "building") continue
+    const other = o.plan !== undefined ? RT.getPlannerEntry(o.plan) : undefined
+    for (const rid of other?.build?.parts?.routes ?? []) busy[rid] = true
+    for (const e of [...(o.growBuild?.add ?? []), ...(o.rework?.add ?? []), ...(other?.build?.extraAdd ?? [])]) {
+      if (e.owner !== undefined && string.sub(e.owner, 1, 6) === "route:") busy[e.owner] = true
+    }
+  }
+  request.busyRoutes = []
+  for (const [id] of pairs(busy)) request.busyRoutes.push(id as string)
+  request.busyRoutes.sort()
   // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
   // factory still has to connect (seed 11: cells next to the labs' pack input made production unroutable).
   if (g.kind === "temp") request.avoid = f.layout.modules.map((m) => ({ x: m.rect.x - TEMP_CLEARANCE, y: m.rect.y - TEMP_CLEARANCE, w: m.rect.w + 2 * TEMP_CLEARANCE, h: m.rect.h + 2 * TEMP_CLEARANCE }))
@@ -1674,6 +1689,24 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     // and n18, n18's list replaced n6's, and n6's poles, the only link to two new modules, were never built).
     b.extraAdd = [...(b.extraAdd ?? []), ...add]
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} completes the shared mine ${completion.module}: ${add.length} entities to build`)
+  }
+  // Tunnel crossings (`planner/tunnel.ts`): a built route this plan's belts cross is rebuilt on those tiles the
+  // mine-completion way. Its old belts there are picked up first (the clear phase), then its underground ends are
+  // ghosted with the plan's own parts (`extraAdd`), so the crossing belt and the pair go up together.
+  for (const rw of delta.reworked) {
+    let cleared = 0
+    for (const s of rw.remove) {
+      for (const e of findEntities(ctx.surface, { name: s.name, position: { x: s.x, y: s.y }, force: ctx.faction.force, limit: 1 })) {
+        if (e.unit_number !== undefined && queued[e.unit_number]) continue
+        if (e.unit_number !== undefined) queued[e.unit_number] = true
+        AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+        cleared++
+      }
+    }
+    const add = rw.add.filter((s) => !alreadyAdded[`${s.name}@${s.x},${s.y}`])
+    for (const s of add) alreadyAdded[`${s.name}@${s.x},${s.y}`] = true
+    b.extraAdd = [...(b.extraAdd ?? []), ...add]
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} tunnels under ${rw.route}: ${cleared} belts to pick up, ${add.length} underground ends to build`)
   }
   transitionGoal(g, "building")
   if (f.adoption === intent) f.adoption = undefined

@@ -1,6 +1,6 @@
 // Pure boundary between a completed planner job and the runtime adapter that adopts it.
 
-import { BuildParts, EntitySpec, partEntities, partTiles } from "./build-list"
+import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles } from "./build-list"
 import { checkClaimOwners } from "./claims"
 import { checkLayoutIndexes, layoutRevision } from "./layout"
 import type { LayoutState } from "./layout"
@@ -57,6 +57,17 @@ export interface PlanDelta {
   claims: PlanClaimDelta
   /** Built modules whose whole-patch mine the candidate completes, in candidate module order. */
   mineCompletions: PlanMineCompletion[]
+  /**
+   * Built routes the candidate rebuilt in place (tunnel crossings, `tunnel.ts`), in candidate route order: the entities
+   * to pick up (the old belts on the rebuilt tiles) and to place (the underground ends).
+   */
+  reworked: PlanReworkedRoute[]
+}
+
+export interface PlanReworkedRoute {
+  route: RouteId
+  remove: EntitySpec[]
+  add: EntitySpec[]
 }
 
 /** Stable rejection codes: host tools match these; `detail`/`problems` carry the human explanation. */
@@ -162,6 +173,17 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
     mineCompletions.push({ module: m.id, entities: partEntities(input.layout, { modules: [m.id], routes: [], poles: [] }) })
   }
 
+  // Tunnel crossings: a base route with more tunnels than the current layout's copy is rebuilt on those tiles.
+  const reworked: PlanReworkedRoute[] = []
+  for (const id of input.layout.routeOrder) {
+    const now = input.layout.routes[id]
+    const was = current.routes[id]
+    if (!input.baseRoutes[id] || was === undefined || (now.tunnels?.length ?? 0) <= (was.tunnels?.length ?? 0)) continue
+    const own = (l: LayoutState): EntitySpec[] => partEntities(l, { modules: [], routes: [id], poles: [] }).filter((e) => e.owner === id)
+    const d = entityDiff(own(current), own(input.layout))
+    reworked.push({ route: id, remove: d.remove, add: d.add })
+  }
+
   return {
     status: "ready",
     delta: {
@@ -173,6 +195,7 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
       logical: { routesByConn, poleLines },
       claims: { takenTiles, mineClaims },
       mineCompletions,
+      reworked,
     },
   }
 }

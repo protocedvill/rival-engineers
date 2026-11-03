@@ -9,8 +9,9 @@ import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { claimPoleTile, releaseLaneReservation, reserveFreeTile } from "./claims"
-import { dirIndex, DX, DY, FREE, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
 import { mergeGoals } from "./merge"
+import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
 import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
@@ -90,6 +91,11 @@ export interface PlanRequest {
   deadPatches?: Record<string, string>
   /** B63: multiply every route window's margin (1 = policy default; 3 for a plan feeding a boxed-in consumer). */
   windowScale?: number
+  /**
+   * Tunnel crossings: base routes another goal is still building (its ghosts already stand for their current tiles).
+   * They may not be crossed by a tunnel, which would rebuild them.
+   */
+  busyRoutes?: string[]
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -140,6 +146,8 @@ export interface PlanStats {
   /** Modules taken out and placed again because a connection could not be routed. */
   replacements: number
   maxStepWork: number
+  /** Tunnel crossings made (`tunnel.ts`): other routes' runs turned into underground pairs. */
+  tunnels?: number
 }
 
 export type PlanEvidence =
@@ -785,6 +793,16 @@ function pipeRoute(id: string, c: ConnectionRequest, f: NonNullable<ConnectionRe
   }
 }
 
+/** Tunnel crossings for this job's searches (`tunnel.ts`): the policy's cost, and the base routes others still build. */
+function tunnelOption(job: PlanJob, policy: LayoutPolicy, maxUnderground: number): RouteRequest["tunnel"] {
+  const cost = policy.router.tunnel ?? 0
+  // Span 2: the crossed run needs undergrounds of at least that reach (none before their technology).
+  if (cost <= 0 || maxUnderground < 2) return undefined
+  const busy: Record<string, boolean> = {}
+  for (const id of job.request.busyRoutes ?? []) busy[id] = true
+  return { cost, busy }
+}
+
 /** Records a failure of `key` (a connection, `module:<id>` or `power:<owner>`): its text and, D69, its kind. */
 function fail(job: PlanJob, key: string, failure: PlanFailure | string): void {
   const f = typeof failure === "string" ? planFailure("other", failure) : failure
@@ -799,16 +817,18 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   if (!tm || !tp || tp.kind !== "belt-in") return planFailure("other", `no belt-in port ${to.module}.${to.port}`)
   const goalTile = portTile(tm, tp)
   const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true, [laneTag(portTag(tm.id, tp.id))]: true }
+  const tier = (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier
   const req: RouteRequest = {
     id: `route:${c.id}`,
     conn: c.id,
     item: tp.item ?? "",
     to,
     goal: { x: goalTile.x, y: goalTile.y, dir: dirIndex(tp.dir), side: tp.side },
-    tier: (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier,
+    tier,
     own,
     avoid,
     windowMargin: winScale,
+    tunnel: tunnelOption(job, policy, tier.maxUnderground),
   }
   if (c.from !== undefined) {
     const from = resolve(job, c.from)
@@ -1420,6 +1440,18 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     } else failRoute(job, terrain, policy, cur, "splitter tap would rip its own route")
     return
   }
+  // Tunnel crossings: every crossed run must still allow its tunnel, and two on one route need 3 steps between them
+  // (each rebuilds steps i-2..i+2). Checked before anything changes; a bad one is avoided on a retry.
+  const bad = badTunnel(job.layout, res.tunnels ?? [], route.id, cur.search.req.tunnel?.busy)
+  if (bad !== undefined) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `tunnel at ${keyX(bad)},${keyY(bad)} no longer possible`)
+    if (cur.retries < 3) {
+      cur.retries++
+      cur.avoid[bad] = true
+      restartRoute(job, terrain, policy, cur, cur.rip)
+    } else failRoute(job, terrain, policy, cur, "tunnel crossing not possible")
+    return
+  }
   for (const v of res.victims) {
     const vr = job.layout.routes[v]
     if (vr === undefined) continue
@@ -1442,8 +1474,31 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
       if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
     }
   }
+  // The crossed runs become underground pairs, freeing the tiles this route takes (a ripped run needs none).
+  for (const t of res.tunnels ?? []) {
+    const on = job.layout.routeOcc[tkey(t.x, t.y)]
+    if (on !== undefined && tunnelRoute(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy) === undefined) {
+      fail(job, cur.conn, `tunnel at ${t.x},${t.y} failed after its check`)
+      job.current = undefined
+      return
+    }
+  }
+  if ((res.tunnels?.length ?? 0) > 0) job.stats.tunnels = (job.stats.tunnels ?? 0) + res.tunnels!.length
   commitRoute(job.layout, route)
   job.current = undefined
+}
+
+/** The first tunnel of `tunnels` that cannot be made (see `searchFound`), as a tile key; undefined when all can. */
+function badTunnel(layout: LayoutState, tunnels: { x: number; y: number; dir: number }[], self: string, busy?: Record<string, boolean>): number | undefined {
+  const seen: Record<string, number[]> = {}
+  for (const t of tunnels) {
+    const site = tunnelSite(layout, t.x, t.y, t.dir, self, busy)
+    if (site === undefined) return tkey(t.x, t.y)
+    const list = (seen[site.route] ??= [])
+    for (const i of list) if (math.abs(i - site.i) < 3) return tkey(t.x, t.y)
+    list.push(site.i)
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------------------------------------

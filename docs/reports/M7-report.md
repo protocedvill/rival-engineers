@@ -1074,6 +1074,59 @@ idled on the throughput-test sink, and robotics, the M7c goal, was out of reach.
 - **Still open:** the design splits the replacement into one mine per consumer after early failures (B61). One mine
   merging into the tree would serve all of them; B122 gets most of that benefit in the planner.
 
+#### M7c.9 follow-up 4: tunnel crossings (user request, 2026-11-03)
+
+The user asked for this in-session: when one belt blocks part of a new route, turn just the blocking section into an
+underground, so the other belt can pass there, instead of ripping up the whole belt or module. The motivating case was
+seed 11 g91 attempt 1: the engine row's pipe input was "blocked by" the iron-plate belt after 3 rip-ups (attempt 2
+planned, but only after 8 rip-ups and ~56,000 ticks of planning).
+
+- **What it does.** The router has a new move, a *tunnel cross*: from tile P0 it crosses an adjacent tile T that
+  another route occupies and lands on T2, with a belt on both P0 and T, at an extra cost (`RouterWeights.tunnel`, 12;
+  a route's own underground pair is 8, so that is preferred where it fits). When the plan commits the route, the
+  crossed route's steps i−1, i, i+1 (around T) become an underground entrance, the freed tile, and an exit. The crossed
+  route keeps its path, items and tier; only its three tiles are rebuilt (`planner/tunnel.ts`).
+- **Why a new move.** The route's own underground pair could already hop a straight crossing. A tunnel helps where it
+  can't: an underground end is never a curve, so a route that must turn right before or right after the crossed belt
+  (in a gap between modules, or onto a port) had no way across a *fixed* belt. Every built route is fixed under a plan
+  on the faction's base, and a plan never rips it.
+- **Edge cases handled** (each a reason `tunnelSite` refuses a site):
+  - only a straight perpendicular crossing. The crossed run must be four straight steps (i−2..i+1) plus a fifth to
+    output into: i−1, i, i+1 plain belts, i−2 a belt or an underground exit. So a port's tile or lane (the router
+    reserves two tiles at each end), a curve, a splitter or an existing underground end is never rebuilt;
+  - no route side-loads or merge-splits onto i−2..i+2, and no tap splitter stands there: an underground end changes what
+    a side-load or a splitter does;
+  - no reserved or otherwise occupied tile under the new pair, and no underground of another route on the same line
+    over the new span (it could take the new pair's end);
+  - not a pipe, not an external route, not the crossing route itself, and not a route another goal is still building
+    (`PlanRequest.busyRoutes`, filled by the factory from building goals' plan parts and growth/rework entities: their
+    ghosts are already out);
+  - two tunnels on one route sit at least 3 steps apart; a later one may use the new exit as its feed;
+  - span 2 (one freed tile) fits every belt tier, and there is no tunnel before underground belts are researched (the
+    request's tier has no undergrounds then);
+  - the seal check (the flood that proves "no path") follows tunnel crosses in both directions, so it never seals off a
+    goal a tunnel could reach.
+- **Building it.** The plan changes the crossed route in its own copy of the layout. `preparePlanDelta` reports every
+  base route that gained tunnels in `delta.reworked`, as the diff of that route's own entities: three belts to pick up,
+  two underground ends to place. Adoption queues the belts for clearing (as for a mine completion) and adds the
+  undergrounds to the build after the clear phase. Growth and reroute builds already diff bystander routes, so a tunnel
+  made there is rebuilt the same way.
+- **Tests.** T1 `tunnel`, five tests:
+  - a crossing that turns on both sides works only through a tunnel, and the layout, claim and index checks stay clean;
+  - with the option off, a busy route or no undergrounds, it fails;
+  - the accepted sites along a run (ends, side-loads, next to an existing tunnel);
+  - the plan delta: exactly 3 belts out and 2 undergrounds in, and the crossed route is not re-added.
+
+  The whole T1 suite passes, with replay times unchanged.
+- **Not yet in game.** The running seed 11 soak (`m7c-cont3`) uses the build from before this change; the next soak is
+  the first to show tunnels in a real base.
+- **Limitations.**
+  - One freed tile per crossing. A route crossing two parallel belts side by side would need two tunnels, but tunnels
+    must be 3 steps apart, so it can't cross them that way.
+  - No pipe crossings.
+  - If the reconciler repairs the crossed route while its rebuild is in progress, both place the same entities, which
+    is harmless.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
@@ -1172,6 +1225,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Oil complex size cap | `strategy/design.ts` `OIL_COMPLEX_MAX_REFINERIES`, `OIL_COMPLEX_MAX_LUBE` | 12 refineries, 6 lubricant plants | Agent guess (proposed): a 12-refinery complex makes ~230 petroleum/s (T2: 19.5/s per refinery with cracking), far above a first blue/robot base; a larger draw adds a parallel complex rather than one unbounded footprint. Lubricant: 6 plants can make 60/s, though heavy oil (5/s per refinery) limits it first; a 6-machine electric-engine row draws ~6.75/s. | no |
 | Router work per move | `planner/router.ts` `ROUTER_MOVE_WORK` | 0.5 units per move an expansion or seal step tries (plus 1 per expansion) | Calibration (proposed): brings the router's unit to ~3–4 µs in T1, the scale of placement's (~4 µs) and of the planner budget (`planner-work-per-tick` 400). | no |
 | Merge search up a tap tree | `planner/merge.ts` `MAX_TAP_DEPTH` | 8 taps | Agent guess (proposed): the deepest seed 11 tree was 4 taps; the bound only stops a pathological chain. | no |
+| Tunnel crossing cost | `planner/policy.ts` `RouterWeights.tunnel` (EARLY_COMPACT) | 12 (0 turns it off) | Agent guess (proposed): above a route's own underground pair (8), so a route hops a crossing itself where it can and rebuilds another route's belts only where it cannot; well below a rip-up (25 per tile plus the reroute). | no (policy field) |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |

@@ -40,6 +40,12 @@ export interface RouterWeights {
   /** Undergrounds may pass under module footprints. */
   underModules: boolean
   /**
+   * Tunnel crossings (user request, 2026-11-03; `planner/tunnel.ts`): extra cost of crossing another route's straight
+   * run, whose three tiles around the crossing become an underground pair. Paid instead of ripping that route up (or
+   * failing on a built one). Absent or 0: off.
+   */
+  tunnel?: number
+  /**
    * B7: cost factor of a tile next to another route's belt (< 1: routes bundle). Multiplies with `corridorFactor`.
    * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
    */
@@ -284,6 +290,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     maxRipups: 3,
     margin: 24,
     underModules: false,
+    tunnel: 12,
     bundleFactor: 0.9,
     softClaim: 10,
     softClaimDecay: 0.5,

@@ -102,6 +102,12 @@ export interface Route {
   /** Built already (part of the faction's base): never ripped up. */
   fixed?: boolean
   /**
+   * Tunnel crossings (`planner/tunnel.ts`, user request 2026-11-03): tiles where another route crosses this one, each
+   * turned into an underground pair around it. A plan that adds one to a built route rebuilds those tiles (plan delta
+   * `reworked`).
+   */
+  tunnels?: { x: number; y: number }[]
+  /**
    * M7b: a fluid route (`pipe-out` → `pipe-in` port; `planner/pipe-router.ts`): the fluid and the entities it uses.
    * Its steps are pipes, pipe-to-ground pairs and pumps; `belt`/`underground`/`splitter` are unused.
    */
