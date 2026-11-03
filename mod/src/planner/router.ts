@@ -446,18 +446,20 @@ function sealPass(s: Search, seal: Seal, state: LayoutState, terrain: TerrainVie
 }
 
 /** Expands one state of the flood from the starts: `stepSearch`'s moves. */
-function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): void {
+function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): number {
   const d = st % 4
   const t = math.floor(st / 4)
   const x = s.x0 + (t % s.w)
   const y = s.y0 + math.floor(t / s.w)
-  if (x === s.req.goal.x && y === s.req.goal.y) return
-  if (!sealPass(s, seal, state, terrain, policy, x, y)) return
+  if (x === s.req.goal.x && y === s.req.goal.y) return 0
+  if (!sealPass(s, seal, state, terrain, policy, x, y)) return 0
   for (const nd of [d, cw(d), ccw(d)]) {
     if (sealTile(s, x + DX[nd], y + DY[nd]) < 0) seal.fedge = true
     else sealAdd(seal, true, encode(s, x + DX[nd], y + DY[nd], nd))
   }
+  let work = ROUTER_MOVE_WORK * 3
   for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
+    work += ROUTER_MOVE_WORK
     if (!underPassable(state, terrain, policy, x + DX[d] * (k - 1), y + DY[d] * (k - 1))) break
     const ex = x + DX[d] * k
     const ey = y + DY[d] * k
@@ -469,10 +471,11 @@ function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: Terrain
     if (sealTile(s, ex + DX[d], ey + DY[d]) < 0) seal.fedge = true
     else sealAdd(seal, true, encode(s, ex + DX[d], ey + DY[d], d))
   }
+  return work
 }
 
 /** Expands one state of the flood from the goal: the states `stepSearch` reaches it from. */
-function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): void {
+function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, st: number): number {
   const d = st % 4
   const t = math.floor(st / 4)
   // A belt at P pointing d, arrived at heading d or turning into d.
@@ -480,12 +483,14 @@ function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: Terrai
   const py = s.y0 + math.floor(t / s.w) - DY[d]
   if (sealTile(s, px, py) < 0) {
     seal.redge = true
-    return
+    return 0
   }
-  if (!sealPass(s, seal, state, terrain, policy, px, py)) return
+  if (!sealPass(s, seal, state, terrain, policy, px, py)) return 0
   for (const h of [d, cw(d), ccw(d)]) sealAdd(seal, false, encode(s, px, py, h))
   // An underground ending at E = P, entered straight (heading d) at E − k·d.
+  let work = ROUTER_MOVE_WORK * 3
   for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
+    work += ROUTER_MOVE_WORK
     if (!underPassable(state, terrain, policy, px - DX[d] * (k - 1), py - DY[d] * (k - 1))) break
     const ix = px - DX[d] * k
     const iy = py - DY[d] * k
@@ -496,6 +501,7 @@ function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: Terrai
     if (!sealPass(s, seal, state, terrain, policy, ix, iy) || !sealSpanOk(s, state, ix, iy, px, py, d)) continue
     sealAdd(seal, false, encode(s, ix, iy, d))
   }
+  return work
 }
 
 /** Runs the seal check for up to `budget` states; returns the work used. */
@@ -534,8 +540,8 @@ function stepSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: L
     }
     used++
     seal.steps++
-    if (fLeft <= rLeft) sealForward(s, seal, state, terrain, policy, seal.fq[seal.fi++])
-    else sealBackward(s, seal, state, terrain, policy, seal.rq[seal.ri++])
+    if (fLeft <= rLeft) used += sealForward(s, seal, state, terrain, policy, seal.fq[seal.fi++])
+    else used += sealBackward(s, seal, state, terrain, policy, seal.rq[seal.ri++])
   }
   return used
 }
@@ -670,6 +676,9 @@ function stepCoarse(s: Search, state: LayoutState, terrain: TerrainView, policy:
   return used
 }
 
+/** M7: planner work per move an expansion (or seal step) tries, on top of one unit per expansion (see `stepSearch`). */
+const ROUTER_MOVE_WORK = 0.5
+
 /** Runs up to `budget` expansions. Returns the number used. */
 /** M7c.8: how many of a state's ancestors a move checks for its tiles (`markHeld`); `searchResult` checks whole routes. */
 const BELT_CROSS_DEPTH = 24
@@ -780,6 +789,10 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
     if (c < 0) continue
     const g = s.g[cur]
     const held = markHeld(s, cur)
+    // M7 (seed 11 g51, g78): an expansion's work counts the moves it tries (three turns, then one per underground
+    // length), half a unit each. Counted as one unit, an expansion cost ~15-30 µs in T1 (more with longer undergrounds)
+    // against the planner budget's ~4 µs a unit, and slow plans took 21-27 ms a tick of a 2 ms budget.
+    used += ROUTER_MOVE_WORK * 3
     for (const nd of [d, cw(d), ccw(d)]) {
       const nx = x + DX[nd]
       const ny = y + DY[nd]
@@ -789,6 +802,7 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
     // Undergrounds: entered straight, exit k tiles ahead.
     const line = lineKey(x, y, d)
     for (let k = 2; k <= maxK; k++) {
+      used += ROUTER_MOVE_WORK
       const mx = x + DX[d] * (k - 1)
       const my = y + DY[d] * (k - 1)
       if (!underPassable(state, terrain, policy, mx, my)) break

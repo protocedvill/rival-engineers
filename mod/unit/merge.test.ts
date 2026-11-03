@@ -1,5 +1,6 @@
 import { mergeGoals } from "../src/planner/merge"
 import type { LayoutState, Route, RouteStep } from "../src/planner/layout"
+import { routeFeedsPort, routesLand } from "../src/planner/layout"
 import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { DX, DY, tkey } from "../src/planner/grid"
 import { eq, run, test } from "./harness"
@@ -152,6 +153,36 @@ test("B94: merge candidates span the whole trunk, not only its nearest stretch (
   let far = 0
   for (const g of splitters) if (g.y >= 10 + 40) far++
   eq(far > 0, true, `some candidates on the trunk's far half (${far})`)
+})
+
+test("M7 (seed 11 g78): a tap sealed in by the base is joined on its trunk, above its splitter", () => {
+  // Trunk south from 10,10 to 10,29 (to another consumer); a tap's splitter at 10,20 (second tile 11,20), then east along
+  // y = 21 to `consumer.in-coal`, both sides of the tap walled in.
+  const t = trunk(20, "in-other")
+  const steps: RouteStep[] = [{ kind: "splitter", x: 10, y: 20, dir: 2, x2: 11, y2: 20 } as RouteStep, belt(11, 21, 1), belt(12, 21, 1), belt(13, 21, 1)]
+  const tap: Route = { ...trunk(1), id: routeId("r:tap"), conn: connectionId("coal>c=>consumer.in-coal"), steps, tiles: steps.map((x) => tkey(x.x, x.y)), tapOf: t.id, startDir: undefined, length: 4 }
+  const s = layoutOf([t, tap])
+  for (let x = 11; x <= 13; x++) {
+    s.occ[tkey(x, 20)] = "module:wall" as never
+    s.occ[tkey(x, 22)] = "module:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  eq(goals.length > 0, true)
+  for (const g of goals) {
+    eq(g.x, 10)
+    eq(g.y < 20, true)
+  }
+  // A merge there lands on the port through the tap, and the layout check accepts its target.
+  const stub: Route = { ...trunk(1), id: routeId("r:stub"), conn: connectionId("coal>new=>consumer.in-coal"), steps: [belt(9, 15, 1)], tiles: [tkey(9, 15)], merge: { x: 10, y: 15, dir: 2, side: "left" } }
+  s.routes[stub.id] = stub
+  s.routeOrder.push(stub.id)
+  for (const r of [t, tap]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  const m = { id: "consumer", rect: { x: 14, y: 20, w: 2, h: 2 }, origin: { x: 14, y: 20 }, def: { ports: [{ id: "in-coal", kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: 4, item: "coal" }] } }
+  s.modules.push(m as never)
+  eq(routeFeedsPort(s, t.id, { module: moduleId("consumer"), port: "in-coal" }), true)
+  eq(routesLand(s, [stub.id], { module: moduleId("consumer"), port: "in-coal" }), true)
+  // Below the splitter the trunk no longer carries the tap's items: nothing is offered there.
+  eq(goals.some((g) => g.y >= 20), false)
 })
 
 run("merge")

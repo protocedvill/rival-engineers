@@ -788,7 +788,7 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     // A shared provider planned for several consumers can be route-infeasible: no one site reaches all of them.
     // After such a plan failure the factory marks the role; give each consumer its own parallel provider instead.
     if (shared.split?.[p] === true) {
-      for (const d of byProducer[p]) addProducer(w, item, d.rate, [d], true, parallelRole(w, p, true), undefined, undefined, true)
+      for (const d of byProducer[p]) addProducer(w, item, d.rate, [d], true, parallelRole(w, p, true), undefined, mergePorts, true)
       continue
     }
     let total = 0
@@ -799,7 +799,10 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     const role = `${item}*>${fresh[0].to}`
     if (shared.split?.[role] === true) {
       // The previous plan could not reach every consumer from one site. One parallel provider per consumer.
-      for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role, true), undefined, undefined, true)
+      // M7 (seed 11 g78): each still side-loads into the belt a retiring provider feeds (D76). Without `mergePorts` the
+      // three coal replacements of a dry mine each routed onto a smelter's fuel port that the old belt still held: every
+      // plan failed "no path" after a full search, at 26 ms a tick for over an hour of game time.
+      for (const d of fresh) addProducer(w, item, d.rate, [d], true, parallelRole(w, role, true), undefined, mergePorts, true)
     } else {
       let total = 0
       let replacing = false

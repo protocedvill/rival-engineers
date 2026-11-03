@@ -792,6 +792,18 @@ test("B81: a retiring provider's replacement never shares the provider it replac
   for (const n of group) eq(n.newSite, true, `${n.role} on a site of its own`)
 })
 
+test("M7 (seed 11 g78): a retiring provider's replacement split per consumer still merges into the old belts", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
+  const role = `coal*>${SMELT_FE}`
+  const g = design(ctx({ enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {}, split: { [role]: true } } }), { item: RED, perSecond: 1 })
+  const feeds = g.edges.filter((e) => e.item === "coal" && (e.to === SMELT_FE || e.to === SMELT_CU) && e.from !== "coal*>old")
+  eq(feeds.length, 2, `one replacement feed per smelter: ${g.edges.filter((e) => e.item === "coal").map((e) => e.role).join(", ")}`)
+  for (const e of feeds) {
+    eq(e.from === role, false, `${e.role}: from a parallel provider, not the split group`)
+    eq(e.merge, true, `${e.role} side-loads into the belt the retiring mine still feeds`)
+  }
+})
+
 test("M7c: blue packs: fluid chains for plastic and sulfur, a pumpjack field, a water pump, assembler-2 rows", () => {
   const blue = ctx({
     enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },

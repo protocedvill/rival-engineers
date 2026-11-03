@@ -891,7 +891,7 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
         claim(r, s.x2, s.y2, "splitter")
         const owner = state.routeOcc[tkey(s.x, s.y)]
         const other = owner !== undefined ? state.routes[owner] : undefined
-        if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+        if (other === undefined || other.id === r.id || !routeFeedsPort(state, other.id, r.to)) {
           problems.push(`${id}: merge splitter ${s.x},${s.y} is not a route to ${r.to.module}.${r.to.port}`)
         }
         expect = undefined
@@ -939,7 +939,7 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       want = r.merge.side === "left" ? (r.merge.dir + 1) % 4 : (r.merge.dir + 3) % 4
       const owner = state.routeOcc[tkey(r.merge.x, r.merge.y)]
       const other = owner !== undefined ? state.routes[owner] : undefined
-      if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+      if (other === undefined || other.id === r.id || !routeFeedsPort(state, other.id, r.to)) {
         problems.push(`${id}: merge target ${r.merge.x},${r.merge.y} is not a route to ${r.to.module}.${r.to.port}`)
       }
     }
@@ -990,13 +990,55 @@ export function routesLand(layout: LayoutState, rids: string[], to: PortRef): bo
     for (let hop = 0; hop < 8 && r !== undefined; hop++) {
       const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
       if (join === undefined) {
-        const last = r.steps[r.steps.length - 1]
-        if (r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))) return true
+        if (endsAt(r, to, goal, inner)) return true
+        // M7 (seed 11 g78): a merge onto a splitter tap's trunk lands through the tap (mergeGoals offers trunk tiles
+        // above a tap). Taps of taps too, a few levels down.
+        if (tapsReach(layout, r.id, to, goal, inner)) return true
         break
       }
       const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
       r = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
     }
+  }
+  return false
+}
+
+function endsAt(r: Route, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }): boolean {
+  const last = r.steps[r.steps.length - 1]
+  return r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))
+}
+
+/** Whether route `rid` goes to port `to`, itself or through its splitter taps (a merge onto a tap's trunk, M7). */
+export function routeFeedsPort(layout: LayoutState, rid: RouteId, to: PortRef): boolean {
+  const r = layout.routes[rid]
+  if (r === undefined) return false
+  if (r.to.module === to.module && r.to.port === to.port) return true
+  let level: RouteId[] = [rid]
+  for (let depth = 0; depth < 8 && level.length > 0; depth++) {
+    const next: RouteId[] = []
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (t.to.module === to.module && t.to.port === to.port) return true
+      next.push(t.id)
+    }
+    level = next
+  }
+  return false
+}
+
+/** Whether a splitter tap of route `rid` (or a tap of one, up to 8 levels) ends at port `to`. */
+function tapsReach(layout: LayoutState, rid: RouteId, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }): boolean {
+  let level: RouteId[] = [rid]
+  for (let depth = 0; depth < 8 && level.length > 0; depth++) {
+    const next: RouteId[] = []
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (endsAt(t, to, goal, inner)) return true
+      next.push(t.id)
+    }
+    level = next
   }
   return false
 }

@@ -7,7 +7,7 @@
 // Pure: no Factorio globals (T1: mod/unit/merge.test.ts).
 
 import { ccw, cw, DX, DY, manhattan, tkey } from "./grid"
-import { findModule, LayoutState, portRate, routeDangles } from "./layout"
+import { findModule, LayoutState, portRate, Route, routeDangles } from "./layout"
 
 /** One place a second route can join an existing route to the same consumer. */
 export interface MergeGoal {
@@ -23,6 +23,8 @@ export interface MergeGoal {
 
 const MAX_SIDE_LOADS = 12
 const MAX_SPLITTERS = 12
+/** M7: how many splitter taps up a trunk tree `mergeGoals` looks for merge points. */
+const MAX_TAP_DEPTH = 8
 
 function free(layout: LayoutState, x: number, y: number): boolean {
   const k = tkey(x, y)
@@ -65,17 +67,19 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   const near = (x: number, y: number): number => manhattan({ x, y }, { x: fx, y: fy })
   const sideLoad: { goal: MergeGoal; cost: number }[] = []
   const splitter: { goal: MergeGoal; cost: number }[] = []
+  // Tiles where a splitter tap replaced a route's belt: no merge there.
+  const splitAt: Record<number, boolean> = {}
   for (const id of layout.routeOrder) {
     const r = layout.routes[id]
-    if (r === undefined || r.to.module !== to.module || r.to.port !== to.port) continue
-    // B86: only a route that brings items to the port is a trunk to join (not a stub onto a ripped trunk).
-    if (routeDangles(layout, id)) continue
+    if (r?.tapOf !== undefined && r.steps[0]?.kind === "splitter") splitAt[tkey(r.steps[0].x, r.steps[0].y)] = true
+  }
+  const consider = (r: Route, end: number): void => {
     let heading = r.tapOf === undefined && r.startDir !== undefined ? r.startDir : -1
-    for (let i = 0; i < r.steps.length; i++) {
+    for (let i = 0; i < end; i++) {
       const st = r.steps[i]
       const incoming = heading
       heading = st.dir
-      if (st.kind !== "belt") continue
+      if (st.kind !== "belt" || splitAt[tkey(st.x, st.y)]) continue
       const next = r.steps[i + 1]
       const straight = next !== undefined && next.x === st.x + DX[st.dir] && next.y === st.y + DY[st.dir] && st.dir === incoming
       for (const side of ["left", "right"] as ("left" | "right")[]) {
@@ -89,6 +93,29 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
         if (layout.routeOcc[back] !== undefined || layout.occ[back] !== undefined || layout.mine?.[back] !== undefined) continue
         splitter.push({ goal: { x: st.x, y: st.y, dir: st.dir, x2: x, y2: y }, cost: near(x, y) })
       }
+    }
+  }
+  const seen: Record<string, boolean> = {}
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    if (r === undefined || r.to.module !== to.module || r.to.port !== to.port) continue
+    // B86: only a route that brings items to the port is a trunk to join (not a stub onto a ripped trunk).
+    if (routeDangles(layout, id)) continue
+    consider(r, r.steps.length)
+    // M7 (seed 11 g78): a splitter tap's trunk carries its items too, upstream of the tap's splitter. The fuel taps of a
+    // retiring coal mine ran 10 tiles between two 24-furnace columns, sealed in by the base, while their trunk's head was
+    // open (B94's pocket, a whole tap long): every replacement merge failed "no path". Join the trunk above the tap too.
+    let tap: Route = r
+    for (let depth = 0; depth < MAX_TAP_DEPTH && tap.tapOf !== undefined && !seen[tap.tapOf]; depth++) {
+      seen[tap.tapOf] = true
+      const trunk = layout.routes[tap.tapOf]
+      const s0 = tap.steps[0]
+      if (trunk === undefined || s0 === undefined || routeDangles(layout, trunk.id)) break
+      let at = -1
+      for (let i = 0; i < trunk.steps.length && at < 0; i++) if (trunk.steps[i].x === s0.x && trunk.steps[i].y === s0.y) at = i
+      if (at < 0) break
+      consider(trunk, at)
+      tap = trunk
     }
   }
   // TSTL compiles `__TS__ArraySort` to call `compareFn(nil, a, b)`, so the comparator must take a `self`
