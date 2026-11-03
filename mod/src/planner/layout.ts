@@ -1008,12 +1008,26 @@ function endsAt(r: Route, to: PortRef, goal: { x: number; y: number }, inner: { 
   return r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))
 }
 
-/** Whether route `rid` goes to port `to`, itself or through its splitter taps (a merge onto a tap's trunk, M7). */
+/**
+ * Whether route `rid` goes to port `to`, itself or through its splitter taps (a merge onto a tap's trunk, M7), or, for a
+ * route that merges into another (B122: a replacement joining another replacement's belt), through the route it joins.
+ */
 export function routeFeedsPort(layout: LayoutState, rid: RouteId, to: PortRef): boolean {
-  const r = layout.routes[rid]
-  if (r === undefined) return false
+  let r: Route | undefined = layout.routes[rid]
+  for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    if (feedsDirect(layout, r, to)) return true
+    const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+    if (join === undefined) return false
+    const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+    r = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
+  }
+  return false
+}
+
+/** Whether route `r` goes to port `to`, itself or through its splitter taps (up to 8 levels). */
+function feedsDirect(layout: LayoutState, r: Route, to: PortRef): boolean {
   if (r.to.module === to.module && r.to.port === to.port) return true
-  let level: RouteId[] = [rid]
+  let level: RouteId[] = [r.id]
   for (let depth = 0; depth < 8 && level.length > 0; depth++) {
     const next: RouteId[] = []
     for (const id of layout.routeOrder) {

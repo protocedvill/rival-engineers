@@ -460,26 +460,41 @@ test("router: underground across a 3-wide river; fails across 5 with yellow (max
   noProblems(s6f, t6, "river 6 fast")
 })
 
-test("router: never enters a module footprint, goes around (or under, when allowed)", () => {
+test("router: never enters a module footprint; B121: goes under one only if it has no undergrounds of its own", () => {
   const terrain = asciiTerrain(field(40, 30))
-  const state = newLayout()
   const a = source("a", EAST)
   const b = sink("b", EAST)
-  const wall = box("wall", 3, 20, [])
+  // A module with an underground belt pair inside (a curated block): ours could pair with its ends, so it is a wall.
+  const walled = box("walled", 3, 20, [])
+  walled.entities = [
+    { name: "underground-belt", x: 1.5, y: 2.5, dir: 4, ioType: "input" },
+    { name: "underground-belt", x: 1.5, y: 5.5, dir: 4, ioType: "output" },
+  ] as never
+  const state = newLayout()
   place(state, a, 2, 15)
   place(state, b, 30, 15)
-  place(state, wall, 15, 5)
-  eq(routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b, wall]).phase, "done", "routed")
-  eq(state.routes["route:c"].undergrounds, 0, "no underground under the module by default")
+  place(state, walled, 15, 5)
+  eq(routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b, walled]).phase, "done", "routed")
+  eq(state.routes["route:c"].undergrounds, 0, "no underground under a module with undergrounds of its own")
   noProblems(state, terrain, "around")
+  // B121 (seed 11 g78, in game): a module with none (a smelter column) can't steal an underground's pair: pass under it.
+  const plain = box("plain", 3, 20, [])
   const s2 = newLayout()
   place(s2, a, 2, 15)
   place(s2, b, 30, 15)
-  place(s2, wall, 15, 5)
+  place(s2, plain, 15, 5)
+  eq(routeOne(s2, terrain, policy(), conn("c", "a", "b"), [a, b, plain]).phase, "done", "routed under")
+  eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module without undergrounds")
+  for (const st of s2.routes["route:c"].steps) ok(string.sub(s2.occ[tkey(st.x, st.y)] ?? "", 1, 2) !== "m:", "no belt end on the module")
+  // underModules: true lets undergrounds under any module.
+  const s3 = newLayout()
+  place(s3, a, 2, 15)
+  place(s3, b, 30, 15)
+  place(s3, walled, 15, 5)
   const pol = policy()
   pol.router = { ...pol.router, underModules: true }
-  routeOne(s2, terrain, pol, conn("c", "a", "b"), [a, b, wall])
-  eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
+  routeOne(s3, terrain, pol, conn("c", "a", "b"), [a, b, walled])
+  eq(s3.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
 })
 
 test("router: B60 merge side-loads a second provider into an existing route without a blocker", () => {
@@ -1130,7 +1145,7 @@ test("plan: the 5-module set on terrain with a lake, cliffs, trees, ore and stru
   for (const e of g.physical.edges) ok(e.capacity.ok, `${e.id} within capacity`)
   print(
     string.format(
-      "    [router-cost] 5-module set: %d steps of ≤400 units, work %.0f (placement %.0f, routing %.0f), %d A* expansions in %d searches, %d rip-ups, %d belt tiles, %d undergrounds, %.1f ms total (%.3f ms/step, plain Lua)",
+      "    [router-cost] 5-module set: %d steps of ≤400 units, work %.0f (placement %.0f, routing %.0f), %.0f A* expansion work in %d searches, %d rip-ups, %d belt tiles, %d undergrounds, %.1f ms total (%.3f ms/step, plain Lua)",
       job.stats.steps,
       job.stats.work,
       job.stats.placeWork,

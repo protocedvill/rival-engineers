@@ -515,7 +515,7 @@ function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy,
   const routeTerrain = pipeTerrain(terrain, f)
   return {
     cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
-    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y) && pipeSpanAt(job.layout, x, y, axis) === undefined,
+    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y, "pipe") && pipeSpanAt(job.layout, x, y, axis) === undefined,
     fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
   }
 }

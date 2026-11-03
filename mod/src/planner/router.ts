@@ -18,7 +18,8 @@ import type { RouteId } from "../shared/ids"
 import { BeltTier } from "./capacity"
 import { routeClaimConflict } from "./claims"
 import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
-import { isPoleTag, LayoutState, lineKey, PortRef, Route, RouteStep, spanConflicts } from "./layout"
+import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
+import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
 
 export interface RouteRequest {
@@ -269,10 +270,57 @@ export function minTileCost(policy: LayoutPolicy): number {
   return w.corridorFactor * math.min(1, w.bundleFactor ?? 1)
 }
 
-/** Whether an underground may pass under a tile (anything but module footprints, unless allowed, and unknown land). */
-export function underPassable(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number): boolean {
+/** Modules by id, per layout (rebuilt when an id is missing). Lookup speed only: never changes a result. */
+const moduleIndex = new WeakMap<LayoutState, Record<string, PlacedModule>>()
+/** Whether a module definition holds undergrounds of a kind (belt or pipe) of its own, cached by definition. */
+const defUnderground = new WeakMap<ModuleDef, Record<string, boolean>>()
+
+function moduleById(state: LayoutState, id: string): PlacedModule | undefined {
+  let index = moduleIndex.get(state)
+  if (index?.[id] === undefined) {
+    index = {}
+    for (const m of state.modules) index[m.id] = m
+    moduleIndex.set(state, index)
+  }
+  return index[id]
+}
+
+/** The entity name part that marks an underground of each kind (vanilla names: `*underground-belt`, `pipe-to-ground`). */
+const UNDER_NAME: Record<UnderKind, string> = { belt: "underground-belt", pipe: "pipe-to-ground" }
+export type UnderKind = "belt" | "pipe"
+
+/**
+ * B121 (seed 11 g78, in game): whether a module's footprint holds undergrounds of `kind`. An underground passing under
+ * a module with none of its own can't pair with anything inside, so it may pass like a player's would. A smelter
+ * column's dry coal tree had sealed its fuel ports inside the base: with every module a wall to undergrounds, no new
+ * coal could get in. Modules with their own (curated belts; chemistry rows' and the oil complex's pipe-to-ground) stay
+ * walls: their ends could pair with ours.
+ */
+export function moduleHasUndergrounds(def: ModuleDef, kind: UnderKind): boolean {
+  let byKind = defUnderground.get(def)
+  if (byKind === undefined) {
+    byKind = {}
+    defUnderground.set(def, byKind)
+  }
+  let v = byKind[kind]
+  if (v === undefined) {
+    v = false
+    const part = UNDER_NAME[kind]
+    for (const e of def.entities) if (string.find(e.name, part, 1, true)[0] !== undefined) v = true
+    // In-place growth adds copies of the unit's entities inside the footprint.
+    for (const e of def.expand?.unit.entities ?? []) if (string.find(e.name, part, 1, true)[0] !== undefined) v = true
+    byKind[kind] = v
+  }
+  return v
+}
+
+/** Whether an underground of `kind` may pass under a tile: not under unknown land, nor a module with its own (B121). */
+export function underPassable(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, x: number, y: number, kind: UnderKind = "belt"): boolean {
   const o = state.occ[tkey(x, y)]
-  if (o !== undefined && !policy.router.underModules && string.sub(o, 1, 2) === "m:") return false
+  if (o !== undefined && !policy.router.underModules && string.sub(o, 1, 2) === "m:") {
+    const m = moduleById(state, string.sub(o, 3))
+    if (m === undefined || moduleHasUndergrounds(m.def, kind)) return false
+  }
   return terrain.block(x, y) !== UNKNOWN
 }
 

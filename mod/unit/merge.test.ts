@@ -185,4 +185,28 @@ test("M7 (seed 11 g78): a tap sealed in by the base is joined on its trunk, abov
   eq(goals.some((g) => g.y >= 20), false)
 })
 
+test("B122 (seed 11 g78, in game): a belt that merges into the trunk is a merge point too", () => {
+  // Trunk south from 10,10 to 10,29 to `consumer.in-coal`, walled in on both sides; a first replacement's belt runs
+  // east along y = 12 from x = 2 and side-loads into it at 10,12.
+  const t = trunk(20)
+  const fsteps: RouteStep[] = []
+  for (let x = 2; x <= 9; x++) fsteps.push(belt(x, 12, 1))
+  const feeder: Route = { ...trunk(1), id: routeId("r:first"), conn: connectionId("coal>new=>consumer.in-coal"), from: { module: moduleId("mine1"), port: "out" }, steps: fsteps, tiles: fsteps.map((x) => tkey(x.x, x.y)), startDir: 1, length: fsteps.length, merge: { x: 10, y: 12, dir: 2, side: "right" } }
+  const s = layoutOf([t, feeder])
+  for (const r of [t, feeder]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  for (let y = 10; y <= 29; y++) {
+    if (y !== 12) s.occ[tkey(9, y)] = "m:wall" as never
+    s.occ[tkey(11, y)] = "m:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  eq(goals.length > 0, true)
+  // Every goal is on the first replacement's belt, outside the walls.
+  for (const g of goals) {
+    eq(g.y, 12)
+    eq(g.x < 10, true)
+  }
+  // A second route merging there feeds the port through the first and the trunk.
+  eq(routeFeedsPort(s, feeder.id, { module: moduleId("consumer"), port: "in-coal" }), true)
+})
+
 run("merge")

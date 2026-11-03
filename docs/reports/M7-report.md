@@ -1036,7 +1036,43 @@ capture kept g78 (`mod/unit/fixtures/m7-seed11-g78-slow.lua`).
 - **Design:** when a retiring provider's replacement group is split into one provider per consumer (B61), each kept the
   D76 merge into the old belt only by accident (B79 in the planner). The split now passes `mergePorts` on (T1 `design`).
 - **Still open:** a base with no coal within ~500 tiles. Retrying placements far away is the only remedy the factory has
-  now; electric smelting (or solar, D82 c) would remove the fuel need. A soak on this build will show the in-game cost.
+  now; electric smelting (or solar, D82 c) would remove the fuel need.
+- **In game (`m7c-cont2`, the same save on `dd4ebaf`):** the planner took 17–25 s of AI time per game minute while g78
+  planned (5–7 ms a tick), against 76–103 s on the old build: about 4× less. Every planner unit costs about the same in
+  the game now, ~17 µs: radar goal g64 (placement and poles only, no routing) used 232k units and 4.0 s of planner time
+  in its minute. T1's Lua runs the same code ~4× faster, so the T1 calibration (~4 µs) understates the game's cost. At
+  full use the 400-unit budget (`planner-work-per-tick`, D58: "estimated 2–3 ms; not yet measured") costs ~7 ms a tick.
+  **Open (proposed, the user decides):** the default stays 400. 150 would give the D58 estimate (~2.5 ms) at the cost
+  of plans taking ~2.7× more game time.
+
+#### M7c.9 follow-up 3: undergrounds under modules, and merging onto a replacement's belt (B121, B122)
+
+On the faster planner the same goal still failed, now in about 10 game minutes per attempt: g78 attempts 1–3 in
+`m7c-cont2`, "no path" to the fuel ports of three iron smelter columns (labs, labs~5, labs~6). Red and green research
+was finished, and stage 3 (blue) waits for every stage-2 goal to be planned and built (`advanceGoals`). So the factory
+idled on the throughput-test sink, and robotics, the M7c goal, was out of reach. The capture of attempt 3 is replay
+`m7-seed11-g78-a3`.
+
+- **Why (B121).** The dry mine n38 sits in the middle of the base, and its splitter tree fed nine fuel ports. Each
+  port's merge goals lay in pockets of 330–680 tiles, closed by belt bundles 5–8 wide and by modules. A seal flood dump
+  showed the pockets' edges were mostly built belts, which an underground can cross. But the router never put an
+  underground under a module (`underModules: false`, from M4b), and with 7- and 9-tile undergrounds the pockets stayed
+  closed too. With undergrounds under modules, yellow ones routed 2 of the 3 feeds and fast ones all 3. In Factorio an
+  underground passes under anything. It only goes wrong next to another underground of its own kind on the same line,
+  which could take its pair. Generated modules have no belt undergrounds; the three curated ones do, and so do the
+  chemistry rows and the oil complex (pipe-to-ground).
+  **Fix:** an underground may pass under a module that has no undergrounds of its own kind: belt undergrounds for
+  belts, pipe-to-ground for the pipe router, including the module's growth unit (`router.ts` `underPassable`,
+  `moduleHasUndergrounds`). `underModules: true` still opens every module. T1 `planner` "B121".
+- **Then (B122).** With the base open, the three replacement mines (one per column, B61) each needed their own way in:
+  the first one's belt blocked the others. That took 6 rip-ups and ~57M work units, and two feeds still failed. But
+  the first belt already merges into the tree above the other two's taps, so it carries coal to them too.
+  **Fix:** `mergeGoals` also offers the belts of routes that merge into a candidate trunk above the point where it
+  serves the port, following chains of such merges. `routeFeedsPort` follows merges, so the layout check accepts the
+  target. The attempt-3 replay now plans in 5 searches and ~0.6M work units, all three feeds routed (it failed after 77
+  searches and ~4M before). T1 `merge` "B122".
+- **Still open:** the design splits the replacement into one mine per consumer after early failures (B61). One mine
+  merging into the tree would serve all of them; B122 gets most of that benefit in the planner.
 
 ## M7d: advanced oil, robots and the full mall
 

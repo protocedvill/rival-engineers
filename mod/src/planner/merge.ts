@@ -73,7 +73,29 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
     const r = layout.routes[id]
     if (r?.tapOf !== undefined && r.steps[0]?.kind === "splitter") splitAt[tkey(r.steps[0].x, r.steps[0].y)] = true
   }
+  // B122 (seed 11 g78, in game): routes that merge into another route (side-load or splitter), by the trunk tile they
+  // join. Their belts carry items into that trunk, so a merge onto one of them lands wherever the trunk does.
+  const feeders: Record<number, Route[]> = {}
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const join = r?.merge ?? r?.mergeSplitter
+    if (r === undefined || join === undefined) continue
+    const k = tkey(join.x, join.y)
+    feeders[k] ??= []
+    feeders[k].push(r)
+  }
+  const fed: Record<string, boolean> = {}
   const consider = (r: Route, end: number): void => {
+    // A feeder joining this route above `end` carries items past it: its whole belt is a merge point too (B122: three
+    // replacement mines for one sealed fuel tree each needed their own way into the base; the second and third can
+    // join the first's belt outside it).
+    for (let i = 0; i < end; i++) {
+      for (const f of feeders[tkey(r.steps[i].x, r.steps[i].y)] ?? []) {
+        if (f.id === r.id || fed[f.id] || routeDangles(layout, f.id)) continue
+        fed[f.id] = true
+        consider(f, f.steps.length)
+      }
+    }
     let heading = r.tapOf === undefined && r.startDir !== undefined ? r.startDir : -1
     for (let i = 0; i < end; i++) {
       const st = r.steps[i]
