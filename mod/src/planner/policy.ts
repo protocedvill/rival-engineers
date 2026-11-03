@@ -35,6 +35,11 @@ export interface RouterWeights {
   rip: number
   /** Times a connection may be ripped up before routing gives up on it. */
   maxRipups: number
+  /**
+   * Seed 11 g104: 1 = a connection that would rip the same route a second time moves a module at once (plan.ts
+   * `ripPairs`), 0 = off (rip up to `maxRipups`).
+   */
+  ripLoop?: number
   /** Search window margin around a connection's endpoints (tiles). */
   margin: number
   /** Undergrounds may pass under module footprints. */
@@ -129,6 +134,12 @@ export interface PlacementWeights {
    * (seed 11) count as open.
    */
   portEscape?: number
+  /**
+   * Seed 11 g104: all of a candidate's belt ports must be able to leave together, no two belts sharing a tile, to this
+   * many tiles out from its footprint (or to their connections' targets): `egress.ts` (0: off). `portEscape` checks
+   * each port alone.
+   */
+  portEgress?: number
   /**
    * D57: a new mine ranks the patches it may use by distance; a patch where the faction has no mine yet (a fresh
    * field) counts this many tiles farther.
@@ -288,6 +299,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorFactor: 0.9,
     rip: 25,
     maxRipups: 3,
+    ripLoop: 1,
     margin: 24,
     underModules: false,
     tunnel: 12,
@@ -302,7 +314,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorCells: 1,
     corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
+  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, portEgress: 50, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 

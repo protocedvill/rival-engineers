@@ -234,9 +234,10 @@ replay("m7-seed11-crude")
 // M7c.8 (seed 11 minute 654, goal g107 attempt 1, from the crew-fix save at minute 645): the sulfur chain's water line
 // searched its whole 200000-expansion budget (76 s of planner time in a game minute) though the goal was 13 tiles away,
 // and the advanced-circuit belt failed "route crosses itself": both searches let a path that loops over its own tile
-// own a (tile, heading) state, so every arrival through it crossed itself. Both routes are found now; the plan still
-// fails on an ordinary rip-up limit (a later attempt re-places).
-replay("m7-seed11-g107", { expect: "failed", failureExcludes: "crosses itself" })
+// own a (tile, heading) state, so every arrival through it crossed itself. Both routes are found now; the plan then
+// failed on an ordinary rip-up limit (a later attempt re-placed). Since the g104 fixes (all of a module's belts must be
+// able to leave together; a rip-up loop moves a module at once) it plans.
+replay("m7-seed11-g107", { expect: "done" })
 replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-science-pack>labs.in-crude-oil", failureExcludes: "=>plastic-bar>advanced-circuit>chemical-science-pack>labs.in-crude-oil" })
 // M7c.9 (seed 11 minute ~930, g160): an ~870-tile crude line into the base. The coarse corridor ran north of a module
 // block into ground closed by belt bands wider than a pipe-to-ground span, and the corridor search took the whole
@@ -843,5 +844,12 @@ replay("m7-seed11-g78-slow", { expect: "failed", failureIncludes: "no path", fai
 // undergrounds pass under modules without undergrounds of their own; B122 lets the second and third feeds join the
 // first's belt (it merges into the tree above their taps). 5 searches instead of 77, ~0.6M work instead of ~4M.
 replay("m7-seed11-g78-a3", { expect: "done" })
+// M7 (seed 11, m7c-cont3 soak, g104: the blue-pack row and its chain, slow-plan capture): planned for 42+ game minutes.
+// All the row's belt inputs (3) come from the west and south-west through a gap three belts wide; each port alone could
+// leave, so the row was placed there, and its four belts ripped each other up in a cycle (pack output → circuits →
+// sulfur → engine units) until the rip-up limit moved it, twice: 51M work units, 13 rip-ups. Placement now checks that
+// all its belts can leave together within `portEgress` tiles (egress.ts), and a connection that rips the same route
+// again moves a module at once: 2.8M work, no rip-ups, no re-placements.
+replay("m7-seed11-g104-slow", { expect: "done" })
 
 run("plan-replay")

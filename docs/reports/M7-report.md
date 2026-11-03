@@ -1127,6 +1127,47 @@ planned, but only after 8 rip-ups and ~56,000 ticks of planning).
   - If the reconciler repairs the crossed route while its rebuild is in progress, both place the same entities, which
     is harmless.
 
+#### M7c.9 follow-up 5: a module's belts must be able to leave together (seed 11 g104)
+
+In `m7c-cont3` the blue-pack plan (g104: the chemical-science row, its advanced-circuit row, the plastic and sulfur
+chains, a copper mine) planned for 42+ game minutes at the full planner budget. Chemical science was researched, so
+robotics waited on it. Replay `m7-seed11-g104-slow` (the slow-plan capture) reproduced it: 51M work units, 103
+searches, 13 rip-ups, 2 re-placements, all to plan successfully in the end.
+
+- **Why.** Logging every search showed 92% of the work on four belts of the new row: its sulfur, advanced-circuit and
+  engine-unit inputs and its pack output. They ripped each other up in a fixed cycle (the pack output ripped the
+  circuit belt, engine units ripped the pack output, sulfur ripped engine units, circuits ripped sulfur), round after
+  round. Each rip-up search cost 3.5–5.2M units, and the rounds were identical until the rip-up limit moved the row,
+  twice. The inputs come from 150–350 tiles west and south-west, through a gap only three belts wide. Placement
+  checked each port's lane on its own, and each could leave, so it accepted the spot.
+- **Fix (root cause).** The placement search checks that all of the chosen spot's belt ports can leave *together*:
+  a max-flow over tiles, each carrying at most one belt, from the ports' lane starts out of a box `portEgress` tiles
+  around the module, or to within a tile of a connection's target. Undergrounds hop walls, as in the lane checks
+  (`planner/egress.ts`). It runs only on the final best spot, in budgeted steps (the flow is plain data, resumable
+  like the other searches). A spot that fails is marked crowded, and the radius is scanned again without spots
+  overlapping it. After `EGRESS_RETRIES` crowded spots the best is taken unchecked, so placement never fails on it.
+  - **Its ground** is what the router may use: anything but hard tiles and the candidate's own footprint. The first
+    version used the lane checks' ground, which also excludes modules' margin rings. In a compact cluster those rings
+    are the corridors belts run in, so the seed 11 production replay went from 0 rip-ups to failing with 17. With the
+    router's ground it is back to 0.
+  - **The box size matters.** At 10 and 25 tiles g104 is unchanged (the gap is farther out); at 50 the row goes
+    where its belts fit: 2.8M work units, 17 searches, no rip-ups, no re-placements (15 s instead of 208 s in T1).
+- **Safety net: rip-up loops.** A connection that would rip up the same route a second time (since the last
+  re-placement) moves one of its modules at once rather than going round to the rip-up limit. If neither module can
+  move, ripping goes on up to the limit as before, so no plan fails earlier than it did (`router.ripLoop`). Alone it
+  takes g104 from 51M to 35M work units.
+- **Results (T1, every replay).** Outcomes are unchanged except two that now plan: g104 and g107 (which failed on an
+  ordinary rip-up limit). The old g51 capture drops from 21.5M to 12.7M work units (15 → 4 rip-ups), seed 3333's
+  production replay from 9 to 5 rip-ups. Small compact plans spend 10–40% more on placement (the check itself), a few
+  thousand to ~500k units. The replays shared with the previous run fall from 49.4M to 45.2M units in total, and g104
+  from 51M to 2.8M. T1 `egress` (6 tests: disjoint corridors, a shared gap, the reverse step that reroutes an earlier
+  path, underground hops, targets, stepping), and `plan-replay` g104 and g107.
+- **Not done: a cheaper rip-up search.** A rip-up search that starts from the side the cheap "no path" check proved
+  walled in would avoid flooding the whole 9× window (the 3.5–5.2M per search above). With the egress check g104 needs
+  no rip-ups, so nothing here measures it. It needs the router to search backward from the goal, a larger change,
+  so it is left as a proposal.
+- **Not yet in game.** The running soak uses the build before this change.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
@@ -1226,6 +1267,10 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Router work per move | `planner/router.ts` `ROUTER_MOVE_WORK` | 0.5 units per move an expansion or seal step tries (plus 1 per expansion) | Calibration (proposed): brings the router's unit to ~3–4 µs in T1, the scale of placement's (~4 µs) and of the planner budget (`planner-work-per-tick` 400). | no |
 | Merge search up a tap tree | `planner/merge.ts` `MAX_TAP_DEPTH` | 8 taps | Agent guess (proposed): the deepest seed 11 tree was 4 taps; the bound only stops a pathological chain. | no |
 | Tunnel crossing cost | `planner/policy.ts` `RouterWeights.tunnel` (EARLY_COMPACT) | 12 (0 turns it off) | Agent guess (proposed): above a route's own underground pair (8), so a route hops a crossing itself where it can and rebuilds another route's belts only where it cannot; well below a rip-up (25 per tile plus the reroute). | no (policy field) |
+| Joint port egress box | `planner/policy.ts` `placement.portEgress` (EARLY_COMPACT) | 50 tiles (0 turns it off) | Agent guess (proposed): seed 11 g104's bottleneck was beyond 25 tiles; 50 caught it and 75 changed nothing. A larger box costs more and rejects more spots. | no (policy field) |
+| Egress check retries | `planner/placement.ts` `EGRESS_RETRIES` | 6 crowded spots | Agent guess (proposed): bounds the rescans of one radius; after that the best spot is taken unchecked, as before the check. | no |
+| Egress check work per node | `planner/placement.ts` `EGRESS_WORK` | 0.25 units | Calibration (proposed): a node's residual moves cost about a quarter of a placement unit. | no |
+| Rip-up loop guard | `planner/policy.ts` `router.ripLoop` (EARLY_COMPACT) | 1 (on; 0 off) | Agent proposal: a connection ripping the same route twice moves a module at once; no threshold beyond "twice". | no (policy field) |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
 | Depot spot search retry | `strategy/bootstrap.ts` `DEPOT_SEARCH_RETRY` | 3600 ticks | Agent guess (B116): a failed search scans the whole square, so it runs once a game-minute, not every think. | no |

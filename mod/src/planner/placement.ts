@@ -17,6 +17,7 @@ import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, T
 import { ModuleDef, ModuleEntity, Port } from "../modules/types"
 import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
 import { laneTag } from "./claim-tags"
+import { EgressGround, EgressJob, newEgress, stepEgress } from "./egress"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, layoutMargins, lineKey, markModule, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
@@ -103,6 +104,11 @@ export interface PlacementSearch {
   ri: number
   best?: { score: number; ti: number; ox: number; oy: number; coverage: number; clear: number }
   work: number
+  /** Best spots whose belt ports could not all leave together (`egressGate`): candidates overlapping them are out. */
+  crowded?: Rect[]
+  /** The egress check of the best spot in progress (`egressStep`), and the last spot that passed it. */
+  egress?: { key: string; job: EgressJob }
+  egressOk?: string
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
@@ -453,6 +459,11 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
  */
 export const LANE_HOP = 5
 
+/** Work units per node an egress check searches (a node's residual moves cost about a quarter of a placement unit). */
+const EGRESS_WORK = 0.25
+/** Crowded best spots (`egressGate`) a placement search rescans past before it takes the best unchecked. */
+const EGRESS_RETRIES = 6
+
 /**
  * B57: what a lane's way out may go under (an underground's span): anything but a module or unknown ground; and, as the
  * router, not along another underground's span on the same line (seed 11: a pocket "led out" along a route's spans).
@@ -698,11 +709,84 @@ function ownLanesOut(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   return true
 }
 
+/**
+ * Seed 11 g104: the ground the candidate's belts may leave over: what a route may use (not hard, not the candidate's
+ * footprint). Unlike the lane checks, modules' margin rings count: in a compact cluster they are the corridors the
+ * router lays belts in (with them out, every compact spot read as crowded and the seed 11 production replay failed).
+ */
+function egressGround(s: PlacementSearch, state: LayoutState, td: TDef, ox: number, oy: number): EgressGround {
+  const rect = { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }
+  const free = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  const under = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  return { free, under, hop: LANE_HOP }
+}
+
 /** B57: `ownLanesOut`, only for a candidate that would become the best (a flood per port is too dear for every one). */
 function sealGate(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, td: TDef, ox: number, oy: number): boolean {
-  if (ownLanesOut(s, state, policy, td, ox, oy)) return true
-  reject(s, "own-lane-sealed", ox, oy)
+  if (!ownLanesOut(s, state, policy, td, ox, oy)) {
+    reject(s, "own-lane-sealed", ox, oy)
+    return false
+  }
+  // A spot overlapping one whose belts could not all leave together shares its pocket (`egressGate`).
+  for (const c of s.crowded ?? []) {
+    if (rectsOverlap(c, { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h })) {
+      reject(s, "ports-crowded", ox, oy)
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Seed 11 g104: the scan's best must let all its belt ports leave together, no two belts sharing a tile, to
+ * `portEgress` tiles out or to their connections' targets (`egress.ts`). Dear (a flood of that box per port), so only
+ * the final choice is checked, in budgeted steps (`egressStep`). True: go ahead with the best. False: the check is
+ * running, or the best was crowded and the radius is being scanned again without it. After `EGRESS_RETRIES` crowded
+ * spots the best is taken unchecked (the router's rip-ups and re-placements remain).
+ */
+function egressGate(s: PlacementSearch, policy: LayoutPolicy): boolean {
+  const ring = policy.placement.portEgress ?? 0
+  const best = s.best!
+  if (ring <= 0 || (s.crowded?.length ?? 0) >= EGRESS_RETRIES) return true
+  const td = s.tdefs[best.ti]
+  const key = `${best.ti}:${best.ox},${best.oy}`
+  if (s.egressOk === key) return true
+  const belts = td.ports.filter((p) => !p.pipe)
+  if (belts.length < 2) return true
+  const starts: Vec[] = []
+  const targets: Vec[] = []
+  for (const p of belts) {
+    starts.push({ x: best.ox + p.ox + p.nx, y: best.oy + p.oy + p.ny })
+    const t = s.req.targets[p.id]
+    if (t !== undefined) targets.push(t)
+  }
+  const rect = { x: best.ox, y: best.oy, w: td.def.footprint.w, h: td.def.footprint.h }
+  s.egress = { key, job: newEgress(starts, inflate(rect, ring), targets) }
   return false
+}
+
+/** Steps the running egress check for about `budget` work units; on its verdict, accepts the best or rescans. */
+function egressStep(s: PlacementSearch, state: LayoutState, budget: number): number {
+  const e = s.egress!
+  const best = s.best!
+  const td = s.tdefs[best.ti]
+  const n = stepEgress(e.job, egressGround(s, state, td, best.ox, best.oy), math.max(1, math.floor(budget / EGRESS_WORK)))
+  if (!e.job.done) return n * EGRESS_WORK
+  s.egress = undefined
+  if (e.job.paths >= e.job.starts.length) {
+    s.egressOk = e.key
+    return n * EGRESS_WORK
+  }
+  reject(s, "ports-crowded", best.ox, best.oy)
+  ;(s.crowded ??= []).push({ x: best.ox, y: best.oy, w: td.def.footprint.w, h: td.def.footprint.h })
+  s.best = undefined
+  s.ti = 0
+  s.ci = 0
+  s.stride = 2
+  s.top = []
+  s.refine = []
+  s.ri = -1
+  return n * EGRESS_WORK
 }
 
 /** M7c.8: whether a pipe port's connection comes from farther than the largest search radius from the target. */
@@ -1067,7 +1151,8 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
       }
       satRow(s, state, terrain, policy)
       used += s.ww / 2
-    } else if (s.ri >= 0) used += refineStep(s, state, policy)
+    } else if (s.egress !== undefined) used += egressStep(s, state, budget - used)
+    else if (s.ri >= 0) used += refineStep(s, state, policy)
     else if (s.ti >= s.tdefs.length) passEnd(s, state, terrain, policy)
     else used += scanStep(s, state, policy)
   }
@@ -1157,6 +1242,7 @@ function scanStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy):
   return 1
 }
 
+
 /** Scores the next refine candidate (±1 around the coarse pass's best); past the last, ends the pass. */
 function refineStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
   if (s.ri >= s.refine.length) {
@@ -1210,6 +1296,7 @@ function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, p
     s.radiusIdx++
     startWindow(s, state, policy)
   } else if (s.best !== undefined) {
+    if (!egressGate(s, policy)) return
     const td = s.tdefs[s.best.ti]
     s.result = {
       id: moduleId(s.req.id),

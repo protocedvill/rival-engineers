@@ -193,6 +193,12 @@ export interface PlanJob {
   deadPatches?: Record<string, string>
   queue: string[]
   ripCount: Record<string, number>
+  /**
+   * Rip-up loop guard (seed 11 g104): `conn>victim` pairs ripped since the last re-placement. A connection ripping the
+   * same route again means the routes are taking turns through a gap too narrow for all of them (four belts ripped
+   * each other round after round, ~12M work units a round, until the rip-up limit moved the module).
+   */
+  ripPairs?: Record<string, boolean>
   /** M7: the fluid connection being routed (its search runs over several steps). */
   pipe?: PipeJob
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
@@ -998,6 +1004,8 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
     unmarkModule(job.layout, m, facts)
     job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
     job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
+    // New geometry: earlier rip-ups say nothing about loops around the new spot.
+    job.ripPairs = undefined
     // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
     // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
     const pad = search?.sealed !== undefined ? policy.router.margin : 0
@@ -1185,6 +1193,7 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.alias = {}
   job.queue = []
   job.ripCount = {}
+  job.ripPairs = undefined
   job.current = undefined
   job.pipe = undefined
   job.failures = {}
@@ -1456,6 +1465,15 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     const vr = job.layout.routes[v]
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
+    // A loop moves a module now; if none can move, ripping goes on up to the limit as before.
+    if ((policy.router.ripLoop ?? 0) > 0 && n < policy.router.maxRipups && job.ripPairs?.[`${cur.conn}>${vr.conn}`] === true) {
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `rip-up loop: ripped ${vr.conn} for this connection before`)
+      if (tryReplace(job, c, facts, policy)) {
+        job.current = undefined
+        return
+      }
+      continue
+    }
     if (n >= policy.router.maxRipups) {
       routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
       if (!tryReplace(job, c, facts, policy)) {
@@ -1465,6 +1483,10 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
       job.current = undefined
       return
     }
+  }
+  for (const v of res.victims) {
+    const vr = job.layout.routes[v]
+    if (vr !== undefined) (job.ripPairs ??= {})[`${cur.conn}>${vr.conn}`] = true
   }
   for (const v of res.victims) {
     for (const removed of ripRoute(job.layout, routeId(v))) {
