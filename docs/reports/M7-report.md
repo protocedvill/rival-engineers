@@ -1073,6 +1073,10 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    swaps entity for entity (same position and direction; the old one goes back to the stockpile), so no plan or route
    changes; the module's declared rates are recomputed with the new entities; a belt is upgraded only where the
    measured or planned flow exceeds a yellow lane, a module only when its output is short.
+   **User decision (in-session 2026-11-03):** "make it eligible for upgrade just like growth, so it also upgrades
+   upstream and such or pulls in more input". An upgrade is one more way to grow in place: the design offers an
+   upgradable module's extra output as in-place capacity (like its expansion units), and the raised draw goes up the
+   chain through the supply pass, which grows, upgrades or forks the providers in turn.
 8. **Modular armour, batteries and an exoskeleton (D82 b)** so the crew walks faster (and carries the personal
    roboport of item 5).
 9. **Solar panels and accumulators (D82 c)** where adding or upgrading steam power costs more; panels are meant to be
