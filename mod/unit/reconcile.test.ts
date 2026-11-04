@@ -195,6 +195,21 @@ test("B131: an edge probe from before a status change is measured again before a
   ok(r.probe.indexOf("ore") >= 0, "the edge is probed again")
 })
 
+test("B133: a backed-up feed is repaired before another feed's undersized producer is grown", () => {
+  // Seed 11, minute 210: n22's iron arrived through four merged feeds. The first blamed n15 (flat out, unable to grow)
+  // and returned; the backed-up smelters feeding the same port were never repaired.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 2, st({ starved: 1 }), 0)
+  node(g, "a", "outpost", "iron-ore", 1, st({ working: 1 }), 0.5)
+  node(g, "b", "outpost", "iron-ore", 1, st({ blocked: 1 }), 0)
+  belt(g, "ea", "a", "smelt", "iron-ore", 1, { rate: 0.5, from: 0, to: 0 })
+  belt(g, "eb", "b", "smelt", "iron-ore", 1, { rate: 0, from: 1, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.id, "eb", g.nodes.smelt.cause!.why)
+  eq(r.remedies.filter((x) => x.kind === "repair" && x.edge === "eb").length, 1, "the blocked feed is repaired")
+  eq(r.remedies.filter((x) => x.kind === "grow" && x.node === "a").length, 0, "the undersized feed is not grown first")
+})
+
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
   const g = chain(st({ working: 0.1, unpowered: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.2, from: 0, to: 0 })

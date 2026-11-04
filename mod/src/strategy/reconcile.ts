@@ -294,6 +294,28 @@ function anyFull(g: LogicalGraph, prod: LogicalNode, item: string, tick: number,
   return false
 }
 
+/**
+ * B133 (seed 11, minute 210): a feed whose producer is backed up (or whose belt is broken) is a physical blockage.
+ * It must be handled before another feed's "producer is undersized" cause: n22's iron arrived through four merged
+ * feeds, the first one blamed n15 (already flat out and unable to grow) and returned, so the three backed-up smelters
+ * feeding the same port were never repaired and n25's plates stayed at its port.
+ */
+function brokenFeed(t: TraceCtx, n: LogicalNode, item: string, e: LogicalEdge, prod: LogicalNode, depth: number): RootCause {
+  const p = t.input.params
+  // B127: a producer blocked only inside itself (its cable assemblers full while its circuit assemblers starve for
+  // iron) with nothing piling up at its port: its missing inputs are the cause, not this belt.
+  if (edgeVerdict(e, t.input.tick, p) !== "broken" && depth < MAX_DEPTH && shares(prod).starved >= p.minActive) {
+    const lacking: string[] = []
+    for (const [k, x] of pairs(prod.measured?.missing ?? {})) if ((x as number) > 0 && k !== "depleted") lacking.push(k as string)
+    if (lacking.length > 0) {
+      lacking.sort()
+      return traceInputs(t, prod, lacking, depth + 1)
+    }
+  }
+  remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
+  return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: items pile up at the producer and don't arrive (${fmt(e.measuredRate)}/s)` }
+}
+
 /** A starved (or unfuelled) node: which of its inputs is short, and why. */
 function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number): RootCause {
   const p = t.input.params
@@ -308,6 +330,17 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
     if (edges.length === 0) {
       external = external ?? { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
       continue
+    }
+    // B133: physical blockages first, across every feed of the item, before any "undersized producer" cause.
+    for (const e of edges) {
+      if (e.from === undefined) continue
+      const own = t.g.nodes[e.from]
+      if (own === undefined) continue
+      const prod = physicalNode(t.g, own)
+      if (prod.lifecycle !== "built") continue
+      const v = edgeVerdict(e, t.input.tick, p)
+      if (v === "stale" || staleForStatus(e, prod, n)) return wantProbe(t, e)
+      if (v === "broken" || (v === "sparse" && prod.status === "backed-up")) return brokenFeed(t, n, item, e, prod, depth)
     }
     for (const e of edges) {
       if (e.from === undefined) return { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, supplied from outside the graph` }
@@ -343,21 +376,7 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         }
         return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
       }
-      if (v === "broken" || prod.status === "backed-up") {
-        // B127 (m7c-cont12 seed 11, minute 780): a producer blocked only inside itself (its cable assemblers full while
-        // its circuit assemblers starve for iron) with nothing piling up at its port: its missing inputs are the cause,
-        // not this belt (three "nothing missing" repairs of an intact circuit belt).
-        if (v !== "broken" && depth < MAX_DEPTH && shares(prod).starved >= p.minActive) {
-          const lacking: string[] = []
-          for (const [k, x] of pairs(prod.measured?.missing ?? {})) if ((x as number) > 0 && k !== "depleted") lacking.push(k as string)
-          if (lacking.length > 0) {
-            lacking.sort()
-            return traceInputs(t, prod, lacking, depth + 1)
-          }
-        }
-        remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
-        return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: items pile up at the producer and don't arrive (${fmt(e.measuredRate)}/s)` }
-      }
+      if (v === "broken" || (v === "sparse" && prod.status === "backed-up")) return brokenFeed(t, n, item, e, prod, depth)
       // The belt is sparse at both ends: the producer doesn't make enough.
       if (prod.status === "starved" || prod.status === "unfuelled" || prod.status === "unpowered") return trace(t, prod, depth + 1)
       // The producer makes more than arrives: the belt between is still filling (or losing items). Wait.
