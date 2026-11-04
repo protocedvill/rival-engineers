@@ -1434,6 +1434,13 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      (76). (2) The pipe search kept one node per (tile, heading) by cost, so every path with a pump was dropped where a
      pump-free one came first; a dearer node with a shorter run is kept now. The plan completes (route work +2%; no
      other replay moved more than 5%).
+   - **In game (soak `m7d5-robots3`, seed 11):** g154 planned on its first attempt and built all but one pipe, which
+     the game refused (BUGS B130). Its own crude line had turned right beside the second oil complex's water manifold
+     on the module's edge, so crude flowed into the new water line, and its last pipe would have mixed the two. The
+     stuck-build reroute then routed that pipe line as a belt and failed, and the goal gave up its whole site. Fixes:
+     the pipe router keeps plain pipes away from other fluids' module pipes on a module edge, and a reroute keeps a
+     route's fluid. Still open: a reroute cannot clean a segment that already holds the wrong fluid, and one stuck
+     ghost still relocates a whole site; both proposed as follow-ups.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

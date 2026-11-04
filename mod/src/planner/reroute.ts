@@ -9,7 +9,7 @@ import { BuildParts, bystanderDiff, entityDiff, EntitySpec, partEntities } from 
 import { BeltTier } from "./capacity"
 import { isPoleTag } from "./claim-tags"
 import { FOREIGN, FREE, OWN, Rect, TerrainView, tkey } from "./grid"
-import { dependentRoutes, LayoutState, ripRoute } from "./layout"
+import { dependentRoutes, LayoutState, ripRoute, Route } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
 
@@ -22,6 +22,23 @@ export interface ReroutePlan {
   add: EntitySpec[]
   /** Route ids of the new layout that replace the ripped ones (build parts). */
   routes: RouteId[]
+}
+
+/** Engine default of a 2.0 pipeline's extent (utility constant `default_pipeline_extent`), for routes stored before B130. */
+const DEFAULT_PIPELINE_EXTENT = 320
+
+/** A fluid route's connection spec for routing it again (routes stored before B130 take their limits from the facts). */
+function rerouteFluid(f: Route["fluid"], facts: ProtoFacts): ConnectionRequest["fluid"] {
+  if (f === undefined) return undefined
+  return {
+    name: f.name,
+    pipe: f.pipe,
+    underground: f.underground,
+    pump: f.pump,
+    maxUnderground: f.maxUnderground ?? facts.entity(f.underground)?.maxPipeUnderground ?? 10,
+    extent: f.extent ?? DEFAULT_PIPELINE_EXTENT,
+    pole: f.pole,
+  }
 }
 
 /**
@@ -52,7 +69,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       for (const e of partEntities(layout, { modules: [], routes: [rid], poles: [] })) before.push(e)
       // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
       // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
-      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined })
+      // B130 (seed 11 g154): a fluid route is routed again with pipes. Without its fluid the routing job took it for a
+      // belt ("no belt-in port"), and a stuck pipe line made its goal give up a 5000-entity site instead.
+      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined, fluid: rerouteFluid(r.fluid, facts) })
     }
     for (const rid of group) ripRoute(layout, rid)
   }

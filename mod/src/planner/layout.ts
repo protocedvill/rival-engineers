@@ -111,7 +111,16 @@ export interface Route {
    * M7b: a fluid route (`pipe-out` → `pipe-in` port; `planner/pipe-router.ts`): the fluid and the entities it uses.
    * Its steps are pipes, pipe-to-ground pairs and pumps; `belt`/`underground`/`splitter` are unused.
    */
-  fluid?: { name: string; pipe: string; underground: string; pump: string }
+  fluid?: {
+    name: string
+    pipe: string
+    underground: string
+    pump: string
+    /** B130: the connection's limits and pump pole, kept so a reroute can route it again (unset on older routes). */
+    maxUnderground?: number
+    extent?: number
+    pole?: string
+  }
 }
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */

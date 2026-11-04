@@ -608,7 +608,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       }
     }
   }
-  // Other fluids: other fluid routes' tiles and every other pipe port of a module.
+  // Other fluids: other fluid routes' tiles, every other pipe port of a module, and module pipes on its edge.
   const fluids: Record<number, boolean> = {}
   for (const rid of job.layout.routeOrder) {
     const r = job.layout.routes[rid]
@@ -626,6 +626,22 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
         const ko = tkey(o.x, o.y)
         if (trunk[ko] === undefined) fluids[ko] = true
       }
+    }
+  }
+  // B130 (seed 11 g154): and every pipe on a module's edge, but the ones in this route's own ports' segments. A plain
+  // pipe joins every neighbour: a crude line laid along an oil complex's top edge joined its water manifold, the crude
+  // flowed down the new water line, and its last pipe could never be placed (Factorio refuses to mix fluids).
+  for (const m of job.layout.modules) {
+    const own: Record<number, boolean> = {}
+    if (m.id === fm.id) for (const [k] of pairs(portSegment(m, fp).tiles)) own[k] = true
+    if (m.id === tm.id) for (const [k] of pairs(portSegment(m, tp).tiles)) own[k] = true
+    const { w: mw, h: mh } = m.def.footprint
+    for (const e of m.def.entities) {
+      if (e.name !== "pipe" && string.find(e.name, "pipe-to-ground", 1, true)[0] === undefined) continue
+      const lx = math.floor(e.x)
+      const ly = math.floor(e.y)
+      if ((lx > 0 && ly > 0 && lx < mw - 1 && ly < mh - 1) || own[tkey(lx, ly)]) continue
+      fluids[tkey(m.origin.x + lx, m.origin.y + ly)] = true
     }
   }
   const w = policy.router
@@ -680,6 +696,11 @@ function segmentLengths(steps: RouteStep[], first: number): number[] {
  * open side (its direction) and through its partner (the nearest end behind it facing the other way).
  */
 export function moduleFluidRun(m: PlacedModule, p: Port): number {
+  return portSegment(m, p).run
+}
+
+/** The pipes of module `m` in port `p`'s segment (module-local tile keys) and their run (see `moduleFluidRun`). */
+function portSegment(m: PlacedModule, p: Port): { run: number; tiles: Record<number, boolean> } {
   const pipes: Record<number, boolean> = {}
   // Pipe-to-ground ends by tile: their open side (the entity's direction, as the generators place them).
   const ug: Record<number, number> = {}
@@ -725,7 +746,7 @@ export function moduleFluidRun(m: PlacedModule, p: Port): number {
     n++
     for (let i = 0; i < 4; i++) queue.push({ x: t.x + DX[i], y: t.y + DY[i], from: k })
   }
-  return math.ceil(n)
+  return { run: math.ceil(n), tiles: seen }
 }
 
 /** How far behind a pipe-to-ground end its partner may be (vanilla pipe-to-ground reach is 10 tiles between). */
@@ -857,7 +878,7 @@ function pipeRoute(id: string, c: ConnectionRequest, f: NonNullable<ConnectionRe
     undergrounds: ugs,
     cost,
     ripped: 0,
-    fluid: { name: f.name, pipe: f.pipe, underground: f.underground, pump: f.pump },
+    fluid: { name: f.name, pipe: f.pipe, underground: f.underground, pump: f.pump, maxUnderground: f.maxUnderground, extent: f.extent, pole: f.pole },
   }
 }
 

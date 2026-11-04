@@ -1,14 +1,15 @@
-import { ModuleDef, EAST, NORTH, Port } from "../src/modules/types"
+import { ModuleDef, EAST, NORTH, Port, SOUTH } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
 import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
+import { planReroute } from "../src/planner/reroute"
 import { unpoweredModules } from "../src/planner/power"
 import { fluidChain, oilComplex, pumpjackField } from "../src/modules/generators"
 import { beltTiers } from "../src/planner/capacity"
 import { IDENTITY } from "../src/modules/geometry"
-import { connectionId, moduleId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -94,6 +95,65 @@ test("fluid route: never runs a plain pipe next to another module's pipe port", 
   }
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
   ok(job.layout.routeOcc[tkey(15, 11)] === undefined, "the other port's tile stays its own")
+})
+
+test("B130 (seed 11 g154): never runs a plain pipe next to a module's own pipe on its edge", () => {
+  // An oil complex's water manifold runs along its top edge. A crude line along the outside of that edge joined it: the
+  // crude flowed down the complex's new water line, and its last pipe could never be placed (Factorio refuses to mix).
+  const terrain = asciiTerrain(field(60, 30))
+  const state = newLayout()
+  const src = box("src-edge", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: SOUTH as 0, item: "crude-oil" }])
+  const dst = box("dst-edge", 1, 1, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const complex = box("complex-edge", 20, 4, [])
+  for (let x = 0; x < 20; x++) complex.entities.push({ name: "pipe", x: x + 0.5, y: 0.5 })
+  // The line comes down from the north and turns east into the target's port tile (34,11), which touches the manifold.
+  // Runs are underground pairs, but a turn is a plain pipe: it must not turn on the row beside the manifold.
+  place(state, src, 25, 2)
+  place(state, dst, 35, 11)
+  place(state, complex, 20, 12)
+  const c: ConnectionRequest = { id: connectionId("crude-edge"), from: { module: "src-edge", port: "out" }, to: { module: "dst-edge", port: "in" }, fluid: FLUID }
+  const job = runJob(newRoutingJob(request([src, dst, complex], [c], 60, 30), YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  for (const st of job.layout.routes["route:crude-edge"].steps) {
+    if (st.kind !== "pipe") continue
+    for (let d = 0; d < 4; d++) {
+      const x = st.x + DX[d]
+      const y = st.y + DY[d]
+      ok(y !== 12 || x < 20 || x > 39, `pipe at ${st.x},${st.y} touches the manifold at ${x},${y}`)
+    }
+  }
+})
+
+test("B130 (seed 11 g154): a stuck pipe route is rerouted with pipes around the stuck tile", () => {
+  // The build's reroute rebuilt each connection without its fluid, so a pipe line was routed as a belt ("no belt-in
+  // port") and the goal gave up its whole site over one pipe. Older routes have no stored limits: the facts give them.
+  const terrain = asciiTerrain(field(80, 30))
+  const state = newLayout()
+  const well = box("well-rr", 3, 3, [{ id: "out", kind: "pipe-out", pos: { x: 2.5, y: 1.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const refinery = box("ref-rr", 5, 5, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 2.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, well, 2, 10)
+  place(state, refinery, 60, 9)
+  const c: ConnectionRequest = { id: connectionId("crude-rr"), from: { module: "well-rr", port: "out" }, to: { module: "ref-rr", port: "in" }, fluid: FLUID }
+  const job = runJob(newRoutingJob(request([well, refinery], [c], 80, 30), YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  const rid = routeId("route:crude-rr")
+  const old = job.layout.routes[rid]
+  eq(old.fluid?.extent, 320, "the route keeps its extent")
+  old.fluid!.extent = undefined
+  old.fluid!.maxUnderground = undefined
+  // The stuck tile: a pipe-to-ground end in the middle of the line.
+  const mid = old.steps[math.floor(old.steps.length / 2)]
+  const avoid = { [tkey(mid.x, mid.y)]: true }
+  const plan = planReroute(job.layout, terrain, F, policy, YELLOW, [rid], { x: 0, y: 0, w: 80, h: 30 }, avoid)
+  ok(plan.ok, `reroute: ${plan.reason}`)
+  const r = plan.layout.routes[plan.routes[0]]
+  ok(r !== undefined && r.fluid?.name === "crude-oil", "a fluid route again")
+  for (const st of r.steps) {
+    ok(st.kind === "pipe" || st.kind === "pipe-ug-in" || st.kind === "pipe-ug-out" || st.kind === "pump", `a pipe step (${st.kind})`)
+    ok(st.x !== mid.x || st.y !== mid.y, `avoids the stuck tile ${mid.x},${mid.y}`)
+  }
+  eq(checkLayout(plan.layout, terrain, () => 10).problems.length, 0)
+  ok(plan.add.length > 0 && plan.add.every((e) => e.name !== "transport-belt"), "builds pipes, no belts")
 })
 
 test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a plastic block the planner places", () => {
