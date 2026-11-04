@@ -1362,7 +1362,11 @@ Found in `m7s11b` (seed 11, fresh, minutes 180-330):
   steel. When a placement completes, a module with no still-valid ghost left in its rect is now marked built, even if
   another module's place job is still open. T1 `goal-lifecycle` "B135".
 
-No new tuning numbers. Validation: `val11blue5` resumed from `m7s11b` minute 300 on the fixed build.
+B135 was refined after `val11b141`: the check runs on every build think (a module can become usable between two
+placements) and requires only the module's machines, not every internal belt/pole/buffer. On `val11b142` (from minute
+360) n167 became `built` and visible to the reconciler for the first time; it is now starved by the retiring n37, which
+is the open B141. No new tuning numbers. Validation: `val11blue5` and `val11b142` resumed from `m7s11b` on the fixed
+build; full T2 193/193 on the B140 build, targeted factory/reconciler 31/31 after the B135 refinement.
 
 #### M7c.9 follow-up 13: failed ghosts and pruned jobs (B138, B139)
 
