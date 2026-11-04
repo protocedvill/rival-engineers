@@ -1340,6 +1340,25 @@ Found while soaking seed 11 from fresh (`m7s11a`, branch `m7-soak-fixes` on `615
 
 No new tuning numbers. Validation: `m7s11a`/`m7s11b` (seed 11) and `m7s222a`/`m7s222b` (seed 222) on the fixed build.
 
+#### M7c.9 follow-up 12: a masked feed, a bogus tap and a building module's output (B132-B134)
+
+Found in `m7s11b` (seed 11, fresh, minutes 180-330):
+
+- **B132 (a tap must start on its parent).** n25's tap to n22 had its steps reversed by a re-root: its first splitter was
+  on another route and its last splitter was on the parent. `tapsReach` still followed it to n22, so the repair found
+  "nothing missing". A tap now counts only when its first splitter is on a parent tile; `feedsDirect` uses the same rule.
+  T1 `merge` "B132".
+- **B133 (do not mask a blocked feed with an undersized one).** n22's iron came through four merged feeds. The trace took
+  the first feed's "producer undersized" cause (n15, already flat out and unable to grow) and returned, so the backed-up
+  smelters feeding the same port were never repaired. Physical blockages are now checked across every feed before any
+  grow cause. T1 `reconcile` "B133".
+- **B134 (a building module's output is a supply point).** The blue line's steel smelter stood and ran, but its module was
+  still `building`, so `moduleFurnaces`/`moduleAssemblers` did not register its output. The same plan's pumpjack craft
+  waited 44 game-min for 5 steel plates, so the oil field (and blue science) never started. A module being built is now a
+  supply point for its furnace/assembler output too. T2 `bootstrap-sources` "B134".
+
+No new tuning numbers. Validation: `val11b134` resumed from `m7s11b` minute 300 on the fixed build.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
