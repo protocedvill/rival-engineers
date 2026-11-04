@@ -1023,6 +1023,9 @@ function registerSupplies(ctx: Ctx): void {
       else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, "pair", fuel, PAIR_KEEP)
     }
   }
+  // B134: a module still being built has no finished output belt; its furnace output is the only source for a craft in
+  // the same plan (the blue line's pumpjack waited 44 game-min for steel from its own building smelter).
+  for (const e of moduleFurnaces(ctx.faction.name, true)) add(e, defines.inventory.furnace_result, "module-furnace")
   // B36 (proposed, default off): smelter modules' furnace outputs, last (buffers and bootstrap furnaces first).
   if (ctx.config.supplyModuleFurnaces) for (const e of moduleFurnaces(ctx.faction.name)) add(e, defines.inventory.furnace_result, "module-furnace")
   // M7c.8 (seed 11, minute 657–743: g108's four crude-line pumps waited 85 game-min for engine units while the faction's

@@ -125,7 +125,7 @@ export function repairBuffers(factionName: string): void {
  * B36 (proposed, `supply-module-furnaces`, default off): the furnaces of built smelter modules, whose result slots
  * fill up when their output belt backs up. Taking from them may starve the module's belt.
  */
-export function moduleFurnaces(factionName: string): LuaEntity[] {
+export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEntity[] {
   const out: LuaEntity[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
@@ -134,7 +134,7 @@ export function moduleFurnaces(factionName: string): LuaEntity[] {
   for (const n of nodesOf(f.graph)) {
     // B134: a module inside a plan still being built can already run (the blue line's steel smelter). Its output must
     // be a supply point, or the same plan's pumpjack craft waits for steel that the smelter has made.
-    if (n.lifecycle !== "built" && n.lifecycle !== "building") continue
+    if (buildingOnly ? n.lifecycle !== "building" : n.lifecycle !== "built" && n.lifecycle !== "building") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let any = false
@@ -150,7 +150,7 @@ export function moduleFurnaces(factionName: string): LuaEntity[] {
  * M7c.8: the assemblers of built factory modules (the crew may take a product the economy has no other source for from
  * their output slots; `bootstrap.ts` registers them).
  */
-export function moduleAssemblers(factionName: string): LuaEntity[] {
+export function moduleAssemblers(factionName: string, buildingOnly = false): LuaEntity[] {
   const out: LuaEntity[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
@@ -158,7 +158,7 @@ export function moduleAssemblers(factionName: string): LuaEntity[] {
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph)) {
     // B134: same as moduleFurnaces: a building module's output can already be the only source of a needed item.
-    if (n.lifecycle !== "built" && n.lifecycle !== "building") continue
+    if (buildingOnly ? n.lifecycle !== "building" : n.lifecycle !== "built" && n.lifecycle !== "building") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let any = false

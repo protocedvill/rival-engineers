@@ -352,7 +352,7 @@ describe("B17 material sources", () => {
     const node = f.graph.nodes[moduleId("smelter")]!
     node.lifecycle = "building"
     node.builtTick = undefined
-    assert(moduleFurnaces(faction.name).length > 0, "a building module's furnaces are supply points")
+    assert(moduleFurnaces(faction.name, true).length > 0, "a building module's furnaces are supply points even with the setting off")
   })
 
   test("M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler output, below the minimum take", () => {
