@@ -1801,10 +1801,12 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     ctx.faction.brain!.steps += done - g.placed
     g.placed = done
     g.progressTick = ctx.tick
-    // B135 (seed 11, minute 330): a plan's modules become built only when the whole plan finishes. The blue line's
-    // steel smelter stood and ran, but the pumpjack in the same plan waited for steel from it: a circular wait. Mark a
-    // module built as soon as its own entities stand (no ghost left in its rect); the reconciler can then feed it and
-    // its output is a supply point (B134).
+  }
+  // B135 (seed 11, minute 330): a plan's modules become built only when the whole plan finishes. The blue line's steel
+  // smelter stood and ran, but the pumpjack in the same plan waited for steel from it: a circular wait. Mark a module
+  // built as soon as its machines stand, on every think (a module can become usable between two placements); the
+  // reconciler can then feed it and its output is a supply point (B134).
+  if (b.phase !== "done") {
     const layout = entry.job?.layout
     if (layout !== undefined) {
       const ghosts = b.ghosts ?? []
@@ -1814,7 +1816,11 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
         const m = LO.findModule(layout, gn.id)
         if (m === undefined) continue
         const own: { x: number; y: number }[] = []
-        for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        for (const e of m.def.entities) {
+          const t = prototypes.entity[e.name]?.type
+          if (t === "assembling-machine" || t === "furnace" || t === "mining-drill" || t === "lab" || t === "boiler" || t === "generator") own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        }
+        if (own.length === 0) for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
         if (!GLC.modulePlaced(own, ghosts)) continue
         node.lifecycle = "built"
         node.builtTick = ctx.tick
