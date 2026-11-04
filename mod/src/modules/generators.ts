@@ -443,6 +443,42 @@ function rowBufferHead(facts: ProtoFacts, L: Layout, ports: Port[], buffer: stri
   return true
 }
 
+/** M7d.5: columns a row module's roboport head adds at its west end. */
+const ROW_ROBOPORT_W = 6
+
+/**
+ * M7d.5: a roboport head at the west end of a row module (output belt on row 0 flowing west): every entity and port
+ * moves ROW_ROBOPORT_W columns east, and the belt runs on to the port at (0.5, 0.5).
+ *   row 0     B B B B B B   belt, flowing west
+ *   row 1     P c P . r .   r: picks off the belt into the roboport (upstream, so robots fill the network first)
+ *   row 2     . C R R R R   c: picks what passes into the buffer (supply) chest C; P: poles
+ *   rows 3–4  S . R R R R   S: the hub's storage chests (0–2)
+ *   row 5     . . R R R R   R: the roboport (4 × 4, columns 2–5, rows 2–5)
+ * Returns whether it was added (an electric inserter, a 4 × 4 roboport and a buffer chest are needed).
+ */
+function rowRoboportHead(facts: ProtoFacts, L: Layout, ports: Port[], p: { buffer?: string; roboport?: string; storageChest?: string; storage?: number }): boolean {
+  const robo = p.roboport !== undefined && p.roboport !== "" ? facts.entity(p.roboport) : undefined
+  if (robo === undefined || robo.tileW !== 4 || robo.tileH !== 4) return false
+  if (p.buffer === undefined || p.buffer === "" || facts.entity(L.inserter)?.electric !== true) return false
+  for (const e of L.entities) e.x += ROW_ROBOPORT_W
+  for (const q of ports) q.pos = { x: q.pos.x + ROW_ROBOPORT_W, y: q.pos.y }
+  for (let x = 0; x < ROW_ROBOPORT_W; x++) L.beltAt(x + 0.5, 0.5, WEST)
+  // Robots reach the roboport first (upstream on the belt); the chest gets them once the roboport holds no more.
+  L.ins(4.5, 1.5, NORTH)
+  L.add(p.roboport!, 4, 4)
+  L.ins(1.5, 1.5, NORTH)
+  L.add(p.buffer, 1.5, 2.5, undefined, { buffer: true })
+  const storage = math.max(0, math.min(2, p.storage ?? 0))
+  for (let i = 0; i < storage; i++) L.add(p.storageChest ?? "storage-chest", 0.5, 3.5 + i)
+  L.poleAt(0.5, 1.5)
+  L.poleAt(2.5, 1.5)
+  for (const q of ports) if (q.kind === "belt-out" || q.kind === "power") {
+    if (q.kind === "belt-out") q.pos = { x: 0.5, y: 0.5 }
+    else q.pos = { x: 0.5, y: 1.5 }
+  }
+  return true
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Generic assembler row
 
@@ -455,6 +491,15 @@ export interface AssemblerRowParams extends CommonParams {
   buffer?: string
   /** M7c: the long-handed inserter that feeds a third ingredient from its own belt. */
   longInserter?: string
+  /**
+   * M7d.5 (user request in-session 2026-11-04: robots go straight into a roboport, a supply chest kept for the crew):
+   * a roboport at the head that the output belt's first inserter fills; the buffer chest takes what the roboport does
+   * not. With `storage` storage chests beside it, the roboport is the faction network's hub. Needs a buffer chest.
+   */
+  roboport?: string
+  /** M7d.5: the storage chest entity and how many the roboport head holds (0–2). */
+  storageChest?: string
+  storage?: number
 }
 
 /**
@@ -571,8 +616,9 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   }
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 0.5, y: 1.5 }, dir: NORTH })
-  const buffered = rowBufferHead(facts, L, ports, p.buffer)
-  const head = buffered ? ROW_BUFFER_W : 0
+  const roboHead = rowRoboportHead(facts, L, ports, p)
+  const buffered = roboHead || rowBufferHead(facts, L, ports, p.buffer)
+  const head = roboHead ? ROW_ROBOPORT_W : buffered ? ROW_BUFFER_W : 0
   W += head
   const H = four ? 10 : three || fluid !== undefined ? 9 : inputs.length === 1 ? 7 : 8
   if (fluid !== undefined) {
@@ -590,7 +636,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   let maxMachines = (2 * lane) / (crafts * product.amount)
   for (const i of solids) maxMachines = Math.min(maxMachines, (inputs.length === 1 || (i === third && !four) ? 2 * lane : lane) / (crafts * i.amount))
   const draft: ModuleDraft = {
-    id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
+    id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}${roboHead ? `/roboport=${p.roboport}+${p.storage ?? 0}` : ""}`,
     source: "generated",
     generator: "assembler-row",
     provenance: "generator assembler-row (Rival Engineers)",
@@ -601,7 +647,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
     recipe: p.recipe,
     rotatable: true,
     mirrorable: true,
-    params: { recipe: p.recipe, count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: buffered ? p.buffer! : "" },
+    params: { recipe: p.recipe, count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: buffered ? p.buffer! : "", ...(roboHead ? { roboport: p.roboport!, storageChest: p.storageChest ?? "storage-chest", storage: p.storage ?? 0 } : {}) },
     expand: {
       unit: { footprint: { w: 6, h: H }, entities: sliceUnit(L.entities, "x", head, head + 6) },
       axis: "x",

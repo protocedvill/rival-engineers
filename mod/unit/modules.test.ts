@@ -225,11 +225,38 @@ test("M7d.5: a passive-provider buffer head is a chest like an iron one: same ra
   eq(b[0].name, "passive-provider-chest", "the provider")
 })
 
+test("M7d.5 (user request in-session 2026-11-04): a roboport head puts the row's robots into a roboport, the rest into the supply chest", () => {
+  const plain = assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest" })
+  const hub = assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storageChest: "storage-chest", storage: 2 })
+  near(rateOf(hub.rates.outputs, "construction-robot"), rateOf(plain.rates.outputs, "construction-robot"), 1e-9, "same output")
+  eq(hub.footprint.w - plain.footprint.w, 4, "four columns wider than a buffer head")
+  eq(hub.footprint.h, plain.footprint.h, "same height")
+  const ports = hub.entities.filter((e) => e.name === "roboport")
+  eq(ports.length, 1, "one roboport")
+  eq(hub.entities.filter((e) => e.name === "storage-chest").length, 2, "two storage chests")
+  const b = hub.entities.filter((e) => e.buffer === true)
+  eq(b.length, 1, "one buffer (the supply chest)")
+  eq(b[0].name, "passive-provider-chest", "the provider")
+  // Each head inserter (facing north) picks from the output belt above it and drops on the tile below.
+  const r = ports[0]
+  const drops = hub.entities.filter((e) => e.name === "inserter" && e.y === 1.5 && e.x < 6).map((e) => ({ x: e.x, y: e.y + 1 }))
+  eq(drops.length, 2, "two head inserters")
+  ok(drops.some((d) => math.abs(d.x - r.x) < 2 && math.abs(d.y - r.y) < 2), "one drops into the roboport")
+  ok(drops.some((d) => d.x === b[0].x && d.y === b[0].y), "one drops into the supply chest")
+  const out = hub.ports.find((p) => p.kind === "belt-out")!
+  eq(`${out.pos.x},${out.pos.y}`, "0.5,0.5", "the belt runs on to the west edge")
+  ok(hub.id !== plain.id, "distinct ids")
+  // Without a buffer chest (or an electric inserter) the head is left out.
+  const none = assemblerRow(F, { recipe: "construction-robot", count: 2, roboport: "roboport", storage: 2 })
+  eq(none.entities.filter((e) => e.name === "roboport").length, 0, "no buffer: no roboport head")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
   return [
     roboportCell(F, { chests: 2 }),
+    assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storage: 2 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
     smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),

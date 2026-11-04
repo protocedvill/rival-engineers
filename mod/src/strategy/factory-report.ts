@@ -78,8 +78,8 @@ export function tempCells(factionName: string, item?: string): TempCell[] {
 // takes from directly when a job needs their items.
 
 /** Built chest-out port chests of the factory's sink modules (mall, temporary cells), in node order. */
-export function supplyChests(factionName: string): { entity: LuaEntity; temp: boolean }[] {
-  const out: { entity: LuaEntity; temp: boolean }[] = []
+export function supplyChests(factionName: string): { entity: LuaEntity; temp: boolean; stock: boolean }[] {
+  const out: { entity: LuaEntity; temp: boolean; stock: boolean }[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
@@ -88,11 +88,16 @@ export function supplyChests(factionName: string): { entity: LuaEntity; temp: bo
     if (n.lifecycle !== "built") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
-    for (const p of m.def.ports) {
-      if (p.kind !== "chest-out") continue
+    // M7d.5: a stock row's (roboports, robots) buffer chest is supply that is taken from in any amount (one roboport
+    // is all a goal may need), so it registers here, before the buffers.
+    const stock = string.sub(n.role, 1, 6) === "stock:"
+    const at: { x: number; y: number }[] = []
+    for (const p of m.def.ports) if (p.kind === "chest-out") at.push(p.pos)
+    if (stock) for (const e of m.def.entities) if (e.buffer === true) at.push(e)
+    for (const pos of at) {
       // M7d.5: output chests may be passive providers.
-      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
-      if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role) })
+      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: { x: m.origin.x + pos.x, y: m.origin.y + pos.y }, limit: 1 })[0]
+      if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role), stock })
     }
   }
   return out

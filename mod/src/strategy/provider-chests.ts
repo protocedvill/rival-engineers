@@ -17,7 +17,7 @@ import * as LG from "../planner/logical"
 import { findEntities } from "../work"
 import type { ExploreCtx } from "./explore"
 import { addKeyed } from "./lab-feed"
-import * as RG from "./robot-grid"
+import { hubRoboport } from "./robots"
 import { isTempRole } from "./stage"
 
 /** Chest entity types a module output chest can be. */
@@ -97,11 +97,7 @@ export function upgradeOutputChests(ctx: ExploreCtx & { faction: FactionState },
 
 /** The crew brings `count` provider chests to the hub's first storage chest, for the robots' upgrades. */
 function stockProviders(ctx: ExploreCtx & { faction: FactionState }, provider: string, count: number, priority: number): void {
-  const hub = LG.nodeByRole(ctx.f.graph, RG.cellRole({ i: 0, j: 0 }))
-  const m = hub !== undefined && hub.lifecycle === "built" ? ctx.f.layout.modules.find((x) => x.id === hub.id) : undefined
-  if (m === undefined) return
-  const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
-  const store = findEntities(ctx.surface, { type: "logistic-container", force: ctx.force, area, limit: 1 })[0]
+  const store = hubRoboport(ctx)?.chests[0]
   if (store === undefined || !store.valid) return
   const want = count - store.get_item_count(provider)
   const key = `provider-chests:${store.unit_number}`

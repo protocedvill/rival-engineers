@@ -953,6 +953,15 @@ test("M7d.5: construction robots and roboports stocked: the robot frame chain is
   ok(d.nodes.some((n) => n.item === "electric-engine-unit" && n.generator === "assembler-row"), "an electric engine row")
   ok(d.nodes.some((n) => n.item === "battery" && n.generator === "chem-row"), "a battery row")
   ok(d.edges.some((e) => e.item === "lubricant"), "lubricant is piped")
+  // M7d.5 (user request in-session 2026-11-04): with a robot hub, the robot row's robots go into its roboport head.
+  const hubbed = design({ ...c, buffer: "passive-provider-chest", robotHub: { robot: "construction-robot", roboport: "roboport", storageChest: "storage-chest", storage: 2 } }, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
+  eq(hubbed.errors.length, 0, hubbed.errors.join("; "))
+  const hubRow = hubbed.nodes.find((n) => n.role === stockRole("construction-robot"))!
+  eq(hubRow.params.roboport as string, "roboport", "the robot row has the roboport head")
+  ok(string.find(hubRow.def.id, "/roboport=", 1, true)[0] !== undefined, `its module id marks the head (${hubRow.def.id})`)
+  eq(hubRow.def.entities.filter((e) => e.name === "roboport").length, 1, "one roboport in it")
+  const portRow = hubbed.nodes.find((n) => n.role === stockRole("roboport"))!
+  eq(portRow.params.roboport, undefined, "the roboport row has none")
 })
 
 test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry rows, no fluid chains", () => {

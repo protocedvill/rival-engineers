@@ -966,6 +966,10 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
   brings), then roboports on a 36-tile grid next to the network where they cover the most uncovered base, up to 10
   (settings `factory-roboport-spacing`, `factory-roboports-max`, `factory-network-robots`). Personal roboports wait for
   modular armour with a power source (D82 b).
+- **P53, the hub in the robot row (proposed, M7d.5, 2026-11-04):** the user asked in-session (2026-11-04) that the
+  construction-robot row put its robots straight into a roboport and keep a supply chest for the crew. The agent
+  proposes that this roboport is the network's hub (P52's hub roboport and storage chests, moved into the robot row),
+  so no separate hub is built; a faction whose hub already exists keeps it.
 
 ## 12. References
 

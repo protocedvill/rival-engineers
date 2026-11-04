@@ -1012,7 +1012,7 @@ function registerSupplies(ctx: Ctx): void {
     seen[entity.unit_number] = true
     points.push({ entity, inventory, item, keep, kind })
   }
-  for (const c of supplyChests(ctx.faction.name)) add(c.entity, defines.inventory.chest, c.temp ? "temp-out" : "chest-out")
+  for (const c of supplyChests(ctx.faction.name)) add(c.entity, defines.inventory.chest, c.temp ? "temp-out" : c.stock ? "stock-out" : "chest-out")
   // B36: buffers of modules the planner stamped were never registered; register any built one that is missing.
   repairBuffers(ctx.faction.name)
   for (const chest of bufferChests(ctx.faction.force)) add(chest, defines.inventory.chest, "buffer")

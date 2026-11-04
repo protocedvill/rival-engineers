@@ -14,7 +14,7 @@ import type { FactoryGoal, FactoryState } from "./factory"
 // one namespace and its Lua main chunk does not gain a local (it is close to the 200 limit).
 export { exhausted } from "../shared/exhausted"
 // M7d.5: the roboport network, through the same namespace for the same reason.
-export { robotsStep, robotsUpkeep } from "./robots"
+export { robotHub, robotsStep, robotsUpkeep } from "./robots"
 export { bufferChest, upgradeOutputChests } from "./provider-chests"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 

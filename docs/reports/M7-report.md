@@ -1441,6 +1441,18 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      the pipe router keeps plain pipes away from other fluids' module pipes on a module edge, and a reroute keeps a
      route's fluid. Still open: a reroute cannot clean a segment that already holds the wrong fluid, and one stuck
      ghost still relocates a whole site; both proposed as follow-ups.
+   - **Robots straight into a roboport (user request in-session 2026-11-04: "the output of the construction robots
+     should be inserted directly into a roboport, and a supply chest can be kept for the engineers").** The
+     construction-robot stock row gets a roboport head (`generators.ts` `rowRoboportHead`, 6 columns at its west end):
+     the first inserter off its output belt fills a roboport, the second the buffer chest (a passive provider) that
+     stays the crew's supply, and two storage chests sit beside the roboport. *Proposed (agent choice):* that roboport
+     is the network's hub (cell 0,0, the grid's origin, its storage chests the depot), so no separate hub goal is
+     planned when the row has the head; a faction whose hub or robot row already exists keeps it. The crew no longer
+     carries robots into that hub (the inserter does). The roboport keeps taking robots until its robot slots are full
+     (up to 350), above the network's `factory-network-robots`. Also: a stock row's chest is a new supply kind,
+     `stock-out`, taken from in any amount (soak `m7d5-robots4`: the hub's roboport place job could not take the one
+     roboport made, "below minimum 5", and queued a hand-craft needing 90 plastic). T1 `modules` "M7d.5 (user request
+     in-session 2026-11-04): a roboport head…", T1 `design` (the robot row's params); not yet seen in a soak.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
@@ -1498,6 +1510,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Robots in the network | `settings.ts` `factory-network-robots` | 50 | D77 ("about 50 construction robots"). | yes |
 | Robot-first window | `settings.ts` `factory-robot-first-seconds` | 60 s | Agent guess (proposed): long enough for a robot to fly across a 110-tile construction area (~30 s), short enough that a job the robots miss is not held up for long. | yes |
 | Hub storage chests | `strategy/robots.ts` `HUB_CHESTS` | 2 | Agent guess (proposed): room for a depot's worth of building materials beside the hub. | no |
+| Robot row roboport head width | `modules/generators.ts` `ROW_ROBOPORT_W` | 6 | Layout geometry (proposed): a 4×4 roboport plus a column for the supply chest's inserter and a column for the storage chests. | no |
 | Roboport plan window | `strategy/robots.ts` `CELL_WINDOW`, `HUB_WINDOW` | 8 / 24 tiles (half-size) | Agent guess (proposed): a cell's roboport stays near its grid point; the hub only fixes the grid's origin, so it may go farther from the centre. | no |
 | Rip-up loop guard | `planner/policy.ts` `router.ripLoop` (EARLY_COMPACT) | 1 (on; 0 off) | Agent proposal: a connection ripping the same route twice moves a module at once; no threshold beyond "twice". | no (policy field) |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |

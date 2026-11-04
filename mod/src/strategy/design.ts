@@ -75,6 +75,12 @@ export interface DesignContext {
   resources: string[]
   /** D42 / D51: the chest for module buffer depots (smelter columns, assembler rows, circuit blocks), "" or absent = none. */
   buffer?: string
+  /**
+   * M7d.5 (user request in-session 2026-11-04): the construction-robot stock row puts its robots straight into a
+   * roboport at its head, which is the network's hub (`storage` storage chests beside it); its buffer chest is the
+   * crew's supply. Absent: robots are collected from the buffer chest only.
+   */
+  robotHub?: { robot: string; roboport: string; storageChest: string; storage: number }
   /** D51 / M7c.8: the products whose assembler rows get that buffer (absent: gear rows only). */
   bufferRows?: string[]
   /** Burner fuel (coal) and entity choices (config defaults, from prototypes). */
@@ -523,7 +529,13 @@ function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: nu
     return
   }
   const machine = machineFor(ctx, r.category) ?? ctx.assembler
-  const params = { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
+  const hub = ctx.robotHub !== undefined && ctx.robotHub.robot === st.item ? ctx.robotHub : undefined
+  const params: Record<string, unknown> = { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
+  if (hub !== undefined) {
+    params.roboport = hub.roboport
+    params.storageChest = hub.storageChest
+    params.storage = hub.storage
+  }
   const [ok, made] = pcall(ctx.make, "assembler-row", params)
   if (!ok) {
     w.errors.push(`stock ${st.item}: ${tostring(made)}`)

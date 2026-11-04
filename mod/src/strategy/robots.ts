@@ -35,17 +35,57 @@ export interface RobotsHooks {
 /** The context the network's upkeep needs (the factory's). */
 export type RobotsCtx = ExploreCtx & { faction: FactionState }
 
-/** The built hub roboport of the faction's network, if any. */
-function hubRoboport(ctx: RobotsCtx): { roboport: LuaEntity; chests: LuaEntity[] } | undefined {
-  const f = ctx.f
-  const hub = LG.nodeByRole(f.graph, RG.cellRole({ i: 0, j: 0 }))
-  if (hub === undefined || hub.lifecycle !== "built") return undefined
-  const m = findModule(f.layout, hub.id)
+/** The construction robot's name. */
+function robotName(ctx: Pick<ExploreCtx, "entities">): string {
+  return ctx.entities["construction-robot"] ?? "construction-robot"
+}
+
+/** Whether a stock row's module has a roboport head (generators.ts `rowRoboportHead` marks its id). */
+function hasRoboportHead(n: LG.LogicalNode): boolean {
+  return n.module !== undefined && string.find(n.module, "/roboport=", 1, true)[0] !== undefined
+}
+
+/**
+ * The hub's graph node: the hub cell's roboport module (`roboport:0,0`), or the construction-robot stock row when its
+ * roboport head is the hub (user request in-session 2026-11-04: robots go straight into a roboport).
+ */
+export function hubNode(ctx: Pick<ExploreCtx, "f" | "entities">): { node: LG.LogicalNode; row: boolean } | undefined {
+  const cell = LG.nodeByRole(ctx.f.graph, RG.cellRole({ i: 0, j: 0 }))
+  if (cell !== undefined) return { node: cell, row: false }
+  const row = LG.nodeByRole(ctx.f.graph, `stock:${robotName(ctx)}`)
+  if (row !== undefined && hasRoboportHead(row)) return { node: row, row: true }
+  return undefined
+}
+
+/**
+ * The design's roboport head for the construction-robot stock row (design.ts `robotHub`): once the roboport can be
+ * made, a faction with no hub yet gets it in that row. Undefined when the hub exists another way (a roboport module,
+ * or a stock row already planned without a head), so a running network keeps its hub.
+ */
+export function robotHub(ctx: Pick<ExploreCtx, "config" | "force" | "entities">, graph: LG.LogicalGraph | undefined): { robot: string; roboport: string; storageChest: string; storage: number } | undefined {
+  if (!ctx.config.factoryRobots || graph === undefined) return undefined
+  const roboport = ctx.entities.roboport ?? "roboport"
+  if (ctx.force.recipes[prototypeFacts.recipeForItem(roboport) ?? roboport]?.enabled !== true) return undefined
+  const robot = robotName(ctx)
+  if (ctx.force.recipes[prototypeFacts.recipeForItem(robot) ?? robot]?.enabled !== true) return undefined
+  if (LG.nodeByRole(graph, RG.cellRole({ i: 0, j: 0 })) !== undefined) return undefined
+  const row = LG.nodeByRole(graph, `stock:${robot}`)
+  if (row !== undefined && !hasRoboportHead(row)) return undefined
+  return { robot, roboport, storageChest: ctx.entities["storage-chest"] ?? "storage-chest", storage: HUB_CHESTS }
+}
+
+/** The built hub roboport of the faction's network and its storage chests, if any. */
+export function hubRoboport(ctx: ExploreCtx): { roboport: LuaEntity; chests: LuaEntity[]; row: boolean } | undefined {
+  const hub = hubNode(ctx)
+  if (hub === undefined || hub.node.lifecycle !== "built") return undefined
+  const m = findModule(ctx.f.layout, hub.node.id)
   if (m === undefined) return undefined
   const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
   const roboport = findEntities(ctx.surface, { type: "roboport", force: ctx.force, area, limit: 1 })[0]
   if (roboport === undefined || !roboport.valid) return undefined
-  return { roboport, chests: findEntities(ctx.surface, { type: "logistic-container", force: ctx.force, area }).filter((e) => e.valid) }
+  // Storage chests only: the stock row's buffer (a passive provider) is the crew's supply, not a depot.
+  const chests = findEntities(ctx.surface, { type: "logistic-container", force: ctx.force, area }).filter((e) => e.valid && e.prototype.logistic_mode === "storage")
+  return { roboport, chests, row: hub.row }
 }
 
 /**
@@ -64,7 +104,9 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
     addStockpile(ctx.faction, c)
     log(`[rival-engineers] faction ${ctx.faction.name}: M7d.5 hub storage chest at (${c.position.x}, ${c.position.y}) is now a depot`)
   }
-  const robot = ctx.entities["construction-robot"] ?? "construction-robot"
+  // The stock row's own inserter fills its roboport with the robots it makes.
+  if (hub.row) return
+  const robot = robotName(ctx)
   const have = hub.roboport.logistic_network?.all_construction_robots ?? 0
   const want = ctx.config.factoryNetworkRobots - have
   const key = `robots:${hub.roboport.unit_number}`
@@ -95,6 +137,18 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     const c = RG.parseCellRole(n.role)
     if (c !== undefined && !failed[RG.cellKey(c)]) cells.push(c)
   }
+  // The hub in the construction-robot stock row: cell 0,0 once the row is built; the design plans it (no hub goal).
+  const hub = hubNode(ctx)
+  if (hub !== undefined && hub.row) {
+    if (hub.node.lifecycle !== "built") {
+      ctx.waiting.push(`robots: wait for the hub in the ${hub.node.role} row`)
+      return
+    }
+    cells.push({ i: 0, j: 0 })
+  } else if (hub === undefined && robotHub(ctx, f.graph) !== undefined) {
+    ctx.waiting.push(`robots: wait for the design to plan the hub in the stock:${robotName(ctx)} row`)
+    return
+  }
   // The network waits for its roboports to be made (the stock row, design.ts `robotStock`).
   const stock = LG.nodeByRole(f.graph, `stock:${roboport}`)
   if (stock === undefined || stock.lifecycle !== "built") {
@@ -103,10 +157,16 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   }
   let origin: Vec = f.center
   if (cells.length > 0) {
-    const hub = LG.nodeByRole(f.graph, RG.cellRole({ i: 0, j: 0 }))
-    const m = hub !== undefined ? findModule(f.layout, hub.id) : undefined
+    const m = hub !== undefined ? findModule(f.layout, hub.node.id) : undefined
     if (m === undefined) return
     origin = { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
+    if (hub!.row) {
+      // The grid starts at the row's roboport, not the row's centre.
+      const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+      const port = findEntities(ctx.surface, { type: "roboport", force: ctx.force, area, limit: 1 })[0]
+      if (port === undefined || !port.valid) return
+      origin = { x: port.position.x, y: port.position.y }
+    }
   }
   const modules: RG.GridRect[] = []
   for (const m of f.layout.modules) modules.push(m.rect)

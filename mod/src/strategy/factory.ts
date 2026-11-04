@@ -439,6 +439,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     resources,
     // M7d.5: passive providers once researched (robots build from them).
     buffer: EX.bufferChest(ctx),
+    robotHub: EX.robotHub(ctx, getFactory(ctx.faction.name)?.graph),
     bufferRows,
     fuel: brain.catalog.fuel,
     assembler: e.assembler ?? "assembling-machine-1",
