@@ -362,7 +362,7 @@ export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntit
   return out
 }
 
-export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
+export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[]; failedSpecs: EntitySpec[] } {
   const force = faction.force
   const clearJobs: JobId[] = []
   for (const e of remove) {
@@ -374,6 +374,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   const ghosts: LuaEntity[] = []
   const placeJobs: JobId[] = []
   const failed: string[] = []
+  const failedSpecs: EntitySpec[] = []
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
     let gh = ownGhost(surface, force, e)
@@ -388,6 +389,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     }
     if (gh === undefined) {
       failed.push(`${e.owner}: ${e.name}@${e.x},${e.y}`)
+      failedSpecs.push(e)
       continue
     }
     ghosts.push(gh)
@@ -396,7 +398,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     if (id !== undefined) placeJobs.push(id)
     else if (faction.ghostJobs[gh.unit_number!] !== undefined) placeJobs.push(faction.ghostJobs[gh.unit_number!])
   }
-  return { ghosts, placeJobs, clearJobs, failed }
+  return { ghosts, placeJobs, clearJobs, failed, failedSpecs }
 }
 
 /**

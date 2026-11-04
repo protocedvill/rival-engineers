@@ -41,6 +41,10 @@ export interface BuildState {
   fuel?: { item: string; count: number }
   priority?: number
   failed: string[]
+  /** B138: specs whose ghost could not be created this attempt (retried with backoff, then rerouted/relocated). */
+  failedSpecs?: EntitySpec[]
+  /** B138: earliest tick to retry a failed ghost creation. */
+  retryAt?: number
   /** Build only these parts (a plan on top of a base); absent: everything in the layout. */
   parts?: BuildParts
   /** B23: entities of a completed shared mine (a base module not in `parts`); ghosted after the clear. */
@@ -581,11 +585,20 @@ export function stepBuild(entry: PlannerEntry): void {
       const j = getJob(faction.board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
+    // B138: a failed ghost must not let the plan advance to "place" and finish with a hole. Retry on the factory's build
+    // round cadence (1800 ticks); the factory goal counts the rounds and relocates after `build-stuck-rounds`.
+    if (b.retryAt !== undefined && game.tick < b.retryAt) return
+    b.failed.length = 0
     const surface = game.surfaces[entry.surface]
     if (tapsPending(b, surface, entry.force, entry.job!.layout)) return
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
-    if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
+    if (r.failed.length > 0) {
+      log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
+      b.retryAt = game.tick + 1800
+      return
+    }
+    b.retryAt = undefined
     const stamped: LuaEntity[] = [...r.entities]
     // B23: a completed shared mine's new entities (a base module not in `parts`) join the same build.
     if (b.extraAdd !== undefined) {

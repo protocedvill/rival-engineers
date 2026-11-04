@@ -131,7 +131,7 @@ export interface FactoryGoal {
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   /** A growth or repair build: `poles` (D71 b) places the new poles before the old ones in `breakAfter` are picked up. */
-  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[]; priority?: number }
+  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[]; priority?: number; failed?: string[]; failedSpecs?: EntitySpec[]; retryAt?: number }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
@@ -1008,12 +1008,38 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       const j = getJob(board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
+    if (b.retryAt !== undefined && ctx.tick < b.retryAt) return
     if (clearObstacles(ctx, b)) return
     const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority ?? ctx.config.factoryBuildPriority })
     for (const gh of d.ghosts) b.ghosts.push(gh)
     for (const id of d.placeJobs) b.placeJobs.push(id)
     // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
-    if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
+    // B138 (random seed 1212121): two route belts could not be ghosted, but the growth still reported "grew" because
+    // the failed specs were only logged. Retry them with backoff; after `build-stuck-rounds`, abandon the growth like a
+    // stuck ghost instead of silently finishing with a hole.
+    b.failed = d.failed
+    b.failedSpecs = d.failedSpecs
+    if (d.failed.length > 0) {
+      g.rounds++
+      g.lastRound = ctx.tick
+      g.reason = `${d.failed.length} ghosts could not be created (round ${g.rounds}): ${d.failed.slice(0, 4).join("; ")}`
+      log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
+      b.retryAt = ctx.tick + BUILD_ROUND_TICKS
+      if (stuckRound(ctx, g, d.failed.length)) {
+        for (const gh of b.ghosts) if (gh.valid) destroyEntity(gh)
+        b.phase = "done"
+        transitionGoal(g, "failed")
+        const node = ctx.f.graph.nodes[g.growth?.node ?? ""]
+        if (node !== undefined) {
+          node.lifecycle = "built"
+          node.builtTick = ctx.tick
+          CS.setValue((ctx.f.constraints ??= {}), "growFails", node.role, ST.GROW_MAX_FAILS)
+        }
+      }
+      return
+    }
+    b.retryAt = undefined
+    b.failedSpecs = undefined
     b.phase = "place"
     return
   }
@@ -1796,6 +1822,17 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     }
   }
   if (g.rework !== undefined && !rework(ctx, g, b)) return
+  // B138: the plan is still in its clear phase because a ghost could not be created. Count the retry rounds and give up
+  // the location after `build-stuck-rounds` instead of leaving the goal building forever.
+  if (b.phase === "clear" && (b.failed?.length ?? 0) > 0) {
+    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+    g.lastRound = ctx.tick
+    g.rounds++
+    g.reason = `${b.failed.length} ghosts could not be created (round ${g.rounds}): ${b.failed.slice(0, 4).join("; ")}`
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
+    if (stuckRound(ctx, g, b.failed.length)) relocateGoal(ctx, g, entry, `build stuck: ${g.reason}`)
+    return
+  }
   if (b.phase !== "done") return
   // Every job finished: ghosts left over (failed jobs, a replan dropping jobs) get new place jobs.
   if (LIFT.restoreLifted(g, ctx.faction, (b.ghosts ??= []))) return
