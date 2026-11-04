@@ -1445,11 +1445,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      should be inserted directly into a roboport, and a supply chest can be kept for the engineers").** The
      construction-robot stock row gets a roboport head (`generators.ts` `rowRoboportHead`, 6 columns at its west end):
      the first inserter off its output belt fills a roboport, the second the buffer chest (a passive provider) that
-     stays the crew's supply, and two storage chests sit beside the roboport. *Proposed (agent choice):* that roboport
-     is the network's hub (cell 0,0, the grid's origin, its storage chests the depot), so no separate hub goal is
+     stays the crew's supply, and two storage chests sit beside the roboport. *Approved by the user in-session
+     2026-11-04 ("roboport can be the new hub", an agent proposal):* that roboport is the network's hub (cell 0,0, the grid's origin, its storage chests the depot), so no separate hub goal is
      planned when the row has the head; a faction whose hub or robot row already exists keeps it. The crew no longer
      carries robots into that hub (the inserter does). The roboport keeps taking robots until its robot slots are full
-     (up to 350), above the network's `factory-network-robots`. Also: a stock row's chest is a new supply kind,
+     (up to 350), above the network's `factory-network-robots`; the user decided in-session 2026-11-04 that it needs no
+     cap. Also: a stock row's chest is a new supply kind,
      `stock-out`, taken from in any amount (soak `m7d5-robots4`: the hub's roboport place job could not take the one
      roboport made, "below minimum 5", and queued a hand-craft needing 90 plastic). T1 `modules` "M7d.5 (user request
      in-session 2026-11-04): a roboport head…", T1 `design` (the robot row's params); not yet seen in a soak.
