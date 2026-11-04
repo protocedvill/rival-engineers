@@ -140,6 +140,20 @@ test("B124: a starved consumer whose port is full while nothing goes in is a sto
   eq(r2.remedies.filter((x) => x.edge === "ore").length, 0, "no repair")
 })
 
+test("B127: a producer blocked inside itself while it starves for an input: trace the input, don't repair its belt out", () => {
+  // m7c-cont12 seed 11: circuit module (cable assemblers full, circuit assemblers short of iron) read backed-up; its
+  // intact circuit belt was "repaired" three times while the iron feed's ore lane was held.
+  const g = chain(st({ working: 0.1, blocked: 0.9 }), 0.1, st({ working: 0.05, starved: 0.95 }), 0.1, st({ starved: 0.4, blocked: 0.6 }), 0)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0, from: 1, to: 1 })
+  belt(g, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0, from: 0, to: 0 })
+  node(g, "lab", "labs", "research-unit", 1, st({ starved: 1 }), 0)
+  belt(g, "out", "gears", "lab", "iron-gear-wheel", 1, { rate: 0, from: 0, to: 0 })
+  g.nodes.gears.measured!.missing = { "iron-plate": 0.4 }
+  const { r } = settle(g)
+  eq(r.remedies.filter((x) => x.edge === "out").length, 0, "no repair of the module's own output belt")
+  eq(r.remedies.filter((x) => x.kind === "repair" && x.edge === "ore").length, 1, "the held ore lane is repaired")
+})
+
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
   const g = chain(st({ working: 0.1, unpowered: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.2, from: 0, to: 0 })

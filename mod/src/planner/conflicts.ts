@@ -261,9 +261,17 @@ export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutS
   const out: { spec: EntitySpec; entity: LuaEntity }[] = []
   const seen: Record<number, boolean> = {}
   const routeSet: Record<string, boolean> = {}
-  for (const rid of routes) routeSet[rid] = true
+  const routeTiles: Record<number, boolean> = {}
+  for (const rid of routes) {
+    routeSet[rid] = true
+    for (const k of layout.routes[rid]?.tiles ?? []) routeTiles[k] = true
+  }
   for (const spec of routeEntities(layout)) {
-    if (!routeSet[spec.owner] || BELT_TYPES.indexOf(prototypes.entity[spec.name]?.type ?? "") < 0) continue
+    if (BELT_TYPES.indexOf(prototypes.entity[spec.name]?.type ?? "") < 0) continue
+    // B126 (m7c-cont12 seed 11, minute 780): a branch's merge splitter stands on the trunk's tile but belongs to the
+    // branch route. Coal stranded in it could only leave by its branch-side output (B125 filters the trunk item to the
+    // trunk side), which has no belt: it held the trunk's ore lane for good. Pieces on the edge's tiles count too.
+    if (!routeSet[spec.owner] && !specTiles(spec).some((k) => routeTiles[k] === true)) continue
     const item = spec.carries
     if (item === undefined) continue
     for (const e of findEntities(surface, { position: { x: spec.x, y: spec.y }, type: BELT_TYPES, force, limit: 1 })) {

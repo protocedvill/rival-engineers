@@ -389,6 +389,41 @@ describe("faction conflicts", () => {
     })
   })
 
+  test("B126: a branch's merge splitter on the edge's trunk holding a foreign item is found", () => {
+    // m7c-cont12 seed 11, minute 780: coal stranded in a merge splitter owned by the branch route held the trunk's ore
+    // lane; the trunk edge's repairs only looked at the trunk's own pieces and said "nothing missing".
+    const lab = createLab(24)
+    const a = faction(lab, "merge-clog", 30, 0)
+    const s = lab.surface
+    const x0 = math.floor(lab.origin.x)
+    const y0 = math.floor(lab.origin.y)
+    const layout = newLayout()
+    const base = { item: "iron-ore", spans: [], belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: 3, undergrounds: 0, cost: 1, ripped: 0 }
+    const trunkSteps = [
+      { kind: "belt" as const, x: x0, y: y0 + 1, dir: 0 },
+      { kind: "belt" as const, x: x0, y: y0, dir: 0 },
+      { kind: "belt" as const, x: x0, y: y0 - 1, dir: 0 },
+    ]
+    const trunk = { ...base, id: routeId("route:t"), conn: connectionId("t"), to: { module: moduleId("x"), port: "in" }, steps: trunkSteps, tiles: trunkSteps.map((st) => tkey(st.x, st.y)) }
+    const ms = { x: x0, y: y0, dir: 0, x2: x0 + 1, y2: y0 }
+    const branchSteps = [
+      { kind: "belt" as const, x: x0 + 1, y: y0 + 1, dir: 0 },
+      { kind: "splitter" as const, ...ms },
+    ]
+    const branch = { ...base, id: routeId("route:b"), conn: connectionId("b"), to: { module: moduleId("x"), port: "in" }, mergeSplitter: ms, steps: branchSteps, tiles: [tkey(x0 + 1, y0 + 1), tkey(x0 + 1, y0)] }
+    for (const r of [trunk, branch]) {
+      layout.routes[r.id] = r as never
+      layout.routeOrder.push(r.id)
+    }
+    const sp = s.create_entity({ name: "splitter", position: { x: x0 + 1, y: y0 + 0.5 }, direction: 0 as never, force: a.force })!
+    for (const [dx, dy] of [[0, 1], [1, 1], [0, -1]]) s.create_entity({ name: "transport-belt", position: { x: x0 + dx + 0.5, y: y0 + dy + 0.5 }, direction: 0 as never, force: a.force })
+    let found = cloggedBelts(s, a.force, layout, "x", "in", [trunk.id])
+    assert(found.length === 0, `a clean splitter is no clog (${found.length})`)
+    sp.get_transport_line(2).insert_at_back({ name: "coal", count: 1 })
+    found = cloggedBelts(s, a.force, layout, "x", "in", [trunk.id])
+    assert(found.length === 1 && found[0].entity === sp, `the branch's splitter holding coal is found (${found.length})`)
+  })
+
   test("B95: an own underground between a route's underground pair, facing its flow, is an intruder to pick up", () => {
     // Sweep 3e1c4d7 seed 4819313: an old route's underground stood between a new pair's ends on the same line. The
     // entrance paired with it, the ore surfaced short of the port, and every repair said "nothing missing".

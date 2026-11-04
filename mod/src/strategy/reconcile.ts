@@ -318,6 +318,17 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
       }
       if (v === "broken" || prod.status === "backed-up") {
+        // B127 (m7c-cont12 seed 11, minute 780): a producer blocked only inside itself (its cable assemblers full while
+        // its circuit assemblers starve for iron) with nothing piling up at its port: its missing inputs are the cause,
+        // not this belt (three "nothing missing" repairs of an intact circuit belt).
+        if (v !== "broken" && depth < MAX_DEPTH && shares(prod).starved >= p.minActive) {
+          const lacking: string[] = []
+          for (const [k, x] of pairs(prod.measured?.missing ?? {})) if ((x as number) > 0 && k !== "depleted") lacking.push(k as string)
+          if (lacking.length > 0) {
+            lacking.sort()
+            return traceInputs(t, prod, lacking, depth + 1)
+          }
+        }
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
         return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: items pile up at the producer and don't arrive (${fmt(e.measuredRate)}/s)` }
       }
