@@ -1333,8 +1333,12 @@ Found while soaking seed 11 from fresh (`m7s11a`, branch `m7-soak-fixes` on `615
   so `builtFor` returned undefined on every evaluation and the smelter stayed `unknown / warming up` for 70 game-min.
   Its four built mines backed up behind it with no status and no remedy. Only built feeders set the warm-up age now; an
   unbuilt one is ignored when the consumer already has a built feeder. T1 `reconcile` "B130".
+- **B131 (a probe from before a status change).** Seed 11 minute 60: n22's iron tap was probed at 0/s just before its
+  smelter began producing, and the reconciler repaired the intact tap twice on that sample. A probe is only usable when
+  it is newer than the last status change of both ends; otherwise it is measured again before acting. T1 `reconcile`
+  "B131".
 
-No new tuning numbers. Validation: `m7s11a` (seed 11) and `m7s222a` (seed 222) running on the fixed build.
+No new tuning numbers. Validation: `m7s11a`/`m7s11b` (seed 11) and `m7s222a`/`m7s222b` (seed 222) on the fixed build.
 
 ## M7d: advanced oil, robots and the full mall
 
