@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, mergeBranchOutlet, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -387,6 +387,36 @@ describe("faction conflicts", () => {
       done()
       return false
     })
+  })
+
+  test("B129: a merge splitter whose branch-side outlet is dead gets no filter", () => {
+    // Seed 11 (m7c-cont12): the branch-side outlet had no belt. B125's filter sent every non-route item to that dead
+    // side, where coal stuck for good. A dead outlet must back up instead, so the splitter sends everything down the
+    // trunk; a live outlet still gets the filter (B125).
+    const lab = createLab(24)
+    const a = faction(lab, "merge-dead", 30, 0)
+    const s = lab.surface
+    const x0 = math.floor(lab.origin.x)
+    const y0 = math.floor(lab.origin.y)
+    const ms = { x: x0, y: y0, dir: 0, x2: x0 + 1, y2: y0 }
+    assert(mergeBranchOutlet(ms).x === x0 + 1, "branch outlet x")
+    assert(mergeBranchOutlet(ms).y === y0 - 1, "branch outlet y")
+    const layout = newLayout()
+    layout.routes["route:m"] = { id: routeId("route:m"), item: "iron-plate", mergeSplitter: ms, steps: [], tiles: [] } as never
+    layout.routeOrder.push(routeId("route:m"))
+    const sp = s.create_entity({ name: "splitter", position: { x: x0 + 1, y: y0 + 0.5 }, direction: 0 as never, force: a.force })!
+    sp.splitter_filter = { name: "iron-plate" } as never
+    sp.splitter_output_priority = "left"
+    assert(tuneMergeSplitters(s, a.force, layout) === 1, "the stale filter on a dead outlet is cleared")
+    assert(sp.splitter_filter === undefined, "no filter")
+    assert((sp.splitter_output_priority as string) === "none", "no output priority")
+    assert(tuneMergeSplitters(s, a.force, layout) === 0, "already clear")
+    s.create_entity({ name: "transport-belt", position: { x: x0 + 1.5, y: y0 - 0.5 }, direction: 0 as never, force: a.force })
+    assert(tuneMergeSplitters(s, a.force, layout) === 1, "a live branch outlet gets the filter")
+    const fl: unknown = sp.splitter_filter
+    const have = typeof fl === "string" ? fl : (fl as { name?: string } | undefined)?.name
+    assert(have === "iron-plate", `filter ${have}`)
+    assert((sp.splitter_output_priority as string) === "left", "trunk side priority")
   })
 
   test("B126: a branch's merge splitter on the edge's trunk holding a foreign item is found", () => {
