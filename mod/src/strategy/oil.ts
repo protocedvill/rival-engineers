@@ -176,6 +176,13 @@ function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack
   // poles 4 tiles off its edge well, a planned module) blocks it. Wells next to one are left out until the box is clear.
   const blockers: Rect[] = []
   for (const r of avoid) if (r.x < b.x + b.w && r.x + r.w > b.x && r.y < b.y + b.h && r.y + r.h > b.y) blockers.push(r)
+  // Seed 1212121 g111/g112: a cliff stood between the field's wells, so every well's own 3×3 was clear but the fixed
+  // module box still covered it and the plan failed "blocked (terrain cliff)". Treat each hard tile in the box as a
+  // blocker too, so the nearest well is dropped and the box shrinks away from it.
+  for (const [k] of pairs(hard)) {
+    const parts = (k as string).split(",")
+    blockers.push({ x: tonumber(parts[0])!, y: tonumber(parts[1])!, w: 1, h: 1 })
+  }
   for (const e of findEntities(surface, { area: fieldArea })) {
     if (!isStructureType(e.type)) continue
     const bb = e.bounding_box

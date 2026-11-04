@@ -336,6 +336,21 @@ describe("B17 material sources", () => {
     })
   })
 
+  test("B142: stamping the same module ghosts twice reuses them", () => {
+    // Seed 1212121 g109: a retried stamp created a second ghost on every tile, returned nil, and reported 1149 already
+    // created ghosts as failures, so a good plan was abandoned.
+    const lab = createLab(24)
+    const faction = createFaction(`b142-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+    const origin = { x: math.floor(lab.origin.x), y: math.floor(lab.origin.y) }
+    const a = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    const b = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    assert(a.length === def.entities.length, `${a.length} ghosts`)
+    let same = 0
+    for (let i = 0; i < a.length; i++) if (a[i] !== undefined && b[i] === a[i]) same++
+    assert(same === def.entities.length, `reused ${same}/${def.entities.length} ghosts`)
+  })
+
   test("B134: a module still being built is a supply point for its furnace output", () => {
     // Seed 11, minute 330: the blue line's steel smelter stood and ran, but its module was still "building", so its
     // plates were not a supply point. The same plan's pumpjack craft waited 44 game-min for 5 steel plates.

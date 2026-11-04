@@ -366,6 +366,11 @@ function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buff
 }
 
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
+  // B142: a retried build re-stamps the same plan; an existing ghost is the wanted result.
+  if (ghost) {
+    const existing = surface.find_entities_filtered({ name: "entity-ghost", ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+    if (existing !== undefined) return existing
+  }
   const params: Record<string, unknown> = { name: ghost ? "entity-ghost" : e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
   if (ghost) params.inner_name = e.name
   if (e.ioType !== undefined) params.type = e.ioType

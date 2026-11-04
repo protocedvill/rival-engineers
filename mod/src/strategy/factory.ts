@@ -55,7 +55,6 @@ import * as REL from "./relocation"
 import * as AR from "./adoption-runtime"
 import * as EX from "./explore"
 import * as GH from "./goal-holds"
-export { parseStages } from "./stage"
 export type { GoalStatus } from "./goal-lifecycle"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
@@ -1831,6 +1830,25 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   // B138: the plan is still in its clear phase because a ghost could not be created. Count the retry rounds and give up
   // the location after `build-stuck-rounds` instead of leaving the goal building forever.
   if (b.phase === "clear" && (b.failed?.length ?? 0) > 0) {
+    // B142: a failed ghost inside a module whose machines already stand (B135 marked it built) is a missing internal
+    // belt/inserter, not a reason to abandon the whole plan. The reconciler can repair the edge it feeds.
+    let onlyBuiltModules = true
+    for (const line of b.failed) {
+      let mm = string.match(line, "^ghost ([^:]+):")
+      if (mm === undefined) mm = string.match(line, "^([^:]+):")
+      const owner = mm !== undefined ? mm[0] : undefined
+      const node = owner !== undefined ? f.graph.nodes[owner] : undefined
+      if (node === undefined || node.lifecycle !== "built") {
+        onlyBuiltModules = false
+        break
+      }
+    }
+    if (onlyBuiltModules) {
+      b.failed.length = 0
+      b.retryAt = undefined
+      b.phase = "place"
+      return
+    }
     if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
     g.lastRound = ctx.tick
     g.rounds++
@@ -2043,13 +2061,12 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
  * per event; the summary (kinds, the owner ids that leaked and their counts) is built and logged at most once a game
  * minute per faction, so a claim loop cannot flood the log or cost anything on the hot path.
  */
-const ORPHAN_LOG_TICKS = 3600
-
 function reportOrphanClaims(ctx: Ctx, g: FactoryGoal, problems: string[]): void {
   const f = ctx.f
   f.orphanClaims = (f.orphanClaims ?? 0) + problems.length
   f.orphanEvents = (f.orphanEvents ?? 0) + 1
-  if (ctx.tick - (f.orphanLogTick ?? -ORPHAN_LOG_TICKS) < ORPHAN_LOG_TICKS) return
+  // Once a game minute per faction (60 s).
+  if (ctx.tick - (f.orphanLogTick ?? -3600) < 3600) return
   f.orphanLogTick = ctx.tick
   const kinds: Record<string, number> = {}
   const owners: Record<string, number> = {}
