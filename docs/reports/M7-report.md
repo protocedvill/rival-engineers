@@ -1388,12 +1388,11 @@ reroutes the whole merge tree in place once (B88). `val11b140` (from `m7s11b` mi
 (233 pickups, 186 builds); n22 went from starved to `ok 0.283/0.275/s` and n25 from backed-up to `ok 1.23/0.978/s`.
 T1 `reconcile` "B140".
 
-**Still open after these fixes (seed 11, `m7s11b`/`val11blue5`, minutes 180-360).** The blue line still waits on
-its pumpjack craft because the steel smelter's iron feed delivers almost nothing. B135 makes a fully placed module
-visible (n171 did become visible), but n167 still has ghosts and its feed is a tap of n17/n47's iron trunk. Several
-producers merge into the same port; the edge probe sees the same total on every feed, so a backed-up feed is repaired
-and `checkBuild` finds "nothing missing" (B136, open). The power layer also defers repeated `power#5: no shore site in
-the region` goals (B137, open). Neither is a tuning issue; both need a probe/planner change.
+**Still open after these fixes (seed 11, `m7s11b`/`val11b141`, minutes 180-390).** The blue line still waits on
+its pumpjack craft because the steel smelter n167 taps n47, whose iron mine n37 is depleted and retiring. The retiring
+provider's replacement group does not include n167, a consumer added in an unbuilt plan (B141, open). B135 makes a
+fully placed module visible (n171 did become visible), but n167 still has ghosts. The power layer also defers repeated
+`power#5: no shore site in the region` goals (B137, open). Neither is a tuning issue.
 
 ## M7d: advanced oil, robots and the full mall
 
