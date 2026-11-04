@@ -1355,9 +1355,14 @@ Found in `m7s11b` (seed 11, fresh, minutes 180-330):
 - **B134 (a building module's output is a supply point).** The blue line's steel smelter stood and ran, but its module was
   still `building`, so `moduleFurnaces`/`moduleAssemblers` did not register its output. The same plan's pumpjack craft
   waited 44 game-min for 5 steel plates, so the oil field (and blue science) never started. A module being built is now a
-  supply point for its furnace/assembler output too. T2 `bootstrap-sources` "B134".
+  supply point for its furnace/assembler output too (unconditionally; the furnace setting still governs completed
+  modules). T2 `bootstrap-sources` "B134".
+- **B135 (a placed module is built before the whole plan).** A plan's modules become `built` only when the whole plan
+  finishes, so the steel smelter was invisible to the reconciler while the pumpjack in the same plan waited for its
+  steel. When a placement completes, a module with no still-valid ghost left in its rect is now marked built, even if
+  another module's place job is still open. T1 `goal-lifecycle` "B135".
 
-No new tuning numbers. Validation: `val11b134` resumed from `m7s11b` minute 300 on the fixed build.
+No new tuning numbers. Validation: `val11blue5` resumed from `m7s11b` minute 300 on the fixed build.
 
 ## M7d: advanced oil, robots and the full mall
 
