@@ -1364,6 +1364,13 @@ Found in `m7s11b` (seed 11, fresh, minutes 180-330):
 
 No new tuning numbers. Validation: `val11blue5` resumed from `m7s11b` minute 300 on the fixed build.
 
+**Still open after these fixes (seed 11, `m7s11b`/`val11blue5`, minutes 180-360).** The blue line still waits on
+its pumpjack craft because the steel smelter's iron feed delivers almost nothing. B135 makes a fully placed module
+visible (n171 did become visible), but n167 still has ghosts and its feed is a tap of n17/n47's iron trunk. Several
+producers merge into the same port; the edge probe sees the same total on every feed, so a backed-up feed is repaired
+and `checkBuild` finds "nothing missing" (B136, open). The power layer also defers repeated `power#5: no shore site in
+the region` goals (B137, open). Neither is a tuning issue; both need a probe/planner change.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
