@@ -2156,6 +2156,9 @@ function measureAndReconcile(ctx: Ctx): void {
   if (ctx.tick - meter.lastSample >= ctx.config.measureIntervalTicks) {
     meter.lastSample = ctx.tick
     MS.sampleNodes(meter, f.graph, f.layout, ctx.surface, ctx.faction.force, ctx.tick, ctx.config.measureWindowSamples)
+    // B125: built merge splitters get their filter and trunk-side priority (the crew sets them like a player would).
+    const tuned = RT.tuneMergeSplitters(ctx.surface, ctx.faction.force, f.layout)
+    if (tuned > 0) log(`[rival-engineers] faction ${ctx.faction.name}: ${tuned} merge splitter(s) set to their item, trunk side first (B125)`)
     f.reconciler ??= newReconcileState()
     // D49: labs are hand-fed by the crew until a built producer belts their pack in.
     const crewSupplied = (n: LogicalNode, item: string): boolean => {

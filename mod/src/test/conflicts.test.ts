@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, routeCheck, staleUnderRoutes } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -347,6 +347,46 @@ describe("faction conflicts", () => {
     assert(serpent.line(at) === serpent.line(want), `fouled ${serpent.line(at)}, want ${serpent.line(want)}`)
     // Without the edge's routes only the module's belt is looked at.
     assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore").length === 1, "module belt only")
+  })
+
+  test("B125: a merge splitter set to its item and trunk side sends nothing out of its branch side", () => {
+    // Seed 11 (m7c-cont10): an iron-plate merge splitter's branch-side output faced a coal route; half the plates went
+    // onto the coal line and stopped the smelters' fuel.
+    const lab = createLab(24)
+    const a = faction(lab, "merge-splitter", 30, 0)
+    const s = lab.surface
+    const x0 = math.floor(lab.origin.x)
+    const y0 = math.floor(lab.origin.y)
+    // Trunk at x0, branch at x0+1, both flowing north (planner dir 0): the trunk is on the splitter's left.
+    const ms = { x: x0, y: y0, dir: 0, x2: x0 + 1, y2: y0 }
+    assert(mergeTrunkSide(ms) === "left", "trunk side left")
+    assert(mergeTrunkSide({ x: x0 + 1, y: y0, dir: 0, x2: x0, y2: y0 }) === "right", "trunk side right")
+    assert(mergeTrunkSide({ x: x0, y: y0, dir: 1, x2: x0, y2: y0 + 1 }) === "left", "east-facing: trunk north is left")
+    const layout = newLayout()
+    layout.routes["route:m"] = { id: routeId("route:m"), item: "iron-plate", mergeSplitter: ms, steps: [], tiles: [] } as never
+    layout.routeOrder.push(routeId("route:m"))
+    s.create_entity({ name: "splitter", position: { x: x0 + 1, y: y0 + 0.5 }, direction: 0 as never, force: a.force })
+    for (const dx of [0, 1]) for (const dy of [1, 2, -1, -2, -3]) s.create_entity({ name: "transport-belt", position: { x: x0 + dx + 0.5, y: y0 + dy + 0.5 }, direction: 0 as never, force: a.force })
+    assert(tuneMergeSplitters(s, a.force, layout) === 1, "one splitter set")
+    assert(tuneMergeSplitters(s, a.force, layout) === 0, "already set")
+    const feed = s.find_entities_filtered({ type: "transport-belt", position: { x: x0 + 1.5, y: y0 + 2.5 } })[0]
+    let t = 0
+    async(600)
+    on_tick(() => {
+      t++
+      if (t < 40) for (const li of [1, 2]) feed.get_transport_line(li).insert_at_back({ name: "iron-plate", count: 1 })
+      if (t < 300) return
+      let trunk = 0
+      let branch = 0
+      for (const dy of [-1, -2, -3]) {
+        trunk += s.find_entities_filtered({ type: "transport-belt", position: { x: x0 + 0.5, y: y0 + dy + 0.5 } })[0].get_item_count()
+        branch += s.find_entities_filtered({ type: "transport-belt", position: { x: x0 + 1.5, y: y0 + dy + 0.5 } })[0].get_item_count()
+      }
+      assert(trunk > 0, `plates on the trunk side (${trunk})`)
+      assert(branch === 0, `no plate out of the branch side (${branch})`)
+      done()
+      return false
+    })
   })
 
   test("B95: an own underground between a route's underground pair, facing its flow, is an intruder to pick up", () => {

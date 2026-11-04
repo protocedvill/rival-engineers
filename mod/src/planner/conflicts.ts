@@ -13,7 +13,7 @@ import { registerBuffer } from "../modules/buffers"
 import { foreignEntitiesOn } from "../world/claims"
 import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
-import { keyX, keyY, tkey, Vec } from "./grid"
+import { ccw, DX, DY, keyX, keyY, tkey, Vec } from "./grid"
 import { dependentRoutes, findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
@@ -445,4 +445,42 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   removePoleLines(layout, bridge.dropLines)
   rehomeKeptPoles(layout, bridge.keepPoles)
   return { tiles, clearJobs, routes, keptPoles: bridge.keepPoles.length }
+}
+
+// B125 (seed 11, soak m7c-cont10): a provider-group merge splitter (`Route.mergeSplitter`) replaces the trunk tile and
+// the branch tile beside it. Its trunk-side output carries the joined flow on; its branch-side output faces whatever
+// stands in front of the branch tile. At (470,-36) that was a coal route: half of the merged iron plates went onto the
+// coal line, stranded there and stopped the iron smelters' fuel (B124 emptied the same 65 belts three times).
+// A player sets such a splitter's filter to the item and its output priority to the trunk side: every item then leaves
+// on the trunk side and waits there when the trunk is full; nothing ever leaves through the branch side.
+
+
+/** The trunk side of a merge splitter facing `dir` (planner directions) with its trunk tile at x,y and branch at x2,y2. */
+export function mergeTrunkSide(ms: { x: number; y: number; dir: number; x2: number; y2: number }): "left" | "right" {
+  const l = ccw(ms.dir)
+  return ms.x - ms.x2 === DX[l] && ms.y - ms.y2 === DY[l] ? "left" : "right"
+}
+
+/** Sets every built merge splitter's filter (its route's item) and output priority (the trunk side). Returns how many it changed. */
+export function tuneMergeSplitters(surface: LuaSurface, force: string, layout: LayoutState): number {
+  let changed = 0
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const ms = r?.mergeSplitter
+    if (r === undefined || ms === undefined || r.fluid !== undefined) continue
+    const x = (ms.x + ms.x2) / 2 + 0.5
+    const y = (ms.y + ms.y2) / 2 + 0.5
+    const side = mergeTrunkSide(ms)
+    for (const e of findEntities(surface, { position: { x, y }, type: "splitter", force, limit: 1 }) as LuaEntity[]) {
+      const fl = e.splitter_filter
+      // Read back, the filter's name is a prototype in the typings but a plain string in 2.0.77: accept both.
+      const n = fl === undefined || typeof fl === "string" ? fl : (fl.name as unknown as string | { name: string } | undefined)
+      const have = n === undefined || typeof n === "string" ? n : n.name
+      if (have === r.item && e.splitter_output_priority === side) continue
+      e.splitter_filter = { name: r.item } as never
+      e.splitter_output_priority = side
+      changed++
+    }
+  }
+  return changed
 }

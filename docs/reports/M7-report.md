@@ -1310,6 +1310,11 @@ Fix (B124), in two parts:
   stopped lane, and it gets a repair.
 - **Repair:** the repair's clog check also picks up and re-places (empties) the belts that hold a foreign item.
 
+The resumed soak (`m7c-cont10`) then emptied the same 65 coal belts three times, and they filled with iron plates again.
+The source was a merge splitter. It joins an extra iron-plate provider onto the mall's iron trunk, and its branch-side
+output faced a coal route. Merge splitters now get their item as filter and the trunk side as output priority, so
+nothing leaves through the branch side (B125).
+
 No new tuning numbers.
 
 ## M7d: advanced oil, robots and the full mall
