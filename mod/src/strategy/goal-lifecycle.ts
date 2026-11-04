@@ -20,16 +20,17 @@ export function nextGoalStatus(from: GoalStatus, to: GoalStatus, goal = "?"): Go
 }
 
 /**
- * B135: whether a module's own entities all stand in a plan: no still-valid ghost lies inside its rect. A module can be
- * marked built before the whole plan finishes (the blue line's steel smelter stood while the same plan's pumpjack waited
- * for its steel).
+ * B135: whether a module's own entities all stand in a plan. Only ghosts at the module's own entity positions block it:
+ * a route, pole line or another module's ghost passing through the rect must not keep it unbuilt. A module can be marked
+ * built before the whole plan finishes (the blue line's steel smelter stood while the same plan's pumpjack waited for its
+ * steel).
  */
-export function modulePlaced(rect: { x: number; y: number; w: number; h: number }, ghosts: readonly { valid: boolean; position: { x: number; y: number } }[]): boolean {
+export function modulePlaced(positions: readonly { x: number; y: number }[], ghosts: readonly { valid: boolean; position: { x: number; y: number } }[]): boolean {
+  const own: Record<string, boolean> = {}
+  for (const p of positions) own[`${p.x},${p.y}`] = true
   for (const gh of ghosts) {
     if (!gh.valid) continue
-    const x = gh.position.x
-    const y = gh.position.y
-    if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h) return false
+    if (own[`${gh.position.x},${gh.position.y}`] === true) return false
   }
   return true
 }

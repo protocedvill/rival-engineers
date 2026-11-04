@@ -35,14 +35,12 @@ test("B108: the factory has power once any power goal is done, even when a later
   ok(!everDone([{ kind: "production", status: "done" }], "power"), "no power goal")
 })
 
-test("B135: a module is placed when no still-valid ghost lies in its rect", () => {
-  const rect = { x: 10, y: 20, w: 8, h: 6 }
-  ok(modulePlaced(rect, []), "no ghost: placed")
-  ok(modulePlaced(rect, [{ valid: true, position: { x: 30, y: 30 } }]), "a ghost elsewhere does not block")
-  ok(!modulePlaced(rect, [{ valid: true, position: { x: 12, y: 24 } }]), "a ghost inside blocks")
-  ok(modulePlaced(rect, [{ valid: false, position: { x: 12, y: 24 } }]), "an invalid ghost does not")
-  ok(!modulePlaced(rect, [{ valid: true, position: { x: 10, y: 20 } }]), "the left/top edge counts")
-  ok(modulePlaced(rect, [{ valid: true, position: { x: 18, y: 26 } }]), "the right/bottom edge is outside")
+test("B135: a module is placed when its own entities have no still-valid ghost", () => {
+  const own = [{ x: 10.5, y: 20.5 }, { x: 12.5, y: 24.5 }]
+  ok(modulePlaced(own, []), "no ghost: placed")
+  ok(modulePlaced(own, [{ valid: true, position: { x: 11.5, y: 21.5 } }]), "a route ghost inside the rect does not block")
+  ok(!modulePlaced(own, [{ valid: true, position: { x: 12.5, y: 24.5 } }]), "a ghost on an own entity blocks")
+  ok(modulePlaced(own, [{ valid: false, position: { x: 12.5, y: 24.5 } }]), "an invalid ghost does not")
 })
 
 run("goal-lifecycle")

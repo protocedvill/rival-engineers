@@ -1787,7 +1787,9 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
         if (node === undefined || node.lifecycle === "built") continue
         const m = LO.findModule(layout, gn.id)
         if (m === undefined) continue
-        if (!GLC.modulePlaced(m.rect, ghosts)) continue
+        const own: { x: number; y: number }[] = []
+        for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        if (!GLC.modulePlaced(own, ghosts)) continue
         node.lifecycle = "built"
         node.builtTick = ctx.tick
       }
