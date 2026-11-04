@@ -961,6 +961,11 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
 - **P51, outposts on lake-cut arms (proposed, M7c.8, 2026-11-03):** an arm whose outpost has no pole path from the base is
   skipped from then on (in code). Proposed on top: place the outpost at the last land the base's poles reach, so the
   arm is still explored up to its lake.
+- **P52, the roboport network's shape (proposed, M7d.5, 2026-11-04):** one connected network per faction: a hub roboport
+  with two storage chests near the base centre (the chests are the crew's depot, so robots build from what the crew
+  brings), then roboports on a 36-tile grid next to the network where they cover the most uncovered base, up to 10
+  (settings `factory-roboport-spacing`, `factory-roboports-max`, `factory-network-robots`). Personal roboports wait for
+  modular armour with a power source (D82 b).
 
 ## 12. References
 

@@ -1378,8 +1378,35 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    three tests (one complex, pipe-fed rows and no fluid chains after the research; electric engines and plastic share
    one complex for lubricant and petroleum; a built fluid chain stays one). Not yet seen in a soak: no run has reached
    advanced oil processing.
-5. **Robots (D77, P48, P49):** a roboport network over the base with chests the mall fills, about 50 construction robots,
-   modular armour with personal roboports for the crew.
+5. **Robots (D77, P48, P49): in progress.** A roboport network over the base with chests the crew fills, about 50
+   construction robots, modular armour with personal roboports for the crew. All of the design below is the agent's
+   (proposed), not a user decision.
+   - **Four-ingredient assembler rows: done.** A flying robot frame takes four solids (engine, battery, steel, circuit).
+     `assembler-row` now takes 1–4 solids: a fourth input sideloads from the east end of the row-7 tail, beside the third
+     (the row-6 merge column moves one tile east, the row gets one tile wider). T1 `fluid-chain` "M7d.5: assembler row,
+     four ingredients": ports, power, rates. T2 validation `assembler-row flying-robot-frame 2`: 0.0733 of 0.075 frames/s
+     (97.8%). `factory-row-inputs` now allows 4 (default 2; `m7.toml` sets 4).
+   - **Robot stock: done.** Once `construction-robotics` is researched and the recipes are enabled, the design adds
+     stock sinks (`strategy/design.ts` `robotStock`, role `stock:<item>`): a two-machine assembler row with a buffer for
+     construction robots (50) and one for roboports (10), sized to fill in 30 game-min, as sinks the solver expands
+     like the mall's (frames, engines, batteries and the rest of the chain follow). T1 `design` "M7d.5: construction
+     robots and roboports stocked…".
+   - **Roboport network goal: done, not yet seen in a soak.** Generator `roboport` (5×4: a roboport and a small pole; the
+     hub variant adds two storage chests). A new goal kind `robots` (`strategy/robots.ts`): once the roboport stock row is
+     built, a hub roboport goes near the base centre, then one roboport at a time on a square grid from the hub
+     (`factory-roboport-spacing`, 36 tiles). Each new one takes a free cell next to the network (so the logistic areas
+     touch) whose construction area reaches the most module area the network does not cover yet; ties go to the cell
+     nearest the hub (`strategy/robot-grid.ts`, T1 `robot-grid`). A goal's plan region is 8 tiles around its grid point
+     (24 for the hub), so a roboport lands within about 6 tiles of it: 36 + 12 stays within the vanilla roboport's
+     logistic reach of 50. A failed cell is not tried again; the network stops at `factory-roboports-max` (10).
+   - **Crew and robots: started.** The hub's storage chests become the crew's depot (`addStockpile`): robots build ghosts
+     from whatever the crew leaves there. The crew puts construction robots from the stock into the hub roboport until
+     the network has `factory-network-robots` (50). A place job whose ghost a robot built is done (`robot-built`), not
+     failed `ghost-removed`, so its fuel jobs go on (T2 `jobs` "M7d.5: a place job whose ghost a construction robot
+     builds…"). A robot-built buffer chest gets its slot limit. Still to do: keep the crew off place jobs the robots can
+     do (the two now race), robot deconstruction for clear jobs.
+   - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
+     power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
 7. **In-place upgrades (D82 a, user request in-session 2026-11-03).** Once a better entity is researched and the mall
    stockpile holds enough of it, existing modules are upgraded where they stand rather than rebuilt: red belts
@@ -1428,6 +1455,13 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Joint port egress box | `planner/policy.ts` `placement.portEgress` (EARLY_COMPACT) | 50 tiles (0 turns it off) | Agent guess (proposed): seed 11 g104's bottleneck was beyond 25 tiles; 50 caught it and 75 changed nothing. A larger box costs more and rejects more spots. | no (policy field) |
 | Egress check retries | `planner/placement.ts` `EGRESS_RETRIES` | 6 crowded spots | Agent guess (proposed): bounds the rescans of one radius; after that the best spot is taken unchecked, as before the check. | no |
 | Egress check work per node | `planner/placement.ts` `EGRESS_WORK` | 0.25 units | Calibration (proposed): a node's residual moves cost about a quarter of a placement unit. | no |
+| Robot stock | `strategy/design.ts` `ROBOT_STOCK`, `ROBOPORT_STOCK` | 50 construction robots, 10 roboports | Agent guess (M7d.5, proposed): 50 robots is D77's "about 50"; 10 roboports is the network's default size. | no |
+| Robot stock fill time | `strategy/design.ts` `STOCK_FILL_SECONDS` | 1,800 s | Agent guess (proposed): the stock rows are sized to fill their buffers in 30 game-min, so they stay small. | no |
+| Roboport grid spacing | `settings.ts` `factory-roboport-spacing` | 36 tiles | Agent guess (proposed): neighbours may each land 6 tiles off their point, and 36 + 12 = 48 keeps their logistic areas (reach 50 for the vanilla roboport) touching. | yes |
+| Roboports per faction | `settings.ts` `factory-roboports-max` | 10 | Agent guess (proposed): about a 400 × 400 base at spacing 36. | yes |
+| Robots in the network | `settings.ts` `factory-network-robots` | 50 | D77 ("about 50 construction robots"). | yes |
+| Hub storage chests | `strategy/robots.ts` `HUB_CHESTS` | 2 | Agent guess (proposed): room for a depot's worth of building materials beside the hub. | no |
+| Roboport plan window | `strategy/robots.ts` `CELL_WINDOW`, `HUB_WINDOW` | 8 / 24 tiles (half-size) | Agent guess (proposed): a cell's roboport stays near its grid point; the hub only fixes the grid's origin, so it may go farther from the centre. | no |
 | Rip-up loop guard | `planner/policy.ts` `router.ripLoop` (EARLY_COMPACT) | 1 (on; 0 off) | Agent proposal: a connection ripping the same route twice moves a module at once; no threshold beyond "twice". | no (policy field) |
 | Robot count per faction (P49) | not implemented yet | ~50 | Approved as "about 50" with P49; the exact number is set when robots are built (M7d). | no |
 | Depot spot search radius | `strategy/bootstrap.ts` `DEPOT_SEARCH_RADIUS` | 64 tiles | Agent guess (B116): was 24; by game-minute 450 the factory filled the hub and no depot fit. | no |
