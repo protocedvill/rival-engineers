@@ -817,6 +817,13 @@ test("M7 B (seed 11 g111): a retiring provider's consumers get one replacement o
   eq(byRole(g.nodes, "coal*>old~2")!.newSite, true, "on a site of its own")
 })
 
+test("M7 B: a retiring provider's consumer whose port took no merge keeps the old belt (no heir edge)", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
+  const g = design(ctx({ enabled: ELECTRIC, retiring: { "coal*>old": true }, noMerge: { [`${SMELT_CU}.in-fuel`]: true }, sharing: { keep, spare: {} } }), { item: RED, perSecond: 1 })
+  const feeds = g.edges.filter((e) => e.item === "coal" && e.merge === true)
+  eq(feeds.map((e) => e.to).join(","), SMELT_FE, `only the iron smelter gets a replacement: ${g.edges.filter((e) => e.item === "coal").map((e) => e.role).join(", ")}`)
+})
+
 test("M7 C: a top-up into a belt that still feeds its consumer below factory-min-top-up gets no provider", () => {
   const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
   const base = { enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {} } }

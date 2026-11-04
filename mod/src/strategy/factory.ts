@@ -1422,6 +1422,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     baseRoutes: entry.job!.baseRoutes,
     addedPoles: entry.job!.poleJob?.added,
     expanded: entry.job!.expanded,
+    covered: entry.job!.covered,
   }, f.layout)
   if (prepared.status === "rejected") {
     const decision = prepared.code === "stale-base-revision" ? "stale-plan-rejected" : "invalid-plan-delta"

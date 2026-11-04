@@ -60,7 +60,7 @@ function byCost(a: { cost: number; goal: MergeGoal }, b: { cost: number; goal: M
  * A splitter merge needs the trunk belt to run straight through (it enters and leaves the splitter straight) and the
  * splitter's far output lane to stay empty, so that lane backs up and every item goes into the trunk.
  */
-export function mergeGoals(layout: LayoutState, to: { module: string; port: string }, from: { module: string; port: string } | undefined, lane?: { capacity: number; share: number }): MergeGoal[] {
+export function mergeGoals(layout: LayoutState, to: { module: string; port: string }, from: { module: string; port: string } | undefined, lane?: { capacity: number; share: number }, score?: (this: void, x: number, y: number) => number): MergeGoal[] {
   const fm = from !== undefined ? findModule(layout, from.module) : undefined
   const fx = fm !== undefined ? fm.rect.x + fm.rect.w / 2 : 0
   const fy = fm !== undefined ? fm.rect.y + fm.rect.h / 2 : 0
@@ -146,12 +146,27 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   splitter.sort((a, b) => byCost(a, b))
   const out: MergeGoal[] = []
   // Each candidate costs a full search: try the nearest few, then let the ordinary rip/re-place retries take over.
-  const sides = (): void => {
-    for (const c of spread(sideLoad, MAX_SIDE_LOADS)) out.push(c.goal)
+  // M7 (B): with `score` (how many other ports a join there also feeds), the scoring points come first, best first, in up
+  // to half the slots; the rest are spread as before.
+  const pick = (list: { goal: MergeGoal; cost: number }[], max: number): void => {
+    if (score === undefined) {
+      for (const c of spread(list, max)) out.push(c.goal)
+      return
+    }
+    const top: { goal: MergeGoal; cost: number; n: number }[] = []
+    const rest: { goal: MergeGoal; cost: number }[] = []
+    for (const c of list) {
+      const n = score(c.goal.x, c.goal.y)
+      if (n > 0) top.push({ goal: c.goal, cost: c.cost, n })
+      else rest.push(c)
+    }
+    top.sort((a, b) => (a.n !== b.n ? b.n - a.n : byCost(a, b)))
+    const k = math.min(top.length, math.floor(max / 2))
+    for (let i = 0; i < k; i++) out.push(top[i].goal)
+    for (const c of spread(rest, max - k)) out.push(c.goal)
   }
-  const splits = (): void => {
-    for (const c of spread(splitter, MAX_SPLITTERS)) out.push(c.goal)
-  }
+  const sides = (): void => pick(sideLoad, MAX_SIDE_LOADS)
+  const splits = (): void => pick(splitter, MAX_SPLITTERS)
   if (lane === undefined) {
     sides()
     splits()

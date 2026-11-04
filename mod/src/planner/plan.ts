@@ -13,7 +13,7 @@ import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey,
 import { mergeGoals } from "./merge"
 import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, landsDownstream, pointFeeds, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -207,6 +207,13 @@ export interface PlanJob {
   winMemo?: Record<string, number>
   /** With `winMemo`: the connection was found in rip mode there (it starts in rip mode). */
   ripMemo?: Record<string, boolean>
+  /**
+   * M7 (B, seed 11 g111): merge connections that need no route of their own: a route from the same source port already
+   * joins a belt that lands at their port (a trunk above their tap). Connection → that route's connection.
+   */
+  covered?: Record<string, string>
+  /** M7 (B): merge connections put back once behind a sibling from the same source after their goals all failed. */
+  deferred?: Record<string, number>
   /** M7: the fluid connection being routed (its search runs over several steps). */
   pipe?: PipeJob
   current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
@@ -476,6 +483,8 @@ function startRouting(job: PlanJob): void {
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
   })
   job.queue = conns.map((c) => c.id)
+  job.covered = undefined
+  job.deferred = undefined
   job.phase = "route"
 }
 
@@ -873,7 +882,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   // feeds); it joins that route like a provider-group merge (B60).
   if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
     const share = policy.router.sideLoadLaneShare
-    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined)
+    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined, siblingScore(job, c))
     if (goals.length > 0) {
       req.mergeGoals = goals
       applyMergeGoal(req, goals[0])
@@ -1371,6 +1380,12 @@ function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolic
     if (job.pipe === undefined) return 1
     return pipeStep(job, terrain, policy, budget)
   }
+  const via = coveredBy(job, c)
+  if (via !== undefined) {
+    ;(job.covered ??= {})[id] = via
+    if (planTrace.searches !== undefined) planTrace.searches(`belt ${id} covered by ${via}`)
+    return 1
+  }
   const winScale = job.winMemo?.[id]
   const req = routeRequest(job, c, policy, {}, winScale)
   if (isPlanFailure(req)) {
@@ -1394,8 +1409,76 @@ function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolic
   return 0
 }
 
+/**
+ * M7 (B, user request in-session 2026-11-03; seed 11 g111): the connection (a merge) of a route from the same source port
+ * that already lands at `c`'s port: its join sits on a trunk above `c`'s tap, so `c`'s items arrive without a belt of
+ * its own. A heir mine of a retiring coal mine joined its tap tree once for one smelter; each other smelter's merge
+ * searched a 200×585 window for its own way into a sealed fuel line.
+ */
+function coveredBy(job: PlanJob, c: ConnectionRequest): string | undefined {
+  if (c.merge !== true || c.from === undefined || c.fluid !== undefined) return undefined
+  const to = resolve(job, c.to)
+  for (const rid of sameSource(job, resolve(job, c.from), c.id)) {
+    const r = job.layout.routes[rid as RouteId]
+    if (r !== undefined && !routeDangles(job.layout, rid) && landsDownstream(job.layout, rid, to)) return r.conn
+  }
+  return undefined
+}
+
+/**
+ * M7 (B, user request in-session 2026-11-03): scores a merge goal by how many sibling merges (same source, not routed or
+ * covered yet) a join there would feed too (`mergeGoals` puts such points first; P44's splitters-first order holds per
+ * kind). One heir mine of a retiring coal mine then joins its tap tree above every smelter it replaces, and the others
+ * are covered (seed 11 g111: the tree's root ran 27 tiles from the old mine, its first tap 3 tiles in).
+ */
+function siblingScore(job: PlanJob, c: ConnectionRequest): ((this: void, x: number, y: number) => number) | undefined {
+  if (c.merge !== true || c.from === undefined) return undefined
+  const from = resolve(job, c.from)
+  const ports: PortRef[] = []
+  for (const o of job.request.connections) {
+    if (o.id === c.id || o.merge !== true || o.from === undefined || job.covered?.[o.id] !== undefined) continue
+    if (job.layout.routes[routeId(`route:${o.id}`)] !== undefined) continue
+    const f = resolve(job, o.from)
+    if (f.module === from.module && f.port === from.port) ports.push(resolve(job, o.to))
+  }
+  if (ports.length === 0) return undefined
+  const layout = job.layout
+  return (x, y) => {
+    let n = 0
+    for (const p of ports) if (pointFeeds(layout, x, y, p)) n++
+    return n
+  }
+}
+
+/** M7 (B): a queued merge connection from the same source as `c` (it may join a trunk above `c`'s port). */
+function siblingQueued(job: PlanJob, c: ConnectionRequest): boolean {
+  if (c.from === undefined) return false
+  const from = resolve(job, c.from)
+  for (const id of job.queue) {
+    const o = connection(job, id)
+    if (o.merge !== true || o.from === undefined) continue
+    const f = resolve(job, o.from)
+    if (f.module === from.module && f.port === from.port) return true
+  }
+  return false
+}
+
 /** Every connection routed or failed: guard the lanes (B57, B85), then compare, poles, done or failed. */
 function endRouting(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): number {
+  // M7 (B): a covering route ripped or re-routed since: its covered connections route again (twice at most each).
+  for (const [id] of pairs(job.covered ?? {})) {
+    const c = connection(job, id as string)
+    if (coveredBy(job, c) !== undefined) continue
+    delete job.covered![id as string]
+    const n = (job.deferred ??= {})[id as string] ?? 0
+    if (n >= 2) {
+      fail(job, id as string, "no path (its covering route is gone)")
+      continue
+    }
+    job.deferred[id as string] = n + 1
+    job.queue.push(id as string)
+  }
+  if (job.queue.length > 0) return 1
   let failed = false
   for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
   // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
@@ -1469,6 +1552,14 @@ function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, pol
       job.stats.searches++
       return
     }
+  }
+  // M7 (B): every merge goal failed, and a sibling from the same source is still queued: it may join a trunk above this
+  // port, which then covers this one. Try that first (once), before rip mode.
+  if (!cur.rip && c.merge === true && (job.deferred?.[cur.conn] ?? 0) === 0 && siblingQueued(job, c)) {
+    ;(job.deferred ??= {})[cur.conn] = 1
+    job.queue.push(cur.conn)
+    job.current = undefined
+    return
   }
   if (!cur.rip) restartRoute(job, terrain, policy, cur, true, cur.search.reason === "no path")
   else {

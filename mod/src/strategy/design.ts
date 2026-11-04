@@ -810,8 +810,16 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const heirs: Record<string, Demand[]> = {}
   const heirRoles: string[] = []
   for (let i = 0; i < fresh.length; i++) {
-    const p = heirOf[`${fresh[i].to}.${fresh[i].toPort}`]
+    const port = `${fresh[i].to}.${fresh[i].toPort}`
+    const p = heirOf[port]
     if (p === undefined) continue
+    // A port that took no merge (B71, learned from a failed plan: seed 11 g111's sealed copper-smelter fuel line) keeps
+    // the retiring provider's belt until that provider is gone; then it is fed again like any consumer.
+    if (w.ctx.noMerge?.[port] === true) {
+      fresh.splice(i, 1)
+      i--
+      continue
+    }
     if (heirs[p] === undefined) {
       heirs[p] = []
       heirRoles.push(p)

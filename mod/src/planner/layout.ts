@@ -1132,6 +1132,66 @@ function tapsReach(layout: LayoutState, rid: RouteId, to: PortRef, goal: { x: nu
   return false
 }
 
+/**
+ * M7 (B): whether the items of route `rid` reach port `to`, by position: a route that joins another (side-load or
+ * splitter merge) feeds only what lies downstream of its join on that route: the route's own end, and the splitter taps
+ * at or after the join (taps of taps too). `routesLand` accepts any tap of the joined trunk; a join below a tap's
+ * splitter does not feed that tap.
+ */
+export function landsDownstream(layout: LayoutState, rid: string, to: PortRef): boolean {
+  const m = findModule(layout, to.module)
+  const p = m !== undefined ? findPort(m, to.port) : undefined
+  if (m === undefined || p === undefined) return false
+  const goal = portOutside(m, p)
+  const inner = portTile(m, p)
+  let r: Route | undefined = layout.routes[rid as RouteId]
+  let from = 0
+  for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+    if (join === undefined) return reachesFrom(layout, r, from, to, goal, inner, 0)
+    const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+    const next: Route | undefined = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
+    if (next === undefined) return false
+    from = -1
+    for (let i = 0; i < next.steps.length && from < 0; i++) if (next.steps[i].x === join.x && next.steps[i].y === join.y) from = i
+    if (from < 0) return false
+    r = next
+  }
+  return false
+}
+
+/**
+ * M7 (B): whether items put onto the route belt at tile (x, y) (a merge goal) reach port `to`: the route's end, or a
+ * splitter tap at or after that tile. Ports that cannot be resolved count as not reached.
+ */
+export function pointFeeds(layout: LayoutState, x: number, y: number, to: PortRef): boolean {
+  const owner: RouteId | undefined = layout.routeOcc[tkey(x, y)]
+  const r = owner !== undefined ? layout.routes[owner] : undefined
+  const m = findModule(layout, to.module)
+  const p = m !== undefined ? findPort(m, to.port) : undefined
+  if (r === undefined || m === undefined || p === undefined) return false
+  let at = -1
+  for (let i = 0; i < r.steps.length && at < 0; i++) if (r.steps[i].x === x && r.steps[i].y === y) at = i
+  if (at < 0) return false
+  if (reachesFrom(layout, r, at, to, portOutside(m, p), portTile(m, p), 0)) return true
+  // A merge route's items go on to the route it joins.
+  return (r.merge ?? r.mergeSplitter) !== undefined && landsDownstream(layout, r.id, to)
+}
+
+function reachesFrom(layout: LayoutState, r: Route, from: number, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }, depth: number): boolean {
+  if (endsAt(r, to, goal, inner)) return true
+  if (depth >= 8) return false
+  for (const id of layout.routeOrder) {
+    const t = layout.routes[id]
+    const s0 = t?.steps[0]
+    if (t === undefined || t.tapOf !== r.id || s0 === undefined) continue
+    let at = -1
+    for (let i = from; i < r.steps.length && at < 0; i++) if (r.steps[i].x === s0.x && r.steps[i].y === s0.y) at = i
+    if (at >= 0 && reachesFrom(layout, t, 0, to, goal, inner, depth + 1)) return true
+  }
+  return false
+}
+
 /** B84: whether a route of the layout already starts at belt-out port `from` (directly, not as a splitter tap). */
 export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
   for (const rid of layout.routeOrder) {

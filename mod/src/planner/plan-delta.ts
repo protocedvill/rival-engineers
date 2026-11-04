@@ -16,6 +16,8 @@ export interface PlanDeltaInput {
   addedPoles?: PoleId[]
   /** Request id → placed module id, from the plan's expansion decisions (B23 mine completion). */
   expanded?: Record<string, { module: string; units: number }>
+  /** M7 (B): merge connections that ride on another connection's route (`PlanJob.covered`): they share its routes. */
+  covered?: Record<string, string>
 }
 
 /** Logical consequences of the candidate, derived once before the adapter creates any Factorio work. */
@@ -143,6 +145,14 @@ export function preparePlanDelta(input: PlanDeltaInput, current: LayoutState): P
     }
     if (route.tapOf !== undefined) list.push(route.tapOf)
     list.push(id)
+  }
+  // M7 (B): a covered merge connection's items travel on its covering connection's routes.
+  const covered: string[] = []
+  for (const [conn] of pairs(input.covered ?? {})) covered.push(conn as string)
+  covered.sort()
+  for (const conn of covered) {
+    const via = routesByConn[input.covered![conn]]
+    if (via !== undefined && routesByConn[conn] === undefined) routesByConn[conn] = [...via]
   }
   const poleLines: { id: string; to: string; from: string }[] = []
   for (const line of input.layout.poleLines ?? []) poleLines.push({ id: line.id, to: line.to, from: line.from })

@@ -7,7 +7,7 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, rerootTap, Route, unmarkModule } from "../src/planner/layout"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, rerootTap, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
@@ -710,6 +710,39 @@ test("re-root: a tap keeps its belt and the trunk's first part when the trunk go
   eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
   eq(state.routes["route:ab"].tapOf, "route:ac")
   noProblems(state, terrain, "trunk routed again")
+})
+
+test("M7 B (seed 11 g111): a heir's merges into one tap tree: the join above the tap covers the other port", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  const m = source("m", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  place(state, m, 6, 2)
+  const tp = policy({ topology: "splitter-tap" })
+  const base = request([a, b, c, m], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  runJob(newRoutingJob(base, YELLOW, state, ["ab", "ac"]), terrain, F, tp)
+  const trunk = state.routes["route:ab"]
+  const sp = state.routes["route:ac"].steps[0]
+  let at = 0
+  while (trunk.steps[at].x !== sp.x || trunk.steps[at].y !== sp.y) at++
+  ok(pointFeeds(state, trunk.steps[0].x, trunk.steps[0].y, { module: "c", port: "in" }), "the trunk's head feeds the tap")
+  eq(pointFeeds(state, trunk.steps[at + 1].x, trunk.steps[at + 1].y, { module: "c", port: "in" }), false, "below the splitter it does not")
+  ok(pointFeeds(state, trunk.steps[at + 1].x, trunk.steps[at + 1].y, { module: "b", port: "in" }), "the trunk's own end, from anywhere on it")
+  const mb: ConnectionRequest = { ...conn("mb", "m", "b"), merge: true }
+  const mc: ConnectionRequest = { ...conn("mc", "m", "c"), merge: true }
+  const job = runJob(newRoutingJob(request([a, b, c, m], [conn("ab", "a", "b"), conn("ac", "a", "c"), mb, mc], 40, 30), YELLOW, state, ["mb", "mc"]), terrain, F, tp)
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  const routed = state.routes["route:mb"] !== undefined ? "mb" : "mc"
+  const other = routed === "mb" ? "mc" : "mb"
+  eq(state.routes[`route:${other}`], undefined, `${other} has no belt of its own`)
+  eq(job.covered?.[other], routed, `${other} rides on ${routed}`)
+  ok(landsDownstream(state, `route:${routed}`, { module: "b", port: "in" }) && landsDownstream(state, `route:${routed}`, { module: "c", port: "in" }), "one join feeds both ports")
+  noProblems(state, terrain, "one heir join")
 })
 
 test("plan: a module whose port is walled in is re-placed elsewhere, then routed", () => {

@@ -1252,9 +1252,27 @@ its own mine and its own long merge belt.
 - **C (`factory-min-top-up`, proposed 0.05/s).** A merge edge below this rate gets no provider: a short provider's
   residual (B60) or a retiring provider's replacement (D76). For a retiring provider, such a consumer is planned again
   after the old mine is removed (its edge goes with the mine's routes).
+- **B (planner).** A heir mine's merges into one tap tree need only one join, if it lands above the other ports' taps:
+  - **Covered connections:** a merge connection whose own source already has a route that lands at its port gets no
+    belt of its own (`PlanJob.covered`). `layout.ts` `landsDownstream` / `pointFeeds` check this by position: a join
+    feeds the joined route's end, plus only the taps at or after the join. Its graph edge rides on that route
+    (`plan-delta` `routesByConn`). If the covering route is ripped later, the connection routes again.
+  - **Goal order:** `mergeGoals` takes a score (how many sibling ports a join there also feeds) and puts scoring points
+    first, in up to half the slots. P44's order holds within each kind.
+  - **Deferral:** a merge whose goals all fail waits once behind a queued sibling before rip mode.
+- **B (design, again).** A heir whose port took no merge (`noMerge`, learned from a failed plan) gets no replacement. It
+  keeps the retiring provider's belt until that provider is gone, then it is fed again like any consumer.
+- **Soak `m7c-cont6`** (from minute 600, on the design part of B and C only) stopped at the same g111 stall. Its new
+  design had 21 modules, not 24. The three base heirs (n34, n178, n36) shared one mine, n181's 0.004/s was dropped, and
+  the blue line kept its four mines. Its replay costs 26.3M work units and fails on the same two connections:
+  - **n36's fuel:** n36's fuel line taps the tree's root route 3 tiles from the old mine. The only join above that tap
+    lies in those first tiles, and they have no free side. n36's own line is sealed in by the base. The next attempt
+    learns `noMerge` for that port, and the design part above then leaves n36 on n38's belt.
+  - **The circuit cluster's copper ore** (option D, not done).
 - **Not done:** growing the retiring mine instead of replacing it. n38 is retiring because its patch has no ore left
   in its growth area.
-- T1: two new design tests (`M7 B`, `M7 C`); the g78 split test now names the heir group's role.
+- T1: new design tests (`M7 B` ×2, `M7 C`) and a planner test (`M7 B`, one join covers a tap). The g78 split test now
+  names the heir group's role.
 
 ## M7d: advanced oil, robots and the full mall
 
