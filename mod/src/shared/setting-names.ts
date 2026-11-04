@@ -111,6 +111,7 @@ export const Settings = {
   factoryRoboportsMax: "rival-engineers-factory-roboports-max",
   factoryRoboportSpacing: "rival-engineers-factory-roboport-spacing",
   factoryNetworkRobots: "rival-engineers-factory-network-robots",
+  factoryRobotFirstSeconds: "rival-engineers-factory-robot-first-seconds",
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",
   supplyRadius: "rival-engineers-supply-radius",
   supplyMinTake: "rival-engineers-supply-min-take",

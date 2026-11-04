@@ -831,6 +831,30 @@ function builtInstead(faction: FactionState, p: Extract<JobPayload, { kind: "pla
   return e !== undefined && e.valid && !e.to_be_deconstructed() ? e : undefined
 }
 
+/**
+ * M7d.5: place jobs the faction's construction robots can do now, which the crew leaves to them for
+ * `factory-robot-first-seconds` after the job was made: the ghost is in a network's construction range, the network
+ * has a free robot and its storage holds the item. After that the crew builds it like any other (the fallback when the
+ * robots never come). Undefined when no network has a free robot.
+ */
+function robotWork(faction: FactionState, tick: number, config: Config): ((this: void, job: CrewJob) => boolean) | undefined {
+  const window = config.factoryRobotFirstSeconds * 60
+  if (window <= 0) return undefined
+  const surface = factionSurface(faction)
+  const networks = game.forces[faction.force]?.logistic_networks[surface.name] ?? []
+  const free = networks.filter((n) => n.valid && n.available_construction_robots > 0)
+  if (free.length === 0) return undefined
+  return (job) => {
+    const p = job.payload
+    if (p.kind !== "place" || tick - job.createdTick >= window || !p.ghost.valid) return false
+    for (const n of free) {
+      if (n.get_item_count(p.item) <= 0) continue
+      for (const cell of n.cells) if (cell.valid && cell.is_in_construction_range(p.position)) return true
+    }
+    return false
+  }
+}
+
 /** Fails ready jobs whose targets are gone, so nobody claims them. */
 function dropDeadJobs(faction: FactionState, tick: number): void {
   const board = faction.board
@@ -902,10 +926,12 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
   if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick, coveredItems(board, held, tick))) return
   const rejected: Record<number, string> = {}
+  const robots = robotWork(faction, tick, config)
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
     if (!hasMaterials(job, avail)) { rejected[job.id] = "materials"; return false }
     if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) { rejected[job.id] = "fuel-target"; return false }
+    if (robots !== undefined && robots(job)) { rejected[job.id] = "robots"; return false }
     return true
   }
   let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)

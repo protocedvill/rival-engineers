@@ -324,10 +324,8 @@ describe("job board", () => {
     })
   })
 
-  test("M7d.5: a place job whose ghost a construction robot builds is done (robot-built), not failed", () => {
-    // The crew has no belts (they are in the network's storage chest, not a stockpile): only the robots can build.
-    const lab = createLab(32)
-    const faction = createFaction(newFactionName("robots"), { position: at(lab, -10, 8), crew: 1 })
+  /** A powered roboport with 10 robots and a storage chest of 20 belts for `faction`, and six belt ghosts with place jobs. */
+  function robotScene(lab: Lab, faction: FactionState): number[] {
     const f = faction.force
     const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: at(lab, -6, 0), force: f })!
     eei.electric_buffer_size = 1e9
@@ -342,7 +340,17 @@ describe("job board", () => {
       const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, x + 0.5, 10.5), force: f })!
       ids.push(addPlaceJob(faction, g, {})!)
     }
+    return ids
+  }
+
+  test("M7d.5: a place job whose ghost a construction robot builds is done (robot-built), not failed", () => {
+    // The crew has no belts (they are in the network's storage chest, not a stockpile): only the robots can build.
+    setConfigOverride("factoryRobotFirstSeconds", 0)
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots"), { position: at(lab, -10, 8), crew: 1 })
+    const ids = robotScene(lab, faction)
     awaitBoard(faction, 3600, () => {
+      clearConfigOverrides()
       for (const id of ids) {
         const job = faction.board.jobs[id]
         const p = job.payload as Extract<JobPayload, { kind: "place" }>
@@ -350,6 +358,21 @@ describe("job board", () => {
         assert(p.built !== undefined && p.built.valid && p.built.name === "transport-belt", `job ${id}: the built belt is recorded`)
       }
       assert(itemCount(storage.crew[faction.crew[0]].character, "transport-belt") === 0, "the crew placed none")
+    })
+  })
+
+  test("M7d.5: the crew leaves place jobs the robots can do now to them (factory-robot-first-seconds)", () => {
+    // The crew has belts of its own next to it, yet the robots build every ghost.
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-first"), { position: at(lab, -10, 8), crew: 1 })
+    const own = stockpile(lab, faction, -8.5, 10.5, { "transport-belt": 6 })
+    const ids = robotScene(lab, faction)
+    awaitBoard(faction, 3600, () => {
+      for (const id of ids) {
+        const job = faction.board.jobs[id]
+        assert(job.status === "done" && job.reason === "robot-built", `job ${id}: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+      }
+      assert(own.get_item_count("transport-belt") === 6, `the crew's belts stay (${own.get_item_count("transport-belt")})`)
     })
   })
 

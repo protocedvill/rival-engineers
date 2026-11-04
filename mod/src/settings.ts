@@ -964,6 +964,15 @@ data.extend([
     maximum_value: 1000,
     order: "j-bm",
   },
+  {
+    type: "double-setting",
+    name: Settings.factoryRobotFirstSeconds,
+    setting_type: "runtime-global",
+    default_value: 60,
+    minimum_value: 0,
+    maximum_value: 3600,
+    order: "j-bn",
+  },
   // B31: when an urgent job may pull a busy crew member off its batch.
   {
     type: "double-setting",

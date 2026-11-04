@@ -1403,8 +1403,10 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      from whatever the crew leaves there. The crew puts construction robots from the stock into the hub roboport until
      the network has `factory-network-robots` (50). A place job whose ghost a robot built is done (`robot-built`), not
      failed `ghost-removed`, so its fuel jobs go on (T2 `jobs` "M7d.5: a place job whose ghost a construction robot
-     builds…"). A robot-built buffer chest gets its slot limit. Still to do: keep the crew off place jobs the robots can
-     do (the two now race), robot deconstruction for clear jobs.
+     builds…"). A robot-built buffer chest gets its slot limit. The crew leaves a new place job to the robots for
+     `factory-robot-first-seconds` (60) when they can do it now: the ghost is in a network's construction range, the
+     network has a free robot and its storage holds the item; after that the crew builds it as before (T2 `jobs` "M7d.5:
+     the crew leaves place jobs…", which fails with the window at 0). Still to do: robot deconstruction for clear jobs.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
@@ -1460,6 +1462,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Roboport grid spacing | `settings.ts` `factory-roboport-spacing` | 36 tiles | Agent guess (proposed): neighbours may each land 6 tiles off their point, and 36 + 12 = 48 keeps their logistic areas (reach 50 for the vanilla roboport) touching. | yes |
 | Roboports per faction | `settings.ts` `factory-roboports-max` | 10 | Agent guess (proposed): about a 400 × 400 base at spacing 36. | yes |
 | Robots in the network | `settings.ts` `factory-network-robots` | 50 | D77 ("about 50 construction robots"). | yes |
+| Robot-first window | `settings.ts` `factory-robot-first-seconds` | 60 s | Agent guess (proposed): long enough for a robot to fly across a 110-tile construction area (~30 s), short enough that a job the robots miss is not held up for long. | yes |
 | Hub storage chests | `strategy/robots.ts` `HUB_CHESTS` | 2 | Agent guess (proposed): room for a depot's worth of building materials beside the hub. | no |
 | Roboport plan window | `strategy/robots.ts` `CELL_WINDOW`, `HUB_WINDOW` | 8 / 24 tiles (half-size) | Agent guess (proposed): a cell's roboport stays near its grid point; the hub only fixes the grid's origin, so it may go farther from the centre. | no |
 | Rip-up loop guard | `planner/policy.ts` `router.ripLoop` (EARLY_COMPACT) | 1 (on; 0 off) | Agent proposal: a connection ripping the same route twice moves a module at once; no threshold beyond "twice". | no (policy field) |

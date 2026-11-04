@@ -226,6 +226,8 @@ export interface Config {
   factoryRoboportSpacing: number
   /** M7d.5: construction robots the crew keeps in the network (put into the hub roboport; proposed). */
   factoryNetworkRobots: number
+  /** M7d.5: seconds the crew leaves a new place job to the robots when they can do it now (0 = never; proposed). */
+  factoryRobotFirstSeconds: number
   /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
   preemptFuelSeconds: number
   /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */
