@@ -1405,7 +1405,8 @@ T1 `reconcile` "B140".
   and water tiles inside the box now drop the nearest well, like a structure already does.
 
 `val1212fix3` (from minute 660): g109 built instead of being abandoned, and g111 plans instead of failing immediately.
-T2 `bootstrap-sources` "B142".
+A follow-up makes route-only ghost failures reroute those routes around the failing tiles (B123) rather than abandon
+the plan; `StampResult` now carries the failed specs. T2 `bootstrap-sources` "B142".
 
 #### M7c.9 follow-up 16: seed 44444’s blue line has a design edge the graph never got (B143)
 
