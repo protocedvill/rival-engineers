@@ -1398,6 +1398,14 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 9. **Solar panels and accumulators (D82 c)** where adding or upgrading steam power costs more; panels are meant to be
    easy to move. *Proposed:* a solar-field module (panels, accumulators, poles) placed like other modules, picked up and
    re-placed when its ground is needed.
+10. **Cliff explosives and landfill (D83, user request in-session 2026-11-04), at the end of M7d.** The faction
+    researches `cliff-explosives` and `landfill`, and the mall makes both. Cliff explosives destroy cliffs that block a
+    site or a route; landfill fills water under one (lake-cut arms, P51). *Proposed:*
+    - **Engine tests first, as with robots (P48):** throwing a capsule and placing tiles are player actions. A
+      player-less character may not be able to do them, and then a scripted equivalent is needed (a cliff-explosive
+      projectile created at the cliff, `surface.set_tiles` for landfill paid from the crew's inventory).
+    - **Cost:** the planner sees a cliff or water tile as passable at a cost, once the item can be made. A removal is
+      planned when it is cheaper than the detour or the next site.
 
 ### Magic numbers for the user (M7)
 
