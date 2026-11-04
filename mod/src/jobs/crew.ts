@@ -715,6 +715,11 @@ function jobFailed(
     failJob(board, job.id, "ghost-removed", tick, member.id)
     return
   }
+  // M7d.5: the robots took a clear job's target down while this member was on its way.
+  if (payload.kind === "clear" && payload.robotOrdered === true && !payload.target.valid) {
+    complete(board, job.id, member.id, tick)
+    return
+  }
   // B66 (5387208): Factorio accepts a ghost on top of the same live entity, and that ghost can never be revived. The
   // entity it asks for already stands, so the job is done: drop the ghost instead of retrying it forever.
   if (payload.kind === "place" && action?.reason === "cannot-place") {
@@ -832,9 +837,10 @@ function builtInstead(faction: FactionState, p: Extract<JobPayload, { kind: "pla
 }
 
 /**
- * M7d.5: place jobs the faction's construction robots can do now, which the crew leaves to them for
+ * M7d.5: place and clear jobs the faction's construction robots can do now, which the crew leaves to them for
  * `factory-robot-first-seconds` after the job was made: the ghost is in a network's construction range, the network
- * has a free robot and its storage holds the item. After that the crew builds it like any other (the fallback when the
+ * has a free robot and its storage holds the item; or the clear job's target is in range (it is then marked for
+ * deconstruction, once). After that the crew builds it like any other (the fallback when the
  * robots never come). Undefined when no network has a free robot.
  */
 function robotWork(faction: FactionState, tick: number, config: Config): ((this: void, job: CrewJob) => boolean) | undefined {
@@ -846,7 +852,21 @@ function robotWork(faction: FactionState, tick: number, config: Config): ((this:
   if (free.length === 0) return undefined
   return (job) => {
     const p = job.payload
-    if (p.kind !== "place" || tick - job.createdTick >= window || !p.ghost.valid) return false
+    if (tick - job.createdTick >= window) return false
+    if (p.kind === "clear") {
+      // Trees, rocks and the faction's own entities: the robots take them down (marked for deconstruction once).
+      if (!p.target.valid) return false
+      if (p.robotOrdered) return true
+      for (const n of free) {
+        for (const cell of n.cells) {
+          if (!cell.valid || !cell.is_in_construction_range(p.target.position)) continue
+          p.robotOrdered = p.target.order_deconstruction(faction.force)
+          return p.robotOrdered === true
+        }
+      }
+      return false
+    }
+    if (p.kind !== "place" || !p.ghost.valid) return false
     for (const n of free) {
       if (n.get_item_count(p.item) <= 0) continue
       for (const cell of n.cells) if (cell.valid && cell.is_in_construction_range(p.position)) return true
@@ -875,6 +895,10 @@ function dropDeadJobs(faction: FactionState, tick: number): void {
         continue
       }
       gone = "ghost-removed"
+    } else if (payload.kind === "clear" && payload.robotOrdered === true && !payload.target.valid) {
+      // M7d.5: the robots took it down.
+      completeOpen(board, id, tick, "robot-removed")
+      continue
     } else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
     else if (payload.kind === "gather" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "craft" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"

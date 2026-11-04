@@ -1406,7 +1406,9 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      builds…"). A robot-built buffer chest gets its slot limit. The crew leaves a new place job to the robots for
      `factory-robot-first-seconds` (60) when they can do it now: the ghost is in a network's construction range, the
      network has a free robot and its storage holds the item; after that the crew builds it as before (T2 `jobs` "M7d.5:
-     the crew leaves place jobs…", which fails with the window at 0). Still to do: robot deconstruction for clear jobs.
+     the crew leaves place jobs…", which fails with the window at 0). Clear jobs too: a tree, rock or own entity in construction range is marked for
+     deconstruction and left to the robots for the same window; the job is done (`robot-removed`) once it is gone (T2
+     `jobs` "M7d.5: robots take down a clear job's tree…").
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

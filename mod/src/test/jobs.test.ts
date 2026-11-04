@@ -361,6 +361,19 @@ describe("job board", () => {
     })
   })
 
+  test("M7d.5: robots take down a clear job's tree in range; the job is done (robot-removed)", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-clear"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    const tree = lab.surface.create_entity({ name: "tree-01", position: at(lab, 8, -8) })!
+    const id = addClearJob(faction, tree)!
+    awaitBoard(faction, 3600, () => {
+      const job = faction.board.jobs[id]
+      assert(job.status === "done" && job.reason === "robot-removed", `clear job: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+      assert(!tree.valid, "the tree is gone")
+    })
+  })
+
   test("M7d.5: the crew leaves place jobs the robots can do now to them (factory-robot-first-seconds)", () => {
     // The crew has belts of its own next to it, yet the robots build every ghost.
     const lab = createLab(32)
