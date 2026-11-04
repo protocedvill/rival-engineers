@@ -254,6 +254,18 @@ function wantProbe(t: TraceCtx, e: LogicalEdge): RootCause {
   return { kind: "measuring", id: e.id, what: "probe", why: `measuring ${e.role}` }
 }
 
+/**
+ * B131 (seed 11, minute 60): an edge probe taken while its producer or consumer was still warming up says nothing about
+ * the belt after the node starts. n22's iron tap was probed at 0/s just before the smelter began producing; the repair
+ * then ran on that pre-warm-up sample and found nothing. A verdict is only usable when it is newer than both ends'
+ * last status change; otherwise probe again.
+ */
+function staleForStatus(e: LogicalEdge, a: LogicalNode, b: LogicalNode): boolean {
+  const t = e.measuredTick
+  if (t === undefined) return true
+  return (a.statusTick ?? 0) > t || (b.statusTick ?? 0) > t
+}
+
 function label(n: LogicalNode): string {
   return `${n.id} (${n.role})`
 }
@@ -304,7 +316,7 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       const prod = physicalNode(t.g, own)
       if (prod.lifecycle !== "built") return { kind: "building", id: prod.id, what: "under construction", why: `${item} comes from ${label(prod)}, still being built` }
       const v = edgeVerdict(e, t.input.tick, p)
-      if (v === "stale") return wantProbe(t, e)
+      if (v === "stale" || staleForStatus(e, prod, n)) return wantProbe(t, e)
       if (v === "full") {
         const why = `${e.role} carries ${fmt(e.measuredRate)}/s, its belt's capacity (${fmt(e.capacityRate)}/s): undersized for ${fmt(e.plannedRate)}/s planned`
         // B60 group remedy: a shared trunk is undersized as a group. Growing one producer would not widen the belt it
@@ -444,7 +456,7 @@ function trace(t: TraceCtx, n: LogicalNode, depth: number): RootCause {
       if (c === undefined) continue
       if (c.lifecycle !== "built") return { kind: "building", id: c.id, what: "under construction", why: `consumer ${label(c)} is still being built` }
       const v = edgeVerdict(e, t.input.tick, p)
-      if (v === "stale") return wantProbe(t, e)
+      if (v === "stale" || staleForStatus(e, n, c)) return wantProbe(t, e)
       if (v === "broken") {
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${e.item} piles up at ${label(n)} but ${fmt(e.measuredRate)}/s reach ${label(c)}` })
         return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: items pile up at the producer and don't arrive` }

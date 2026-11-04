@@ -182,6 +182,19 @@ test("B130: a new feeder under construction does not keep a running consumer unc
   eq(r.remedies.filter((x) => x.kind === "grow" && x.node === "mine").length, 1, "the built mine is grown")
 })
 
+test("B131: an edge probe from before a status change is measured again before a repair", () => {
+  // Seed 11, minute 60: n22's iron tap was probed at 0/s just before its smelter began producing; the repair ran on that
+  // pre-warm-up sample and found nothing.
+  const g = chain(st({ working: 1 }), 0.1, st({ working: 0, starved: 1 }), 0, st({ starved: 1 }), 0)
+  const e = belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0, from: 1, to: 0 })
+  e.measuredTick = TICK - 1000
+  belt(g, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "probe", g.nodes.smelt.cause!.why)
+  eq(r.remedies.filter((x) => x.edge === "ore").length, 0, "no repair from a pre-status-change probe")
+  ok(r.probe.indexOf("ore") >= 0, "the edge is probed again")
+})
+
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
   const g = chain(st({ working: 0.1, unpowered: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.2, from: 0, to: 0 })
