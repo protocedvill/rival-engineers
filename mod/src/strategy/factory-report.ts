@@ -132,7 +132,9 @@ export function moduleFurnaces(factionName: string): LuaEntity[] {
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph)) {
-    if (n.lifecycle !== "built") continue
+    // B134: a module inside a plan still being built can already run (the blue line's steel smelter). Its output must
+    // be a supply point, or the same plan's pumpjack craft waits for steel that the smelter has made.
+    if (n.lifecycle !== "built" && n.lifecycle !== "building") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let any = false
@@ -155,7 +157,8 @@ export function moduleAssemblers(factionName: string): LuaEntity[] {
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph)) {
-    if (n.lifecycle !== "built") continue
+    // B134: same as moduleFurnaces: a building module's output can already be the only source of a needed item.
+    if (n.lifecycle !== "built" && n.lifecycle !== "building") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let any = false

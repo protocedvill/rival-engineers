@@ -14,6 +14,7 @@ import { commitModule, PlacedModule } from "../planner/layout"
 import { addNode } from "../planner/logical"
 import { stampParts } from "../planner/runtime"
 import { FactoryState, startFactory } from "../strategy/factory"
+import { moduleFurnaces } from "../strategy/factory-report"
 import { ModuleDef } from "../modules/types"
 
 // B17 (SPEC §5.5 collect-first): material sourcing must take from bootstrap furnaces (and buffers) before it
@@ -333,6 +334,25 @@ describe("B17 material sources", () => {
       assert(watch.handSourcing === 0, `nothing was hand-mined (${msg})`)
       assert(takesOf(faction, "module-furnace") === 60, `taken from the module's furnace (${msg})`)
     })
+  })
+
+  test("B134: a module still being built is a supply point for its furnace output", () => {
+    // Seed 11, minute 330: the blue line's steel smelter stood and ran, but its module was still "building", so its
+    // plates were not a supply point. The same plan's pumpjack craft waited 44 game-min for 5 steel plates.
+    const lab = createLab(32)
+    const faction = createFaction(`b134-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12))
+    stampModule(lab.surface, faction.force, def, m.origin)
+    const node = f.graph.nodes[moduleId("smelter")]!
+    node.lifecycle = "building"
+    node.builtTick = undefined
+    assert(moduleFurnaces(faction.name).length > 0, "a building module's furnaces are supply points")
   })
 
   test("M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler output, below the minimum take", () => {
