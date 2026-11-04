@@ -65,6 +65,9 @@ export interface EntityFacts {
   fluidBoxes?: FluidBoxFacts[]
   /** Pipe-to-ground: the farthest an exit may be from its entrance. */
   maxPipeUnderground?: number
+  /** M7d.5: roboports: half-widths of the logistic and construction areas. */
+  logisticRadius?: number
+  constructionRadius?: number
 }
 
 export interface ProtoFacts {

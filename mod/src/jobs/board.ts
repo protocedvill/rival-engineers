@@ -240,6 +240,23 @@ export function complete(board: Board<unknown>, id: number, member: number, tick
   return true
 }
 
+/**
+ * M7d.5: marks an open job done by someone off the board (a construction robot built its ghost). Its dependents become
+ * ready as after a crew member's completion. Returns false unless the job was open.
+ */
+export function completeOpen(board: Board<unknown>, id: number, tick: number, by: string): boolean {
+  const job: Job<unknown> | undefined = board.jobs[id]
+  if (job === undefined || job.status !== "open") return false
+  job.status = "done"
+  job.doneBy = 0
+  job.reason = by
+  job.finishedTick = tick
+  board.counters.completions++
+  removeActive(board, id)
+  logEvent(board, { tick, job: id, member: 0, event: "done", reason: by })
+  return true
+}
+
 /** Fails a job for good, and every active job that depends on it (transitively). */
 export function failJob(board: Board<unknown>, id: number, reason: string, tick: number, member = 0): void {
   const job: Job<unknown> | undefined = board.jobs[id]

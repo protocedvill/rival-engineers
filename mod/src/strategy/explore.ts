@@ -13,6 +13,8 @@ import type { FactoryGoal, FactoryState } from "./factory"
 // The knowledge-failure classifier lives in `shared/` (pure, T1-tested); re-exported here so the factory keeps using
 // one namespace and its Lua main chunk does not gain a local (it is close to the 200 limit).
 export { exhausted } from "../shared/exhausted"
+// M7d.5: the roboport network, through the same namespace for the same reason.
+export { robotsStep, robotsUpkeep } from "./robots"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */

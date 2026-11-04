@@ -62,6 +62,10 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
     f.maxPowerPerTick = tryCall(() => p.get_max_power_output())
     f.fluidPerTick = tryCall(() => p.get_fluid_usage_per_tick())
   }
+  if (t === "roboport") {
+    f.logisticRadius = p.logistic_radius
+    f.constructionRadius = p.construction_radius
+  }
   if (t === "offshore-pump") f.pumpingPerTick = tryCall(() => p.get_pumping_speed())
   // M7b: fluid boxes, north-facing (`positions[0]` is the north orientation's connection tile offset).
   const boxes = p.fluidbox_prototypes

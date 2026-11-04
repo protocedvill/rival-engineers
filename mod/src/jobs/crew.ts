@@ -5,6 +5,7 @@ import { Config, getConfig } from "../config"
 import {
   claim,
   complete,
+  completeOpen,
   anyReady,
   depsDone,
   distance,
@@ -703,6 +704,14 @@ function jobFailed(
   }
   const payload = job.payload
   if (payload.kind === "place" && !payload.ghost.valid) {
+    // M7d.5: a construction robot built it while this member was on its way.
+    const built = builtInstead(faction, payload)
+    if (built !== undefined) {
+      payload.built = built
+      delete faction.ghostJobs[payload.ghostKey]
+      complete(board, job.id, member.id, tick)
+      return
+    }
     failJob(board, job.id, "ghost-removed", tick, member.id)
     return
   }
@@ -813,6 +822,15 @@ function fuelTarget(faction: FactionState, job: CrewJob): LuaEntity | undefined 
   return built?.valid ? built : undefined
 }
 
+/**
+ * M7d.5: the entity standing where a place job's (now gone) ghost was: what a construction robot built from it. One that
+ * is marked for deconstruction is an old entity on its way out, not the build.
+ */
+function builtInstead(faction: FactionState, p: Extract<JobPayload, { kind: "place" }>): LuaEntity | undefined {
+  const e = findEntities(factionSurface(faction), { name: p.entity, position: p.position, force: faction.force, limit: 1 })[0]
+  return e !== undefined && e.valid && !e.to_be_deconstructed() ? e : undefined
+}
+
 /** Fails ready jobs whose targets are gone, so nobody claims them. */
 function dropDeadJobs(faction: FactionState, tick: number): void {
   const board = faction.board
@@ -823,8 +841,17 @@ function dropDeadJobs(faction: FactionState, tick: number): void {
     let gone: string | undefined
     // M7c.8: an open self-job can never be claimed again (saves from before the pollActions fix hold thousands).
     if (isSelfJob(job)) gone = "orphan-self-job"
-    else if (payload.kind === "place" && !payload.ghost.valid) gone = "ghost-removed"
-    else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
+    else if (payload.kind === "place" && !payload.ghost.valid) {
+      // M7d.5: a construction robot built it (the ghost became the entity): the job is done, its fuel jobs go on.
+      const built = builtInstead(faction, payload)
+      if (built !== undefined) {
+        payload.built = built
+        delete faction.ghostJobs[payload.ghostKey]
+        completeOpen(board, id, tick, "robot-built")
+        continue
+      }
+      gone = "ghost-removed"
+    } else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
     else if (payload.kind === "gather" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "craft" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "transfer" && (!payload.from.valid || !payload.to.valid)) gone = "target-invalid"

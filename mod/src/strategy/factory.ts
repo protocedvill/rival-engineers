@@ -142,6 +142,8 @@ export interface FactoryGoal {
   lastLeft?: number
   /** D62: a radar outpost goal: where its radar goes, on which arm, and the strip the crew explores to get there. */
   site?: { x: number; y: number; arm: number; step: number; strip: Rect }
+  /** M7d.5: a roboport goal plans near this point, within `window` tiles of it. */
+  anchor?: { x: number; y: number; window: number }
 }
 
 export interface FactoryState {
@@ -365,6 +367,15 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   tempFactories(ctx)
   const hooks: EX.ExploreHooks = { busy: () => (planning(f) !== undefined ? "the current plan" : !GLC.everDone(f.goals, "power") ? "power" : undefined), startRadar: (role, site) => startRadar(ctx, role, site) }
   EX.baseRadar(ctx, hooks)
+  EX.robotsStep(ctx, {
+    busy: hooks.busy,
+    start: (role, anchor, window, chests) => {
+      const params = { roboport: ctx.entities.roboport ?? "roboport", chests }
+      const def = makeModule("roboport", params)
+      const node: DesignNode = { role, kind: "sink", generator: "roboport", params, def, item: params.roboport, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
+      startGoal(ctx, { kind: "robots", nodes: [node], edges: [], techs: [] }, undefined, { x: anchor.x, y: anchor.y, window })
+    },
+  })
   EX.exploreStep(ctx, hooks)
   advanceGoals(ctx, d)
   LF.research(ctx, d)
@@ -372,6 +383,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   if (ctx.tick - f.lastUpkeep >= UPKEEP_INTERVAL) {
     f.lastUpkeep = ctx.tick
     upkeep(ctx)
+    EX.robotsUpkeep(ctx, ctx.config.factoryBuildPriority)
   }
   LF.milestones(ctx)
   ST.sampleScience(ctx, LF.packsAutomated(f), (name) => mark(faction, name))
@@ -612,7 +624,7 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
   // M7c: a stalled building goal still holds its kind's lock here. Released, it let the next blue cluster plan a second
   // copy of the stalled chain (seed 11, two oil modules on one field). Its feeders pass by `feedsBuilding`; the
   // growth waits (B52/B98, `startGrow`) skip it.
-  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar"] as GoalKind[]) {
+  for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar", "robots"] as GoalKind[]) {
     active[kind] = f.goals.some((g) => g.kind === kind && (g.status === "planning" || g.status === "building"))
     completed[kind] = built(f, kind)
   }
@@ -785,7 +797,7 @@ function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   }
 }
 
-function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): boolean {
+function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"], anchor?: FactoryGoal["anchor"]): boolean {
   const f = ctx.f
   // D55/P36: don't plan a replacement while the old module's clear jobs are still on the board. Its footprint is still
   // `OWN` in the terrain view, so the only free part of the patch would fail placement and the goal would burn every
@@ -811,6 +823,7 @@ function startGoal(ctx: Ctx, spec: GoalSpec, site?: FactoryGoal["site"]): boolea
     placed: 0,
     rounds: 0,
     site,
+    anchor,
   }
   f.goals.push(g)
   planGoal(ctx, g)
@@ -1113,6 +1126,8 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const mine = modules.some((m) => m.def.site === "resource-patch" || m.def.generator === "pumpjack-field")
   const r = mine ? EX.homeRadius(ctx) : math.min(g.radius, EX.homeRadius(ctx))
   let region = EX.planRegion(ctx, g, r)
+  // M7d.5: a roboport stays near its grid point, or the network's logistic areas stop touching.
+  if (g.anchor !== undefined) region = { x: math.floor(g.anchor.x - g.anchor.window), y: math.floor(g.anchor.y - g.anchor.window), w: 2 * g.anchor.window, h: 2 * g.anchor.window }
   // B120: a blue-chain goal can connect to an oil field placed by an earlier goal far outside the home zone.
   // Scan the known ground between that source and the new consumers so its pipe route does not see UNKNOWN.
   for (const c of connections) {
@@ -1142,7 +1157,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const offsets = [[0, 0], [24, 0], [0, 24], [-24, 0], [0, -24], [24, 24], [-24, -24], [24, -24], [-24, 24]]
   const off = offsets[tries % offsets.length]
   // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
-  const center = g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
+  const center = g.anchor !== undefined ? { x: g.anchor.x, y: g.anchor.y } : g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
   // M7c.8: wells of the layout's fields (planned too) and of this goal's earlier fields are taken.
   const takenWells = OIL.moduleWells(f.layout.modules.map((x) => x.canonical))

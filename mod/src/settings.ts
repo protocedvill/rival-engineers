@@ -929,6 +929,41 @@ data.extend([
     default_value: true,
     order: "j-bi",
   },
+  // M7d.5: the construction-robot network (proposed values, see the M7 report).
+  {
+    type: "bool-setting",
+    name: Settings.factoryRobots,
+    setting_type: "runtime-global",
+    default_value: true,
+    order: "j-bj",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryRoboportsMax,
+    setting_type: "runtime-global",
+    default_value: 10,
+    minimum_value: 1,
+    maximum_value: 100,
+    order: "j-bk",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryRoboportSpacing,
+    setting_type: "runtime-global",
+    default_value: 36,
+    minimum_value: 8,
+    maximum_value: 50,
+    order: "j-bl",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryNetworkRobots,
+    setting_type: "runtime-global",
+    default_value: 50,
+    minimum_value: 0,
+    maximum_value: 1000,
+    order: "j-bm",
+  },
   // B31: when an urgent job may pull a busy crew member off its batch.
   {
     type: "double-setting",

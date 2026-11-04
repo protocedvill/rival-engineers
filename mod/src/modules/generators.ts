@@ -955,6 +955,41 @@ export function radarCell(facts: ProtoFacts, p: RadarParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Roboport (M7d.5: the construction network; the hub also holds the network's storage chests)
+
+export interface RoboportParams extends CommonParams {
+  roboport?: string
+  /** Storage chests beside the roboport (0 to 2): the hub roboport's, which the crew stocks with building materials. */
+  chests?: number
+  chest?: string
+}
+
+/** M7d.5: one roboport (4×4) with a small pole beside it, and up to two storage chests under the pole: 5×4, no belts. */
+export function roboportCell(facts: ProtoFacts, p: RoboportParams): ModuleDef {
+  const roboport = p.roboport ?? "roboport"
+  const chest = p.chest ?? "storage-chest"
+  const chests = math.max(0, math.min(2, p.chests ?? 0))
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  L.add(roboport, 2, 2)
+  L.poleAt(4.5, 0.5)
+  for (let i = 0; i < chests; i++) L.add(chest, 4.5, 2.5 + i)
+  const draft: ModuleDraft = {
+    id: `roboport/${roboport}/${chests}x${chest}/${L.pole}`,
+    source: "generated",
+    generator: "roboport",
+    provenance: "generator roboport (Rival Engineers)",
+    description: chests > 0 ? `one ${roboport} with ${chests} ${chest} (M7d.5 network hub)` : `one ${roboport} (M7d.5)`,
+    footprint: { w: 5, h: 4 },
+    entities: L.entities,
+    ports: [{ id: "power", kind: "power", pos: { x: 4.5, y: 0.5 }, dir: EAST }],
+    rotatable: true,
+    mirrorable: true,
+    params: { roboport, chests, chest },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Registry
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1603,7 +1638,7 @@ export function decodeWells(s: string): { x: number; y: number; perSecond: numbe
 /** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
 const PUMPJACK_FIELD_MARGIN = 2
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "roboport" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1617,6 +1652,7 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "lab-array") return labArray(facts, P)
   if (name === "chest-cell") return chestCell(facts, P)
   if (name === "radar") return radarCell(facts, P)
+  if (name === "roboport") return roboportCell(facts, P)
   if (name === "fluid-chain") return fluidChain(facts, P)
   if (name === "water-pump") return waterPump(facts, P)
   if (name === "pumpjack-field") return pumpjackField(facts, P)
@@ -1625,4 +1661,4 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "roboport", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]

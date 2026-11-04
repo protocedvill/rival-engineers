@@ -324,6 +324,35 @@ describe("job board", () => {
     })
   })
 
+  test("M7d.5: a place job whose ghost a construction robot builds is done (robot-built), not failed", () => {
+    // The crew has no belts (they are in the network's storage chest, not a stockpile): only the robots can build.
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots"), { position: at(lab, -10, 8), crew: 1 })
+    const f = faction.force
+    const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: at(lab, -6, 0), force: f })!
+    eei.electric_buffer_size = 1e9
+    eei.power_production = 1e7
+    lab.surface.create_entity({ name: "medium-electric-pole", position: at(lab, -4, 2), force: f })
+    const port = lab.surface.create_entity({ name: "roboport", position: at(lab, 0, 0), force: f })!
+    port.get_inventory(defines.inventory.roboport_robot)!.insert({ name: "construction-robot", count: 10 })
+    const chest = lab.surface.create_entity({ name: "storage-chest", position: at(lab, 3.5, 3.5), force: f })!
+    chest.insert({ name: "transport-belt", count: 20 })
+    const ids: number[] = []
+    for (let x = -3; x < 3; x++) {
+      const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, x + 0.5, 10.5), force: f })!
+      ids.push(addPlaceJob(faction, g, {})!)
+    }
+    awaitBoard(faction, 3600, () => {
+      for (const id of ids) {
+        const job = faction.board.jobs[id]
+        const p = job.payload as Extract<JobPayload, { kind: "place" }>
+        assert(job.status === "done" && job.reason === "robot-built", `job ${id}: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+        assert(p.built !== undefined && p.built.valid && p.built.name === "transport-belt", `job ${id}: the built belt is recorded`)
+      }
+      assert(itemCount(storage.crew[faction.crew[0]].character, "transport-belt") === 0, "the crew placed none")
+    })
+  })
+
   test("a crew member's death releases its claims and the other finishes the build", () => {
     const lab = createLab(32)
     const faction = createFaction(newFactionName("death"), { position: at(lab, 0, 12), crew: 2 })

@@ -1,5 +1,5 @@
 import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
-import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, roboportCell, smelterColumn, steamBlock } from "../src/modules/generators"
 import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -202,10 +202,25 @@ test("radar cell (D56): one radar and its pole, 4 × 3, powered, no belts", () =
   eq(m.entities.filter((e) => e.name === "radar").length, 1, "one radar")
 })
 
+test("M7d.5: roboport cell: one roboport and its pole, 5 × 4; the hub holds two storage chests", () => {
+  const m = roboportCell(F, {})
+  eq(m.footprint.w * 10 + m.footprint.h, 54, "5 × 4")
+  eq(m.ports.length, 1, "one port")
+  eq(m.ports[0].kind, "power", "the power port")
+  near(inp(m, "electricity"), 50000, 1e-6, "50 kW")
+  eq(m.entities.filter((e) => e.name === "roboport").length, 1, "one roboport")
+  eq(m.entities.filter((e) => e.name === "storage-chest").length, 0, "no chests")
+  const hub = roboportCell(F, { chests: 2 })
+  eq(hub.footprint.w * 10 + hub.footprint.h, 54, "same footprint")
+  eq(hub.entities.filter((e) => e.name === "storage-chest").length, 2, "two storage chests")
+  ok(hub.id !== m.id, "distinct ids")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
   return [
+    roboportCell(F, { chests: 2 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
     smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
     smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),
