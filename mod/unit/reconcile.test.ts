@@ -166,6 +166,22 @@ test("B127: a producer blocked inside itself while it starves for an input: trac
   eq(r.remedies.filter((x) => x.kind === "repair" && x.edge === "ore").length, 1, "the held ore lane is repaired")
 })
 
+test("B130: a new feeder under construction does not keep a running consumer unclassified", () => {
+  // Seed 11, minutes 100-110: n17's fifth copper-ore mine was still building; the smelter stayed "unknown / warming
+  // up" for 70 game-min, so its four built mines backed up behind it with no status and no remedy.
+  const g = chain(st({ working: 1 }), 0.1, st({ working: 0, starved: 1 }), 0, st({ starved: 1 }), 0)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.1, from: 0, to: 0 })
+  belt(g, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0, from: 0, to: 0 })
+  const newMine = node(g, "newmine", "outpost", "iron-ore", 1, st({ working: 0 }), 0)
+  newMine.lifecycle = "building"
+  newMine.builtTick = undefined
+  belt(g, "ore2", "newmine", "smelt", "iron-ore", 1, { rate: 0, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.status, "starved", `classified, not warming up (${g.nodes.smelt.statusReason})`)
+  ok(g.nodes.smelt.cause !== undefined, "the smelter has a cause")
+  eq(r.remedies.filter((x) => x.kind === "grow" && x.node === "mine").length, 1, "the built mine is grown")
+})
+
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
   const g = chain(st({ working: 0.1, unpowered: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.2, from: 0, to: 0 })

@@ -120,20 +120,31 @@ function shares(n: LogicalNode): StateShares {
 }
 
 /**
- * Ticks since the node and its direct feeders were all built; undefined while the node is not built (or being grown)
- * or a feeder was never built. A feeder being grown (e.g. the steam block gaining boilers) keeps running: its
- * consumers stay classified.
+ * Ticks since the node and its direct feeders were all built; undefined while the node is not built (or being grown).
+ * A feeder being grown (e.g. the steam block gaining boilers) keeps running: its consumers stay classified.
+ *
+ * B130 (seed 11, minutes 100-110): a *new* feeder under construction must not un-classify a consumer that has been
+ * running for an hour. n17's fifth copper-ore mine (n34) was still building, so `builtFor` returned undefined every
+ * evaluation and the smelter stayed "unknown / warming up" forever: no status, no remedy, while its other four mines
+ * backed up behind it. Only built feeders set the age; an unbuilt one is reported by the starved trace as "under
+ * construction" instead. A consumer with no built feeder at all still waits (a new module's first feed).
  */
 function builtFor(g: LogicalGraph, n: LogicalNode, tick: number): number | undefined {
   if (n.lifecycle !== "built") return undefined
   let since = n.builtTick ?? n.createdTick
+  let built = 0
+  let unbuilt = false
   for (const e of edgesInto(g, n.id)) {
     if (e.from === undefined) continue
     const p = g.nodes[e.from]
-    if (p === undefined) continue
-    if (p.builtTick === undefined) return undefined
+    if (p === undefined || p.builtTick === undefined) {
+      unbuilt = true
+      continue
+    }
+    built++
     since = math.max(since, p.builtTick)
   }
+  if (unbuilt && built === 0) return undefined
   return tick - since
 }
 
