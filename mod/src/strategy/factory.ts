@@ -493,7 +493,9 @@ function designNow(ctx: Ctx): Design | undefined {
   const mallId = ctx.config.factoryMall
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
   const dctx = designContext(ctx, stageIndex)
-  const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall })
+  // M7d.5 (D77): construction robots and roboports are stocked once their technology is researched.
+  const stock = DS.robotStock((t) => ctx.force.technologies[t]?.researched === true, (r) => ctx.force.recipes[r]?.enabled === true)
+  const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock })
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
   // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
   // residual as a parallel provider; it never relocates this one.

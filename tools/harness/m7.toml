@@ -28,5 +28,5 @@ debugInfiniteResearch = true
 researchSciencePacks = "automation-science-pack,logistic-science-pack,chemical-science-pack"
 researchExcludedTriggers = "uranium-ore"
 researchSkipCombat = true
-factoryRowInputs = 3
+factoryRowInputs = 4
 factoryTargets = "automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=10;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=30"

@@ -5,7 +5,7 @@ import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, stuckRounds } from "../src/strategy/design"
+import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -933,6 +933,26 @@ test("M7c.9: an edge more clusters do not shrink stops the split", () => {
   ok(string.find(overflow[edge.role] ?? "", "more clusters do not split it", 1, true) !== undefined, `the overflow says why (${overflow[edge.role]})`)
   edge.rate = 20
   ok(checkEdges(c, w, {}, false, {}, rates) > 1, "a rate that did shrink may split again")
+})
+
+test("M7d.5: construction robots and roboports stocked: the robot frame chain is planned (engines on lubricant, batteries)", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true, "flying-robot-frame": true, "construction-robot": true, roboport: true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  eq(generatorFor(c, "flying-robot-frame"), "assembler-row", "robot frames: a four-ingredient row")
+  const stock = robotStock((t) => t === "construction-robotics", (r) => enabled[r as keyof typeof enabled] === true)
+  eq(stock.map((s) => s.item).join(","), "construction-robot,roboport", "robots and roboports once researched")
+  eq(robotStock(() => false, () => true).length, 0, "nothing before the research")
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const robots = d.nodes.find((n) => n.role === stockRole("construction-robot"))!
+  ok(robots !== undefined && robots.kind === "sink" && robots.generator === "assembler-row", "a robot stock sink")
+  ok((robots.params.buffer as string) !== "", "with a buffer head the crew collects from")
+  ok(d.nodes.some((n) => n.role === stockRole("roboport")), "a roboport stock sink")
+  ok(d.edges.some((e) => e.to === stockRole("construction-robot") && e.item === "flying-robot-frame"), "frames go to the robot row")
+  ok(d.nodes.some((n) => n.item === "flying-robot-frame" && n.generator === "assembler-row"), "a robot frame row")
+  ok(d.nodes.some((n) => n.item === "electric-engine-unit" && n.generator === "assembler-row"), "an electric engine row")
+  ok(d.nodes.some((n) => n.item === "battery" && n.generator === "chem-row"), "a battery row")
+  ok(d.edges.some((e) => e.item === "lubricant"), "lubricant is piped")
 })
 
 test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry rows, no fluid chains", () => {

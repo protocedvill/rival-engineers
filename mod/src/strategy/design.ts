@@ -91,7 +91,7 @@ export interface DesignContext {
    * (engines need assembler 2). Absent: `assembler` only.
    */
   assemblers?: string[]
-  /** M7c: most ingredients an assembler row takes (2: v1; 3: engines, advanced circuits, blue packs). Default 2. */
+  /** M7c: most ingredients an assembler row takes (2: v1; 3: engines, advanced circuits, blue packs; 4: robot frames). Default 2. */
   rowInputs?: number
   /** M7c: fluid chains (refinery recipe making the intermediate, the machines) and the offshore-pumped fluid. */
   fluidSource?: string
@@ -165,6 +165,35 @@ export interface DesignTarget {
    * planned at `utilization` of its full-speed inputs (it only runs while its chests have room).
    */
   mall?: { id: string; utilization: number }
+  /**
+   * M7d.5 (D77, P49): items the faction stocks rather than consumes (construction robots, roboports): each is a sink, a
+   * two-machine assembler row whose buffer head collects the product for the crew, planned at `perSecond`.
+   */
+  stock?: { item: string; perSecond: number }[]
+}
+
+/** M7d.5 (P49, approved "about 50"): construction robots stocked, and the time the stock line is sized to make them in. */
+export const ROBOT_STOCK = 50
+/** M7d.5 (agent, proposed): roboports stocked for the first network (3 x 3 at logistic spacing covers ~210 tiles square). */
+export const ROBOPORT_STOCK = 10
+/** M7d.5 (agent, proposed): game seconds the stock lines are sized to fill their stock in. */
+export const STOCK_FILL_SECONDS = 1800
+
+/**
+ * M7d.5 (D77, P48): once the technology unlocking construction robots is researched, the faction stocks robots and
+ * roboports (each only while its recipe is enabled). `researched` and `enabled` read the force.
+ */
+export function robotStock(researched: (this: void, tech: string) => boolean, enabled: (this: void, recipe: string) => boolean): { item: string; perSecond: number }[] {
+  if (!researched("construction-robotics")) return []
+  const out: { item: string; perSecond: number }[] = []
+  if (enabled("construction-robot")) out.push({ item: "construction-robot", perSecond: ROBOT_STOCK / STOCK_FILL_SECONDS })
+  if (enabled("roboport")) out.push({ item: "roboport", perSecond: ROBOPORT_STOCK / STOCK_FILL_SECONDS })
+  return out
+}
+
+/** M7d.5: the graph role of a stock sink for `item`. */
+export function stockRole(item: string): string {
+  return `stock:${item}`
 }
 
 export interface DesignPort {
@@ -482,6 +511,34 @@ function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: num
 }
 
 /** Input ports of a module with their planned rates at `utilization` of full speed. */
+/**
+ * M7d.5: a stock sink: the smallest assembler row (two machines) with a buffer head; the crew collects from its buffer
+ * chest. Planned at the share of its full rate that `st.perSecond` needs, like the mall (its inputs are demands).
+ */
+function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: number }, cluster: number): void {
+  const recipe = ctx.facts.recipeForItem(st.item)
+  const r = recipe !== undefined ? ctx.facts.recipe(recipe) : undefined
+  if (r === undefined) {
+    w.errors.push(`stock ${st.item}: no recipe`)
+    return
+  }
+  const machine = machineFor(ctx, r.category) ?? ctx.assembler
+  const params = { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
+  const [ok, made] = pcall(ctx.make, "assembler-row", params)
+  if (!ok) {
+    w.errors.push(`stock ${st.item}: ${tostring(made)}`)
+    return
+  }
+  const def = made as ModuleDef
+  const full = outputRate(def, st.item)
+  if (full <= EPS) return
+  const utilization = math.min(1, st.perSecond / full)
+  const role = stockRole(st.item)
+  const inputs = inputPorts(def, utilization)
+  w.nodes.push({ role, kind: "sink", generator: "assembler-row", params, def, item: st.item, need: utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * utilization, cluster })
+  for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+}
+
 function inputPorts(def: ModuleDef, utilization: number): DesignPort[] {
   const out: DesignPort[] = []
   const count: Record<string, number> = {}
@@ -1043,6 +1100,7 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
     w.nodes.push({ role: "mall", kind: "sink", generator: "curated", params: { id: target.mall.id }, def, item: "mall", need: target.mall.utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * target.mall.utilization, cluster })
     for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
   }
+  if (cluster === 1) for (const st of target.stock ?? []) addStock(ctx, w, st, cluster)
   for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
   // M7c: a module may ask for an item the recipe walk never reaches (a fluid chain's crude oil and water: its petroleum
   // has no recipe of its own). Expand those too, until nothing new is asked for.
@@ -1259,7 +1317,8 @@ export function mergeShared(nodes: DesignNode[]): void {
 export function design(ctx: DesignContext, target: DesignTarget): Design {
   const solveJob = solveNow(
     {
-      targets: targetItems(target),
+      // M7d.5: stock items are roots of the item order too (not lab packs: `targetItems` sizes the labs).
+      targets: [...targetItems(target), ...(target.stock ?? [])],
       machines: [ctx.assembler, ctx.furnace],
       drills: [electricDrills(ctx) ? ctx.electricDrill : ctx.burnerDrill],
       resources: ctx.resources,
