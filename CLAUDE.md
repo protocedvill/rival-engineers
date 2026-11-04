@@ -220,6 +220,9 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   engine-capabilities test "M7b finding". Measure fluids with a pushing source (an offshore pump): an `infinity-pipe`
   sets its whole segment's contents and fakes any flow; read amounts with `get_fluid_contents()` (TSTL shifts
   `fluidbox[1]`). An offshore pump's output is on the side opposite its facing (`west` → connects east).
+- **Diagonal cliffs have turned collision boxes**: `bounding_box` carries `orientation` (0.125 turns for a corner piece)
+  and its corners are the *unturned* rectangle about the box centre. Turned, it reached ~1 tile further: a belt could not
+  be placed on a tile the corners missed (B123). Tile coverage goes through `grid.ts` `boxTiles`.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

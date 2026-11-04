@@ -1274,6 +1274,23 @@ its own mine and its own long merge belt.
 - T1: new design tests (`M7 B` ×2, `M7 C`) and a planner test (`M7 B`, one join covers a tap). The g78 split test now
   names the heir group's role.
 
+#### M7c.9 follow-up 9: g113 plans, then is torn down over one ghost (B123)
+
+Soak `m7c-cont8` (fail-fast off, from minute 600) went on past the g111 stall:
+- **g111** failed: the circuit cluster's copper-ore mine could not route; the factory split it and gave it a site.
+- **g112** failed: the circuit and copper-cable belts into the advanced-circuit assembler ripped each other up.
+- **g113 planned:** 22 modules and 27 routes, in 13.6M work units with 1 rip-up (g111 had cost 26–37M). It built 1196
+  entities.
+
+Then one underground-belt entrance could never be placed. After 10 rounds the goal gave up its location and 5653 built
+entities were deconstructed. The cause is a turned cliff box the terrain scan read unturned (B123). The user asked
+in-session (2026-11-04) for both fixes:
+- **Scan:** turned boxes cover the tiles they really reach.
+- **Recovery:** a build stuck only on route pieces reroutes those routes around the failing tiles before it gives up
+  its location.
+
+No new tuning numbers.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

@@ -8,7 +8,7 @@ import type { RouteId } from "../shared/ids"
 import { BuildParts, bystanderDiff, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
 import { isPoleTag } from "./claim-tags"
-import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
+import { FOREIGN, FREE, OWN, Rect, TerrainView, tkey } from "./grid"
 import { dependentRoutes, LayoutState, ripRoute } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
@@ -29,7 +29,11 @@ export interface ReroutePlan {
  * faction's view (its built entities and ghosts are OWN, other forces' FOREIGN): the ripped routes' own tiles count as
  * free, so a reroute can reuse every piece not in the way; a foreign entity on them still blocks.
  */
-export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect): ReroutePlan {
+/**
+ * `avoid`: tiles the new routes must not use (M7: a build's ghosts there could never be placed, though the terrain scan
+ * reads them as free).
+ */
+export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect, avoid?: Record<number, boolean>): ReroutePlan {
   const layout = cloneLayout(base)
   const before: EntitySpec[] = []
   const conns: ConnectionRequest[] = []
@@ -61,6 +65,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       // here. The claim view reads them as free (B37, for plans that re-lay them): an in-place coal reroute ran over
       // main-line poles, a later repair picked the pole up as "not in the layout" and the whole base lost power.
       if (isPoleTag(layout.occ[k])) return OWN
+      if (avoid?.[k] === true) return FOREIGN
       const b = terrain.block(x, y)
       return freed[k] && b === OWN ? FREE : b
     },

@@ -455,6 +455,24 @@ test("M7c.8: a tap rerouted onto a trunk that stays picks up the trunk's belt un
   eq(lacking.length, 0, `never built: ${lacking.slice(0, 3).join("; ")}`)
 })
 
+test("M7 (seed 11 g113): a stuck route reroutes around the tiles its ghosts could not be placed on", () => {
+  const view = oreField(120, 120, 45)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  const conns: ConnectionRequest[] = [{ id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } }]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  const rid = job.layout.routeOrder[0]
+  const r = job.layout.routes[rid]
+  const mid = r.steps[math.floor(r.steps.length / 2)]
+  const avoid: Record<number, boolean> = { [tkey(mid.x, mid.y)]: true }
+  const plan = planReroute(job.layout, view, F, tapPolicy, TIER, [rid], { x: 0, y: 0, w: 120, h: 120 }, avoid)
+  ok(plan.ok, `rerouted: ${plan.reason}`)
+  for (const id of plan.routes) for (const k of plan.layout.routes[id].tiles) ok(!avoid[k], `${id} keeps off ${mid.x},${mid.y}`)
+})
+
 /** B91: every join (side-load or splitter merge) points at a tile its trunk still runs straight through. */
 function joinsHold(layout: LayoutState): string[] {
   const out: string[] = []

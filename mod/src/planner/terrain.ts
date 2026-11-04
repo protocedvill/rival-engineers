@@ -4,7 +4,7 @@
 // the planner uses.
 
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
-import { CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+import { boxTiles, CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
 import { findEntities } from "../work"
 
 export interface ChunkScan {
@@ -156,11 +156,8 @@ export function scanChunk(t: TerrainState, surface: LuaSurface, cx: number, cy: 
     const b = classify(t, e)
     if (b === undefined) continue
     const box = e.bounding_box
-    const bx1 = math.floor(box.left_top.x + 0.01)
-    const by1 = math.floor(box.left_top.y + 0.01)
-    const bx2 = math.ceil(box.right_bottom.x - 0.01)
-    const by2 = math.ceil(box.right_bottom.y - 0.01)
-    for (let x = bx1; x < math.max(bx2, bx1 + 1); x++) for (let y = by1; y < math.max(by2, by1 + 1); y++) set(x, y, b)
+    // M7 (seed 11 g113): a diagonal cliff's box is turned (`orientation`): its tiles are the turned rectangle's.
+    for (const p of boxTiles(box.left_top, box.right_bottom, box.orientation)) set(p.x, p.y, b)
   }
   t.chunks[tkey(cx, cy)] = scan
   t.scans++

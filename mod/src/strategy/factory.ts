@@ -1794,6 +1794,22 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
     if (stuckRound(ctx, g, left.length) && (g.repairs ?? 0) < ctx.config.conflictMaxRepairs && planning(ctx.f) === undefined) {
       g.repairs = (g.repairs ?? 0) + 1
+      // M7 (seed 11 g113, user request in-session 2026-11-04): ghosts that are all route pieces only reroute those routes
+      // around their tiles; the goal gave up 5653 built entities for one underground belt that could not be placed.
+      const stuckRoutes: IDS.RouteId[] = []
+      const stuckTiles: Record<number, boolean> = {}
+      let onlyRoutes = true
+      for (const gh of left) {
+        const k = tkey(math.floor(gh.position.x), math.floor(gh.position.y))
+        const rid = ctx.f.layout.routeOcc[k]
+        if (rid === undefined || ctx.f.layout.routes[rid] === undefined) onlyRoutes = false
+        else if (stuckRoutes.indexOf(rid) < 0) stuckRoutes.push(rid)
+        stuckTiles[k] = true
+      }
+      if (onlyRoutes && stuckRoutes.length > 0 && reroute(ctx, g, entry, stuckRoutes, stuckTiles)) {
+        g.stuck = 0
+        return
+      }
       relocateGoal(ctx, g, entry, `build stuck: ${g.reason}`)
       return
     }
@@ -1854,7 +1870,7 @@ function resolveConflicts(ctx: Ctx, g: FactoryGoal, entry: Entry): boolean {
   return true
 }
 
-function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[]): boolean {
+function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[], avoid?: Record<number, boolean>): boolean {
   const f = ctx.f
   const b = entry.build!
   const t = storage.terrains?.[f.terrain]
@@ -1875,7 +1891,7 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[]):
   const maxUg = maxUndergroundNow(ctx)
   if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
   const region: Rect = { x: f.center.x - g.radius, y: f.center.y - g.radius, w: 2 * g.radius, h: 2 * g.radius }
-  const plan = planReroute(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, RT.entryPolicy(entry), all[0], routes, region)
+  const plan = planReroute(f.layout, RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t)), prototypeFacts, RT.entryPolicy(entry), all[0], routes, region, avoid)
   if (!plan.ok) {
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${plan.reason}`)
     return false

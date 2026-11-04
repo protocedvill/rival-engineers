@@ -6,7 +6,7 @@ import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from
 import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
-import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
+import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
 import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, rerootTap, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
@@ -710,6 +710,16 @@ test("re-root: a tap keeps its belt and the trunk's first part when the trunk go
   eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
   eq(state.routes["route:ab"].tapOf, "route:ac")
   noProblems(state, terrain, "trunk routed again")
+})
+
+test("M7 (seed 11 g113): a turned cliff box covers the tiles it reaches, not its unturned corners", () => {
+  // The north-to-west cliff at (366, -425.5), as the game reported its box; the tiles a belt could not be placed on.
+  const tiles: Record<string, boolean> = {}
+  for (const p of boxTiles({ x: 364.54296875, y: -428.515625 }, { x: 365.9609375, y: -424.984375 }, 0.125)) tiles[`${p.x},${p.y}`] = true
+  for (const k of ["363,-427", "364,-428", "365,-428", "365,-429"]) ok(tiles[k] === true, `${k} is under the cliff`)
+  for (const k of ["364,-429", "362,-427", "362,-428"]) eq(tiles[k], undefined, `${k} is free`)
+  // An unturned box keeps its old tiles.
+  eq(boxTiles({ x: 1.1, y: 2.1 }, { x: 2.9, y: 2.9 }).map((p) => `${p.x},${p.y}`).join(" "), "1,2 2,2")
 })
 
 test("M7 B (seed 11 g111): a heir's merges into one tap tree: the join above the tap covers the other port", () => {
