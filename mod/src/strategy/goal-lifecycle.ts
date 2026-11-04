@@ -20,6 +20,21 @@ export function nextGoalStatus(from: GoalStatus, to: GoalStatus, goal = "?"): Go
 }
 
 /**
+ * B135: whether a module's own entities all stand in a plan: no still-valid ghost lies inside its rect. A module can be
+ * marked built before the whole plan finishes (the blue line's steel smelter stood while the same plan's pumpjack waited
+ * for its steel).
+ */
+export function modulePlaced(rect: { x: number; y: number; w: number; h: number }, ghosts: readonly { valid: boolean; position: { x: number; y: number } }[]): boolean {
+  for (const gh of ghosts) {
+    if (!gh.valid) continue
+    const x = gh.position.x
+    const y = gh.position.y
+    if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h) return false
+  }
+  return true
+}
+
+/**
  * Whether goals of `kind` ever completed (the factory has one, e.g. power). Not the last goal of the kind: B108 (two
  * factions, seed 3333) a later power goal that failed for want of coal made "power not built", and the D62 outpost that
  * would find the coal waited for power forever.

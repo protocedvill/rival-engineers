@@ -1775,6 +1775,23 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     ctx.faction.brain!.steps += done - g.placed
     g.placed = done
     g.progressTick = ctx.tick
+    // B135 (seed 11, minute 330): a plan's modules become built only when the whole plan finishes. The blue line's
+    // steel smelter stood and ran, but the pumpjack in the same plan waited for steel from it: a circular wait. Mark a
+    // module built as soon as its own entities stand (no ghost left in its rect); the reconciler can then feed it and
+    // its output is a supply point (B134).
+    const layout = entry.job?.layout
+    if (layout !== undefined) {
+      const ghosts = b.ghosts ?? []
+      for (const gn of g.nodes) {
+        const node = f.graph.nodes[gn.id]
+        if (node === undefined || node.lifecycle === "built") continue
+        const m = LO.findModule(layout, gn.id)
+        if (m === undefined) continue
+        if (!GLC.modulePlaced(m.rect, ghosts)) continue
+        node.lifecycle = "built"
+        node.builtTick = ctx.tick
+      }
+    }
   }
   if (g.rework !== undefined && !rework(ctx, g, b)) return
   if (b.phase !== "done") return
