@@ -388,7 +388,7 @@ export function steamBlock(facts: ProtoFacts, p: SteamParams): ModuleDef {
 // Row helpers
 
 /** Tail for a row module with one or two inputs: returns ports; `xt` is the tail's first column. */
-function rowTail(L: Layout, xt: number, inputs: string[], inRow: number, top = 0): Port[] {
+function rowTail(L: Layout, xt: number, inputs: string[], inRow: number, top = 0, eastFirst = false): Port[] {
   if (inputs.length === 1) {
     L.beltAt(xt + 0.5, inRow + 0.5, WEST)
     return [{ id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 0.5, y: inRow + 0.5 }, dir: WEST, item: inputs[0] }]
@@ -398,10 +398,15 @@ function rowTail(L: Layout, xt: number, inputs: string[], inRow: number, top = 0
   L.beltAt(xt + 0.5, inRow + 0.5, WEST)
   L.beltAt(xt + 0.5, inRow + 1.5, NORTH)
   for (let y = top; y < inRow; y++) L.beltAt(xt + 0.5, y + 0.5, SOUTH)
-  return [
-    { id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 0.5, y: inRow + 1.5 }, dir: NORTH, item: inputs[0] },
-    { id: `in-${inputs[1]}`, kind: "belt-in", pos: { x: xt + 0.5, y: top + 0.5 }, dir: SOUTH, item: inputs[1] },
-  ]
+  const second: Port = { id: `in-${inputs[1]}`, kind: "belt-in", pos: { x: xt + 0.5, y: top + 0.5 }, dir: SOUTH, item: inputs[1] }
+  if (eastFirst) {
+    // M7d.5 (seed 11 g154): the tile below the north belt is inside the module (a chem row's manifolds run under its
+    // whole width), so the first input comes in from the east, one column out: a west belt feeding the north belt's
+    // side. Every item on it still ends on the merge belt's south (left) lane.
+    L.beltAt(xt + 1.5, inRow + 1.5, WEST)
+    return [{ id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 1.5, y: inRow + 1.5 }, dir: WEST, item: inputs[0] }, second]
+  }
+  return [{ id: `in-${inputs[0]}`, kind: "belt-in", pos: { x: xt + 0.5, y: inRow + 1.5 }, dir: NORTH, item: inputs[0] }, second]
 }
 
 function inserterCaps(facts: ProtoFacts, inserter: string): { belt: number; machine: number } {
@@ -1158,7 +1163,8 @@ export function chemRow(facts: ProtoFacts, p: ChemRowParams): ModuleDef {
   const T = fluidOut ? 1 : 0
   const C = math.max(1, p.chemPlants)
   const xt = 1 + 3 * C
-  const W = xt + 1
+  // Two solids: the first one's belt comes in from the east, one column past the tail (`rowTail` eastFirst).
+  const W = xt + (solidsIn.length === 2 ? 2 : 1)
   const two = fluidsIn.length === 2
   const H = T + (two ? 10 : 8)
   const cy = T + 4.5
@@ -1202,7 +1208,7 @@ export function chemRow(facts: ProtoFacts, p: ChemRowParams): ModuleDef {
   if (solidsIn.length > 0) {
     // From the tail to the first plant (column 0 would leak items out of the west edge).
     for (let x = 1; x < xt; x++) L.beltAt(x + 0.5, T + 1.5, WEST)
-    for (const port of rowTail(L, xt, solidsIn.map((i) => i.name), T + 1)) ports.push(port)
+    for (const port of rowTail(L, xt, solidsIn.map((i) => i.name), T + 1, 0, true)) ports.push(port)
   }
   const draft: ModuleDraft = {
     id: `chem-row/${p.recipe}/${C}`,

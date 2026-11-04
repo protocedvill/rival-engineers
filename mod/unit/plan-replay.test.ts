@@ -20,6 +20,7 @@ import { finishReplay, startTrace } from "./dump"
 import { planTrace } from "../src/planner/trace"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
+import { generate, GeneratorName } from "../src/modules/generators"
 
 interface PlanInput {
   id: string
@@ -120,6 +121,8 @@ interface ReplayOptions {
   failureExcludes?: string
   /** Requests that represent route-reassignment providers and must use an independent mine site. */
   newSites?: string[]
+  /** Modules regenerated from their params with today's generators (the capture holds the generator's old output). */
+  regenerate?: string[]
 }
 
 /** REPLAY_DUMP=1: each module's placement, mine plan (B33) or ore-clipped strip, and belt ports. */
@@ -176,6 +179,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     const fx = load(name)
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     for (const m of fx.request.modules) if (opts.newSites !== undefined && opts.newSites.indexOf(m.id) >= 0) m.newSite = true
+    for (const m of fx.request.modules) if (opts.regenerate !== undefined && opts.regenerate.indexOf(m.id) >= 0) m.def = generate(F, m.def.generator as GeneratorName, m.def.params ?? {})
     const ug = tonumber(os.getenv("REPLAY_UNDERGROUND") ?? "")
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
@@ -858,6 +862,12 @@ replay("m7-seed11-g78-a3", { expect: "done" })
 // all its belts can leave together within `portEgress` tiles (egress.ts), and a connection that rips the same route
 // again moves a module at once: 2.8M work, no rip-ups, no re-placements.
 replay("m7-seed11-g104-slow", { expect: "done" })
+// M7d.5 (seed 11, m7d5-robots soak, g154: the robot chain after construction robotics): the battery chem row's first
+// solid came in from below a tile inside its own footprint (the fluid manifolds run under the whole row), so every spot
+// read "own-lane-sealed" and all 4 attempts failed "no feasible position". Its first solid now sideloads from the east,
+// and the row places. Still open: both oil complexes' water pipes then fail "no pipe path" (the search reaches the
+// port's tile but never connects); pinned as failing there, never at n373 again.
+replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "failed", failureIncludes: "in-water: no pipe path", failureExcludes: "n373" })
 // REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
 // line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
 for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })

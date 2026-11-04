@@ -1,5 +1,5 @@
 import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
-import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, roboportCell, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chemRow, chestCell, circuitBlock, labArray, miningOutpost, oilComplex, radarCell, redLine, roboportCell, smelterColumn, steamBlock } from "../src/modules/generators"
 import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -216,6 +216,15 @@ test("M7d.5: roboport cell: one roboport and its pole, 5 × 4; the hub holds two
   ok(hub.id !== m.id, "distinct ids")
 })
 
+test("M7d.5: a passive-provider buffer head is a chest like an iron one: same rates and buffer flag", () => {
+  const iron = assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" })
+  const prov = assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "passive-provider-chest" })
+  near(rateOf(prov.rates.outputs, "iron-gear-wheel"), rateOf(iron.rates.outputs, "iron-gear-wheel"), 1e-9, "same output")
+  const b = prov.entities.filter((e) => e.buffer === true)
+  eq(b.length, 1, "one buffer")
+  eq(b[0].name, "passive-provider-chest", "the provider")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
 function allGenerated(): ModuleDef[] {
@@ -247,6 +256,24 @@ function allGenerated(): ModuleDef[] {
     chestCell(F, { recipe: "automation-science-pack" }),
   ]
 }
+
+test("M7d.5 (seed 11 g154): every belt and pipe port is fed from (or leads to) a tile outside its module", () => {
+  const defs = [...allGenerated()]
+  for (const recipe of ["battery", "plastic-bar", "sulfur", "sulfuric-acid"]) for (const c of [1, 2, 4]) defs.push(chemRow(F, { recipe, chemPlants: c }))
+  defs.push(assemblerRow(F, { recipe: "flying-robot-frame", count: 2 }), assemblerRow(F, { recipe: "electric-engine-unit", count: 2 }))
+  defs.push(oilComplex(F, { refineries: 2, lubePlants: 1 }))
+  const D = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+  for (const def of defs) {
+    for (const p of def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out" && p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
+      const [dx, dy] = D[math.floor(p.dir / 4)]
+      const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
+      const x = math.floor(p.pos.x) + sign * dx
+      const y = math.floor(p.pos.y) + sign * dy
+      ok(x < 0 || y < 0 || x >= def.footprint.w || y >= def.footprint.h, `${def.id} port ${p.id}: its outside tile ${x},${y} is inside the ${def.footprint.w}x${def.footprint.h} footprint`)
+    }
+  }
+})
 
 test("every generated module: no overlaps, inside its footprint, all powered on one pole network", () => {
   for (const def of allGenerated()) {
