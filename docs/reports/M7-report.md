@@ -1206,6 +1206,35 @@ and g105 unchanged; the fixture replays fall from 45.2M to 42.6M units in total.
 `planner` "re-root" pins the re-root: the same entities minus the trunk's tail, the dead output reserved, layout checks
 clean, and the trunk's connection routes again as a tap of the re-rooted route.
 
+#### M7c.9 follow-up 7: a merge's next goal reuses the failed search (seed 11 g111)
+
+The resumed soak (`m7c-cont5`, from minute 600 on the follow-up 6 build) stopped again at game minute 615. g111 (24
+modules, the labs#2 supply) planned for ~13 game-minutes and placed nothing, so the run's second stall triggered the
+fail-fast stop. Its replay costs 37.4M work units and fails. Most of the cost is coal joins (provider-group merges)
+from new coal mines up to 550 tiles out into base smelters' fuel lines. Each tries up to 24 merge goals, one search
+each. Most fail in a few thousand units, but some each exhaust a ~200×560 window (2–5M units): the seal check's two
+floods meet there, though no route exists (it does not model the rule that a belt may not cross its own path).
+
+- **Tried and reverted: one search for all goals.** It took the cheapest goal, which can be a side-load where the
+  user's P44 rule prefers a splitter (T1 P44 and B91 failed), and on g111 it routed a merge that used to fail, which
+  then ripped another merge in turn up to the rip-up limit (61M units).
+- **Done: reuse the failed search** (the user asked for this in-session, 2026-11-03). A search's costs from the start do
+  not depend on the goal, so a search that ran out of states has reached everything reachable in its window: the next
+  goal was either reached (its route is known) or cannot be. `router.ts` `retargetSearch` points the search at the next
+  goal and keeps its tree, reopening only the old goal tile's states (a splitter merge's goal is a free tile the search
+  never expanded). The goals are still tried in their order, so P44 holds. "No path" carries over only when the new
+  goal's own window lies inside the searched one. To make that hold, all of a merge's searches now share one window
+  over every goal (`router.mergeReuse`, on in `early-compact`); each goal's window then contains the one it had alone,
+  so no route is lost.
+- **Results (T1).** g111 37.4M → 27.5M work units; it still fails (see below). Its iron-plate coal join now succeeds at
+  goal 3 instead of 16. The g78 capture, which failed, now plans (its labs' own feed finds a goal in the shared window;
+  the test expectation is updated). Fixture totals 42.6M → 43.0M (g78-a3 +0.4M, g51 +0.5M from the wider windows).
+  No new tuning numbers.
+- **Why g111 still fails**: (1) the new coal mine for the
+  copper-plate logistic smelter's fuel is 550 tiles north, and every merge goal on that smelter's fuel line is sealed in
+  by trees, its port reservation and built belts; (2) the copper-ore belt to the new copper smelter in the circuit
+  cluster loses a rip-up contest with the steel smelter's ore belt after both of its re-placements.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

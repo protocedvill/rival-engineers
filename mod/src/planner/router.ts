@@ -110,6 +110,9 @@ export interface Search {
   sealed?: { side: "start" | "goal"; tiles: number; edge: boolean }
   /** Tiles the seal check visited (work). */
   sealSteps?: number
+  /** The window's margin and the box of its starts (and tapped routes) before it (`retargetSearch`). */
+  m?: number
+  sb?: { x1: number; y1: number; x2: number; y2: number }
   /** The seal check ran (or runs) without a cap: a retry's, or the one before a corridor search falls back. */
   sealFull?: boolean
 }
@@ -378,10 +381,10 @@ function tapCandidates(state: LayoutState, terrain: TerrainView, policy: LayoutP
 
 export function newSearch(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, rip: boolean, retry = false): Search {
   // Window: the endpoints (and tapped routes) plus a margin.
-  let x1 = req.goal.x
-  let y1 = req.goal.y
-  let x2 = req.goal.x
-  let y2 = req.goal.y
+  let x1 = math.huge
+  let y1 = math.huge
+  let x2 = -math.huge
+  let y2 = -math.huge
   const grow = (x: number, y: number): void => {
     x1 = math.min(x1, x)
     y1 = math.min(y1, y)
@@ -390,6 +393,11 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
   }
   if (req.start) grow(req.start.x, req.start.y)
   for (const id of req.taps ?? []) for (const k of state.routes[id]?.tiles ?? []) grow(keyX(k), keyY(k))
+  // A provider-group merge's searches share one window over all its goals, so the next goal can reuse a failed search
+  // (`retargetSearch`): each goal's window holds the one it had alone, so no route is lost.
+  if (policy.router.mergeReuse === true) for (const g of req.mergeGoals ?? []) grow(g.x2 ?? g.x, g.y2 ?? g.y)
+  const sb = x1 <= x2 ? { x1, y1, x2, y2 } : undefined
+  grow(req.goal.x, req.goal.y)
   const m = policy.router.margin * (req.windowMargin ?? 1)
   const w = policy.router
   const maxK = req.tier.maxUnderground
@@ -416,6 +424,8 @@ export function newSearch(state: LayoutState, terrain: TerrainView, policy: Layo
     cell: C,
     cellsW: math.ceil((x2 - x1 + 2 * m + 1) / C),
     tc: {},
+    m,
+    sb,
   }
   s.goalS = encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))
   for (const id of req.taps ?? []) for (const c of tapCandidates(state, terrain, policy, req, rip, id)) s.tapStarts.push(c)
@@ -458,6 +468,59 @@ function sealSpanOk(s: Search, state: LayoutState, x: number, y: number, ex: num
   return true
 }
 
+
+/**
+ * Points a failed search at its request's new goal (a provider-group merge's next goal; the caller has changed
+ * `s.req`'s goal) and keeps what it found (seed 11 g111). The search's costs from the start do not depend on the goal,
+ * so a search that ran out of states has already reached everything reachable in its window: the new goal was either
+ * reached (its route is known) or cannot be. Only the old goal's tile was never expanded (a splitter merge's goal is a
+ * free tile); its states are opened again. Before this, each of a connection's up to 24 merge goals searched the same
+ * 400 tiles from the producer again, three of them exhausting a 200×560 window (~3.4M work units each).
+ * Returns false when the search cannot be reused (it did not search to the end, or the goal is outside its window):
+ * the caller starts a new one.
+ */
+export function retargetSearch(s: Search): boolean {
+  const req = s.req
+  if (s.status !== "failed" || s.reason !== "no path" || s.expansions === 0 || s.hs.length > 0 || s.coarse !== undefined || s.corridor !== undefined) return false
+  if (sealTile(s, req.goal.x, req.goal.y) < 0) return false
+  if (req.goal.side !== undefined && req.merge !== true) return false
+  // "No path" carries over only if the new goal's own window lies inside this one (a smaller window has no more
+  // routes); a route found here is valid either way.
+  let inside = false
+  if (s.m !== undefined && s.sb !== undefined) {
+    const nx0 = math.min(s.sb.x1, req.goal.x) - s.m
+    const ny0 = math.min(s.sb.y1, req.goal.y) - s.m
+    const nx1 = math.max(s.sb.x2, req.goal.x) + s.m
+    const ny1 = math.max(s.sb.y2, req.goal.y) + s.m
+    inside = nx0 >= s.x0 && ny0 >= s.y0 && nx1 < s.x0 + s.w && ny1 < s.y0 + s.h
+  }
+  if (!inside && !s.closed[encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))]) return false
+  const oldTile = math.floor(s.goalS / 4)
+  s.goalS = encode(s, req.goal.x, req.goal.y, sideHeading(req.goal.dir, req.goal.side))
+  s.status = "running"
+  s.reason = undefined
+  s.sealed = undefined
+  s.seal = undefined
+  s.hw = 1
+  if (s.closed[s.goalS]) {
+    s.status = "found"
+    s.found = s.goalS
+    return true
+  }
+  // The old goal tile's states: closed without being expanded.
+  for (let d = 0; d < 4; d++) {
+    const st = oldTile * 4 + d
+    if (!s.closed[st] || s.g[st] === undefined) continue
+    delete s.closed[st]
+    const t = math.floor(st / 4)
+    heapPush(s, st, s.g[st] + s.hMin * (math.abs(s.x0 + (t % s.w) - req.goal.x) + math.abs(s.y0 + math.floor(t / s.w) - req.goal.y)))
+  }
+  if (s.hs.length === 0) {
+    s.status = "failed"
+    s.reason = "no path"
+  }
+  return true
+}
 
 /** Tile index in the window (corridor ignored), or -1 outside. */
 function sealTile(s: Search, x: number, y: number): number {

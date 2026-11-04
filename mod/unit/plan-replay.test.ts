@@ -842,7 +842,9 @@ replay("m7-seed11-g51-slow", { expect: "failed", failureIncludes: "no path" })
 // columns, sealed in by the base. 21-27 ms a tick while it and its retries planned. Merging above a tap (mergeGoals) now
 // feeds labs~6 through its trunk; the labs' own feed, from a mine 530 tiles west, is still sealed off (cheaply: the seal
 // check fails it with 0 expansions).
-replay("m7-seed11-g78-slow", { expect: "failed", failureIncludes: "no path", failureExcludes: "labs~6.in-fuel" })
+// Seed 11 g111 (merge goals share one window, `retargetSearch`): the labs' own feed now finds a merge goal in the window
+// that covers all of them, and the plan routes.
+replay("m7-seed11-g78-slow", { expect: "done" })
 // M7 (seed 11, m7c-cont2 soak, g78 attempt 3 on the router-work build): the old coal tree's fuel taps sit in pockets the
 // base closes with belt bundles wider than an underground, and smelter columns, which undergrounds could not pass
 // under. Every merge goal was sealed; the three replacement feeds failed and stage 3 (blue) never began. B121 lets

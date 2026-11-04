@@ -40,6 +40,8 @@ export interface RouterWeights {
    * `ripPairs`), 0 = off (rip up to `maxRipups`).
    */
   ripLoop?: number
+  /** Seed 11 g111: a provider-group merge's next goal reuses the failed search for the previous one (`retargetSearch`). */
+  mergeReuse?: boolean
   /** Search window margin around a connection's endpoints (tiles). */
   margin: number
   /** Undergrounds may pass under module footprints. */
@@ -300,6 +302,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     rip: 25,
     maxRipups: 3,
     ripLoop: 1,
+    mergeReuse: true,
     margin: 24,
     underModules: false,
     tunnel: 12,

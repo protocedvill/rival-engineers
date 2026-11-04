@@ -18,7 +18,7 @@ import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
-import { minTileCost, newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
+import { minTileCost, newSearch, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
 import { newPipeSearch, pipeFailureNotes, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
@@ -1437,6 +1437,14 @@ function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, pol
   // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
   if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
     cur.mergeTry = (cur.mergeTry ?? 0) + 1
+    // Seed 11 g111: a search that ran to the end already knows every route from the producer; the next goal reuses it.
+    if (!cur.rip && policy.router.mergeReuse === true) {
+      applyMergeGoal(cur.search.req, cur.mergeGoals[cur.mergeTry])
+      if (retargetSearch(cur.search)) {
+        job.stats.searches++
+        return
+      }
+    }
     const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
     if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
       applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
