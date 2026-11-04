@@ -1379,6 +1379,15 @@ Random-seed soaks (`m7r44444`, `m7r555555`, `m7r1212121`) exposed two structural
 T2 itself was also made cheaper: one shard per core (445 s → 162 s solo) and a statistical steady-state tolerance for
 low-rate lab modules (the two engine tests 147/120 s → ~19 s each). Full T2 193/193.
 
+#### M7c.9 follow-up 14: a shared consumer port is one repair (B140)
+
+Seed 11 n22 had four iron feeds into one port. The edge probe samples the consumer port, so every feed reported the
+same total; a backed-up feed was repaired and `checkBuild` found "nothing missing" while the port received 0.9/s of
+3.65/s planned. The reconciler now detects that shape and proposes one `shared:<node>:<item>` group repair; the repair
+reroutes the whole merge tree in place once (B88). `val11b140` (from `m7s11b` minute 360) rerouted 12 routes
+(233 pickups, 186 builds); n22 went from starved to `ok 0.283/0.275/s` and n25 from backed-up to `ok 1.23/0.978/s`.
+T1 `reconcile` "B140".
+
 **Still open after these fixes (seed 11, `m7s11b`/`val11blue5`, minutes 180-360).** The blue line still waits on
 its pumpjack craft because the steel smelter's iron feed delivers almost nothing. B135 makes a fully placed module
 visible (n171 did become visible), but n167 still has ghosts and its feed is a tap of n17/n47's iron trunk. Several
