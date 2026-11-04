@@ -1364,6 +1364,21 @@ Found in `m7s11b` (seed 11, fresh, minutes 180-330):
 
 No new tuning numbers. Validation: `val11blue5` resumed from `m7s11b` minute 300 on the fixed build.
 
+#### M7c.9 follow-up 13: failed ghosts and pruned jobs (B138, B139)
+
+Random-seed soaks (`m7r44444`, `m7r555555`, `m7r1212121`) exposed two structural bookkeeping bugs:
+
+- **B138 (a failed ghost must not be a silent success).** Goal g16 logged `cannot place 2` route belts and then reported
+  `grew`: `applyDiff` only logged failed ghosts, and the completion check looked only at created ghosts/jobs. A growth
+  now retries the failed specs on the build-round cadence and abandons the growth (B20) after `build-stuck-rounds`; a
+  plan build stays in its clear phase and the factory goal relocates after the same rounds.
+- **B139 (active goals keep their job records).** `pruneBoard` deleted done/failed jobs after 1800 ticks even when an
+  active goal’s build/grow lists still referenced them, producing hundreds of false `build-job-missing` invariants and
+  stopping `placed` from advancing on long builds. Jobs referenced by a planning/building goal are now kept.
+
+T2 itself was also made cheaper: one shard per core (445 s → 162 s solo) and a statistical steady-state tolerance for
+low-rate lab modules (the two engine tests 147/120 s → ~19 s each). Full T2 193/193.
+
 **Still open after these fixes (seed 11, `m7s11b`/`val11blue5`, minutes 180-360).** The blue line still waits on
 its pumpjack craft because the steel smelter's iron feed delivers almost nothing. B135 makes a fully placed module
 visible (n171 did become visible), but n167 still has ghosts and its feed is a tap of n17/n47's iron trunk. Several
