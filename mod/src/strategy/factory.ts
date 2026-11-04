@@ -1830,6 +1830,31 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   // B138: the plan is still in its clear phase because a ghost could not be created. Count the retry rounds and give up
   // the location after `build-stuck-rounds` instead of leaving the goal building forever.
   if (b.phase === "clear" && (b.failed?.length ?? 0) > 0) {
+    // B142: when every failed ghost is a route piece, reroute those routes around the failing tiles (B123) instead of
+    // abandoning the whole plan. Seed 1212121 g111 had 281 blocked route pieces and was relocated twice for them.
+    const specs = b.failedSpecs ?? []
+    if (specs.length > 0) {
+      const layout = entry.job?.layout
+      let onlyRoutes = layout !== undefined
+      const routes: IDS.RouteId[] = []
+      const tiles: Record<number, boolean> = {}
+      for (const s of specs) {
+        if (layout === undefined || layout.routes[s.owner] === undefined) {
+          onlyRoutes = false
+          break
+        }
+        const rid = IDS.routeId(s.owner)
+        if (routes.indexOf(rid) < 0) routes.push(rid)
+        tiles[tkey(math.floor(s.x), math.floor(s.y))] = true
+      }
+      if (onlyRoutes && routes.length > 0 && reroute(ctx, g, entry, routes, tiles)) {
+        g.stuck = 0
+        b.failed.length = 0
+        b.failedSpecs = undefined
+        b.retryAt = undefined
+        return
+      }
+    }
     // B142: a failed ghost inside a module whose machines already stand (B135 marked it built) is a missing internal
     // belt/inserter, not a reason to abandon the whole plan. The reconciler can repair the edge it feeds.
     let onlyBuiltModules = true
