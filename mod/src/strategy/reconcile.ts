@@ -305,7 +305,16 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         if (shared > 1) remedy(t, { key: `parallel:${prod.id}`, kind: "parallel", node: prod.id, why })
         return { kind: "edge", id: e.id, what: "at-capacity", why }
       }
-      if (v === "intake") return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
+      if (v === "intake") {
+        // B124 (seed 11, min 610-770): the starved consumer's port is full and (almost) nothing goes in: not a slow
+        // intake but a stopped one. A foreign item stranded on its lane (iron ore on a smelter's coal lane, plates on an
+        // ore belt) holds the lane for good. The repair empties the belts that hold one.
+        if ((e.measuredRate ?? 0) * (p.probeTicks / 60) < LOST_MIN_ITEMS) {
+          remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} waits at ${label(n)}'s port but ${fmt(e.measuredRate)}/s go in while it starves: a lane held by a foreign item?` })
+          return { kind: "edge", id: e.id, what: "stopped", why: `${item} waits at ${label(n)}'s port and ${fmt(e.measuredRate)}/s go in: its lane is held` }
+        }
+        return { kind: "node", id: n.id, what: "intake-limited", why: `${item} waits at ${label(n)}'s port (${fmt(e.measuredRate)}/s arrive): the module takes it slower than planned` }
+      }
       if (v === "broken" || prod.status === "backed-up") {
         remedy(t, { key: `repair:${e.id}`, kind: "repair", edge: e.id, why: `${item} piles up at ${label(prod)} but ${fmt(e.measuredRate)}/s reach ${label(n)}` })
         return { kind: "edge", id: e.id, what: "broken", why: `${e.role}: items pile up at the producer and don't arrive (${fmt(e.measuredRate)}/s)` }

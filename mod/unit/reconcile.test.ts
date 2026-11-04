@@ -121,6 +121,25 @@ test("edge verdict: stale, full (at its belt's capacity), intake-limited, broken
   eq(edgeVerdict(old, TICK, P), "stale", "too old")
 })
 
+test("B124: a starved consumer whose port is full while nothing goes in is a stopped lane: repair, not intake-limited", () => {
+  // Seed 11 (min 610-770): iron ore stranded on a copper smelter's coal lane; coal waited at the port, 0/s went in.
+  const g = chain(st({ working: 0.1, blocked: 0.9 }), 0.1, st({ working: 0.05, starved: 0.95 }), 0.1, st({ working: 0.1, starved: 0.9 }), 0.1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0, from: 1, to: 1 })
+  belt(g, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0.1, from: 0, to: 0 })
+  const { r } = settle(g)
+  const c = g.nodes.smelt.cause!
+  eq(c.what, "stopped", c.why)
+  eq(c.id, "ore", "the ore edge")
+  eq(r.remedies.filter((x) => x.kind === "repair" && x.edge === "ore").length, 1, "repair the ore edge")
+  // Items still go in (slowly): the module's intake is the limit, nothing to repair.
+  const g2 = chain(st({ working: 0.1, blocked: 0.9 }), 0.1, st({ working: 0.5, starved: 0.5 }), 1, st({ working: 0.1, starved: 0.9 }), 0.1)
+  belt(g2, "ore", "mine", "smelt", "iron-ore", 2, { rate: 1.2, from: 1, to: 1 })
+  belt(g2, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0.1, from: 0, to: 0 })
+  const r2 = settle(g2).r
+  eq(g2.nodes.smelt.cause!.what, "intake-limited", g2.nodes.smelt.cause!.why)
+  eq(r2.remedies.filter((x) => x.edge === "ore").length, 0, "no repair")
+})
+
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
   const g = chain(st({ working: 0.1, unpowered: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.2, st({ working: 0.1, starved: 0.9 }), 0.1)
   belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.2, from: 0, to: 0 })

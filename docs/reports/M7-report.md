@@ -1304,7 +1304,13 @@ None of them had a source upstream, so they were left over from rebuilds. No ins
 lane, so each lane stopped for good, and the stall spread through the shared trunks. Every repair said "nothing
 missing".
 
-Fix: the repair's clog check also picks up and re-places (empties) those belts (B124). No new tuning numbers.
+Fix (B124), in two parts:
+- **Diagnosis:** the reconciler had called these edges "intake-limited", which proposes no remedy: the port was full
+  but 0/s went in. A starved consumer whose full port takes in fewer than `LOST_MIN_ITEMS` items per probe is now a
+  stopped lane, and it gets a repair.
+- **Repair:** the repair's clog check also picks up and re-places (empties) the belts that hold a foreign item.
+
+No new tuning numbers.
 
 ## M7d: advanced oil, robots and the full mall
 
