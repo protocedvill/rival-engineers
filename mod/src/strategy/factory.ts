@@ -702,7 +702,10 @@ export function factoryCheckDebug(name: string, edgeFilter: string): unknown {
     for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
     const c = checkBuild(game.get_surface(faction.surface)!, faction.force, f.layout, parts)
     const at = (s: EntitySpec): string => `${s.name}@${s.x},${s.y}:${s.dir ?? 0}`
-    out.push({ edge: id, physical: e.physical, missing: c.missing.map((s) => at(s)), misdirected: c.misdirected.map((m) => at(m.spec)), stale: c.stale.map((m) => at(m.spec)), intruders: c.intruders.length, conflicts: c.conflicts.length })
+    // B132: what the repair's B83 check would decide (all pieces can stand while a route's steps do not reach the port).
+    const to = LG.connectModule(f.graph, e.to, (mid: string) => LO.findModule(f.layout, mid) !== undefined) ?? e.to
+    const land = e.toPort !== undefined ? LO.routesLand(f.layout, e.physical, { module: to, port: e.toPort }) : undefined
+    out.push({ edge: id, physical: e.physical, land, missing: c.missing.map((s) => at(s)), misdirected: c.misdirected.map((m) => at(m.spec)), stale: c.stale.map((m) => at(m.spec)), intruders: c.intruders.length, conflicts: c.conflicts.length })
   }
   return out
 }
