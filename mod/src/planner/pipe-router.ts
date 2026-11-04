@@ -134,6 +134,12 @@ export interface PipeSearch {
   hf: number[]
   /** Best cost per (tile, heading) state. */
   best: Record<number, number>
+  /**
+   * B129: the shortest run (tiles since the segment's start) any node at a (tile, heading) state had. A node that is
+   * dearer but has a shorter run is kept too: seed 11's g154 water line reached its goal only with runs over the extent,
+   * because every path with a pump (cost +10) came to a state after a cheaper pump-free one and was dropped.
+   */
+  bestRun?: Record<number, number>
   /** Caches for the search's life (the layout does not change while it runs). */
   tc: Record<number, number>
   uc: Record<number, boolean>
@@ -533,8 +539,12 @@ function visit(s: PipeSearch, x: number, y: number, d: number, g: number, run: n
   }
   const key = tkey(x, y) * 4 + d
   const b = s.best[key]
-  if (b !== undefined && b <= g) return
-  s.best[key] = g
+  // Searches saved before B129 have no run record: start one.
+  if (s.bestRun === undefined) s.bestRun = {}
+  const br = s.bestRun[key]
+  if (b !== undefined && b <= g && br !== undefined && br <= run) return
+  if (b === undefined || g < b) s.best[key] = g
+  if (br === undefined || run < br) s.bestRun[key] = run
   const i = s.nx.length
   s.nx.push(x)
   s.ny.push(y)
@@ -557,6 +567,7 @@ function seedTiles(s: PipeSearch): void {
   s.hs = []
   s.hf = []
   s.best = {}
+  s.bestRun = {}
   for (const st of startsOf(s.p)) visit(s, st.x, st.y, st.dir, 0, st.run ?? s.p.startRun ?? 0, -1, MV_START)
 }
 
@@ -704,7 +715,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
 
 /** A new pipe search; step it with `stepPipeSearch`. */
 export function newPipeSearch(p: PipeParams): PipeSearch {
-  return { p, status: "running", work: 0, nx: [], ny: [], nd: [], ng: [], nrun: [], npar: [], nmv: [], hs: [], hf: [], best: {}, tc: {}, uc: {} }
+  return { p, status: "running", work: 0, nx: [], ny: [], nd: [], ng: [], nrun: [], npar: [], nmv: [], hs: [], hf: [], best: {}, bestRun: {}, tc: {}, uc: {} }
 }
 
 /** Advances the search by about `budget` work units; returns the work done. */
@@ -749,7 +760,7 @@ export function stepPipeSearch(s: PipeSearch, cb: PipeCallbacks, budget: number)
     }
     const i = heapPop(s)
     const key = tkey(s.nx[i], s.ny[i]) * 4 + s.nd[i]
-    if (s.best[key] < s.ng[i]) continue
+    if (s.best[key] < s.ng[i] && (s.bestRun?.[key] ?? -1) < s.nrun[i]) continue
     used++
     expand(s, cb, i)
   }

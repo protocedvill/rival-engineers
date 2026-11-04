@@ -865,9 +865,9 @@ replay("m7-seed11-g104-slow", { expect: "done" })
 // M7d.5 (seed 11, m7d5-robots soak, g154: the robot chain after construction robotics): the battery chem row's first
 // solid came in from below a tile inside its own footprint (the fluid manifolds run under the whole row), so every spot
 // read "own-lane-sealed" and all 4 attempts failed "no feasible position". Its first solid now sideloads from the east,
-// and the row places. Still open: both oil complexes' water pipes then fail "no pipe path" (the search reaches the
-// port's tile but never connects); pinned as failing there, never at n373 again.
-replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "failed", failureIncludes: "in-water: no pipe path", failureExcludes: "n373" })
+// and the row places. B129: both oil complexes' water lines then failed "no pipe path": each complex's in-water run
+// counted all its pipes (221 tiles), and the pipe search dropped every path with a pump, so no arrival kept the extent.
+replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "done" })
 // REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
 // line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
 for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })

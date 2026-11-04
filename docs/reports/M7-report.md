@@ -1428,9 +1428,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      fed their first input port from a tile inside the module, so placement rejected every spot `own-lane-sealed`
      (17,903 times) and all 4 attempts failed. That first solid now sideloads from the east (the row is one tile wider).
      A new T1 invariant checks every generated module: every belt and pipe port leads to a tile outside it. The replay
-     `m7-seed11-g154-a1` (new `regenerate` option: rebuild a captured module from its params) now places the row and
-     fails later: both oil complexes' water pipes give "no pipe path" (budget exhausted), which the bad row had
-     hidden. That is still open (BUGS B128) and pinned as the replay's expected failure.
+     `m7-seed11-g154-a1` (new `regenerate` option: rebuild a captured module from its params) then placed the row and
+     failed both oil complexes' water pipes (BUGS B129, hidden by the bad row). (1) A port's in-module run counted
+     every pipe of the module (221 of the 312-tile extent for the water port), now only the pipes joined to the port
+     (76). (2) The pipe search kept one node per (tile, heading) by cost, so every path with a pump was dropped where a
+     pump-free one came first; a dearer node with a shorter run is kept now. The plan completes (route work +2%; no
+     other replay moved more than 5%).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

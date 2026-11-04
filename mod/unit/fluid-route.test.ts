@@ -2,10 +2,10 @@ import { ModuleDef, EAST, NORTH, Port } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
 import { checkLayout, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
-import { ConnectionRequest, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
+import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
 import { unpoweredModules } from "../src/planner/power"
-import { fluidChain, pumpjackField } from "../src/modules/generators"
+import { fluidChain, oilComplex, pumpjackField } from "../src/modules/generators"
 import { beltTiers } from "../src/planner/capacity"
 import { IDENTITY } from "../src/modules/geometry"
 import { connectionId, moduleId } from "../src/shared/ids"
@@ -220,6 +220,22 @@ test("fluid route: pumps on a long line get a pole each, joined to the power net
   ok(line !== undefined && line.poles.length === pumps, "a pole beside each pump")
   eq(unpoweredModules(job.layout, F).join(","), "", "every pump pole joined the network")
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
+})
+
+test("B129 (seed 11 g154): a port's run inside its module counts its own fluid's pipes only", () => {
+  // The oil complex's water reaches its plants along the bottom row, the west column and the top manifold (19 + 25 + 19
+  // tiles, plus risers); its gas, oil and lube manifolds and their pipe-to-ground risers are other segments. Counting
+  // every pipe read 221 and left the water line 91 tiles of the extent.
+  const def = oilComplex(F, { refineries: 1, lubePlants: 1 })
+  const m = { def } as PlacedModule
+  const port = (id: string): Port => def.ports.find((q) => q.id === id)!
+  const water = moduleFluidRun(m, port("in-water"))
+  ok(water >= 63 && water <= 80, `water run ${water}`)
+  const all = def.entities.filter((e) => e.name === "pipe").length
+  for (const id of ["in-crude-oil", "out-petroleum-gas", "out-lubricant"]) {
+    const r = moduleFluidRun(m, port(id))
+    ok(r < all / 2, `${id} run ${r} of ${all} pipes`)
+  }
 })
 
 run("fluid-route")

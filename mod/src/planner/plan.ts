@@ -22,7 +22,7 @@ import { minTileCost, newSearch, retargetSearch, RouteRequest, Search, searchRes
 import { newPipeSearch, pipeFailureNotes, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
-import { ModuleDef } from "../modules/types"
+import { ModuleDef, Port } from "../modules/types"
 import { moduleId, poleId, routeId } from "../shared/ids"
 import type { ConnectionId, PoleId, RouteId } from "../shared/ids"
 
@@ -597,7 +597,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       const route = job.layout.routes[rid]
       // M7c.8: a tap joins the trunk's segment there: it starts with that whole segment's length counted (seed 11: a
       // sulfur tap from beside the field merged 600 tiles into the first segment, which then carried nothing).
-      const seg = segmentLengths(route.steps, moduleFluidRun(fm))
+      const seg = segmentLengths(route.steps, moduleFluidRun(fm, fp))
       for (let i = 0; i < route.steps.length; i++) {
         const st = route.steps[i]
         if (st.kind !== "pipe") continue
@@ -635,8 +635,8 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
     maxUnderground: f.maxUnderground,
     extent: f.extent - PIPE_EXTENT_MARGIN,
-    startRun: starts.length > 0 ? 0 : moduleFluidRun(fm),
-    goalRun: moduleFluidRun(tm),
+    startRun: starts.length > 0 ? 0 : moduleFluidRun(fm, fp),
+    goalRun: moduleFluidRun(tm, tp),
     minCost: minTileCost(policy),
     ugCost: w.pipeUnderground ?? 2,
     pumpCost: w.pump ?? 10,
@@ -672,28 +672,67 @@ function segmentLengths(steps: RouteStep[], first: number): number[] {
 }
 
 /**
- * M7c.8: an upper bound on the path a module's fluid takes inside it toward a port: every pipe tile of the module
- * (pipe-to-ground pairs count their span, as the engine does). Over-counts a module with two fluid networks.
+ * M7c.8: an upper bound on the path a module's fluid takes inside it toward port `p`: the module's pipe tiles that
+ * join the port's tile (pipe-to-ground pairs count their span, as the engine does). B129 (seed 11 g154): this counted
+ * every pipe of the module, so an oil complex's water port read 221 tiles (crude, gas, oil and lube lines with it) and
+ * left 91 of the 312-tile extent for its water line, which no route from the lake could keep. A 2.0 segment is pipes
+ * only (a machine's fluid box starts its own), so a port on a machine reads 0. A pipe-to-ground end joins on its
+ * open side (its direction) and through its partner (the nearest end behind it facing the other way).
  */
-function moduleFluidRun(m: PlacedModule): number {
-  let n = 0
-  const under: { x: number; y: number }[] = []
+export function moduleFluidRun(m: PlacedModule, p: Port): number {
+  const pipes: Record<number, boolean> = {}
+  // Pipe-to-ground ends by tile: their open side (the entity's direction, as the generators place them).
+  const ug: Record<number, number> = {}
   for (const e of m.def.entities) {
-    if (e.name === "pipe") n++
-    else if (string.find(e.name, "pipe-to-ground", 1, true)[0] !== undefined) under.push({ x: e.x, y: e.y })
+    const k = tkey(math.floor(e.x), math.floor(e.y))
+    if (e.name === "pipe") pipes[k] = true
+    else if (string.find(e.name, "pipe-to-ground", 1, true)[0] !== undefined) ug[k] = math.floor((e.dir ?? 0) / 4) % 4
   }
-  // Pairs: each end and the tiles between it and its partner (the nearest end on the same row or column).
-  for (let i = 0; i < under.length; i++) {
-    let best = math.huge
-    for (let j = 0; j < under.length; j++) {
-      if (i === j) continue
-      const a = under[i]
-      const b = under[j]
-      if (a.x === b.x || a.y === b.y) best = math.min(best, math.abs(a.x - b.x) + math.abs(a.y - b.y))
+  // An end's partner: the nearest end behind it facing the other way (span: tiles between, both ends included).
+  const partner = (x: number, y: number, d: number): { x: number; y: number; span: number } | undefined => {
+    for (let k = 1; k <= UG_PARTNER_REACH; k++) {
+      const bx = x - DX[d] * k
+      const by = y - DY[d] * k
+      if (ug[tkey(bx, by)] === opposite4(d)) return { x: bx, y: by, span: k + 1 }
     }
-    n += best === math.huge ? 1 : (best + 1) / 2
+    return undefined
+  }
+  let n = 0
+  const seen: Record<number, boolean> = {}
+  // Entries: a tile and the tile it is entered from (undefined for the port's own tile).
+  const queue: { x: number; y: number; from?: number }[] = [{ x: math.floor(p.pos.x), y: math.floor(p.pos.y) }]
+  while (queue.length > 0) {
+    const t = queue.pop()!
+    const k = tkey(t.x, t.y)
+    if (seen[k]) continue
+    const d = ug[k]
+    if (d !== undefined) {
+      const open = tkey(t.x + DX[d], t.y + DY[d])
+      const b = partner(t.x, t.y, d)
+      // An end joins above ground on its open side only (or through its partner).
+      if (t.from !== undefined && t.from !== open && (b === undefined || t.from !== tkey(b.x, b.y))) continue
+      seen[k] = true
+      queue.push({ x: t.x + DX[d], y: t.y + DY[d], from: k })
+      if (b !== undefined) {
+        // Each end counts half the pair's span, as the engine counts the whole span.
+        n += b.span / 2
+        queue.push({ x: b.x, y: b.y, from: k })
+      } else n += 1
+      continue
+    }
+    if (!pipes[k]) continue
+    seen[k] = true
+    n++
+    for (let i = 0; i < 4; i++) queue.push({ x: t.x + DX[i], y: t.y + DY[i], from: k })
   }
   return math.ceil(n)
+}
+
+/** How far behind a pipe-to-ground end its partner may be (vanilla pipe-to-ground reach is 10 tiles between). */
+const UG_PARTNER_REACH = 11
+
+function opposite4(d: number): number {
+  return (d + 2) % 4
 }
 
 /** Steps the running fluid connection (`job.pipe`); commits its route or records the failure when the search ends. */
