@@ -1407,6 +1407,18 @@ T1 `reconcile` "B140".
 `val1212fix3` (from minute 660): g109 built instead of being abandoned, and g111 plans instead of failing immediately.
 T2 `bootstrap-sources` "B142".
 
+#### M7c.9 follow-up 16: seed 44444’s blue line has a design edge the graph never got (B143)
+
+`m7r44444c` ran the full 960 game-min and finished with 28.8 red / 36.0 green / **0 chemical** packs per minute. The
+blue line’s iron smelter n43 is `starved`, cause `external: no producer`, while the iron mine n16 is `backed-up` with
+`nothing takes its output`. A `design_debug("1","iron-ore")` probe of `min-0900` shows the design *does* have the edge
+`iron-ore*>iron-plate>automation-science-pack>labs~2 => iron-plate>logistic-science-pack>labs.in-ore` at 3.63/s, but the
+live graph has no corresponding edge. The factory is busy building g80, a huge production plan (27k+ queued jobs, about
+30 ms/tick in the run), planned before that demand appeared; a long-running build blocks planning the missing feed.
+Power is short at the same time: power#3 growth is blocked at 435,-50, and the next power block finds no shore site
+(B137). Fix direction for B143: allow a critical missing feed to be planned while another large build runs, or split
+huge production goals into smaller ones.
+
 **Still open after these fixes (seed 11, `m7s11b`/`val11b141`, minutes 180-390).** The blue line still waits on
 its pumpjack craft because the steel smelter n167 taps n47, whose iron mine n37 is depleted and retiring. The retiring
 provider's replacement group does not include n167, a consumer added in an unbuilt plan (B141, open). B135 makes a
