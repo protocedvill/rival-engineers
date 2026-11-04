@@ -119,6 +119,35 @@ def dashed(draw, a, b, fill, width, dash=6):
         draw.line([(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0), (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)], fill=fill, width=width)
 
 
+# --labels item: module boxes say what they make (big type, for whole-base maps), not just their node id.
+LABELS = {"mode": "id", "size": 0}
+
+
+def module_label(node):
+    """Short name of what a logical node makes: the first item of its role, plus its copy suffix (#2, ~3)."""
+    role = node.get("role") or ""
+    head = role.split(">")[0].replace("*", "")
+    tail = role.split(">")[-1]
+    suffix = ""
+    for mark in ("#", "~"):
+        if mark in tail:
+            suffix += mark + tail.split(mark, 1)[1].split("~")[0].split("#")[0]
+    if ">" not in role:
+        head = role
+    return f"{node['id']} {head}{suffix}"
+
+
+def draw_label(draw, xy, text, size):
+    from PIL import ImageFont
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:
+        font = ImageFont.load_default()
+    l, t, r, b = draw.textbbox(xy, text, font=font)
+    draw.rectangle([l - 2, t - 1, r + 2, b + 1], fill=(20, 20, 20))
+    draw.text(xy, text, fill=(255, 255, 255), font=font)
+
+
 def draw_graph(draw, graph, box, scale):
     x0, y0 = box[0], box[1]
     px = lambda x, y: ((x + 0.5 - x0) * scale, (y + 0.5 - y0) * scale)
@@ -127,7 +156,8 @@ def draw_graph(draw, graph, box, scale):
     for n in as_list(phys.get("nodes")):
         r = n["rect"]
         draw.rectangle([(r["x"] - x0) * scale, (r["y"] - y0) * scale, (r["x"] + r["w"] - x0) * scale - 1, (r["y"] + r["h"] - y0) * scale - 1], outline=(250, 250, 250), width=2)
-        draw.text(((r["x"] - x0) * scale + 3, (r["y"] - y0) * scale + 2), n["id"], fill=(255, 255, 255))
+        if LABELS["mode"] != "item":
+            draw.text(((r["x"] - x0) * scale + 3, (r["y"] - y0) * scale + 2), n["id"], fill=(255, 255, 255))
         for p in as_list(n.get("ports")):
             if p["kind"] not in ("belt-in", "belt-out"):
                 continue
@@ -176,6 +206,18 @@ def draw_graph(draw, graph, box, scale):
             draw.text(px(s0["x"], s0["y"]), f"{e['item']} {cap_info.get('planned', 0):.1f}/{cap_info.get('capacity', 0):.0f} -> {decision}", fill=(255, 120, 120))
 
 
+
+def draw_item_labels(draw, graph, box, scale):
+    """--labels item: each module box labelled with what it makes, drawn last so belts do not cover it."""
+    x0, y0 = box[0], box[1]
+    logical = {n["id"]: n for n in as_list(graph.get("logical", {}).get("nodes")) if isinstance(n, dict)}
+    for n in as_list(graph.get("physical", {}).get("nodes")):
+        ln = logical.get(n["id"], {"id": n["id"]})
+        if ln.get("lifecycle") == "retired":
+            continue
+        r = n["rect"]
+        draw_label(draw, ((r["x"] - x0) * scale + 3, (r["y"] - y0) * scale + 2), module_label(ln), LABELS["size"] or max(10, scale * 2))
+
 def render(dump, box, scale, trail=None, graph=None):
     x0, y0, x1, y1 = box
     img = Image.new("RGB", (int((x1 - x0) * scale), int((y1 - y0) * scale)), BACKGROUND)
@@ -215,6 +257,8 @@ def render(dump, box, scale, trail=None, graph=None):
 
     if graph:
         draw_graph(draw, graph, box, scale)
+        if LABELS["mode"] == "item":
+            draw_item_labels(draw, graph, box, scale)
 
     if trail and len(trail) > 1:
         draw.line([((x - x0) * scale, (y - y0) * scale) for x, y in trail], fill=TRAIL, width=max(2, scale // 2))
@@ -234,8 +278,12 @@ def main(argv):
     ap.add_argument("--trail", action="store_true", help="draw the path walked by the (single) character across dumps")
     ap.add_argument("--graph", help="Factory Graph JSON to overlay (module boxes, routes by utilization)")
     ap.add_argument("--crop", help="x0,y0,x1,y1 world box to render instead of the dumps' extent")
+    ap.add_argument("--labels", choices=("id", "item"), default="id", help="module box labels: node id, or id + what it makes")
+    ap.add_argument("--label-size", type=int, default=0, help="--labels item font size in pixels (default 2 tiles)")
     ap.add_argument("--graph-dir", help="per-frame Factory Graphs: DIR/<dump name>.graph.json overlays each frame")
     args = ap.parse_args(argv)
+    LABELS["mode"] = args.labels
+    LABELS["size"] = args.label_size
 
     dumps = []
     for path in args.dumps:
