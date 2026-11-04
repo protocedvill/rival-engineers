@@ -1346,7 +1346,7 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   if (planTrace.searches !== undefined) {
     cur.work = (cur.work ?? 0) + used
     if (st !== "running") {
-      planTrace.searches(`belt ${cur.conn} ${st} rip=${cur.rip} win=${cur.winScale ?? 1} work=${math.floor(cur.work)} ${cur.search.reason ?? ""}`)
+      planTrace.searches(`belt ${cur.conn} ${st} rip=${cur.rip} win=${cur.winScale ?? 1} work=${math.floor(cur.work)} ${cur.search.reason ?? ""} seal=${cur.search.sealSteps ?? "-"}${cur.search.sealFull === true ? "F" : ""}${cur.search.sealed !== undefined ? `:${cur.search.sealed.side}${cur.search.sealed.edge ? "/edge" : ""}` : ""}${cur.search.widened === true ? " widened" : ""}${cur.search.coarse !== undefined || cur.search.corridor !== undefined ? " corridor" : ""} box=${cur.search.w}x${cur.search.h} merge=${cur.mergeTry ?? 0}/${cur.mergeGoals?.length ?? 0}`)
       cur.work = 0
     }
   }
