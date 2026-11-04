@@ -1,7 +1,8 @@
 import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
-import { addJob } from "../jobs/board"
+import { addJob, failJob } from "../jobs/board"
+import { sweepOrders } from "../jobs/robot-orders"
 import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { setAiProfiler } from "../profiling"
@@ -372,6 +373,29 @@ describe("job board", () => {
       assert(job.status === "done" && job.reason === "robot-removed", `clear job: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
       assert(!tree.valid, "the tree is gone")
     })
+  })
+
+  test("M7d.5: with a network, a clear job is a deconstruction order at once; a dropped job's order is cancelled", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-orders"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    // Far outside the network's construction range: only the order itself is tested here.
+    const kept = lab.surface.create_entity({ name: "tree-01", position: at(lab, 90, -90) })!
+    const id = addClearJob(faction, kept)
+    assert(kept.to_be_deconstructed(), "marked when the job was made")
+    failJob(faction.board, id, "replan", game.tick)
+    sweepOrders(faction)
+    assert(kept.valid && !kept.to_be_deconstructed(), "the dropped job's order is cancelled")
+    assert((faction.deconOrders ?? []).length === 0, "and forgotten")
+    // A replan that drops one job and queues another for the same target keeps the order.
+    const a = addClearJob(faction, kept)
+    addClearJob(faction, kept)
+    failJob(faction.board, a, "replan", game.tick)
+    sweepOrders(faction)
+    assert(kept.to_be_deconstructed(), "the second job keeps the order")
+    kept.destroy()
+    sweepOrders(faction)
+    assert((faction.deconOrders ?? []).length === 0, "a removed target's order is forgotten")
   })
 
   test("M7d.5: the crew leaves place jobs the robots can do now to them (factory-robot-first-seconds)", () => {

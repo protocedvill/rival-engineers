@@ -1406,9 +1406,15 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      builds…"). A robot-built buffer chest gets its slot limit. The crew leaves a new place job to the robots for
      `factory-robot-first-seconds` (60) when they can do it now: the ghost is in a network's construction range, the
      network has a free robot and its storage holds the item; after that the crew builds it as before (T2 `jobs` "M7d.5:
-     the crew leaves place jobs…", which fails with the window at 0). Clear jobs too: a tree, rock or own entity in construction range is marked for
-     deconstruction and left to the robots for the same window; the job is done (`robot-removed`) once it is gone (T2
-     `jobs` "M7d.5: robots take down a clear job's tree…").
+     the crew leaves place jobs…", which fails with the window at 0). Removals are Factorio's own deconstruction orders (user request in-session 2026-11-04: robots build
+     and deconstruct "like normal", through ghosts and deconstruction orders). Once the faction has a roboport network,
+     every clear job marks its target when it is made (`jobs/robot-orders.ts`), as a player's deconstruction planner
+     does: robots in range take it down, the crew does the rest (and leaves targets in range to the robots for the same
+     window). The job is done (`robot-removed`) once its target is gone, whoever removed it. A clear job that ends with
+     its target standing (failed, or dropped by a replan) has its order cancelled, unless another live job wants the
+     same target. Without a network nothing is marked: a marked machine stops working, and a retiring module keeps
+     producing until the crew picks it up, as before. T2 `jobs` "M7d.5: robots take down a clear job's tree…" and
+     "…a clear job is a deconstruction order at once; a dropped job's order is cancelled".
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

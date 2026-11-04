@@ -39,6 +39,7 @@ declare global {
 }
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { badSpotRects, recordBadSpot } from "./bad-spots"
+import { orderRemoval, sweepOrders } from "./robot-orders"
 import { countEntities, countWork, findEntities } from "../work"
 import { tkey } from "../planner/grid"
 
@@ -858,11 +859,7 @@ function robotWork(faction: FactionState, tick: number, config: Config): ((this:
       if (!p.target.valid) return false
       if (p.robotOrdered) return true
       for (const n of free) {
-        for (const cell of n.cells) {
-          if (!cell.valid || !cell.is_in_construction_range(p.target.position)) continue
-          p.robotOrdered = p.target.order_deconstruction(faction.force)
-          return p.robotOrdered === true
-        }
+        for (const cell of n.cells) if (cell.valid && cell.is_in_construction_range(p.target.position)) return orderRemoval(faction, job.id, p)
       }
       return false
     }
@@ -878,6 +875,7 @@ function robotWork(faction: FactionState, tick: number, config: Config): ((this:
 /** Fails ready jobs whose targets are gone, so nobody claims them. */
 function dropDeadJobs(faction: FactionState, tick: number): void {
   const board = faction.board
+  sweepOrders(faction)
   for (const id of [...board.active]) {
     const job = board.jobs[id]
     if (job.status !== "open") continue

@@ -42,6 +42,11 @@ export type JobPayload =
 export interface FactionState {
   /** B111: standing spots the crew could not walk to, avoided until the tick (`jobs/bad-spots.ts`). */
   badSpots?: Record<string, number>
+  /**
+   * M7d.5: clear jobs whose target carries a deconstruction order (robots in range take it down, like a player's
+   * deconstruction planner). An order whose job ends without the target gone is cancelled (`jobs/robot-orders.ts`).
+   */
+  deconOrders?: { job: JobId; target: LuaEntity }[]
   name: string
   /** The surface the faction lives on (name). */
   surface: string

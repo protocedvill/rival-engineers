@@ -5,6 +5,7 @@ import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
+import { hasNetwork, orderRemoval } from "../jobs/robot-orders"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
 import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
@@ -895,7 +896,10 @@ function maintain(ctx: Ctx): void {
         const e = part.built
         if (!e || !e.valid) continue
         const key = `retire:${e.unit_number}`
-        if (!keyActive(ctx, key)) addKeyed(ctx, key, { kind: "clear", pos: e.position, priority: PRIORITY_RETIRE, payload: { kind: "clear", target: e } })
+        if (keyActive(ctx, key)) continue
+        const job = addKeyed(ctx, key, { kind: "clear", pos: e.position, priority: PRIORITY_RETIRE, payload: { kind: "clear", target: e } })
+        // M7d.5: a deconstruction order, as for every removal once the faction has a roboport network.
+        if (hasNetwork(ctx.faction, e.surface.name)) orderRemoval(ctx.faction, job.id, job.payload as Extract<JobPayload, { kind: "clear" }>)
       }
       continue
     }
