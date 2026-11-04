@@ -59,6 +59,11 @@ export interface DesignContext {
    * has left out keeps them first ("Built first", user decision 2026-10-29).
    */
   providerFeeds?: Record<string, Record<string, boolean>>
+  /**
+   * M7 (C): items/s below which a top-up into a belt that still feeds its consumer (a merge edge: a short provider's
+   * residual, a retiring provider's replacement) gets no provider. 0 = always plan one.
+   */
+  minTopUp?: number
   /** B71: consumer ports (`role.port`) that cannot take a merged residual: a short provider keeps them whole. */
   noMerge?: Record<string, boolean>
   /** B72: provider roles whose plan folded them into a shared mine whose route then failed: they need a site of their own. */
@@ -632,6 +637,17 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     if (consumers.length === 0 || rate <= EPS) return
     if (next(joins)[0] !== undefined) mergePorts = joins
   }
+  // M7 (C, user request in-session 2026-11-03): a top-up into a belt that still feeds its consumer (a merge edge) below
+  // `factory-min-top-up` items/s gets no provider: seed 11 g111 planned a coal mine and a 550-tile belt for 0.004/s.
+  const minTopUp = ctx.minTopUp ?? 0
+  if (fixedCapacity === undefined && minTopUp > 0 && mergePorts !== undefined) {
+    const kept = consumers.filter((c) => !(mergePorts![`${c.to}.${c.toPort}`] === true && c.rate < minTopUp - EPS))
+    if (kept.length < consumers.length) {
+      for (const c of consumers) if (kept.indexOf(c) < 0) rate -= c.rate
+      consumers = kept
+      if (consumers.length === 0 || rate <= EPS) return
+    }
+  }
   const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
   // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a
   // distinct parallel role, rather than one oversized node that can never be satisfied.
@@ -723,12 +739,15 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   const alone: Demand[] = []
   // Consumer ports whose existing belt a retiring provider's replacement must side-load into (D76).
   const mergePorts: Record<string, boolean> = {}
+  // M7 (B, user request in-session 2026-11-03): which retiring provider fed each such port.
+  const heirOf: Record<string, string> = {}
   for (const d of mine) {
     let p: string | undefined = shared.keep[`${item}@${d.to}@${d.toPort}`] ?? shared.keep[`${item}@${d.to}`]
     if (p !== undefined && shared.blocked?.[`${p}=>${d.to}.${d.toPort}`] === true) p = undefined
     // D76: the provider is retiring. Its consumer needs a replacement that side-loads into the belt it still feeds.
     if (p !== undefined && w.ctx.retiring?.[p] === true) {
       mergePorts[`${d.to}.${d.toPort}`] = true
+      heirOf[`${d.to}.${d.toPort}`] = p
       p = undefined
     }
     if (p !== undefined) {
@@ -784,6 +803,24 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     alone.push(fresh[i])
     fresh.splice(i, 1)
   }
+  // M7 (B, user request in-session 2026-11-03; seed 11 g108/g111): the consumers a retiring provider still feeds get
+  // one replacement group per retiring provider, apart from the new consumers. Mixed into the blue line's new fuel
+  // group, the coal tap tree of a worked-out base mine could not be reached from one site with the blue line 500 tiles
+  // away; the group was split per consumer and g111 planned eight coal mines, one per smelter top-up.
+  const heirs: Record<string, Demand[]> = {}
+  const heirRoles: string[] = []
+  for (let i = 0; i < fresh.length; i++) {
+    const p = heirOf[`${fresh[i].to}.${fresh[i].toPort}`]
+    if (p === undefined) continue
+    if (heirs[p] === undefined) {
+      heirs[p] = []
+      heirRoles.push(p)
+    }
+    heirs[p].push(fresh[i])
+    fresh.splice(i, 1)
+    i--
+  }
+  heirRoles.sort()
   for (const p of producers) {
     // A shared provider planned for several consumers can be route-infeasible: no one site reaches all of them.
     // After such a plan failure the factory marks the role; give each consumer its own parallel provider instead.
@@ -794,6 +831,21 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     let total = 0
     for (const d of byProducer[p]) total += d.rate
     addProducer(w, item, total, byProducer[p], true, p)
+  }
+  for (const p of heirRoles) {
+    const group = heirs[p]
+    if (group.length < 2) {
+      for (const d of group) alone.push(d)
+      continue
+    }
+    const role = parallelRole(w, p, true)
+    if (shared.split?.[role] === true) {
+      for (const d of group) addProducer(w, item, d.rate, [d], true, parallelRole(w, role, true), undefined, mergePorts, true)
+      continue
+    }
+    let total = 0
+    for (const d of group) total += d.rate
+    addProducer(w, item, total, group, true, role, undefined, mergePorts, true)
   }
   if (fresh.length >= 2) {
     const role = `${item}*>${fresh[0].to}`

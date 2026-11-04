@@ -852,6 +852,15 @@ data.extend([
     order: "j-bd",
   },
   {
+    type: "double-setting",
+    name: Settings.factoryMinTopUp,
+    setting_type: "runtime-global",
+    default_value: 0.05,
+    minimum_value: 0,
+    maximum_value: 100,
+    order: "j-bda",
+  },
+  {
     type: "int-setting",
     name: Settings.logisticsShareMinModules,
     setting_type: "runtime-global",

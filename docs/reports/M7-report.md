@@ -1235,6 +1235,27 @@ floods meet there, though no route exists (it does not model the rule that a bel
   by trees, its port reservation and built belts; (2) the copper-ore belt to the new copper smelter in the circuit
   cluster loses a rip-up contest with the steel smelter's ore belt after both of its re-placements.
 
+#### M7c.9 follow-up 8: a retiring mine's heirs get one replacement; tiny top-ups get none (seed 11 g111)
+
+The user asked for options B and C in-session (2026-11-03). g111's eight new coal mines (n271–n278) were one per
+consumer. Four fed the new blue-line modules. The other four were merge top-ups (0.17, 0.14, 0.10 and 0.004 coal/s)
+into the fuel lines of base smelters. Those lines are a tap tree fed by n38, a 4-drill coal mine that has been
+retiring (worked out, 25 % depleted) since `m7c-fresh`. D76 put the consumers n38 still feeds into the same design
+group as the new consumers (`coal*>steel-plate>…labs#2`). In g108, that one group could not be reached from one site,
+because the blue line lies ~500 tiles from the base. The factory then split it per consumer, and each base smelter got
+its own mine and its own long merge belt.
+
+- **B (design, `expandShared`).** The consumers a retiring provider still feeds now form their own replacement group,
+  one per retiring provider. It goes under a parallel role of the retiring one (`coal*>…labs#2~N`), with merge edges
+  and a site of its own. New consumers are never mixed into it. The tap tree is compact, so one site can reach it. If
+  even that group fails from one site, the existing `providerSplit` rule still splits it per consumer.
+- **C (`factory-min-top-up`, proposed 0.05/s).** A merge edge below this rate gets no provider: a short provider's
+  residual (B60) or a retiring provider's replacement (D76). For a retiring provider, such a consumer is planned again
+  after the old mine is removed (its edge goes with the mine's routes).
+- **Not done:** growing the retiring mine instead of replacing it. n38 is retiring because its patch has no ore left
+  in its growth area.
+- T1: two new design tests (`M7 B`, `M7 C`); the g78 split test now names the heir group's role.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
@@ -1321,6 +1342,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 
 | Name | Where | Value | Why | Setting? |
 |---|---|---|---|---|
+| Smallest top-up worth a provider | `settings.ts` `factory-min-top-up` | 0.05 items/s | Agent guess (M7c.9 follow-up 8, proposed): about two burner furnaces' coal; g111 planned a mine and a 550-tile belt for 0.004/s. | yes |
 | Pipe-route heuristic weight | `planner/pipe-router.ts` `PIPE_HEURISTIC_WEIGHT` | 4 | Agent guess (B120): a remote crude route otherwise searched a broad area for minutes in a single tick; weighted A* trades the cheapest possible pipe path for a fast one. | no |
 | Failed-plan capture side limit | `strategy/factory.ts` `exportPlanInput` | 3,000 tiles (was 800, then 1,200) | Includes a remote oil field and the home base in one replay fixture; 1,200 still skipped the seed 11 sulfur plan (its region was 2,478 × 2,169: the oil field ~900 tiles west of the hub). | no |
 | Power job priority | `strategy/factory.ts` `POWER_JOB_PRIORITY` | 100 | Was the literal of burner refuels; B111: builds that restore the power supply get it too, so refuels cannot preempt them (the build priority setting is 90). | no (build priority is a setting) |

@@ -446,6 +446,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     retiring: ST.retiringRoles(getFactory(ctx.faction.name)),
     providerShort: CS.flags(getFactory(ctx.faction.name)?.constraints, "providerShort"),
     noMerge: CS.flags(getFactory(ctx.faction.name)?.constraints, "noMerge"),
+    minTopUp: ctx.config.factoryMinTopUp,
     ownSite: CS.flags(getFactory(ctx.faction.name)?.constraints, "ownSite"),
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
     builtGenerators: ST.builtGenerators(getFactory(ctx.faction.name)),

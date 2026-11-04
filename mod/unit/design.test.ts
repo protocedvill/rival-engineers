@@ -794,7 +794,8 @@ test("B81: a retiring provider's replacement never shares the provider it replac
 
 test("M7 (seed 11 g78): a retiring provider's replacement split per consumer still merges into the old belts", () => {
   const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
-  const role = `coal*>${SMELT_FE}`
+  // The heirs of a retiring provider form their own group (M7 B), a parallel role of the retiring one.
+  const role = "coal*>old~2"
   const g = design(ctx({ enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {}, split: { [role]: true } } }), { item: RED, perSecond: 1 })
   const feeds = g.edges.filter((e) => e.item === "coal" && (e.to === SMELT_FE || e.to === SMELT_CU) && e.from !== "coal*>old")
   eq(feeds.length, 2, `one replacement feed per smelter: ${g.edges.filter((e) => e.item === "coal").map((e) => e.role).join(", ")}`)
@@ -802,6 +803,34 @@ test("M7 (seed 11 g78): a retiring provider's replacement split per consumer sti
     eq(e.from === role, false, `${e.role}: from a parallel provider, not the split group`)
     eq(e.merge, true, `${e.role} side-loads into the belt the retiring mine still feeds`)
   }
+})
+
+test("M7 B (seed 11 g111): a retiring provider's consumers get one replacement of their own, merging into its belts", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
+  const g = design(ctx({ enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {} } }), { item: RED, perSecond: 1 })
+  const feeds = g.edges.filter((e) => e.item === "coal" && (e.to === SMELT_FE || e.to === SMELT_CU))
+  eq(feeds.length, 2, `one feed per smelter: ${g.edges.filter((e) => e.item === "coal").map((e) => e.role).join(", ")}`)
+  for (const e of feeds) {
+    eq(e.from, "coal*>old~2", `${e.role}: from the retiring mine's one replacement`)
+    eq(e.merge, true, `${e.role} side-loads into the belt the retiring mine still feeds`)
+  }
+  eq(byRole(g.nodes, "coal*>old~2")!.newSite, true, "on a site of its own")
+})
+
+test("M7 C: a top-up into a belt that still feeds its consumer below factory-min-top-up gets no provider", () => {
+  const keep = { [`coal@${SMELT_FE}`]: "coal*>old", [`coal@${SMELT_CU}`]: "coal*>old" }
+  const base = { enabled: ELECTRIC, retiring: { "coal*>old": true }, sharing: { keep, spare: {} } }
+  const all = design(ctx({ ...base, minTopUp: 0 }), { item: RED, perSecond: 1 })
+  const rates = all.edges.filter((e) => e.item === "coal" && e.merge === true).map((e) => e.rate)
+  eq(rates.length, 2, "both smelters get a top-up without a threshold")
+  const cut = (rates[0] + rates[1]) / 2
+  const some = design(ctx({ ...base, minTopUp: cut }), { item: RED, perSecond: 1 })
+  const left = some.edges.filter((e) => e.item === "coal" && e.merge === true)
+  eq(left.length, rates[0] === rates[1] ? 2 : 1, `only the top-up at or above ${cut}/s is planned: ${left.map((e) => `${e.role} ${e.rate}`).join(", ")}`)
+  for (const e of left) ok(e.rate >= cut - 1e-9, `${e.role} at ${e.rate}/s`)
+  const none = design(ctx({ ...base, minTopUp: 100 }), { item: RED, perSecond: 1 })
+  eq(none.edges.filter((e) => e.item === "coal" && e.merge === true).length, 0, "no top-up below the threshold")
+  eq(none.errors.length, 0, none.errors.join("; "))
 })
 
 test("M7c: blue packs: fluid chains for plastic and sulfur, a pumpjack field, a water pump, assembler-2 rows", () => {

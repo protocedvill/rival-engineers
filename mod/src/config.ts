@@ -201,6 +201,8 @@ export interface Config {
   factorySustainMinutes: number
   /** M6: from this stage on (1-based, 0 = never), new fuel consumers share one fuel producer per cluster (splitter taps). */
   factorySharedProviders: number
+  /** M7 (C, proposed): items/s below which a top-up into a belt still feeding its consumer gets no provider (0 = always). */
+  factoryMinTopUp: number
   /** B19: research splitters before production when sharing providers saves at least this many modules (0 = never). */
   logisticsShareMinModules: number
   /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */

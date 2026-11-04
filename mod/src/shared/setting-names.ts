@@ -98,6 +98,7 @@ export const Settings = {
   factoryLabSizing: "rival-engineers-factory-lab-sizing",
   factorySustainMinutes: "rival-engineers-factory-sustain-minutes",
   factorySharedProviders: "rival-engineers-factory-shared-providers",
+  factoryMinTopUp: "rival-engineers-factory-min-top-up",
   logisticsShareMinModules: "rival-engineers-logistics-share-min-modules",
   buildStuckRounds: "rival-engineers-build-stuck-rounds",
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",
