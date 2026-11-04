@@ -467,7 +467,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   const fluid = fluidsIn[0]
   const machine = p.machine ?? (fluid !== undefined ? "assembling-machine-2" : "assembling-machine-1")
   const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
-  if (solids.length < 1 || solids.length > 3) error(`assembler-row: ${p.recipe} needs 1–3 solid ingredients`)
+  if (solids.length < 1 || solids.length > 4) error(`assembler-row: ${p.recipe} needs 1–4 solid ingredients`)
   if (fluidsIn.length > 1 || (fluid !== undefined && solids.length > 2)) error(`assembler-row: ${p.recipe} takes more than one fluid, or a fluid and three solids`)
   if (p.count < 2 || p.count % 2 !== 0) error(`assembler-row: count must be a positive even number, got ${p.count}`)
   const product = mainProduct(recipe)
@@ -475,10 +475,13 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   let perCraftIn = 0
   for (const i of solids) perCraftIn += i.amount
   const caps = inserterCaps(facts, L.inserter)
-  const three = solids.length === 3
+  const three = solids.length >= 3
+  // M7d.5: four ingredients (flying robot frames): the two used most ride row 7, one per lane.
+  const four = solids.length === 4
   // Three ingredients: the one used most per craft rides its own belt (row 7), the other two share the lanes of row 6.
   const sorted = [...solids].sort((a, b) => (a.amount !== b.amount ? a.amount - b.amount : a.name < b.name ? -1 : 1))
   const third = three ? sorted[2] : undefined
+  const fourth = four ? sorted[3] : undefined
   // With a fluid the machines face south and their fluid input sits on row 5 under the middle column: one input
   // inserter, beside it (the pole takes the first column).
   const nIn = three || fluid !== undefined ? 1 : clampInt((crafts * perCraftIn) / caps.belt, 1, 2)
@@ -519,12 +522,39 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   if (inputs.length === 1) {
     ports = rowTail(L, xt, inputs, 6)
     W = xt + 1
+  } else if (four) {
+    // M7d.5: the row-6 merge column moves one further east (xt + 2): the tail's row 7 merge needs columns xt .. xt + 2.
+    L.beltAt(xt + 0.5, 6.5, WEST)
+    L.beltAt(xt + 1.5, 6.5, WEST)
+    ports = rowTail(L, xt + 2, inputs, 6)
+    W = xt + 3
   } else {
     L.beltAt(xt + 0.5, 6.5, WEST)
     ports = rowTail(L, xt + 1, inputs, 6)
     W = xt + 2
   }
-  if (third !== undefined) {
+  if (fourth !== undefined) {
+    // M7d.5, four ingredients. Row 7 carries the third and fourth, one per lane: its tail (xt .. xt + 1, 7) is fed from the
+    // merge tile (xt + 1, 8), which flows north with nothing behind it; the third sideloads into it from the west
+    // (xt, 8) and the fourth from the east (xt + 2, 8), each entering from the bottom row 9. Row 6's first input, whose
+    // column (xt + 2, 7) now has the fourth's belt below it, comes in from the east edge at (xt + 3, 7). Everything sits
+    // at x >= xt, so it moves with the tail when the row grows.
+    L.beltAt(xt + 0.5, 7.5, WEST)
+    L.beltAt(xt + 1.5, 7.5, WEST)
+    L.beltAt(xt + 1.5, 8.5, NORTH)
+    L.beltAt(xt + 0.5, 8.5, EAST)
+    L.beltAt(xt + 0.5, 9.5, NORTH)
+    L.beltAt(xt + 2.5, 8.5, WEST)
+    L.beltAt(xt + 2.5, 9.5, NORTH)
+    L.beltAt(xt + 3.5, 7.5, WEST)
+    ports.push({ id: `in-${third!.name}`, kind: "belt-in", pos: { x: xt + 0.5, y: 9.5 }, dir: NORTH, item: third!.name })
+    ports.push({ id: `in-${fourth.name}`, kind: "belt-in", pos: { x: xt + 2.5, y: 9.5 }, dir: NORTH, item: fourth.name })
+    for (const port of ports) if (port.kind === "belt-in" && port.item === inputs[0]) {
+      port.pos = { x: xt + 3.5, y: 7.5 }
+      port.dir = WEST
+    }
+    W = xt + 4
+  } else if (third !== undefined) {
     // Row 7: the third ingredient enters from below at the tail column and curves west under the machines.
     L.beltAt(xt + 0.5, 7.5, WEST)
     L.beltAt(xt + 0.5, 8.5, NORTH)
@@ -539,7 +569,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   const buffered = rowBufferHead(facts, L, ports, p.buffer)
   const head = buffered ? ROW_BUFFER_W : 0
   W += head
-  const H = three || fluid !== undefined ? 9 : inputs.length === 1 ? 7 : 8
+  const H = four ? 10 : three || fluid !== undefined ? 9 : inputs.length === 1 ? 7 : 8
   if (fluid !== undefined) {
     // The fluid manifold on row 8 under the machines (each unit's slice carries its part), its port at the west end.
     for (let x = 0; x < xt + head; x++) L.add("pipe", x + 0.5, 8.5)
@@ -553,7 +583,7 @@ export function assemblerRow(facts: ProtoFacts, p: AssemblerRowParams): ModuleDe
   // Growth cap: each input lane (two inputs) or the whole belt (one input), and the output belt.
   const lane = laneCapacity(facts, L.belt)
   let maxMachines = (2 * lane) / (crafts * product.amount)
-  for (const i of solids) maxMachines = Math.min(maxMachines, (inputs.length === 1 || i === third ? 2 * lane : lane) / (crafts * i.amount))
+  for (const i of solids) maxMachines = Math.min(maxMachines, (inputs.length === 1 || (i === third && !four) ? 2 * lane : lane) / (crafts * i.amount))
   const draft: ModuleDraft = {
     id: `assembler-row/${p.recipe}/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",

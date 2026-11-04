@@ -125,6 +125,8 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "assembler-row engine 2", generator: "assembler-row", params: { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" }, slow: true },
   { name: "lab-array 4 blue", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack", "chemical-science-pack"] }, slow: true },
   { name: "assembler-row advanced-circuit 2", generator: "assembler-row", params: { recipe: "advanced-circuit", count: 2, machine: "assembling-machine-2" } },
+  // M7d.5: four ingredients (the two used most on row 7's lanes).
+  { name: "assembler-row flying-robot-frame 2", generator: "assembler-row", params: { recipe: "flying-robot-frame", count: 2, machine: "assembling-machine-2" }, slow: true },
 ]
 
 export function catalogModule(entry: CatalogEntry): ModuleDef {

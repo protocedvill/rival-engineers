@@ -193,4 +193,49 @@ test("lab array, three packs: blue on a top belt with regular inserters, every p
   eq(pc.unpowered.length, 0, pc.unpowered.join(", "))
 })
 
+test("M7d.5: assembler row, four ingredients: robot frames take the two most used on row 7's lanes; every port feeds its row", () => {
+  for (const count of [2, 4]) {
+    const def = assemblerRow(F, { recipe: "flying-robot-frame", count, machine: "assembling-machine-2" })
+    occupancy(def.entities, F)
+    eq(def.footprint.h, 10, "a bottom row for the row-7 inputs")
+    near(rateOf(def.rates.outputs, "flying-robot-frame"), count * 0.0375, 1e-6, "0.75 / 20 s per machine")
+    const belts: Record<string, number> = {}
+    for (const e of def.entities) if (e.name === "transport-belt") belts[`${e.x},${e.y}`] = e.dir ?? 0
+    // Each input port's belt runs to row 6 (short inserters) or row 7 (long-handed inserters) under the machines.
+    const reach = (x: number, y: number): number => {
+      for (let i = 0; i < 40; i++) {
+        if (y === 6.5 && x < count * 3) return 6
+        if (y === 7.5 && x < count * 3) return 7
+        const d = belts[`${x},${y}`]
+        ok(d !== undefined, `a belt at ${x},${y}`)
+        if (d === undefined) return -1
+        const k = d / 4
+        x += DX[k]
+        y += DY[k]
+      }
+      return -1
+    }
+    const rows: Record<string, number> = {}
+    for (const p of def.ports) {
+      if (p.kind !== "belt-in") continue
+      const onEdge = p.pos.x < 1 || p.pos.y < 1 || p.pos.x > def.footprint.w - 1 || p.pos.y > def.footprint.h - 1
+      ok(onEdge, `port ${p.id} at ${p.pos.x},${p.pos.y} is on the edge of ${def.footprint.w}x${def.footprint.h}`)
+      rows[p.item!] = reach(p.pos.x, p.pos.y)
+    }
+    // Per craft: 1 engine, 1 steel (row 6 lanes), 2 batteries, 3 circuits (row 7 lanes).
+    eq(rows["electric-engine-unit"], 6, "engines on row 6")
+    eq(rows["steel-plate"], 6, "steel on row 6")
+    eq(rows["battery"], 7, "batteries on row 7")
+    eq(rows["electronic-circuit"], 7, "circuits on row 7")
+    // Row 7's merge tile has nothing behind it: the two inputs sideload from opposite sides (one lane each).
+    const xt = count * 3
+    eq(belts[`${xt + 1.5},8.5`], 0, "merge tile flows north")
+    eq(belts[`${xt + 1.5},9.5`], undefined, "nothing behind the merge tile")
+    eq(belts[`${xt + 0.5},8.5`], 4, "the west input sideloads eastward")
+    eq(belts[`${xt + 2.5},8.5`], 12, "the east input sideloads westward")
+    const pc = powerCheck(def.entities, F)
+    eq(pc.unpowered.length, 0, pc.unpowered.join(", "))
+  }
+})
+
 run("fluid-chain")

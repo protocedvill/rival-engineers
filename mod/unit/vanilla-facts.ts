@@ -42,6 +42,12 @@ const RECIPES: RecipeFacts[] = [
   r("steel-plate", 16, [["iron-plate", 5]], [["steel-plate", 1]], "smelting"),
   r("engine-unit", 10, [["steel-plate", 1], ["iron-gear-wheel", 1], ["pipe", 2]], [["engine-unit", 1]], "advanced-crafting"),
   r("advanced-circuit", 6, [["electronic-circuit", 2], ["plastic-bar", 2], ["copper-cable", 4]], [["advanced-circuit", 1]]),
+  // M7d.5: robots (base/prototypes/recipe.lua, 2.0.77).
+  r("flying-robot-frame", 20, [["electric-engine-unit", 1], ["battery", 2], ["steel-plate", 1], ["electronic-circuit", 3]], [["flying-robot-frame", 1]]),
+  r("construction-robot", 0.5, [["flying-robot-frame", 1], ["electronic-circuit", 2]], [["construction-robot", 1]]),
+  r("roboport", 5, [["steel-plate", 45], ["iron-gear-wheel", 45], ["advanced-circuit", 45]], [["roboport", 1]]),
+  r("steel-chest", 0.5, [["steel-plate", 8]], [["steel-chest", 1]]),
+  r("storage-chest", 0.5, [["steel-chest", 1], ["electronic-circuit", 3]], [["storage-chest", 1]]),
   r("chemical-science-pack", 24, [["engine-unit", 2], ["advanced-circuit", 3], ["sulfur", 1]], [["chemical-science-pack", 2]]),
   r("assembling-machine-2", 0.5, [["steel-plate", 2], ["electronic-circuit", 3], ["iron-gear-wheel", 5], ["assembling-machine-1", 1]], [["assembling-machine-2", 1]]),
   // M7b: the oil chain (fluids flagged; `box` = the recipe's fluidbox_index).
