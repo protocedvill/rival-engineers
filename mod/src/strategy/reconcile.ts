@@ -336,27 +336,38 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
     // nothing missing. Treat the port as a group: if the total is below the feeds' plan while a producer is backed up,
     // reroute the merge tree once.
     if (edges.length > 1) {
-      let stale = false
-      let measured = 0
-      let planned = 0
-      let backed = false
+      // Group by the consumer port: two feeds of the same item into different ports are not a shared-port problem.
+      const byPort: Record<string, LogicalEdge[]> = {}
       for (const e of edges) {
-        if (e.from === undefined) continue
-        const own = t.g.nodes[e.from]
-        if (own === undefined) continue
-        const prod = physicalNode(t.g, own)
-        if (prod.lifecycle !== "built") continue
-        if (edgeVerdict(e, t.input.tick, p) === "stale" || staleForStatus(e, prod, n)) {
-          stale = true
-          break
-        }
-        planned += e.plannedRate
-        measured = math.max(measured, e.measuredRate ?? 0)
-        if (prod.status === "backed-up") backed = true
+        const k = e.toPort ?? ""
+        byPort[k] ??= []
+        byPort[k].push(e)
       }
-      if (!stale && backed && planned > 0 && measured < planned * (1 - p.shortfall)) {
-        remedy(t, { key: `shared:${n.id}:${item}`, kind: "repair", edge: edges[0].id, why: `${label(n)}'s ${item} port has ${edges.length} feeds: ${fmt(measured)}/s arrives of ${fmt(planned)}/s planned while a producer is backed up` })
-        return { kind: "edge", id: edges[0].id, what: "shared-port", why: `${label(n)}'s ${item} port is fed by ${edges.length} merged belts and receives ${fmt(measured)}/s of ${fmt(planned)}/s planned` }
+      let group: LogicalEdge[] = []
+      for (const [, g] of pairs(byPort)) if (g.length > group.length) group = g
+      if (group.length > 1) {
+        let stale = false
+        let measured = 0
+        let planned = 0
+        let backed = false
+        for (const e of group) {
+          if (e.from === undefined) continue
+          const own = t.g.nodes[e.from]
+          if (own === undefined) continue
+          const prod = physicalNode(t.g, own)
+          if (prod.lifecycle !== "built") continue
+          if (edgeVerdict(e, t.input.tick, p) === "stale" || staleForStatus(e, prod, n)) {
+            stale = true
+            break
+          }
+          planned += e.plannedRate
+          measured = math.max(measured, e.measuredRate ?? 0)
+          if (prod.status === "backed-up") backed = true
+        }
+        if (!stale && backed && planned > 0 && measured < planned * (1 - p.shortfall)) {
+          remedy(t, { key: `shared:${n.id}:${item}`, kind: "repair", edge: group[0].id, why: `${label(n)}'s ${item} port has ${group.length} feeds: ${fmt(measured)}/s arrives of ${fmt(planned)}/s planned while a producer is backed up` })
+          return { kind: "edge", id: group[0].id, what: "shared-port", why: `${label(n)}'s ${item} port is fed by ${group.length} merged belts and receives ${fmt(measured)}/s of ${fmt(planned)}/s planned` }
+        }
       }
     }
     // B133: physical blockages first, across every feed of the item, before any "undersized producer" cause.
