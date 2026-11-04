@@ -2489,6 +2489,25 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       say(`its routes do not reach their port in the layout: goal ${g.id} reroutes ${tree.length} routes in place (${plan.remove.length} entities to pick up, ${plan.add.length} to build) (B83, B88)`)
       return true
     }
+    // B140: several feeds share one consumer port. Reroute the whole merge tree once instead of repairing each feed
+    // into "nothing missing".
+    if (r.key.indexOf("shared:") === 0) {
+      const rep = r.edge !== undefined ? f.graph.edges[r.edge] : undefined
+      if (rep === undefined) return
+      if (planning(f) !== undefined) {
+        say("the shared port reroutes after the current plan")
+        return
+      }
+      const routes: IDS.RouteId[] = []
+      for (const id of f.graph.edgeOrder) {
+        const o = f.graph.edges[id]
+        if (o === undefined || o.kind !== "belt" || o.to !== rep.to || o.toPort !== rep.toPort || o.item !== rep.item) continue
+        for (const rid of o.physical) if (f.layout.routes[rid] !== undefined && routes.indexOf(IDS.routeId(rid)) < 0) routes.push(IDS.routeId(rid))
+      }
+      if (rerouteInPlace(routes, r.why)) return
+      say("could not reroute the shared port")
+      return
+    }
     const e = f.graph.edges[r.edge!]
     if (e === undefined) return
     const parts: BuildParts = { modules: [], routes: [], poles: [] }

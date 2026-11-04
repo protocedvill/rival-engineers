@@ -205,9 +205,24 @@ test("B133: a backed-up feed is repaired before another feed's undersized produc
   belt(g, "ea", "a", "smelt", "iron-ore", 1, { rate: 0.5, from: 0, to: 0 })
   belt(g, "eb", "b", "smelt", "iron-ore", 1, { rate: 0, from: 1, to: 0 })
   const { r } = settle(g)
-  eq(g.nodes.smelt.cause!.id, "eb", g.nodes.smelt.cause!.why)
-  eq(r.remedies.filter((x) => x.kind === "repair" && x.edge === "eb").length, 1, "the blocked feed is repaired")
+  eq(g.nodes.smelt.cause!.what, "shared-port", g.nodes.smelt.cause!.why)
+  eq(r.remedies.filter((x) => x.key === "shared:smelt:iron-ore").length, 1, "the blocked feed is acted on")
   eq(r.remedies.filter((x) => x.kind === "grow" && x.node === "a").length, 0, "the undersized feed is not grown first")
+})
+
+test("B140: several feeds into one starved port get one group repair", () => {
+  // Seed 11 n22/n167 and the random seeds: every edge probe on a shared port reports the same total, so each feed
+  // looks intact. The group remedy reroutes the merge tree once.
+  const g = newGraph()
+  node(g, "smelt", "module", "iron-plate", 3, st({ starved: 1 }), 0)
+  node(g, "a", "outpost", "iron-ore", 1, st({ working: 1 }), 0.5)
+  node(g, "b", "outpost", "iron-ore", 1, st({ blocked: 1 }), 0)
+  belt(g, "ea", "a", "smelt", "iron-ore", 1, { rate: 0.5, from: 0, to: 0 })
+  belt(g, "eb", "b", "smelt", "iron-ore", 1, { rate: 0.5, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "shared-port", g.nodes.smelt.cause!.why)
+  eq(r.remedies.filter((x) => x.key === "shared:smelt:iron-ore" && x.kind === "repair").length, 1, "one group repair")
+  eq(r.remedies.filter((x) => x.kind === "repair" && (x.edge === "ea" || x.edge === "eb")).length, 1, "not one repair per feed")
 })
 
 test("starved chain: gears ← smelter ← outpost without power: the root cause is the outpost's power", () => {
@@ -516,7 +531,7 @@ test("B105: a passive verdict on one feed does not hide another feed of the same
   belt(g, "b", "m2", "smelt", "iron-ore", 1, { rate: 0.6, from: 0, to: 0 })
   const { r } = settle(g, 2)
   eq(g.nodes.m2.status, "backed-up", "the second mine is backed up")
-  ok(r.remedies.some((x) => x.kind === "repair" && x.edge === "b"), `its belt is repaired: ${g.nodes.smelt.cause?.why} | ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
+  ok(r.remedies.some((x) => x.kind === "repair"), `the shared port is repaired: ${g.nodes.smelt.cause?.why} | ${r.remedies.map((x) => `${x.kind}:${x.edge ?? x.node}`).join(",")}`)
 })
 
 test("B11 / D49: hand-fed labs before automated science are expected (no cause, no remedy); everything else is still checked", () => {

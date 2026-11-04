@@ -331,6 +331,34 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
       external = external ?? { kind: "external", what: "no producer", why: `${label(n)} lacks ${item}, which no graph node produces (crew-supplied)` }
       continue
     }
+    // B140 (seed 11 n22/n167; random seeds): several feeds merge into one consumer port. The edge probe samples that
+    // port, so every feed reports the same total arrivals and a backed-up feed is "repaired" while `checkBuild` finds
+    // nothing missing. Treat the port as a group: if the total is below the feeds' plan while a producer is backed up,
+    // reroute the merge tree once.
+    if (edges.length > 1) {
+      let stale = false
+      let measured = 0
+      let planned = 0
+      let backed = false
+      for (const e of edges) {
+        if (e.from === undefined) continue
+        const own = t.g.nodes[e.from]
+        if (own === undefined) continue
+        const prod = physicalNode(t.g, own)
+        if (prod.lifecycle !== "built") continue
+        if (edgeVerdict(e, t.input.tick, p) === "stale" || staleForStatus(e, prod, n)) {
+          stale = true
+          break
+        }
+        planned += e.plannedRate
+        measured = math.max(measured, e.measuredRate ?? 0)
+        if (prod.status === "backed-up") backed = true
+      }
+      if (!stale && backed && planned > 0 && measured < planned * (1 - p.shortfall)) {
+        remedy(t, { key: `shared:${n.id}:${item}`, kind: "repair", edge: edges[0].id, why: `${label(n)}'s ${item} port has ${edges.length} feeds: ${fmt(measured)}/s arrives of ${fmt(planned)}/s planned while a producer is backed up` })
+        return { kind: "edge", id: edges[0].id, what: "shared-port", why: `${label(n)}'s ${item} port is fed by ${edges.length} merged belts and receives ${fmt(measured)}/s of ${fmt(planned)}/s planned` }
+      }
+    }
     // B133: physical blockages first, across every feed of the item, before any "undersized producer" cause.
     for (const e of edges) {
       if (e.from === undefined) continue
