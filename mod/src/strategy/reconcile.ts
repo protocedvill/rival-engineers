@@ -306,10 +306,13 @@ function traceInputs(t: TraceCtx, n: LogicalNode, items: string[], depth: number
         return { kind: "edge", id: e.id, what: "at-capacity", why }
       }
       if (v === "intake") {
-        // B124 (seed 11, min 610-770): the starved consumer's port is full and (almost) nothing goes in: not a slow
-        // intake but a stopped one. A foreign item stranded on its lane (iron ore on a smelter's coal lane, plates on an
-        // ore belt) holds the lane for good. The repair empties the belts that hold one.
-        if ((e.measuredRate ?? 0) * (p.probeTicks / 60) < LOST_MIN_ITEMS) {
+        // B124 (seed 11, min 610-770): the starved consumer's port is full and nothing goes in: not a slow intake but a
+        // stopped one. A foreign item stranded on its lane (iron ore on a smelter's coal lane, plates on an ore belt)
+        // holds the lane for good. The repair empties the belts that hold one.
+        // B128 (same run): a trickle is not a stop. The blue line's lab port was full while 0.1/s went in (the labs used
+        // packs faster than the provider made them); `LOST_MIN_ITEMS` over a probe called that "stopped" and spent an
+        // unclog repair that found nothing, again and again. Only zero arrivals means the lane is held.
+        if ((e.measuredRate ?? 0) <= 0) {
           // Its own key: a different fault from a missing piece, so earlier "nothing missing" repairs of the edge (which
           // used up its budget in the seed 11 save) do not stop it.
           remedy(t, { key: `unclog:${e.id}`, kind: "repair", edge: e.id, why: `${item} waits at ${label(n)}'s port but ${fmt(e.measuredRate)}/s go in while it starves: a lane held by a foreign item?` })

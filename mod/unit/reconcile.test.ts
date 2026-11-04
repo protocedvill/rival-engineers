@@ -140,6 +140,18 @@ test("B124: a starved consumer whose port is full while nothing goes in is a sto
   eq(r2.remedies.filter((x) => x.edge === "ore").length, 0, "no repair")
 })
 
+test("B128: a trickle into a full port is a slow consumer, not a stopped lane", () => {
+  // Seed 11, the first blue line's lab port: full, but 0.1/s went in (the labs used packs faster than the provider made
+  // them). LOST_MIN_ITEMS called it "stopped" and every unclog repair found nothing.
+  const g = chain(st({ working: 0.1, blocked: 0.9 }), 0.1, st({ working: 0.5, starved: 0.5 }), 0.1, st({ working: 0.1, starved: 0.9 }), 0.1)
+  belt(g, "ore", "mine", "smelt", "iron-ore", 2, { rate: 0.1, from: 1, to: 1 })
+  belt(g, "plates", "smelt", "gears", "iron-plate", 2, { rate: 0.1, from: 0, to: 0 })
+  const { r } = settle(g)
+  eq(g.nodes.smelt.cause!.what, "intake-limited", g.nodes.smelt.cause!.why)
+  eq(r.remedies.filter((x) => x.edge === "ore").length, 0, "no unclog repair for a trickle")
+  eq(r.remedies.filter((x) => x.key.indexOf("unclog:") === 0).length, 0, "no unclog remedy at all")
+})
+
 test("B127: a producer blocked inside itself while it starves for an input: trace the input, don't repair its belt out", () => {
   // m7c-cont12 seed 11: circuit module (cable assemblers full, circuit assemblers short of iron) read backed-up; its
   // intact circuit belt was "repaired" three times while the iron feed's ore lane was held.
