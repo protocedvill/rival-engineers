@@ -85,12 +85,15 @@ export function supplyChests(factionName: string): { entity: LuaEntity; temp: bo
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph, "sink")) {
-    if (n.lifecycle !== "built") continue
+    // M7d.5: a stock row's (roboports, robots) buffer chest is supply that is taken from in any amount (one roboport
+    // is all a goal may need), so it registers here, before the buffers. It counts once the chest is in the world, not
+    // when its node is built: the robot row's roboport head is in the same goal as the roboport row, so the goal
+    // waited for its own roboport (soak m7d5-robots5: 2 roboports in the chest, the ghost unfilled for 86 game-min
+    // until 5 had piled up).
+    const stock = string.sub(n.role, 1, 6) === "stock:"
+    if (n.lifecycle !== "built" && !stock) continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
-    // M7d.5: a stock row's (roboports, robots) buffer chest is supply that is taken from in any amount (one roboport
-    // is all a goal may need), so it registers here, before the buffers.
-    const stock = string.sub(n.role, 1, 6) === "stock:"
     const at: { x: number; y: number }[] = []
     for (const p of m.def.ports) if (p.kind === "chest-out") at.push(p.pos)
     if (stock) for (const e of m.def.entities) if (e.buffer === true) at.push(e)

@@ -1453,7 +1453,15 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      cap. Also: a stock row's chest is a new supply kind,
      `stock-out`, taken from in any amount (soak `m7d5-robots4`: the hub's roboport place job could not take the one
      roboport made, "below minimum 5", and queued a hand-craft needing 90 plastic). T1 `modules` "M7d.5 (user request
-     in-session 2026-11-04): a roboport head…", T1 `design` (the robot row's params); not yet seen in a soak.
+     in-session 2026-11-04): a roboport head…", T1 `design` (the robot row's params).
+     **In game (soak `m7d5-robots5`, seed 11, from the robotics save):** the robot row was planned with its head, built
+     at minute ~1120, its two storage chests became depots, and the next roboport goal (cell 0,-1) started from it.
+     But g154 (which held both stock rows) took 86 game-min longer than on the old build: the stock row's chest only
+     counted as `stock-out` once its node was built, which waited for the roboport the same goal needed, so the crew
+     waited until 5 roboports piled up (minute 1080: 2 in the chest, the ghost unfilled). A stock row's chest now
+     counts once it stands in the world. T2 `bootstrap-sources` "M7d.5: a stock row's chest supplies one roboport
+     before its node is built…" (fails without the fix). The run ended 20 game-min after the hub was built, before
+     robots could be seen working.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

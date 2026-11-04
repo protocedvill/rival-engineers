@@ -3,6 +3,7 @@ import { clearConfigOverrides, setConfigOverride } from "../config"
 import { moduleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { addJob } from "../jobs/board"
+import { supplyStock } from "../jobs/supply"
 import { startBootstrap } from "../strategy/bootstrap"
 import { Site, SitePart } from "../strategy/types"
 import { FactionState } from "../jobs/types"
@@ -370,6 +371,37 @@ describe("B17 material sources", () => {
     waitFor(3600, () => depot.get_item_count("pump") >= 2, () => `two pumps at the depot (takes ${describeTakes(faction)})`, () => {
       assert(takesOf(faction, "module-out") === 2, `the engines came out of the assembler (takes ${describeTakes(faction)})`)
       assert(machine!.get_item_count("engine-unit") === 1, "one engine is left")
+    })
+  })
+
+  test("M7d.5: a stock row's chest supplies one roboport before its node is built (stock-out, below the minimum take)", () => {
+    // Soak m7d5-robots5 (seed 11, minute 1080): the robot row's roboport ghost waited 86 game-min while the roboport
+    // stock row's chest (same goal, so its node was not built) held 2, below the minimum take.
+    const lab = createLab(32)
+    const faction = createFaction("m7d5-stock", { position: at(lab, 0, 0), crew: 2, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    const target = chest(lab, at(lab, -4, 0), faction.force)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const def = generatedModule("assembler-row", { recipe: "roboport", count: 2, machine: "assembling-machine-2", buffer: "iron-chest" })
+    const o = { x: math.floor(at(lab, 6, -12).x), y: math.floor(at(lab, 6, -12).y) }
+    const m: PlacedModule = { id: moduleId("roboports"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+    commitModule(f.layout, m, prototypeFacts, 1)
+    addNode(f.graph, { id: moduleId("roboports"), role: "stock:roboport", kind: "sink", module: def.id, generator: "assembler-row", recipe: "roboport", item: "roboport", capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "building", status: "unknown", createdTick: game.tick })
+    stampModule(lab.surface, faction.force, def, m.origin)
+    const out = bufferOf(lab, def, m, faction.force)
+    out.get_inventory(defines.inventory.chest)!.set_bar() // the stamp limits a buffer's slots before it has a product
+    const put = out.insert({ name: "roboport", count: 2 })
+    assert(put === 2, `two roboports in the stock row's ${out.name} at ${out.position.x},${out.position.y} (inserted ${put}, bar ${out.get_inventory(defines.inventory.chest)?.get_bar()})`)
+    brain.nextThink = game.tick
+    addJob(faction.board, { kind: "fuel", pos: target.position, materials: [{ item: "roboport", count: 1 }], payload: { kind: "fuel", item: "roboport", count: 1, target, partial: true } }, game.tick)
+    waitFor(3600, () => target.get_item_count("roboport") >= 1, () => `a roboport at the target (takes ${describeTakes(faction)}; supplies ${serpent.line(supplyStock(faction, 5))})`, () => {
+      assert(takesOf(faction, "stock-out") >= 1, `taken from the stock row's chest (takes ${describeTakes(faction)})`)
     })
   })
 
