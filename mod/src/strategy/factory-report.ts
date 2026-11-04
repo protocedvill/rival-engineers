@@ -90,7 +90,8 @@ export function supplyChests(factionName: string): { entity: LuaEntity; temp: bo
     if (m === undefined) continue
     for (const p of m.def.ports) {
       if (p.kind !== "chest-out") continue
-      const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
+      // M7d.5: output chests may be passive providers.
+      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
       if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role) })
     }
   }
@@ -115,7 +116,7 @@ export function repairBuffers(factionName: string): void {
       if (!e.buffer) continue
       const pos = { x: m.origin.x + e.x, y: m.origin.y + e.y }
       if (isBufferAt(surface.name, pos)) continue
-      const chest = findEntities(surface, { type: "container", force: faction.force, position: pos, limit: 1 })[0]
+      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: pos, limit: 1 })[0]
       if (chest !== undefined) registerBuffer(surface, faction.force, chest)
     }
   }

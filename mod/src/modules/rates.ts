@@ -273,7 +273,7 @@ function linkInserters(ctx: RateCtx, hand: number): void {
     if (to === undefined) continue
     if (n.kind === "lab" && nodes[to]?.kind === "lab") n.feeds.push(to)
     if (nodes[to] !== undefined) n.toMachine = true
-    if (target?.type === "container") n.toChest = true
+    if (target?.type === "container" || target?.type === "logistic-container") n.toChest = true
   }
 }
 

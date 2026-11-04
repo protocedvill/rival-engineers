@@ -384,6 +384,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     f.lastUpkeep = ctx.tick
     upkeep(ctx)
     EX.robotsUpkeep(ctx, ctx.config.factoryBuildPriority)
+    EX.upgradeOutputChests(ctx, ctx.config.factoryBuildPriority)
   }
   LF.milestones(ctx)
   ST.sampleScience(ctx, LF.packsAutomated(f), (name) => mark(faction, name))
@@ -436,7 +437,8 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     enabled: enabledRecipes(ctx.force),
     plannable,
     resources,
-    buffer: ctx.config.moduleBuffer,
+    // M7d.5: passive providers once researched (robots build from them).
+    buffer: EX.bufferChest(ctx),
     bufferRows,
     fuel: brain.catalog.fuel,
     assembler: e.assembler ?? "assembling-machine-1",

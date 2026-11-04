@@ -15,6 +15,7 @@ import type { FactoryGoal, FactoryState } from "./factory"
 export { exhausted } from "../shared/exhausted"
 // M7d.5: the roboport network, through the same namespace for the same reason.
 export { robotsStep, robotsUpkeep } from "./robots"
+export { bufferChest, upgradeOutputChests } from "./provider-chests"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */

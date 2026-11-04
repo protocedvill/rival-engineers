@@ -1415,6 +1415,22 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      same target. Without a network nothing is marked: a marked machine stops working, and a retiring module keeps
      producing until the crew picks it up, as before. T2 `jobs` "M7d.5: robots take down a clear job's tree…" and
      "…a clear job is a deconstruction order at once; a dropped job's order is cancelled".
+   - **Passive provider output chests (user decision in-session 2026-11-04: "yes output chests can be upgraded to
+     passive providers").** Once `passive-provider-chest` is researched (construction robotics) and the faction has a
+     network, new modules get passive providers as buffer heads (`strategy/provider-chests.ts` `bufferChest`), and built
+     modules' output chests (buffer heads, the chest-out ports of the mall and stock rows) get Factorio upgrade orders,
+     which the robots carry out in place (contents kept, like a player's upgrade planner). The crew brings the chests
+     the orders wait for to the hub's storage chest. Once a chest in the world is a provider, the layout follows
+     (module entities, canonical copy, growth params). Chest checks across buffers, measurement and the crew accept
+     `logistic-container` too. T1 `modules` "M7d.5: a passive-provider buffer head…", T2 `jobs` "M7d.5: robots upgrade a
+     buffer chest to a passive provider in place…".
+   - **Bug found on the way (seed 11 g154, the robot chain plan).** The two-solid chem rows (battery, sulfuric acid)
+     fed their first input port from a tile inside the module, so placement rejected every spot `own-lane-sealed`
+     (17,903 times) and all 4 attempts failed. That first solid now sideloads from the east (the row is one tile wider).
+     A new T1 invariant checks every generated module: every belt and pipe port leads to a tile outside it. The replay
+     `m7-seed11-g154-a1` (new `regenerate` option: rebuild a captured module from its params) now places the row and
+     fails later: both oil complexes' water pipes give "no pipe path" (budget exhausted), which the bad row had
+     hidden. That is still open (BUGS B128) and pinned as the replay's expected failure.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

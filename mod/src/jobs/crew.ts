@@ -402,7 +402,7 @@ const UNBOX_TREE_RADIUS = 3
 /** B22: most trees or rocks one escape mines before it gets back to work (the walk re-checks the rest). */
 const UNBOX_TREES_PER_ESCAPE = 16
 /** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
-const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
+const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "logistic-container", "transport-belt", "underground-belt", "splitter"]
 /** B22: own structures big enough to trap a member (walls, machines); picked up like the small ones, last. */
 // M7c.8: a steam engine's type is "generator" ("steam-engine" is its name); an offshore pump last (it feeds every boiler).
 const UNBOX_BIG_TYPES = ["wall", "furnace", "lab", "mining-drill", "burner-generator", "generator", "assembling-machine", "storage-tank", "radar", "boiler", "offshore-pump"]

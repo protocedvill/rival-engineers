@@ -48,6 +48,7 @@ const RECIPES: RecipeFacts[] = [
   r("roboport", 5, [["steel-plate", 45], ["iron-gear-wheel", 45], ["advanced-circuit", 45]], [["roboport", 1]]),
   r("steel-chest", 0.5, [["steel-plate", 8]], [["steel-chest", 1]]),
   r("storage-chest", 0.5, [["steel-chest", 1], ["electronic-circuit", 3]], [["storage-chest", 1]]),
+  r("passive-provider-chest", 0.5, [["steel-chest", 1], ["electronic-circuit", 3], ["advanced-circuit", 1]], [["passive-provider-chest", 1]]),
   r("chemical-science-pack", 24, [["engine-unit", 2], ["advanced-circuit", 3], ["sulfur", 1]], [["chemical-science-pack", 2]]),
   r("assembling-machine-2", 0.5, [["steel-plate", 2], ["electronic-circuit", 3], ["iron-gear-wheel", 5], ["assembling-machine-1", 1]], [["assembling-machine-2", 1]]),
   // M7b: the oil chain (fluids flagged; `box` = the recipe's fluidbox_index).
@@ -112,6 +113,7 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "express-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.09375 }),
   e({ name: "iron-chest", type: "container", tileW: 1, tileH: 1 }),
   e({ name: "storage-chest", type: "logistic-container", tileW: 1, tileH: 1 }),
+  e({ name: "passive-provider-chest", type: "logistic-container", tileW: 1, tileH: 1 }),
   e({ name: "pipe", type: "pipe", tileW: 1, tileH: 1 }),
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),

@@ -3,6 +3,7 @@ import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob, failJob } from "../jobs/board"
 import { sweepOrders } from "../jobs/robot-orders"
+import { bufferChests, registerBuffer } from "../modules/buffers"
 import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { setAiProfiler } from "../profiling"
@@ -396,6 +397,31 @@ describe("job board", () => {
     kept.destroy()
     sweepOrders(faction)
     assert((faction.deconOrders ?? []).length === 0, "a removed target's order is forgotten")
+  })
+
+  test("M7d.5: robots upgrade a buffer chest to a passive provider in place: contents kept, the registry follows", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-upgrade"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    const chests = lab.surface.find_entities_filtered({ name: "storage-chest", force: faction.force })
+    chests[0].insert({ name: "passive-provider-chest", count: 1 })
+    const old = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 6.5, -6.5), force: faction.force })!
+    registerBuffer(lab.surface, faction.force, old)
+    old.insert({ name: "iron-gear-wheel", count: 50 })
+    const pos = old.position
+    assert(old.order_upgrade({ target: "passive-provider-chest", force: faction.force }), "upgrade ordered")
+    async(3600)
+    on_tick(() => {
+      const now = lab.surface.find_entities_filtered({ position: pos, force: faction.force, type: ["container", "logistic-container"] })[0]
+      if (now === undefined || now.name !== "passive-provider-chest") return
+      assert(now.get_item_count("iron-gear-wheel") === 50, `contents kept (${now.get_item_count("iron-gear-wheel")})`)
+      const listed = bufferChests(faction.force)
+      assert(listed.length === 1 && listed[0] === now, `the registry follows the new chest (${listed.length})`)
+      const inv = now.get_inventory(defines.inventory.chest)!
+      assert(inv.get_bar() === getConfig().moduleBufferSlots + 1, `slot limit kept (bar ${inv.get_bar()})`)
+      done()
+      return false
+    })
   })
 
   test("M7d.5: the crew leaves place jobs the robots can do now to them (factory-robot-first-seconds)", () => {
