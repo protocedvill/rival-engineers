@@ -1392,6 +1392,21 @@ reroutes the whole merge tree in place once (B88). `val11b140` (from `m7s11b` mi
 (233 pickups, 186 builds); n22 went from starved to `ok 0.283/0.275/s` and n25 from backed-up to `ok 1.23/0.978/s`.
 T1 `reconcile` "B140".
 
+#### M7c.9 follow-up 15: retried ghosts and a cliff inside an oil field (B142)
+
+`m7r1212121c` (seed 1212121, minutes 600-660) failed two ways at once:
+
+- Goal g109 was abandoned as `BUILD STUCK` with `1149 ghosts could not be created`. B138's retry re-stamped the whole
+  plan; `stampModule`/`createSpec` returned nil on every ghost that already stood, so one real failure looked like 1149.
+  Ghost stamping now reuses an existing ghost. A failed ghost owned by a module whose machines already stand (B135) is
+  ignored too: one missing internal belt must not abandon a plan, and the reconciler can repair the edge it feeds.
+- g111/g112 failed every attempt at `no room at its fixed spot: blocked (terrain cliff) at 570,-739`. `fieldModule`
+  rejected wells whose own 3×3 touched a cliff, but a cliff between wells still fell inside the fixed module box. Cliff
+  and water tiles inside the box now drop the nearest well, like a structure already does.
+
+`val1212fix3` (from minute 660): g109 built instead of being abandoned, and g111 plans instead of failing immediately.
+T2 `bootstrap-sources` "B142".
+
 **Still open after these fixes (seed 11, `m7s11b`/`val11b141`, minutes 180-390).** The blue line still waits on
 its pumpjack craft because the steel smelter n167 taps n47, whose iron mine n37 is depleted and retiring. The retiring
 provider's replacement group does not include n167, a consumer added in an unbuilt plan (B141, open). B135 makes a
