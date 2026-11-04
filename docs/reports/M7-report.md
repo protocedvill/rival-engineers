@@ -1317,6 +1317,25 @@ nothing leaves through the branch side (B125).
 
 No new tuning numbers.
 
+#### M7c.9 follow-up 11: false remedies and a dead merge outlet (B128-B130)
+
+Found while soaking seed 11 from fresh (`m7s11a`, branch `m7-soak-fixes` on `615f8b7`):
+
+- **B128 (a trickle is not a stopped lane).** The first blue line's lab port (`n2 in-chemical-science-pack`) was full
+  while 0.1/s went in: the labs used packs faster than the provider made them. B124's `LOST_MIN_ITEMS` test called that
+  "stopped" and spent an unclog repair that found nothing, repeatedly. Only zero arrivals now means the lane is held.
+  T1 `reconcile` "B128".
+- **B129 (a dead merge outlet gets no filter).** B125 filtered a merge splitter to its trunk side, so every item that was
+  not the route's item left through the branch-side output. The planner never builds a belt there, so coal stuck in the
+  splitter for good. A dead outlet must back up instead, which sends everything down the trunk. The filter is set only
+  when a belt stands on the branch-side outlet, and a stale filter is cleared. T2 `conflicts` "B129".
+- **B130 (a new feeder under construction).** Seed 11 minutes 100-110: n17's fifth copper-ore mine was still building,
+  so `builtFor` returned undefined on every evaluation and the smelter stayed `unknown / warming up` for 70 game-min.
+  Its four built mines backed up behind it with no status and no remedy. Only built feeders set the warm-up age now; an
+  unbuilt one is ignored when the consumer already has a built feeder. T1 `reconcile` "B130".
+
+No new tuning numbers. Validation: `m7s11a` (seed 11) and `m7s222a` (seed 222) running on the fixed build.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
