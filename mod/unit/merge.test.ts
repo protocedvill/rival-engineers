@@ -185,6 +185,23 @@ test("M7 (seed 11 g78): a tap sealed in by the base is joined on its trunk, abov
   eq(goals.some((g) => g.y >= 20), false)
 })
 
+test("B132: a tap whose first splitter is not on its parent route does not make the parent land", () => {
+  // Seed 11, minute 180: a re-rooted tap's steps were reversed (first splitter on another route, last splitter on the
+  // parent), so it physically led nowhere, but tapsReach followed it to n22 and the repair found "nothing missing".
+  const t = trunk(20, "in-other")
+  const badSteps: RouteStep[] = [{ kind: "splitter", x: 9, y: 20, dir: 0, x2: 9, y2: 21 } as RouteStep, belt(13, 21, 1)]
+  const bad: Route = { ...trunk(1), id: routeId("r:bad"), conn: connectionId("coal>bad=>consumer.in-coal"), steps: badSteps, tiles: badSteps.map((s) => tkey(s.x, s.y)), tapOf: t.id, length: 2 }
+  const s = layoutOf([t, bad])
+  const m = { id: "consumer", rect: { x: 14, y: 20, w: 2, h: 2 }, origin: { x: 14, y: 20 }, def: { ports: [{ id: "in-coal", kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: 4, item: "coal" }] } }
+  s.modules.push(m as never)
+  eq(routesLand(s, [t.id], TO), false, "a bogus tap does not make its parent land")
+  const goodSteps: RouteStep[] = [{ kind: "splitter", x: 10, y: 20, dir: 2, x2: 11, y2: 20 } as RouteStep, belt(11, 21, 1), belt(12, 21, 1), belt(13, 21, 1)]
+  const good: Route = { ...trunk(1), id: routeId("r:good"), conn: connectionId("coal>good=>consumer.in-coal"), steps: goodSteps, tiles: goodSteps.map((s) => tkey(s.x, s.y)), tapOf: t.id, length: 4 }
+  s.routes[good.id] = good
+  s.routeOrder.push(good.id)
+  eq(routesLand(s, [t.id], TO), true, "a tap whose splitter is on the trunk lands")
+})
+
 test("B122 (seed 11 g78, in game): a belt that merges into the trunk is a merge point too", () => {
   // Trunk south from 10,10 to 10,29 to `consumer.in-coal`, walled in on both sides; a first replacement's belt runs
   // east along y = 12 from x = 2 and side-loads into it at 10,12.
