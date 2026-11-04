@@ -317,6 +317,38 @@ describe("faction conflicts", () => {
     assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore").length === 0, "nothing clogged after the flush")
   })
 
+  test("B124: a foreign item on a module's input belt or on the edge's route is found; the route's own item is not", () => {
+    // Soak m7c-cont8 seed 11 (min 720): iron plates on an iron smelter's ore belt, iron ore and plates stranded on coal
+    // lanes with no source upstream. Nothing takes them off, 122 furnaces sat blocked and every repair said "nothing missing".
+    const lab = createLab(64)
+    const a = faction(lab, "foul", 30, 0)
+    const s = lab.surface
+    const { layout, ghosts } = smeltingLab(lab, a.force)
+    revive(ghosts)
+    const m = findModule(layout, "smelt")!
+    const beltAt = (x: number, y: number) => s.find_entities_filtered({ type: "transport-belt", position: { x, y }, force: a.force })[0]
+    const fill = (x: number, y: number, item: string, lines: number[]) => {
+      const b = beltAt(x, y)
+      for (const li of lines) for (let k = 0; k < 2; k++) b.get_transport_line(li).insert_at_back({ name: item, count: 1 })
+    }
+    const route = [routeId("route:ore")]
+    const steps = partEntities(layout, { modules: [], routes: route, poles: [] }).filter((e) => e.name === "transport-belt")
+    assert(steps.length > 6, `${steps.length} route belts`)
+    for (const st of [steps[2], steps[4]]) fill(st.x, st.y, "iron-ore", [1, 2])
+    fill(m.origin.x + 5.5, m.origin.y + 3.5, "coal", [1])
+    fill(m.origin.x + 5.5, m.origin.y + 3.5, "iron-ore", [2])
+    assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore", route).length === 0, "the route's own item and the module's inputs are no foreign items")
+    // Coal on one lane of an empty route belt (an ore route), iron plates on one lane of the central (input) belt.
+    fill(steps[3].x, steps[3].y, "coal", [1])
+    fill(m.origin.x + 5.5, m.origin.y + 2.5, "iron-plate", [2])
+    const found = cloggedBelts(s, a.force, layout, "smelt", "in-ore", route)
+    const at = found.map((c) => `${c.spec.owner}@${c.spec.x},${c.spec.y}`).sort()
+    const want = [`route:ore@${steps[3].x},${steps[3].y}`, `smelt@${m.origin.x + 5.5},${m.origin.y + 2.5}`].sort()
+    assert(serpent.line(at) === serpent.line(want), `fouled ${serpent.line(at)}, want ${serpent.line(want)}`)
+    // Without the edge's routes only the module's belt is looked at.
+    assert(cloggedBelts(s, a.force, layout, "smelt", "in-ore").length === 1, "module belt only")
+  })
+
   test("B95: an own underground between a route's underground pair, facing its flow, is an intruder to pick up", () => {
     // Sweep 3e1c4d7 seed 4819313: an old route's underground stood between a new pair's ends on the same line. The
     // entrance paired with it, the ore surfaced short of the port, and every repair said "nothing missing".

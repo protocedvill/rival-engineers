@@ -1291,6 +1291,21 @@ in-session (2026-11-04) for both fixes:
 
 No new tuning numbers.
 
+#### M7c.9 follow-up 10: the base jams on stranded items (B124)
+
+The user asked for a labeled map render once blue packs start. They had not started by minute 770 of `m7c-cont9`, and
+the graph dumps showed why: since about minute 610 the whole base made ~1 iron plate/s and no copper plates. The cause
+is not g113. Probes of `min-0720` found stranded foreign items:
+- iron ore on a copper smelter's coal lane;
+- iron plates on a coal trunk lane;
+- iron plates on an iron smelter's ore belt.
+
+None of them had a source upstream, so they were left over from rebuilds. No inserter takes such an item off its
+lane, so each lane stopped for good, and the stall spread through the shared trunks. Every repair said "nothing
+missing".
+
+Fix: the repair's clog check also picks up and re-places (empties) those belts (B124). No new tuning numbers.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

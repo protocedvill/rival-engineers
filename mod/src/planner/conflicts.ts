@@ -250,34 +250,64 @@ function lineItems(e: LuaEntity, line: number): Record<string, boolean> {
  * 1264816: a smelter column grew, its fuel arrived before the new ore side-load belt stood, the merge tile curved and
  * put coal on both lanes; 10 of 12 furnaces never saw ore again and every repair said "nothing missing". Picking the
  * belts up and placing them again empties them.
+ *
+ * B124 (soak m7c-cont8 seed 11, min 720): also belts holding an item that does not belong there at all: on those module
+ * belts, an item that is none of the module's belt inputs (iron plates on an iron smelter's ore belt); on the edge's own
+ * `routes`, any item but the route's (iron ore and iron plates stranded on coal lanes, 4 per lane, no source upstream).
+ * Nothing takes such an item off its lane, so it stops the lane for good: 122 furnaces and 76 drills sat blocked while
+ * their consumers starved, and every repair said "nothing missing".
  */
-export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string): { spec: EntitySpec; entity: LuaEntity }[] {
+export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string, routes: RouteId[] = []): { spec: EntitySpec; entity: LuaEntity }[] {
+  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const seen: Record<number, boolean> = {}
+  const routeSet: Record<string, boolean> = {}
+  for (const rid of routes) routeSet[rid] = true
+  for (const spec of routeEntities(layout)) {
+    if (!routeSet[spec.owner] || BELT_TYPES.indexOf(prototypes.entity[spec.name]?.type ?? "") < 0) continue
+    const item = spec.carries
+    if (item === undefined) continue
+    for (const e of findEntities(surface, { position: { x: spec.x, y: spec.y }, type: BELT_TYPES, force, limit: 1 })) {
+      if (e.unit_number === undefined || seen[e.unit_number]) continue
+      if (foreignOn(e, (name) => name === item)) {
+        seen[e.unit_number] = true
+        out.push({ spec, entity: e })
+      }
+    }
+  }
   const m = findModule(layout, module)
   const p = m !== undefined ? findPort(m, port) : undefined
-  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return []
+  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return out
   const others: Record<string, boolean> = {}
-  for (const q of m.def.ports) if (q.kind === "belt-in" && q.item !== undefined && q.item !== p.item) others[q.item] = true
+  const inputs: Record<string, boolean> = {}
+  const outTiles: Record<number, boolean> = {}
+  for (const q of m.def.ports) {
+    if (q.kind === "belt-in" && q.item !== undefined) {
+      inputs[q.item] = true
+      if (q.item !== p.item) others[q.item] = true
+    }
+    if (q.kind === "belt-out") {
+      const ot = portTile(m, q)
+      outTiles[tkey(ot.x, ot.y)] = true
+    }
+  }
   const specs: Record<string, EntitySpec> = {}
   for (const e of partEntities(layout, { modules: [m.id], routes: [], poles: [] })) specs[string.format("%s@%g,%g", e.name, e.x, e.y)] = e
   const inside = (e: LuaEntity): boolean => e.position.x > m.rect.x && e.position.x < m.rect.x + m.rect.w && e.position.y > m.rect.y && e.position.y < m.rect.y + m.rect.h
   const t = portTile(m, p)
-  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
-  const seen: Record<number, boolean> = {}
   let todo = findEntities(surface, { position: { x: t.x + 0.5, y: t.y + 0.5 }, type: BELT_TYPES, force, limit: 1 })
   while (todo.length > 0) {
     const e = todo.pop()!
     if (!e.valid || e.unit_number === undefined || seen[e.unit_number] || !inside(e)) continue
+    // The input belt ends where the module's output starts (a belt-out port): its items belong there.
+    if (outTiles[tkey(math.floor(e.position.x), math.floor(e.position.y))]) continue
     seen[e.unit_number] = true
     const spec = specs[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]
     if (spec !== undefined) {
       const a = lineItems(e, 1)
       const b = lineItems(e, 2)
-      for (const [item] of pairs(others)) {
-        if (a[item] && b[item]) {
-          out.push({ spec, entity: e })
-          break
-        }
-      }
+      let bad = foreignOn(e, (name) => inputs[name] === true)
+      for (const [item] of pairs(others)) if (a[item] && b[item]) bad = true
+      if (bad) out.push({ spec, entity: e })
     }
     if (e.type === "underground-belt" && e.belt_to_ground_type === "input") {
       const n = e.neighbours as LuaEntity | undefined
@@ -285,6 +315,12 @@ export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutS
     } else for (const o of e.belt_neighbours.outputs) todo.push(o)
   }
   return out
+}
+
+/** B124: whether any transport line of belt `e` holds an item `belongs` rejects. */
+function foreignOn(e: LuaEntity, belongs: (this: void, name: string) => boolean): boolean {
+  for (let i = 1; i <= e.get_max_transport_line_index(); i++) for (const it of e.get_transport_line(i).get_contents()) if (!belongs(it.name)) return true
+  return false
 }
 
 /**

@@ -2499,10 +2499,10 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
       const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0
       // B107: every piece stands, but another input fills both lanes of the consumer's belts past this port: they are
-      // picked up (emptied) and placed again.
+      // picked up (emptied) and placed again. B124: so are its belts and the edge's route belts that hold a foreign item.
       if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
         const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
-        clogged = cloggedBelts(ctx.surface, ctx.faction.force, f.layout, LG.connectModule(f.graph, e.to, inLayout) ?? e.to, e.toPort)
+        clogged = cloggedBelts(ctx.surface, ctx.faction.force, f.layout, LG.connectModule(f.graph, e.to, inLayout) ?? e.to, e.toPort, e.physical.map((rid) => IDS.routeId(rid)))
       }
       if (clogged.length === 0) {
         say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
@@ -2537,7 +2537,7 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
     let turned = check.misdirected.length > 0 ? `, turns ${check.misdirected.length} facing the wrong way (first ${check.misdirected[0].spec.name} at ${check.misdirected[0].spec.x},${check.misdirected[0].spec.y})` : ""
     if (check.stale.length > 0) turned += `, picks up stale belts under ${check.stale.length} (first ${check.stale[0].spec.name} at ${check.stale[0].spec.x},${check.stale[0].spec.y} over ${check.stale[0].entities[0].name})`
     if (check.intruders.length > 0) turned += `, picks up ${check.intruders.length} underground(s) inside its underground spans (first at ${check.intruders[0].position.x},${check.intruders[0].position.y}) (B95)`
-    if (clogged.length > 0) turned += `, empties ${clogged.length} belt(s) of ${clogged[0].spec.owner} where another input fills both lanes (first at ${clogged[0].spec.x},${clogged[0].spec.y}) (B107)`
+    if (clogged.length > 0) turned += `, empties ${clogged.length} belt(s) of ${clogged[0].spec.owner} holding a foreign item or another input on both lanes (first at ${clogged[0].spec.x},${clogged[0].spec.y}) (B107, B124)`
     if (check.orphans.length > 0) turned += `, ${check.orphans.length} of them ghosts no job builds (first ${check.orphans[0].name} at ${check.orphans[0].x},${check.orphans[0].y})`
     say(`goal ${g.id} re-places ${check.missing.length} entities${turned}`)
   },
