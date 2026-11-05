@@ -1408,7 +1408,11 @@ T1 `reconcile` "B140".
 A follow-up makes route-only ghost failures reroute those routes around the failing tiles (B123) rather than abandon
 the plan; `StampResult` now carries the failed specs. T2 `bootstrap-sources` "B142". `val1212fix4` shows the limit of
 that recovery: every reroute of the iron-ore route to labs~7 fails `no path` because the plan's own placement seals the
-lane (B144, open). The goal still builds 280 entities and then relocates.
+lane (B144, open). The goal still builds 280 entities and then relocates. A `min-0660` probe found the exact blocker at
+`346.5,47.5`: an underground-belt ghost over a previous plan's transport-belt ghost; `520.5,-161.5` is buildable, so
+those belts conflict with another part of the same plan stamp. The proposed fix is a two-phase stamp (ghosts first, no
+place jobs until they all stand) plus blocker-directed local rip and a bad-tile ledger; global rip mode stays off.
+`m7r555555c` hit the same class in a grow (two underground-belt ghosts at `-42.5,423.5..424.5`, 19 stalls).
 
 #### M7c.9 follow-up 16: seed 44444’s blue line has a design edge the graph never got (B143)
 
