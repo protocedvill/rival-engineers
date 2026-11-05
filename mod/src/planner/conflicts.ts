@@ -156,36 +156,7 @@ export function plannedSpecKeys(layout: LayoutState): Record<string, boolean> {
   return out
 }
 
-/**
- * B144: at plan start, remove the faction's own ghosts on the plan's tiles that no live layout part owns (a route
- * abandoned after its ghost was created, or a completion/`extraAdd` ghost the layout never got). Such a ghost cannot
- * be built and blocks a different entity's ghost on the same tile. Ghosts the layout does plan are kept: another
- * goal's build may own them. Returns how many were removed.
- */
-export function sweepOrphanGhosts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts): number {
-  const planned = plannedSpecKeys(layout)
-  const tiles = partTiles(layout, parts)
-  const seen: Record<number, boolean> = {}
-  let swept = 0
-  for (const k of tiles) {
-    const x = keyX(k)
-    const y = keyY(k)
-    for (const gh of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "entity-ghost", force: faction.force })) {
-      if (gh.unit_number === undefined || seen[gh.unit_number]) continue
-      // An area search matches boxes that overlap it; only a ghost standing on this tile counts.
-      if (math.floor(gh.position.x) !== x || math.floor(gh.position.y) !== y) continue
-      seen[gh.unit_number] = true
-      if (planned[ghostKey(gh)] === true) continue
-      const unit = gh.unit_number
-      destroyEntity(gh)
-      delete faction.ghostJobs[unit]
-      swept++
-    }
-  }
-  return swept
-}
-
-/** The same sweep, limited to the tiles of `specs` (a failed add list's retry). */
+/** B144: remove the faction's own ghosts on `specs`' tiles that no live layout part owns (a failed add list's retry). */
 export function sweepOrphanGhostsAt(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[]): number {
   const planned = plannedSpecKeys(layout)
   const seen: Record<number, boolean> = {}
