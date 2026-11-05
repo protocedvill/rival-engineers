@@ -1640,7 +1640,13 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      the first beside the port). The replay of g198 still fails on its crude line from a pumpjack field ~1000 tiles
      away and on belt rip-up loops at the labs and the mall (open). **Follow-up (2026-11-05):** a T1 line on open ground routes ~1000 tiles with
       three pumps (T1 `fluid-route` "a 1000-tile line places pumps…"), so the remaining g198 failure is terrain or the
-      field's egress (uncharted chunks, a cliff ring, or a sealed port), not distance.
+      field's egress (uncharted chunks, a cliff ring, or a sealed port), not distance. **g198 was the port (B151,
+      fixed `a9b2ca9`):** the new oil complex was sited with its water port's outside tile beside a built crude route,
+      so a pipe there would mix fluids. Placement now rejects `port-fluid` for a pipe port whose outside tile has
+      another fluid's route beside it, and the router keeps the same one-tile moat. The replay `m7d5-g198-water`
+      completes (63 searches, 11 rip-ups, 3,615 route tiles). g200 remains open for a different reason: its built
+      complex's water port is 78 tiles short behind built infrastructure (`run 264+68 > 312`), which needs a pump/route
+      decision rather than a placement rule.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
