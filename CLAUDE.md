@@ -84,7 +84,7 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   Stop walking and mining explicitly when an action ends.
 - `can_reach_entity` uses the **short mining reach** (≈ `resource_reach_distance` 2.7 + the box) for trees and
   rocks, not `reach_distance` (10). Walks toward a tree/rock must aim inside that (`walk.ts` `pathRadiusFor`).
-- **Script-creating an entity on top of a ghost removes the ghost.** In tests, place obstacles before ghosts.
+- **Script-creating an entity on top of a ghost removes the ghost.** In tests, place obstacles before ghosts. **A ghost created over another ghost also removes the existing one**, even though `can_place_entity` returns true; check for a different own ghost on the tile before creating a ghost (B144, `conflicts.ts` `preflightSpecs`).
   A character's death and corpse do not remove ghosts.
 - `character.can_place_entity` ignores ghosts, so filling a ghost uses the normal player check followed by
   `ghost.revive{raise_revive=true}` (keeps the ghost's settings; raises `script_raised_revive`, not `_built`).

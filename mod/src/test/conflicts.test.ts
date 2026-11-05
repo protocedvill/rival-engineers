@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, mergeBranchOutlet, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, ghostBlockerKind, mergeBranchOutlet, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -271,6 +271,97 @@ describe("faction conflicts", () => {
     revive(d.ghosts)
     const broken = followRoute(s, layout, layout.routes["route:ore"])
     assert(broken === undefined, `route connects again: ${broken}`)
+  })
+
+  test("B144: an orphan ghost on a planned tile is swept, and the local retry stamps the planned piece", () => {
+    // Seed 1212121 g111 (min-0660): the plan wanted an underground-belt ghost where an orphan transport-belt ghost
+    // (unit 33568) stood; route_debug returned {} because no live layout route owned it. The ghost can never be built
+    // and it blocks a different entity's ghost on the same tile.
+    const lab = createLab(64)
+    const a = faction(lab, "b144orphan", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const spec = { name: "transport-belt", x: ox + 25.5, y: oy + 0.5, dir: 0, owner: "route:b144" }
+    const orphan = s.create_entity({ name: "entity-ghost", inner_name: "underground-belt", position: { x: spec.x, y: spec.y }, direction: defines.direction.north, force: a.force })!
+    assert(orphan !== undefined, "orphan ghost placed")
+    assert(ghostBlockerKind(s, a, layout, spec).kind === "orphan", "classified as an orphan")
+    const d = applyDiff(s, a, [], [spec], {}, layout)
+    assert(d.failed.length === 0, `ghost: ${d.failed.join("; ")}`)
+    assert(d.placeJobs.length === 1, `a place job (${d.placeJobs.length})`)
+    assert(!orphan.valid, "the orphan is gone")
+    const made = s.find_entities_filtered({ ghost_name: "transport-belt", position: { x: spec.x, y: spec.y }, force: a.force })[0]
+    assert(made !== undefined && made.direction === defines.direction.north, "the planned belt ghost stands")
+  })
+
+  test("B144: an overlap inside the plan's own add list is classified, and no partial place job is created", () => {
+    // The other half of the g111 evidence: at 520.5,-161.5 the tile was buildable and no orphan stood there; one piece's
+    // ghost had been created before another piece of the same plan wanted the same tile. A retry cannot clear that: the
+    // plan itself is wrong for the ground.
+    const lab = createLab(64)
+    const a = faction(lab, "b144overlap", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const belt = partEntities(layout, { modules: [], routes: [routeId("route:ore")], poles: [] }).filter((e) => e.name === "transport-belt")[5]
+    const clash = { name: "underground-belt", x: belt.x, y: belt.y, dir: belt.dir, ioType: "input" as const, owner: "route:b144" }
+    const d = applyDiff(s, a, [], [belt, clash], {}, layout)
+    assert(d.failed.length === 1 && d.failed[0].indexOf("underground-belt") >= 0, `one failure (${d.failed.join("; ")})`)
+    assert(d.placeJobs.length === 0, `no place job for a partial plan (${d.placeJobs.length})`)
+    const kind = ghostBlockerKind(s, a, layout, clash)
+    assert(kind.kind === "planned", `the planned piece is the blocker (${kind.kind})`)
+  })
+
+  test("B144: an own stale belt blocks a ghost and creates no place jobs for the rest of the add list; a clean retry creates them", () => {
+    const lab = createLab(64)
+    const a = faction(lab, "b144stale", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const free = { name: "transport-belt", x: ox + 26.5, y: oy + 0.5, dir: 0, owner: "route:b144" }
+    const blocked = { name: "underground-belt", x: ox + 27.5, y: oy + 0.5, dir: 0, ioType: "input" as const, owner: "route:b144" }
+    const stale = s.create_entity({ name: "transport-belt", position: { x: blocked.x, y: blocked.y }, direction: defines.direction.north, force: a.force })!
+    assert(stale !== undefined, "stale belt placed")
+    const d = applyDiff(s, a, [], [free, blocked], {}, layout)
+    assert(d.failed.length === 1, `one failure (${d.failed.join("; ")})`)
+    assert(d.placeJobs.length === 0, `no job while a ghost of the list is missing (${d.placeJobs.length})`)
+    const blockedKind = ghostBlockerKind(s, a, layout, blocked)
+    assert(blockedKind.kind === "stale", `stale (${blockedKind.kind}: ${blockedKind.blocker})`)
+    // A foreign entity is a hard blocker when it does stand on the tile (the ghost itself may be created over it).
+    const foreign = { name: "transport-belt", x: ox + 28.5, y: oy + 0.5, dir: 0, owner: "route:b144" }
+    s.create_entity({ name: "wooden-chest", position: { x: foreign.x, y: foreign.y }, force: FOREIGN_FORCE })
+    assert(ghostBlockerKind(s, a, layout, foreign).kind === "foreign", "a foreign entity is classified")
+    stale.destroy()
+    const again = applyDiff(s, a, [], [free, blocked], {}, layout)
+    assert(again.failed.length === 0, `retry: ${again.failed.join("; ")}`)
+    assert(again.placeJobs.length === 2, `both jobs after the blocker goes (${again.placeJobs.length})`)
+  })
+
+  test("B144/B150: applyDiff does not reuse a ghost of the same entity facing another way", () => {
+    const lab = createLab(64)
+    const a = faction(lab, "b144dir", 30, 0)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const spec = { name: "transport-belt", x: ox + 28.5, y: oy + 0.5, dir: defines.direction.east, owner: "route:b144" }
+    s.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: { x: spec.x, y: spec.y }, direction: defines.direction.north, force: a.force })
+    const d = applyDiff(s, a, [], [spec], {})
+    assert(d.failed.length === 1, `the wrong-way ghost is not the planned piece (${d.failed.join("; ")})`)
+    assert(d.placeJobs.length === 0, "no job for the wrong-way ghost")
+  })
+
+  test("B144: removing a piece finds its ghost whatever way it faces", () => {
+    const lab = createLab(64)
+    const a = faction(lab, "b144rm", 30, 0)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const spec = { name: "transport-belt", x: ox + 29.5, y: oy + 0.5, dir: defines.direction.east, owner: "route:b144" }
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: { x: spec.x, y: spec.y }, direction: defines.direction.north, force: a.force })!
+    assert(ghost !== undefined && ghost.valid, "turned ghost placed")
+    applyDiff(s, a, [spec], [], {})
+    assert(!ghost.valid, "the turned ghost is removed")
   })
 
   test("B107: another input filling both lanes past a module's input port is found; picked up and placed again, the belts are empty", () => {

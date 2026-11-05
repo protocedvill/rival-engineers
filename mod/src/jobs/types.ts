@@ -78,6 +78,11 @@ export interface FactionState {
    * no ghost can go over the live splitter). `jobs/crew.ts` `placePendingGhosts` serves them.
    */
   pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number }[]
+  /**
+   * B144: tiles where a plan could not stamp a ghost and a retry cannot clear it (terrain, a foreign entity, a module,
+   * or an overlap in the plan's own add list). The next plan for the role avoids them until `until`.
+   */
+  buildBad?: { role: string; x: number; y: number; until: number; reason: string }[]
 }
 
 export interface CrewStats {

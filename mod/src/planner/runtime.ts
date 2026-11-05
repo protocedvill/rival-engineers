@@ -6,7 +6,7 @@
 
 import { evictableTiles } from "../strategy/evict"
 import type { JobId } from "../shared/ids"
-import { staleUnderRoutes, tuneMergeSplitters } from "./conflicts"
+import { hardGhostFailure, preflightSpecs, staleUnderRoutes, staleUnderSpecs, tuneMergeSplitters } from "./conflicts"
 
 export { tuneMergeSplitters }
 import { LuaEntity, LuaSurface } from "factorio:runtime"
@@ -21,7 +21,7 @@ import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles,
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
-import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE } from "./grid"
+import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, Vec } from "./grid"
 import { isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
@@ -45,6 +45,10 @@ export interface BuildState {
   failedSpecs?: EntitySpec[]
   /** B138: earliest tick to retry a failed ghost creation. */
   retryAt?: number
+  /** B144: a failed ghost whose blocker a retry cannot clear (terrain, foreign, or an overlap in the plan's own list). */
+  hard?: string
+  /** B144: the tiles behind `hard`, for the bad-build ledger. */
+  badTiles?: Vec[]
   /** Build only these parts (a plan on top of a base); absent: everything in the layout. */
   parts?: BuildParts
   /** B23: entities of a completed shared mine (a base module not in `parts`); ghosted after the clear. */
@@ -610,13 +614,57 @@ export function stepBuild(entry: PlannerEntry): void {
     // round cadence (1800 ticks); the factory goal counts the rounds and relocates after `build-stuck-rounds`.
     if (b.retryAt !== undefined && game.tick < b.retryAt) return
     b.failed.length = 0
+    b.hard = undefined
+    b.badTiles = undefined
     const surface = game.surfaces[entry.surface]
-    if (tapsPending(b, surface, entry.force, entry.job!.layout)) return
-    const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
+    const layout = entry.job!.layout
+    if (tapsPending(b, surface, entry.force, layout)) return
+    // B144: a ghost of an earlier, abandoned route (or a completion ghost the layout never got) cannot be built and
+    // blocks a different entity's ghost on its tile. Sweep only the plan's tiles and only ghosts no live layout part
+    // owns, so another goal's build is untouched. Two pieces on one tile, or a tile another planned piece owns, reject
+    // the plan before any ghost is created (creating over a ghost deletes it).
+    const built = b.parts ?? allParts(layout)
+    const pre = preflightSpecs(surface, faction, layout, partEntities(layout, built))
+    if (pre.swept > 0) log(`[rival-engineers] plan ${entry.id}: swept ${pre.swept} orphan ghost(s) off its tiles`)
+    const hardTiles: Vec[] = []
+    let hardReason: string | undefined
+    for (const [, why] of pairs(pre.blocked)) {
+      hardReason = hardReason ?? why.reason
+      hardTiles.push(why.at)
+    }
+    if (hardReason !== undefined) {
+      b.hard = hardReason
+      b.badTiles = hardTiles
+      log(`[rival-engineers] plan ${entry.id}: rejected before stamping: ${hardReason}`)
+      b.retryAt = game.tick + 1800
+      return
+    }
+    // B144: an own belt/splitter the plan does not want on a tile is picked up first (a different-type own ghost was
+    // swept above); the retry then stamps the planned piece instead of failing ten rounds and relocating.
+    let staleQueued = false
+    for (const e of staleUnderSpecs(surface, entry.force, partEntities(layout, built))) {
+      const open = clearJobFor(faction, e) as JobId | undefined
+      if (open !== undefined) {
+        if (b.clearJobs.indexOf(open) < 0) b.clearJobs.push(open)
+      } else b.clearJobs.push(addClearJob(faction, e, b.priority))
+      staleQueued = true
+    }
+    if (staleQueued) {
+      log(`[rival-engineers] plan ${entry.id}: picking up its own stale belt pieces before stamping`)
+      return
+    }
+    const r = b.parts !== undefined ? stampParts(surface, entry.force, layout, b.parts, true) : stampLayout(surface, entry.force, layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
     b.failedSpecs = r.failedSpecs
     if (r.failed.length > 0) {
-      log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
+      // B144: an overlap inside the plan's own list, a foreign entity or a structure cannot be cleared by a retry. Fail
+      // the goal now, before its place jobs exist, and record the tiles so the next plan avoids them.
+      const hard = hardGhostFailure(surface, faction, layout, r.failedSpecs)
+      if (hard !== undefined) {
+        b.hard = hard.reason
+        b.badTiles = hard.tiles
+      }
+      log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}${hard !== undefined ? ` (hard: ${hard.reason})` : ""}`)
       b.retryAt = game.tick + 1800
       return
     }

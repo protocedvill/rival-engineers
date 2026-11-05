@@ -16,6 +16,9 @@ export { exhausted } from "../shared/exhausted"
 // M7d.5: the roboport network, through the same namespace for the same reason.
 export { robotHub, robotsStep, robotsUpkeep } from "./robots"
 export { bufferChest, upgradeOutputChests } from "./provider-chests"
+// B144: the bad-build tile ledger, through the same namespace (the factory is close to Lua's local limit).
+export { badBuildRects, recordBadBuild } from "../planner/bad-build"
+export { hardGhostFailure } from "../planner/conflicts"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */

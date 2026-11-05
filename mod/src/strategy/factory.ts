@@ -1027,7 +1027,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     }
     if (b.retryAt !== undefined && ctx.tick < b.retryAt) return
     if (clearObstacles(ctx, b)) return
-    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority ?? ctx.config.factoryBuildPriority })
+    const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority ?? ctx.config.factoryBuildPriority }, ctx.f.layout)
     for (const gh of d.ghosts) b.ghosts.push(gh)
     for (const id of d.placeJobs) b.placeJobs.push(id)
     // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
@@ -1037,6 +1037,22 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     b.failed = d.failed
     b.failedSpecs = d.failedSpecs
     if (d.failed.length > 0) {
+      // B144: a blocker a retry cannot clear rejects this growth at once (same cleanup as the stuck-round exit below).
+      const hard = EX.hardGhostFailure(ctx.surface, ctx.faction, ctx.f.layout, d.failedSpecs ?? [])
+      if (hard !== undefined) {
+        EX.recordBadBuild(ctx.faction, g.nodes.map((n) => n.role), hard.tiles, ctx.tick, `grow: ${hard.reason}`)
+        for (const gh of b.ghosts) if (gh.valid) destroyEntity(gh)
+        b.phase = "done"
+        transitionGoal(g, "failed")
+        const node = ctx.f.graph.nodes[g.growth?.node ?? ""]
+        if (node !== undefined) {
+          node.lifecycle = "built"
+          node.builtTick = ctx.tick
+        }
+        CS.setValue((ctx.f.constraints ??= {}), "growFails", g.growth!.node, ST.GROW_MAX_FAILS)
+        log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} growth blocked: ${hard.reason}`)
+        return
+      }
       g.rounds++
       g.lastRound = ctx.tick
       g.reason = `${d.failed.length} ghosts could not be created (round ${g.rounds}): ${d.failed.slice(0, 4).join("; ")}`
@@ -1232,6 +1248,9 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // D38: temporary cells keep TEMP_CLEARANCE tiles off every existing module, so they never box in a port the real
   // factory still has to connect (seed 11: cells next to the labs' pack input made production unroutable).
   if (g.kind === "temp") request.avoid = f.layout.modules.map((m) => ({ x: m.rect.x - TEMP_CLEARANCE, y: m.rect.y - TEMP_CLEARANCE, w: m.rect.w + 2 * TEMP_CLEARANCE, h: m.rect.h + 2 * TEMP_CLEARANCE }))
+  // B144: a role whose plan failed on a blocker a retry cannot clear starts its next attempt away from that tile.
+  const bad = EX.badBuildRects(ctx.faction, g.nodes.map((n) => n.role), ctx.tick)
+  if (bad.length > 0) request.avoid = [...(request.avoid ?? []), ...bad]
   const id = `${ctx.faction.name}:${g.id}:${g.attempts}`
   if (RT.getPlannerEntry(id) !== undefined) RT.removePlan(id)
   const maxUnderground = maxUndergroundNow(ctx)
@@ -1813,6 +1832,15 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     g.reason = "build lost"
     return
   }
+  // B144: a ghost blocked by terrain, a foreign entity, a module or an overlap in the plan's own add list cannot be
+  // stamped by retrying. Record where and give up the location at once, before any place job exists, instead of
+  // building most of the plan and then relocating it.
+  if (b.hard !== undefined) {
+    EX.recordBadBuild(ctx.faction, g.nodes.map((n) => n.role), b.badTiles ?? [], ctx.tick, b.hard)
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} build blocked: ${b.hard}`)
+    relocateGoal(ctx, g, entry, `build blocked: ${b.hard}`)
+    return
+  }
   // Progress: place jobs done since the last look.
   let done = 0
   for (const id of b.placeJobs) if (getJob(ctx.faction.board, id)?.status === "done") done++
@@ -2026,7 +2054,7 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[], 
     if (physical.length > 0) e.physical = physical
   }
   // Old pieces first (picked up by the crew, items kept), then the new ghosts: a ghost can't go where a belt stands.
-  const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: b.priority })
+  const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: b.priority }, f.layout)
   g.rework = { clearJobs: d.clearJobs, add: plan.add }
   b.ghosts = (b.ghosts ?? []).filter((gh) => gh.valid)
   log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} rerouted ${routes.join(", ")}: ${plan.remove.length} entities to pick up, ${plan.add.length} to build`)
@@ -2042,7 +2070,7 @@ function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boole
     if (j !== undefined && j.status !== "done" && j.status !== "failed") return false
   }
   if (clearObstacles(ctx, w)) return false
-  const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority })
+  const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority }, ctx.f.layout)
   for (const gh of d.ghosts) b.ghosts!.push(gh)
   for (const id of d.placeJobs) b.placeJobs.push(id)
   if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${d.failed.length} rerouted ghosts could not be created: ${d.failed.slice(0, 4).join("; ")}`)
@@ -2513,7 +2541,7 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
         if (physical.length > 0) e.physical = physical
       }
       // Old pieces first (picked up, items kept), then the new ones: a ghost can't go where a belt stands.
-      const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: ctx.config.factoryBuildPriority })
+      const d = applyDiff(ctx.surface, ctx.faction, plan.remove, [], { priority: ctx.config.factoryBuildPriority }, f.layout)
       const g: FactoryGoal = {
         id: IDS.goalId(`g${f.nextGoal++}`),
         kind: "repair",
@@ -2801,7 +2829,7 @@ function retireTemp(ctx: Ctx, n: LogicalNode): void {
     // Exact specs matter when a permanent whole-patch mine overlaps this disposable cell: clearing the rectangle
     // would also destroy the mine's waiting belt ghosts, making the build look complete with a gap in its collector.
     const own = partEntities(f.layout, { modules: [m.id], routes: [], poles: [] }).filter((e) => prototypeFacts.entity(e.name)?.type !== "electric-pole")
-    jobs = applyDiff(ctx.surface, ctx.faction, own, [], { priority: ctx.config.factoryBuildPriority }).clearJobs.length
+    jobs = applyDiff(ctx.surface, ctx.faction, own, [], { priority: ctx.config.factoryBuildPriority }, f.layout).clearJobs.length
   }
   LG.removeNode(f.graph, n.id)
   f.temp!.retired++

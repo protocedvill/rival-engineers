@@ -1454,6 +1454,32 @@ B131's re-probe on any status change could keep an edge "measuring" if a node's 
 takes; B129 clears the output priority as well as the filter on a dead-outlet splitter (keeping the trunk priority would
 also work and leave fewer items on the dead side).
 
+#### M7c.9 follow-up 18: ghost preflight and orphan ghosts (B144)
+
+The fixed seed 1212121 resume from `min-0660` showed the B144 class on the current code: g109 failed ten rounds on 13
+`transport-belt@357.5,11..16` ghosts and then relocated (0 built entities). B150 had already removed the old
+"built module" exit that let `val1212fix3` report g109 as built, so this is the real outcome of that save.
+
+A probe of the same save found 28 own `transport-belt` ghosts at `357.5,6..17` facing north with no live layout owner:
+orphans of an abandoned route. A plan wanting the opposite direction could not reuse them, and creating its ghost on
+those tiles did not work. The fix adds a preflight before any ghost is created:
+
+- `planner/conflicts.ts` `preflightSpecs` sweeps own ghosts on the plan's tiles that no live layout part owns, and
+  rejects two planned pieces on one tile (`overlappingSpecs`) or a tile another planned piece's ghost owns. A
+  script-created ghost on a tile deletes the ghost already there, so this check must come before creation.
+- `applyDiff` is two-phase: it creates no place jobs until every ghost of its list stands. It also matches a ghost by
+  direction, looks for a blocker before creating, and treats an own stale belt as a pickup-and-retry (a foreign entity,
+  structure or plan overlap is hard).
+- `stepBuild` queues those stale pickups, and a hard blocker records its tile in `FactionState.buildBad`; the next plan
+  for the role avoids it (`planner/bad-build.ts`).
+
+In game, the same save with the fix logs `swept 28 orphan ghost(s) off its tiles` and g109 stamps without a ghost
+failure. The 60-game-minute resume (`m7-b144-fix`, 660 → 720 game-min, `-j 1`) completed with **0 stalls**: g109
+reached 1,376 placed entities and was still building at the end (it had failed and relocated within 50 s before the
+fix), and g111's power growth built in 90 s. Tests: T2 `conflicts` (orphan, plan overlap, stale belt, wrong-direction
+ghost in `applyDiff`, removal of a turned ghost); T1 `bad-build` (53/53 files). Full T2 on this commit: **208 passed,
+0 failed** (2026-11-05).
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
@@ -1660,6 +1686,9 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Joint port egress box | `planner/policy.ts` `placement.portEgress` (EARLY_COMPACT) | 50 tiles (0 turns it off) | Agent guess (proposed): seed 11 g104's bottleneck was beyond 25 tiles; 50 caught it and 75 changed nothing. A larger box costs more and rejects more spots. | no (policy field) |
 | Egress check retries | `planner/placement.ts` `EGRESS_RETRIES` | 6 crowded spots | Agent guess (proposed): bounds the rescans of one radius; after that the best spot is taken unchecked, as before the check. | no |
 | Egress check work per node | `planner/placement.ts` `EGRESS_WORK` | 0.25 units | Calibration (proposed): a node's residual moves cost about a quarter of a placement unit. | no |
+| Bad-build tile memory | `planner/bad-build.ts` `BAD_BUILD_TICKS` | 30 game-min | Agent guess (B144, proposed): long enough for the next attempt to start elsewhere, short enough to try the ground again later. | no |
+| Bad-build tiles kept | `planner/bad-build.ts` `BAD_BUILD_CAP` | 32 entries | Agent guess (B144, proposed): a handful of failed plans per role; the entry expiring first is dropped. | no |
+| Bad-build avoid radius | `planner/bad-build.ts` `BAD_BUILD_RADIUS` | 1 tile | Agent guess (B144, proposed): covers the blocked footprint and its edge without keeping a whole area free. | no |
 | Robot stock | `strategy/design.ts` `ROBOT_STOCK`, `ROBOPORT_STOCK` | 50 construction robots, 10 roboports | Agent guess (M7d.5, proposed): 50 robots is D77's "about 50"; 10 roboports is the network's default size. | no |
 | Robot stock fill time | `strategy/design.ts` `STOCK_FILL_SECONDS` | 1,800 s | Agent guess (proposed): the stock rows are sized to fill their buffers in 30 game-min, so they stay small. | no |
 | Roboport grid spacing | `settings.ts` `factory-roboport-spacing` | 36 tiles | Agent guess (proposed): neighbours may each land 6 tiles off their point, and 36 + 12 = 48 keeps their logistic areas (reach 50 for the vanilla roboport) touching. | yes |
