@@ -37,6 +37,15 @@ export function stampModule(surface: LuaSurface, force: LuaForce | string, def: 
   // every later entity onto the wrong spec). Iterate it with def.entities.length, not out.length.
   const out: (LuaEntity | undefined)[] = []
   for (let i = 0; i < def.entities.length; i++) {
+    // B142: a retried build re-stamps the same plan. A ghost that already stands is the wanted result, not a failed
+    // creation; creating a second ghost on its tile returns nil and made every retry look like thousands of failures.
+    if (opts.ghost === true) {
+      const existing = surface.find_entities_filtered({ name: "entity-ghost", ghost_name: def.entities[i].name, position: worldPos(origin, def.entities[i]), force, limit: 1 })[0]
+      if (existing !== undefined) {
+        out[i] = existing
+        continue
+      }
+    }
     const params = createParams(def.entities[i], origin, force, opts.ghost === true)
     if (opts.raiseBuilt) (params as unknown as Record<string, unknown>).raise_built = true
     out[i] = surface.create_entity(params)

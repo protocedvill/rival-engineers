@@ -27,6 +27,11 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 - factorio-test normally prints `log()` output only for failures. Use `out/test-results.json` to find the shard and
   read `.factorio-test/shards/N/factorio-current.log`.
 - T2’s bundled save is lab tile, not Nauvis. A terrain test must create its own surface.
+- T2 now defaults to one shard per core (capped at 8). The full suite is CPU-bound: six shards on six cores cut the
+  wall time from 445 s to 162 s solo. Do not read that as a test-time reduction: shard time still adds up, and three
+  concurrent soaks inflate the wall time again.
+- The module lab’s steady-state check uses a `0.5/sqrt(expected items)` tolerance floor. A low-rate module (0.15/s)
+  makes 8 or 10 items per window; a flat 3% tolerance never passed and both engine tests ran to the 60-minute cap.
 - Concurrent Factorio instances distort wall time and AI ms/tick. Quote performance only from `-j 1`; deterministic
   work counters are the concurrency-independent comparison.
 - A scorecard written while seeds remain is partial. Check `run.json` and do not treat absent seeds as passes.

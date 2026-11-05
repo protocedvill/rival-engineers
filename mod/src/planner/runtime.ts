@@ -41,6 +41,10 @@ export interface BuildState {
   fuel?: { item: string; count: number }
   priority?: number
   failed: string[]
+  /** B138: specs whose ghost could not be created this attempt (retried with backoff, then rerouted/relocated). */
+  failedSpecs?: EntitySpec[]
+  /** B138: earliest tick to retry a failed ghost creation. */
+  retryAt?: number
   /** Build only these parts (a plan on top of a base); absent: everything in the layout. */
   parts?: BuildParts
   /** B23: entities of a completed shared mine (a base module not in `parts`); ghosted after the clear. */
@@ -362,6 +366,11 @@ function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buff
 }
 
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
+  // B142: a retried build re-stamps the same plan; an existing ghost is the wanted result.
+  if (ghost) {
+    const existing = surface.find_entities_filtered({ name: "entity-ghost", ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+    if (existing !== undefined) return existing
+  }
   const params: Record<string, unknown> = { name: ghost ? "entity-ghost" : e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
   if (ghost) params.inner_name = e.name
   if (e.ioType !== undefined) params.type = e.ioType
@@ -373,12 +382,15 @@ function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: bo
 export interface StampResult {
   entities: LuaEntity[]
   failed: string[]
+  /** B142: the specs behind `failed`, so route-only failures can be rerouted instead of abandoning the plan. */
+  failedSpecs: EntitySpec[]
 }
 
 /** Creates some parts of a layout (modules, routes, poles) as real entities or as ghosts. */
 export function stampParts(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, ghost: boolean): StampResult {
   const entities: LuaEntity[] = []
   const failed: string[] = []
+  const failedSpecs: EntitySpec[] = []
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
   for (const m of layout.modules) {
@@ -387,15 +399,20 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
     registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
-      if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
-      else entities.push(e)
+      if (e === undefined) {
+        const me = m.def.entities[i]
+        failed.push(`${m.id}: ${me.name}@${m.origin.x + me.x},${m.origin.y + me.y}`)
+        failedSpecs.push({ name: me.name, x: m.origin.x + me.x, y: m.origin.y + me.y, dir: me.dir ?? 0, owner: m.id })
+      } else entities.push(e)
     }
   }
   const routes: BuildParts = { modules: [], routes: parts.routes, poles: [] }
   for (const spec of partEntities(layout, routes)) {
     const e = createSpec(surface, force, spec, ghost)
-    if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
-    else entities.push(e)
+    if (e === undefined) {
+      failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
+      failedSpecs.push(spec)
+    } else entities.push(e)
   }
   const poles: BuildParts = { modules: [], routes: [], poles: parts.poles }
   for (const spec of partEntities(layout, poles)) {
@@ -406,31 +423,39 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
     // D71 (b): a replacement pole ghosted ahead of the build (`poles` phase) whose place job did not finish.
     if (ghost && findEntities(surface, { ghost_name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
     const e = createSpec(surface, force, spec, ghost)
-    if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
-    else entities.push(e)
+    if (e === undefined) {
+      failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
+      failedSpecs.push(spec)
+    } else entities.push(e)
   }
-  return { entities, failed }
+  return { entities, failed, failedSpecs }
 }
 
 /** Creates a layout's modules and routes as real entities or as ghosts. */
 export function stampLayout(surface: LuaSurface, force: string, layout: LayoutState, ghost: boolean): StampResult {
   const entities: LuaEntity[] = []
   const failed: string[] = []
+  const failedSpecs: EntitySpec[] = []
   for (const m of layout.modules) {
     const placed = stampModule(surface, force, m.def, m.origin, { ghost })
     registerModuleBuffers(surface, force, m.def.entities, placed)
     for (let i = 0; i < m.def.entities.length; i++) {
       const e = placed[i]
-      if (e === undefined) failed.push(`${m.id}: ${m.def.entities[i].name}@${m.origin.x + m.def.entities[i].x},${m.origin.y + m.def.entities[i].y}`)
-      else entities.push(e)
+      if (e === undefined) {
+        const me = m.def.entities[i]
+        failed.push(`${m.id}: ${me.name}@${m.origin.x + me.x},${m.origin.y + me.y}`)
+        failedSpecs.push({ name: me.name, x: m.origin.x + me.x, y: m.origin.y + me.y, dir: me.dir ?? 0, owner: m.id })
+      } else entities.push(e)
     }
   }
   for (const spec of routeEntities(layout)) {
     const e = createSpec(surface, force, spec, ghost)
-    if (e === undefined) failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
-    else entities.push(e)
+    if (e === undefined) {
+      failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
+      failedSpecs.push(spec)
+    } else entities.push(e)
   }
-  return { entities, failed }
+  return { entities, failed, failedSpecs }
 }
 
 /** Built belts where new splitter taps of `parts` go onto routes outside `parts` (the base layout's). */
@@ -581,11 +606,21 @@ export function stepBuild(entry: PlannerEntry): void {
       const j = getJob(faction.board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
+    // B138: a failed ghost must not let the plan advance to "place" and finish with a hole. Retry on the factory's build
+    // round cadence (1800 ticks); the factory goal counts the rounds and relocates after `build-stuck-rounds`.
+    if (b.retryAt !== undefined && game.tick < b.retryAt) return
+    b.failed.length = 0
     const surface = game.surfaces[entry.surface]
     if (tapsPending(b, surface, entry.force, entry.job!.layout)) return
     const r = b.parts !== undefined ? stampParts(surface, entry.force, entry.job!.layout, b.parts, true) : stampLayout(surface, entry.force, entry.job!.layout, true)
     for (const f of r.failed) b.failed.push(`ghost ${f}`)
-    if (r.failed.length > 0) log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
+    b.failedSpecs = r.failedSpecs
+    if (r.failed.length > 0) {
+      log(`[rival-engineers] plan ${entry.id}: ${r.failed.length} ghosts could not be created: ${r.failed.slice(0, 6).join("; ")}`)
+      b.retryAt = game.tick + 1800
+      return
+    }
+    b.retryAt = undefined
     const stamped: LuaEntity[] = [...r.entities]
     // B23: a completed shared mine's new entities (a base module not in `parts`) join the same build.
     if (b.extraAdd !== undefined) {

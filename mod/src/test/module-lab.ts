@@ -322,14 +322,19 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         return v
       })
     } else for (const [item] of pairs(declared)) keys.push((rates) => rates[item] ?? 0)
+    // A low-rate module (0.15/s) makes 8 or 10 items per 60 s window, so consecutive 3-window groups differ by one item
+    // (~8%) and a flat 3% tolerance can never pass: the two slowest lab tests always ran to the 60-minute cap. The
+    // tolerance floor is the sampling noise of `expected` discrete items (0.5/sqrt(n)); for high rates it stays at 3%.
+    const noiseTol = (expected: number): number => math.max(tolerance, 0.5 / math.sqrt(math.max(1, expected)))
     for (const key of keys) {
       const last = groupMean(key, n - windowsNeeded)
       const prev = groupMean(key, n - 2 * windowsNeeded)
-      if (last <= 0 || math.abs(last - prev) > tolerance * last) return false
+      const expected = last * (windowTicks / 60)
+      if (last <= 0 || math.abs(last - prev) > noiseTol(expected) * last) return false
     }
     for (const f of feeders) {
       const scheduled = f.perTick * feedFactor * 60
-      if (groupMean((rates) => rates[`feed:${f.item}`] ?? 0, n - windowsNeeded) < (1 - tolerance) * scheduled) return false
+      if (groupMean((rates) => rates[`feed:${f.item}`] ?? 0, n - windowsNeeded) < (1 - noiseTol(scheduled * (windowTicks / 60))) * scheduled) return false
     }
     return true
   }

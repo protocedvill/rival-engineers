@@ -1027,6 +1027,9 @@ function registerSupplies(ctx: Ctx): void {
       else if (site.kind === "pair" && e.type === "mining-drill") add(e, defines.inventory.fuel, "pair", fuel, PAIR_KEEP)
     }
   }
+  // B134: a module still being built has no finished output belt; its furnace output is the only source for a craft in
+  // the same plan (the blue line's pumpjack waited 44 game-min for steel from its own building smelter).
+  for (const e of moduleFurnaces(ctx.faction.name, true)) add(e, defines.inventory.furnace_result, "module-furnace")
   // B36 (proposed, default off): smelter modules' furnace outputs, last (buffers and bootstrap furnaces first).
   if (ctx.config.supplyModuleFurnaces) for (const e of moduleFurnaces(ctx.faction.name)) add(e, defines.inventory.furnace_result, "module-furnace")
   // M7c.8 (seed 11, minute 657–743: g108's four crude-line pumps waited 85 game-min for engine units while the faction's
@@ -1624,6 +1627,20 @@ function pruneBoard(faction: FactionState, tick: number): void {
   const board = faction.board
   const needed: Record<number, boolean> = {}
   for (const id of board.active) for (const dep of board.jobs[id].deps) needed[dep] = true
+  const f = storage.factories?.[faction.name]
+  // B139: a long build counts its progress and invariants from the jobs it queued. Pruning a completed job while its
+  // goal is still building made `placed` stop advancing and produced hundreds of false `build-job-missing` invariants
+  // (random seeds 44444/555555/1212121). Keep every job an active goal still references, done or failed.
+  if (f !== undefined) {
+    for (const goal of f.goals) {
+      if (goal.status !== "planning" && goal.status !== "building") continue
+      const b = goal.plan !== undefined ? storage.planner?.entries[goal.plan]?.build : undefined
+      for (const id of b?.clearJobs ?? []) needed[id] = true
+      for (const id of b?.placeJobs ?? []) needed[id] = true
+      for (const id of goal.growBuild?.clearJobs ?? []) needed[id] = true
+      for (const id of goal.growBuild?.placeJobs ?? []) needed[id] = true
+    }
+  }
   for (const [idx, job] of pairs(board.jobs)) {
     const id = idx as number
     if (job.status !== "done" && job.status !== "failed") continue
@@ -1631,7 +1648,6 @@ function pruneBoard(faction: FactionState, tick: number): void {
     delete board.jobs[id]
   }
   if (faction.brain !== undefined) pruneFailedKeys(faction.brain, tick)
-  const f = storage.factories?.[faction.name]
   if (f !== undefined) pruneFailedKeys(f, tick)
 }
 

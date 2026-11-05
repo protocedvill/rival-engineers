@@ -212,7 +212,9 @@ if (filterRes === undefined) {
   }
   // With a filter that matches no known test, run it as given in one shard (it lists the suite for next time).
   if (units.length === 0) units = [{ name: `filters ${filters.join(" ")}`, patterns: filters, ms: 0 }]
-  const n = jobs ?? Math.max(1, Math.min(Math.floor(cores / 2), units.length))
+  // One Factorio per core: T2 is CPU-bound and each shard uses about one core. The old half-core default left half the
+  // machine idle (445 s wall on 6 cores; 226 s with six shards). Cap at 8 so a very large host does not start dozens.
+  const n = jobs ?? Math.max(1, Math.min(cores, 8, units.length))
   firstShards = pack(units, n)
 }
 console.log(`T2: ${firstShards.length} shard(s) on ${cores} cores${jobs ? ` (jobs ${jobs})` : ""}`)
@@ -246,7 +248,7 @@ if (filterRes !== undefined) {
   if (leftover.length > 0) {
     const units = buildUnits(leftover, { wholeFiles: false })
     console.log(`second pass: ${leftover.length} test(s) the shard plan didn't know`)
-    runs = runs.concat(await runShards(pack(units, jobs ?? Math.max(1, Math.min(Math.floor(cores / 2), units.length))), runs.length))
+    runs = runs.concat(await runShards(pack(units, jobs ?? Math.max(1, Math.min(cores, 8, units.length))), runs.length))
   }
 }
 

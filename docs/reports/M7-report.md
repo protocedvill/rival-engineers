@@ -1317,6 +1317,123 @@ nothing leaves through the branch side (B125).
 
 No new tuning numbers.
 
+#### M7c.9 follow-up 11: false remedies and a dead merge outlet (B128-B130)
+
+Found while soaking seed 11 from fresh (`m7s11a`, branch `m7-soak-fixes` on `615f8b7`):
+
+- **B128 (a trickle is not a stopped lane).** The first blue line's lab port (`n2 in-chemical-science-pack`) was full
+  while 0.1/s went in: the labs used packs faster than the provider made them. B124's `LOST_MIN_ITEMS` test called that
+  "stopped" and spent an unclog repair that found nothing, repeatedly. Only zero arrivals now means the lane is held.
+  T1 `reconcile` "B128".
+- **B129 (a dead merge outlet gets no filter).** B125 filtered a merge splitter to its trunk side, so every item that was
+  not the route's item left through the branch-side output. The planner never builds a belt there, so coal stuck in the
+  splitter for good. A dead outlet must back up instead, which sends everything down the trunk. The filter is set only
+  when a belt stands on the branch-side outlet, and a stale filter is cleared. T2 `conflicts` "B129".
+- **B130 (a new feeder under construction).** Seed 11 minutes 100-110: n17's fifth copper-ore mine was still building,
+  so `builtFor` returned undefined on every evaluation and the smelter stayed `unknown / warming up` for 70 game-min.
+  Its four built mines backed up behind it with no status and no remedy. Only built feeders set the warm-up age now; an
+  unbuilt one is ignored when the consumer already has a built feeder. T1 `reconcile` "B130".
+- **B131 (a probe from before a status change).** Seed 11 minute 60: n22's iron tap was probed at 0/s just before its
+  smelter began producing, and the reconciler repaired the intact tap twice on that sample. A probe is only usable when
+  it is newer than the last status change of both ends; otherwise it is measured again before acting. T1 `reconcile`
+  "B131".
+
+No new tuning numbers. Validation: `m7s11a`/`m7s11b` (seed 11) and `m7s222a`/`m7s222b` (seed 222) on the fixed build.
+
+#### M7c.9 follow-up 12: a masked feed, a bogus tap and a building module's output (B132-B134)
+
+Found in `m7s11b` (seed 11, fresh, minutes 180-330):
+
+- **B132 (a tap must start on its parent).** n25's tap to n22 had its steps reversed by a re-root: its first splitter was
+  on another route and its last splitter was on the parent. `tapsReach` still followed it to n22, so the repair found
+  "nothing missing". A tap now counts only when its first splitter is on a parent tile; `feedsDirect` uses the same rule.
+  T1 `merge` "B132".
+- **B133 (do not mask a blocked feed with an undersized one).** n22's iron came through four merged feeds. The trace took
+  the first feed's "producer undersized" cause (n15, already flat out and unable to grow) and returned, so the backed-up
+  smelters feeding the same port were never repaired. Physical blockages are now checked across every feed before any
+  grow cause. T1 `reconcile` "B133".
+- **B134 (a building module's output is a supply point).** The blue line's steel smelter stood and ran, but its module was
+  still `building`, so `moduleFurnaces`/`moduleAssemblers` did not register its output. The same plan's pumpjack craft
+  waited 44 game-min for 5 steel plates, so the oil field (and blue science) never started. A module being built is now a
+  supply point for its furnace/assembler output too (unconditionally; the furnace setting still governs completed
+  modules). T2 `bootstrap-sources` "B134".
+- **B135 (a placed module is built before the whole plan).** A plan's modules become `built` only when the whole plan
+  finishes, so the steel smelter was invisible to the reconciler while the pumpjack in the same plan waited for its
+  steel. When a placement completes, a module with no still-valid ghost left in its rect is now marked built, even if
+  another module's place job is still open. T1 `goal-lifecycle` "B135".
+
+B135 was refined after `val11b141`: the check runs on every build think (a module can become usable between two
+placements) and requires only the module's machines, not every internal belt/pole/buffer. On `val11b142` (from minute
+360) n167 became `built` and visible to the reconciler for the first time; it is now starved by the retiring n37, which
+is the open B141. No new tuning numbers. Validation: `val11blue5` and `val11b142` resumed from `m7s11b` on the fixed
+build; full T2 193/193 on the B140 build, targeted factory/reconciler 31/31 after the B135 refinement.
+
+#### M7c.9 follow-up 13: failed ghosts and pruned jobs (B138, B139)
+
+Random-seed soaks (`m7r44444`, `m7r555555`, `m7r1212121`) exposed two structural bookkeeping bugs:
+
+- **B138 (a failed ghost must not be a silent success).** Goal g16 logged `cannot place 2` route belts and then reported
+  `grew`: `applyDiff` only logged failed ghosts, and the completion check looked only at created ghosts/jobs. A growth
+  now retries the failed specs on the build-round cadence and abandons the growth (B20) after `build-stuck-rounds`; a
+  plan build stays in its clear phase and the factory goal relocates after the same rounds.
+- **B139 (active goals keep their job records).** `pruneBoard` deleted done/failed jobs after 1800 ticks even when an
+  active goal’s build/grow lists still referenced them, producing hundreds of false `build-job-missing` invariants and
+  stopping `placed` from advancing on long builds. Jobs referenced by a planning/building goal are now kept.
+
+T2 itself was also made cheaper: one shard per core (445 s → 162 s solo) and a statistical steady-state tolerance for
+low-rate lab modules (the two engine tests 147/120 s → ~19 s each). Full T2 193/193.
+
+#### M7c.9 follow-up 14: a shared consumer port is one repair (B140)
+
+Seed 11 n22 had four iron feeds into one port. The edge probe samples the consumer port, so every feed reported the
+same total; a backed-up feed was repaired and `checkBuild` found "nothing missing" while the port received 0.9/s of
+3.65/s planned. The reconciler now detects that shape and proposes one `shared:<node>:<item>` group repair; the repair
+reroutes the whole merge tree in place once (B88). `val11b140` (from `m7s11b` minute 360) rerouted 12 routes
+(233 pickups, 186 builds); n22 went from starved to `ok 0.283/0.275/s` and n25 from backed-up to `ok 1.23/0.978/s`.
+T1 `reconcile` "B140".
+
+#### M7c.9 follow-up 15: retried ghosts and a cliff inside an oil field (B142)
+
+`m7r1212121c` (seed 1212121, minutes 600-660) failed two ways at once:
+
+- Goal g109 was abandoned as `BUILD STUCK` with `1149 ghosts could not be created`. B138's retry re-stamped the whole
+  plan; `stampModule`/`createSpec` returned nil on every ghost that already stood, so one real failure looked like 1149.
+  Ghost stamping now reuses an existing ghost. A failed ghost owned by a module whose machines already stand (B135) is
+  ignored too: one missing internal belt must not abandon a plan, and the reconciler can repair the edge it feeds.
+- g111/g112 failed every attempt at `no room at its fixed spot: blocked (terrain cliff) at 570,-739`. `fieldModule`
+  rejected wells whose own 3×3 touched a cliff, but a cliff between wells still fell inside the fixed module box. Cliff
+  and water tiles inside the box now drop the nearest well, like a structure already does.
+
+`val1212fix3` (from minute 660): g109 built instead of being abandoned, and g111 plans instead of failing immediately.
+A follow-up makes route-only ghost failures reroute those routes around the failing tiles (B123) rather than abandon
+the plan; `StampResult` now carries the failed specs. T2 `bootstrap-sources` "B142". `val1212fix4` shows the limit of
+that recovery: every reroute of the iron-ore route to labs~7 fails `no path` because the plan's own placement seals the
+lane (B144, open). The goal still builds 280 entities and then relocates. A `min-0660` probe found the exact blocker at
+`346.5,47.5`: an underground-belt ghost over an **orphan transport-belt ghost** (unit 33568); `route_debug("1",346,47)`
+returns `{}`, so no current layout route owns it and the planner's claims never saw it. At `520.5,-161.5` the tile is
+buildable and `route_debug` is empty too: the plan job is not adopted, so the conflict is **inside the plan's own add
+list** (one piece's belt ghost created before another piece wants the same tile). The proposed fix is a two-phase stamp (ghosts first, no
+place jobs until they all stand) plus blocker-directed local rip and a bad-tile ledger; global rip mode stays off.
+`m7r555555c` hit the same class in a grow (two underground-belt ghosts at `-42.5,423.5..424.5`, 19 stalls).
+
+#### M7c.9 follow-up 16: seed 44444’s blue line has a design edge the graph never got (B143)
+
+`m7r44444c` ran the full 960 game-min and finished with 28.8 red / 36.0 green / **0 chemical** packs per minute. The
+blue line’s iron smelter n43 is `starved`, cause `external: no producer`, while the iron mine n16 is `backed-up` with
+`nothing takes its output`. A `design_debug("1","iron-ore")` probe of `min-0900` shows the design *does* have the edge
+`iron-ore*>iron-plate>automation-science-pack>labs~2 => iron-plate>logistic-science-pack>labs.in-ore` at 3.63/s, but the
+live graph has no corresponding edge. The factory is busy building g80, a huge production plan (27k+ queued jobs, about
+30 ms/tick in the run), planned before that demand appeared; a long-running build blocks planning the missing feed.
+Power is short at the same time: power#3 growth is blocked at 435,-50, and the next power block finds no shore site
+(B137). Fix direction for B143: allow a critical missing feed to be planned while another large build runs, or split
+huge production goals into smaller ones.
+
+**Still open after these fixes (seed 11, `m7s11b`/`val11b141`, minutes 180-390).** The blue line still waits on
+its pumpjack craft because the steel smelter n167 taps n47, whose iron mine n37 is depleted and retiring. The retiring
+provider's replacement group does not include n167, a consumer added in an unbuilt plan (B141, open). B135 makes a
+fully placed module visible (n171 did become visible), but n167 still has ghosts. The power layer also defers repeated
+`power#5: no shore site in the region` goals (B137, open). Neither is a tuning issue.
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

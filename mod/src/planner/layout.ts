@@ -1120,6 +1120,19 @@ export function routeFeedsPort(layout: LayoutState, rid: RouteId, to: PortRef): 
   return false
 }
 
+/**
+ * B132 (seed 11, minute 180): a tap is only a tap of its parent if its first splitter stands on a parent tile. A
+ * re-rooted tap had its steps reversed: the first splitter was on another route and the last one was on the parent, so
+ * the route physically led nowhere. `tapsReach` still followed it to n22 and the repair found "nothing missing".
+ */
+function tapOnRoute(layout: LayoutState, t: Route, parent: RouteId): boolean {
+  const p = layout.routes[parent]
+  const s0 = t.steps[0]
+  if (p === undefined || s0 === undefined || s0.kind !== "splitter") return false
+  if (p.tiles.indexOf(tkey(s0.x, s0.y)) >= 0) return true
+  return s0.x2 !== undefined && s0.y2 !== undefined && p.tiles.indexOf(tkey(s0.x2, s0.y2)) >= 0
+}
+
 /** Whether route `r` goes to port `to`, itself or through its splitter taps (up to 8 levels). */
 function feedsDirect(layout: LayoutState, r: Route, to: PortRef): boolean {
   if (r.to.module === to.module && r.to.port === to.port) return true
@@ -1129,6 +1142,7 @@ function feedsDirect(layout: LayoutState, r: Route, to: PortRef): boolean {
     for (const id of layout.routeOrder) {
       const t = layout.routes[id]
       if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (!tapOnRoute(layout, t, t.tapOf)) continue
       if (t.to.module === to.module && t.to.port === to.port) return true
       next.push(t.id)
     }
@@ -1145,6 +1159,7 @@ function tapsReach(layout: LayoutState, rid: RouteId, to: PortRef, goal: { x: nu
     for (const id of layout.routeOrder) {
       const t = layout.routes[id]
       if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (!tapOnRoute(layout, t, t.tapOf)) continue
       if (endsAt(t, to, goal, inner)) return true
       next.push(t.id)
     }

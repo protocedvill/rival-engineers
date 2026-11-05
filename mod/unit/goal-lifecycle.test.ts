@@ -1,4 +1,4 @@
-import { canTransitionGoal, everDone, GoalStatus, nextGoalStatus } from "../src/strategy/goal-lifecycle"
+import { canTransitionGoal, everDone, GoalStatus, modulePlaced, nextGoalStatus } from "../src/strategy/goal-lifecycle"
 import { eq, ok, run, test } from "./harness"
 
 test("goal lifecycle admits only the coordinator's intended transitions", () => {
@@ -33,6 +33,14 @@ test("B108: the factory has power once any power goal is done, even when a later
   ok(everDone(goals, "power"), "built power counts")
   ok(!everDone([{ kind: "power", status: "building" }], "power"), "a power goal still building is no power")
   ok(!everDone([{ kind: "production", status: "done" }], "power"), "no power goal")
+})
+
+test("B135: a module is placed when its own entities have no still-valid ghost", () => {
+  const own = [{ x: 10.5, y: 20.5 }, { x: 12.5, y: 24.5 }]
+  ok(modulePlaced(own, []), "no ghost: placed")
+  ok(modulePlaced(own, [{ valid: true, position: { x: 11.5, y: 21.5 } }]), "a route ghost inside the rect does not block")
+  ok(!modulePlaced(own, [{ valid: true, position: { x: 12.5, y: 24.5 } }]), "a ghost on an own entity blocks")
+  ok(modulePlaced(own, [{ valid: false, position: { x: 12.5, y: 24.5 } }]), "an invalid ghost does not")
 })
 
 run("goal-lifecycle")

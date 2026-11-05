@@ -362,7 +362,7 @@ export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntit
   return out
 }
 
-export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
+export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[]; failedSpecs: EntitySpec[] } {
   const force = faction.force
   const clearJobs: JobId[] = []
   for (const e of remove) {
@@ -374,6 +374,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   const ghosts: LuaEntity[] = []
   const placeJobs: JobId[] = []
   const failed: string[] = []
+  const failedSpecs: EntitySpec[] = []
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
     let gh = ownGhost(surface, force, e)
@@ -388,6 +389,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     }
     if (gh === undefined) {
       failed.push(`${e.owner}: ${e.name}@${e.x},${e.y}`)
+      failedSpecs.push(e)
       continue
     }
     ghosts.push(gh)
@@ -396,7 +398,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     if (id !== undefined) placeJobs.push(id)
     else if (faction.ghostJobs[gh.unit_number!] !== undefined) placeJobs.push(faction.ghostJobs[gh.unit_number!])
   }
-  return { ghosts, placeJobs, clearJobs, failed }
+  return { ghosts, placeJobs, clearJobs, failed, failedSpecs }
 }
 
 /**
@@ -469,7 +471,24 @@ export function mergeTrunkSide(ms: { x: number; y: number; dir: number; x2: numb
   return ms.x - ms.x2 === DX[l] && ms.y - ms.y2 === DY[l] ? "left" : "right"
 }
 
-/** Sets every built merge splitter's filter (its route's item) and output priority (the trunk side). Returns how many it changed. */
+/** The tile a merge splitter's branch-side output faces (planner tile coordinates). */
+export function mergeBranchOutlet(ms: { dir: number; x2: number; y2: number }): { x: number; y: number } {
+  return { x: ms.x2 + DX[ms.dir], y: ms.y2 + DY[ms.dir] }
+}
+
+function beltOn(surface: LuaSurface, force: string, x: number, y: number): boolean {
+  return findEntities(surface, { position: { x: x + 0.5, y: y + 0.5 }, type: BELT_TYPES, force, limit: 1 }).length > 0
+}
+
+/**
+ * Sets every built merge splitter's filter (its route's item) and output priority (the trunk side). Returns how many it
+ * changed.
+ *
+ * B129 (m7c-cont12 seed 11): a merge splitter whose branch-side outlet has no belt is *meant* to have that outlet back
+ * up, so the splitter sends everything down the trunk. B125's filter breaks that: with a filter, everything that is not
+ * the route's item goes to the *other* (branch-side) output, where it sticks for good (B126 found and emptied it). Only
+ * set the filter when something can actually leave through that side; otherwise clear it and let the dead outlet back up.
+ */
 export function tuneMergeSplitters(surface: LuaSurface, force: string, layout: LayoutState): number {
   let changed = 0
   for (const id of layout.routeOrder) {
@@ -479,7 +498,16 @@ export function tuneMergeSplitters(surface: LuaSurface, force: string, layout: L
     const x = (ms.x + ms.x2) / 2 + 0.5
     const y = (ms.y + ms.y2) / 2 + 0.5
     const side = mergeTrunkSide(ms)
+    const out = mergeBranchOutlet(ms)
+    const live = beltOn(surface, force, out.x, out.y)
     for (const e of findEntities(surface, { position: { x, y }, type: "splitter", force, limit: 1 }) as LuaEntity[]) {
+      if (!live) {
+        if (e.splitter_filter === undefined && e.splitter_output_priority === "none") continue
+        e.splitter_filter = undefined as never
+        e.splitter_output_priority = "none"
+        changed++
+        continue
+      }
       const fl = e.splitter_filter
       // Read back, the filter's name is a prototype in the typings but a plain string in 2.0.77: accept both.
       const n = fl === undefined || typeof fl === "string" ? fl : (fl.name as unknown as string | { name: string } | undefined)

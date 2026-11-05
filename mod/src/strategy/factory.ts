@@ -55,7 +55,6 @@ import * as REL from "./relocation"
 import * as AR from "./adoption-runtime"
 import * as EX from "./explore"
 import * as GH from "./goal-holds"
-export { parseStages } from "./stage"
 export type { GoalStatus } from "./goal-lifecycle"
 
 // The M5 strategy layer (SPEC §5.5, §5.8): takes over from the burner bootstrap once the first-electricity materials
@@ -131,7 +130,7 @@ export interface FactoryGoal {
   /** Growth goals: the node and units, and their own build (pick up moved entities, then build the new ones). */
   growth?: { node: string; units: number }
   /** A growth or repair build: `poles` (D71 b) places the new poles before the old ones in `breakAfter` are picked up. */
-  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[]; priority?: number }
+  growBuild?: { phase: "poles" | "clear" | "place" | "done"; clearJobs: IDS.JobId[]; add: EntitySpec[]; ghosts: LuaEntity[]; placeJobs: IDS.JobId[]; obstacles?: boolean; poleJobs?: IDS.JobId[]; breakAfter?: LuaEntity[]; priority?: number; failed?: string[]; failedSpecs?: EntitySpec[]; retryAt?: number }
   /** Conflict repairs (M5a.2): reroutes and relocations so far, and a reroute waiting for its pick-ups. */
   repairs?: number
   /** D36 / B2: given up because undergrounds or splitters were worth researching first (planned again after it). */
@@ -719,7 +718,10 @@ export function factoryCheckDebug(name: string, edgeFilter: string): unknown {
     for (const rid of e.physical) if (f.layout.routes[rid] !== undefined) parts.routes.push(IDS.routeId(rid))
     const c = checkBuild(game.get_surface(faction.surface)!, faction.force, f.layout, parts)
     const at = (s: EntitySpec): string => `${s.name}@${s.x},${s.y}:${s.dir ?? 0}`
-    out.push({ edge: id, physical: e.physical, missing: c.missing.map((s) => at(s)), misdirected: c.misdirected.map((m) => at(m.spec)), stale: c.stale.map((m) => at(m.spec)), intruders: c.intruders.length, conflicts: c.conflicts.length })
+    // B132: what the repair's B83 check would decide (all pieces can stand while a route's steps do not reach the port).
+    const to = LG.connectModule(f.graph, e.to, (mid: string) => LO.findModule(f.layout, mid) !== undefined) ?? e.to
+    const land = e.toPort !== undefined ? LO.routesLand(f.layout, e.physical, { module: to, port: e.toPort }) : undefined
+    out.push({ edge: id, physical: e.physical, land, missing: c.missing.map((s) => at(s)), misdirected: c.misdirected.map((m) => at(m.spec)), stale: c.stale.map((m) => at(m.spec)), intruders: c.intruders.length, conflicts: c.conflicts.length })
   }
   return out
 }
@@ -1023,12 +1025,38 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
       const j = getJob(board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
     }
+    if (b.retryAt !== undefined && ctx.tick < b.retryAt) return
     if (clearObstacles(ctx, b)) return
     const d = applyDiff(ctx.surface, ctx.faction, [], b.add, { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority ?? ctx.config.factoryBuildPriority })
     for (const gh of d.ghosts) b.ghosts.push(gh)
     for (const id of d.placeJobs) b.placeJobs.push(id)
     // B99: say so (a clear job that failed leaves its entity standing, and the goal ends with nothing placed).
-    if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
+    // B138 (random seed 1212121): two route belts could not be ghosted, but the growth still reported "grew" because
+    // the failed specs were only logged. Retry them with backoff; after `build-stuck-rounds`, abandon the growth like a
+    // stuck ghost instead of silently finishing with a hole.
+    b.failed = d.failed
+    b.failedSpecs = d.failedSpecs
+    if (d.failed.length > 0) {
+      g.rounds++
+      g.lastRound = ctx.tick
+      g.reason = `${d.failed.length} ghosts could not be created (round ${g.rounds}): ${d.failed.slice(0, 4).join("; ")}`
+      log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} cannot place ${d.failed.length}: ${d.failed.slice(0, 4).join("; ")}`)
+      b.retryAt = ctx.tick + BUILD_ROUND_TICKS
+      if (stuckRound(ctx, g, d.failed.length)) {
+        for (const gh of b.ghosts) if (gh.valid) destroyEntity(gh)
+        b.phase = "done"
+        transitionGoal(g, "failed")
+        const node = ctx.f.graph.nodes[g.growth?.node ?? ""]
+        if (node !== undefined) {
+          node.lifecycle = "built"
+          node.builtTick = ctx.tick
+          CS.setValue((ctx.f.constraints ??= {}), "growFails", node.role, ST.GROW_MAX_FAILS)
+        }
+      }
+      return
+    }
+    b.retryAt = undefined
+    b.failedSpecs = undefined
     b.phase = "place"
     return
   }
@@ -1793,7 +1821,87 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
     g.placed = done
     g.progressTick = ctx.tick
   }
+  // B135 (seed 11, minute 330): a plan's modules become built only when the whole plan finishes. The blue line's steel
+  // smelter stood and ran, but the pumpjack in the same plan waited for steel from it: a circular wait. Mark a module
+  // built as soon as its machines stand, on every think (a module can become usable between two placements); the
+  // reconciler can then feed it and its output is a supply point (B134).
+  if (b.phase !== "done") {
+    const layout = entry.job?.layout
+    if (layout !== undefined) {
+      const ghosts = b.ghosts ?? []
+      for (const gn of g.nodes) {
+        const node = f.graph.nodes[gn.id]
+        if (node === undefined || node.lifecycle === "built") continue
+        const m = LO.findModule(layout, gn.id)
+        if (m === undefined) continue
+        const own: { x: number; y: number }[] = []
+        for (const e of m.def.entities) {
+          const t = prototypes.entity[e.name]?.type
+          if (t === "assembling-machine" || t === "furnace" || t === "mining-drill" || t === "lab" || t === "boiler" || t === "generator") own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        }
+        if (own.length === 0) for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        if (!GLC.modulePlaced(own, ghosts)) continue
+        node.lifecycle = "built"
+        node.builtTick = ctx.tick
+      }
+    }
+  }
   if (g.rework !== undefined && !rework(ctx, g, b)) return
+  // B138: the plan is still in its clear phase because a ghost could not be created. Count the retry rounds and give up
+  // the location after `build-stuck-rounds` instead of leaving the goal building forever.
+  if (b.phase === "clear" && (b.failed?.length ?? 0) > 0) {
+    // B142: when every failed ghost is a route piece, reroute those routes around the failing tiles (B123) instead of
+    // abandoning the whole plan. Seed 1212121 g111 had 281 blocked route pieces and was relocated twice for them.
+    const specs = b.failedSpecs ?? []
+    if (specs.length > 0) {
+      const layout = entry.job?.layout
+      let onlyRoutes = layout !== undefined
+      const routes: IDS.RouteId[] = []
+      const tiles: Record<number, boolean> = {}
+      for (const s of specs) {
+        if (layout === undefined || layout.routes[s.owner] === undefined) {
+          onlyRoutes = false
+          break
+        }
+        const rid = IDS.routeId(s.owner)
+        if (routes.indexOf(rid) < 0) routes.push(rid)
+        tiles[tkey(math.floor(s.x), math.floor(s.y))] = true
+      }
+      if (onlyRoutes && routes.length > 0 && reroute(ctx, g, entry, routes, tiles)) {
+        g.stuck = 0
+        b.failed.length = 0
+        b.failedSpecs = undefined
+        b.retryAt = undefined
+        return
+      }
+    }
+    // B142: a failed ghost inside a module whose machines already stand (B135 marked it built) is a missing internal
+    // belt/inserter, not a reason to abandon the whole plan. The reconciler can repair the edge it feeds.
+    let onlyBuiltModules = true
+    for (const line of b.failed) {
+      let mm = string.match(line, "^ghost ([^:]+):")
+      if (mm === undefined) mm = string.match(line, "^([^:]+):")
+      const owner = mm !== undefined ? mm[0] : undefined
+      const node = owner !== undefined ? f.graph.nodes[owner] : undefined
+      if (node === undefined || node.lifecycle !== "built") {
+        onlyBuiltModules = false
+        break
+      }
+    }
+    if (onlyBuiltModules) {
+      b.failed.length = 0
+      b.retryAt = undefined
+      b.phase = "place"
+      return
+    }
+    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+    g.lastRound = ctx.tick
+    g.rounds++
+    g.reason = `${b.failed.length} ghosts could not be created (round ${g.rounds}): ${b.failed.slice(0, 4).join("; ")}`
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)
+    if (stuckRound(ctx, g, b.failed.length)) relocateGoal(ctx, g, entry, `build stuck: ${g.reason}`)
+    return
+  }
   if (b.phase !== "done") return
   // Every job finished: ghosts left over (failed jobs, a replan dropping jobs) get new place jobs.
   if (LIFT.restoreLifted(g, ctx.faction, (b.ghosts ??= []))) return
@@ -1998,13 +2106,12 @@ function relocateGoal(ctx: Ctx, g: FactoryGoal, entry: Entry, what: string): voi
  * per event; the summary (kinds, the owner ids that leaked and their counts) is built and logged at most once a game
  * minute per faction, so a claim loop cannot flood the log or cost anything on the hot path.
  */
-const ORPHAN_LOG_TICKS = 3600
-
 function reportOrphanClaims(ctx: Ctx, g: FactoryGoal, problems: string[]): void {
   const f = ctx.f
   f.orphanClaims = (f.orphanClaims ?? 0) + problems.length
   f.orphanEvents = (f.orphanEvents ?? 0) + 1
-  if (ctx.tick - (f.orphanLogTick ?? -ORPHAN_LOG_TICKS) < ORPHAN_LOG_TICKS) return
+  // Once a game minute per faction (60 s).
+  if (ctx.tick - (f.orphanLogTick ?? -3600) < 3600) return
   f.orphanLogTick = ctx.tick
   const kinds: Record<string, number> = {}
   const owners: Record<string, number> = {}
@@ -2449,6 +2556,25 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       f.goals.push(g)
       say(`its routes do not reach their port in the layout: goal ${g.id} reroutes ${tree.length} routes in place (${plan.remove.length} entities to pick up, ${plan.add.length} to build) (B83, B88)`)
       return true
+    }
+    // B140: several feeds share one consumer port. Reroute the whole merge tree once instead of repairing each feed
+    // into "nothing missing".
+    if (r.key.indexOf("shared:") === 0) {
+      const rep = r.edge !== undefined ? f.graph.edges[r.edge] : undefined
+      if (rep === undefined) return
+      if (planning(f) !== undefined) {
+        say("the shared port reroutes after the current plan")
+        return
+      }
+      const routes: IDS.RouteId[] = []
+      for (const id of f.graph.edgeOrder) {
+        const o = f.graph.edges[id]
+        if (o === undefined || o.kind !== "belt" || o.to !== rep.to || o.toPort !== rep.toPort || o.item !== rep.item) continue
+        for (const rid of o.physical) if (f.layout.routes[rid] !== undefined && routes.indexOf(IDS.routeId(rid)) < 0) routes.push(IDS.routeId(rid))
+      }
+      if (rerouteInPlace(routes, r.why)) return
+      say("could not reroute the shared port")
+      return
     }
     const e = f.graph.edges[r.edge!]
     if (e === undefined) return
