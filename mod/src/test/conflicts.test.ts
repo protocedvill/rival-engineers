@@ -8,7 +8,7 @@ import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
-import { abandonParts, applyDiff, checkBuild, cloggedBelts, ghostBlockerKind, mergeBranchOutlet, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
+import { abandonParts, applyDiff, checkBuild, cloggedBelts, ghostBlockerKind, hardGhostFailure, mergeBranchOutlet, mergeTrunkSide, routeCheck, staleUnderRoutes, tuneMergeSplitters } from "../planner/conflicts"
 import { FOREIGN, keyX, keyY, tkey, Vec } from "../planner/grid"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule } from "../planner/layout"
 import { newRoutingJob, runJob } from "../planner/plan"
@@ -362,6 +362,22 @@ describe("faction conflicts", () => {
     assert(ghost !== undefined && ghost.valid, "turned ghost placed")
     applyDiff(s, a, [spec], [], {})
     assert(!ghost.valid, "the turned ghost is removed")
+  })
+
+  test("B144: a route ghost with no named blocker is retryable; a module ghost is a hard site", () => {
+    // g192 (seed 11, minute 1104): 2 route belts whose ghost creation failed with no blocker rejected a 21-module plan
+    // and dropped its 45 routes. B142 can reroute route pieces; a module cannot move its own ground.
+    const lab = createLab(64)
+    const a = faction(lab, "b144class", 30, 0)
+    const s = lab.surface
+    const { layout, ghosts } = smeltingLab(lab, a.force)
+    const route = partEntities(layout, { modules: [], routes: [routeId("route:ore")], poles: [] }).filter((e) => e.name === "transport-belt")[5]
+    for (const g of ghosts) if (g.position.x === route.x && g.position.y === route.y) g.destroy()
+    assert(hardGhostFailure(s, a, layout, [route]) === undefined, "a route piece with no blocker is not a hard site")
+    const m = findModule(layout, "smelt")!
+    const me = m.def.entities[0]
+    const moduleSpec = { name: me.name, x: m.origin.x + me.x, y: m.origin.y + me.y, dir: me.dir ?? 0, owner: m.id }
+    assert(hardGhostFailure(s, a, layout, [moduleSpec]) !== undefined, "a module piece with no blocker is a hard site")
   })
 
   test("B107: another input filling both lanes past a module's input port is found; picked up and placed again, the belts are empty", () => {

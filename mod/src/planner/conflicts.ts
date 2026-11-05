@@ -291,6 +291,9 @@ export function hardGhostFailure(surface: LuaSurface, faction: FactionState, lay
   for (const e of specs) {
     const b = ghostBlockerKind(surface, faction, layout, e)
     if (b.kind === "orphan" || b.kind === "stale") continue
+    // A route piece with no blocker the engine names is not a bad site: B142 reroutes those routes around the failing
+    // tiles (g192: 2 route belts with no blocker rejected a 21-module plan and dropped its 45 routes).
+    if (b.kind === "none" && layout.routes[e.owner] !== undefined) continue
     hard = true
     tiles.push(b.at)
     reasons.push(b.kind === "none" ? `no blocker found at ${b.at.x},${b.at.y} (terrain?)` : `${b.kind} ${b.blocker ?? "blocked"} at ${b.at.x},${b.at.y}`)
