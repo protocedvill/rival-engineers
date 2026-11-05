@@ -1478,7 +1478,10 @@ failure. The 60-game-minute resume (`m7-b144-fix`, 660 → 720 game-min, `-j 1`)
 reached 1,376 placed entities and was still building at the end (it had failed and relocated within 50 s before the
 fix), and g111's power growth built in 90 s. Tests: T2 `conflicts` (orphan, plan overlap, stale belt, wrong-direction
 ghost in `applyDiff`, removal of a turned ghost); T1 `bad-build` (53/53 files). Full T2 on this commit: **208 passed,
-0 failed** (2026-11-05).
+0 failed** (2026-11-05). The seed-11 resume to the robot stage (`m7d5-robotsB`) then crashed at minute 1044: a repair
+goal reuses `growBuild` without `growth`, so the hard-blocker branch read `g.growth.node`. Guarded (`d82c5f3`, T2
+`factory` "B144: a repair goal…", which exits the shard without the guard); the run resumes from `min-1020`
+(`m7d5-robotsC`).
 
 ## M7d: advanced oil, robots and the full mall
 
