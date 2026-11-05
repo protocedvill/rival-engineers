@@ -320,4 +320,24 @@ test("B146 (seed 11 g154): a port's run inside its module counts its own fluid's
   }
 })
 
+test("fluid route: a 1000-tile line places pumps across the pipeline extent", () => {
+  // M7d.5 g198: a third oil complex drew crude from a field ~1000 tiles away. The plan failed "no pipe path"; before
+  // blaming the field or its terrain, pin that the router itself can carry a line past `default_pipeline_extent`.
+  const W = 1100
+  const H = 40
+  const terrain = asciiTerrain(field(W, H))
+  const state = newLayout()
+  const well = box("far-well", 3, 3, [{ id: "out", kind: "pipe-out", pos: { x: 2.5, y: 1.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const refinery = box("far-ref", 5, 5, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 2.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, well, 5, 18)
+  place(state, refinery, W - 10, 17)
+  const c: ConnectionRequest = { id: connectionId("far-crude"), from: { module: "far-well", port: "out" }, to: { module: "far-ref", port: "in" }, fluid: FLUID }
+  const job = runJob(newRoutingJob(request([well, refinery], [c], W, H), YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  let pumps = 0
+  for (const st of job.layout.routes["route:far-crude"].steps) if (st.kind === "pump") pumps++
+  ok(pumps >= 3, `pumps on a ~1000-tile line (${pumps})`)
+  eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
+})
+
 run("fluid-route")
