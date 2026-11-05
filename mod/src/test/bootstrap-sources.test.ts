@@ -352,6 +352,25 @@ describe("B17 material sources", () => {
     assert(same === def.entities.length, `reused ${same}/${def.entities.length} ghosts`)
   })
 
+  test("B142: a ghost of the same entity facing another way is not reused", () => {
+    // Review of B142: reusing any ghost of the name at the tile would adopt an orphan belt ghost (B144) pointing the wrong
+    // way, and the plan would build a belt that carries nothing to its port.
+    const lab = createLab(24)
+    const faction = createFaction(`b142d-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+    const origin = { x: math.floor(lab.origin.x), y: math.floor(lab.origin.y) }
+    const a = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    let k = -1
+    for (let i = 0; i < def.entities.length; i++) if (k < 0 && def.entities[i].name === "transport-belt" && a[i] !== undefined) k = i
+    assert(k >= 0, "the module has a belt ghost")
+    const want = def.entities[k].dir ?? defines.direction.north
+    const turned = want === defines.direction.north ? defines.direction.east : defines.direction.north
+    a[k]!.direction = turned
+    assert(a[k]!.direction === turned, "the belt ghost turned")
+    const b = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    assert(b[k] === undefined || (b[k]!.valid && b[k]!.direction === want), `the turned ghost was reused (${b[k]?.direction})`)
+  })
+
   test("B134: a module still being built is a supply point for its furnace output", () => {
     // Seed 11, minute 330: the blue line's steel smelter stood and ran, but its module was still "building", so its
     // plates were not a supply point. The same plan's pumpjack craft waited 44 game-min for 5 steel plates.

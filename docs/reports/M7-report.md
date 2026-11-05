@@ -1434,6 +1434,26 @@ provider's replacement group does not include n167, a consumer added in an unbui
 fully placed module visible (n171 did become visible), but n167 still has ghosts. The power layer also defers repeated
 `power#5: no shore site in the region` goals (B137, open). Neither is a tuning issue.
 
+#### M7c.9 follow-up 17: review of the bugfix branch at its merge (B150)
+
+`m7-soak-fixes` (B128-B144) was merged into the M7d.5 branch on 2026-11-05. The M7d.5 branch's own bugs, which had
+taken the same numbers, are now B145-B149. A review of every fix kept all of them but two parts:
+
+- **B135 marked modules built too early.** It ran in the clear phase, before the plan's ghosts exist, so every module of
+  a plan still clearing (or retrying a failed stamp) read as placed. It now runs only in the place phase and needs all of
+  the module's own entities placed, not only its machines (a smelter whose furnaces stand but whose inserters are still
+  ghosts would draw reconciler remedies).
+- **B142's "failed ghost of a built module" exit built nothing.** It set the plan's phase to `place` from the factory
+  goal, which skipped the runtime's place-job creation, so the plan could finish with all its ghosts unbuilt. Together
+  with the B135 defect any failed stamp took this exit. Removed: those failures go back to B138's retry, B142's route
+  reroute and then relocation. `val1212fix3`'s "g109 built" result likely came from this path and should be re-checked.
+- **B142's ghost reuse** now needs the ghost to face the spec's direction, so an orphan ghost (B144) is not adopted.
+
+The other fixes (B128-B134, B136-B141, B143-B144 docs) read as root-cause fixes with T1/T2 tests. Notes for later:
+B131's re-probe on any status change could keep an edge "measuring" if a node's status flips more often than a probe
+takes; B129 clears the output priority as well as the filter on a dead-outlet splitter (keeping the trunk priority would
+also work and leave fewer items on the dead side).
+
 ## M7d: advanced oil, robots and the full mall
 
 Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):

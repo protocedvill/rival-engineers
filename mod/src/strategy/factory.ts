@@ -1823,24 +1823,20 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   }
   // B135 (seed 11, minute 330): a plan's modules become built only when the whole plan finishes. The blue line's steel
   // smelter stood and ran, but the pumpjack in the same plan waited for steel from it: a circular wait. Mark a module
-  // built as soon as its machines stand, on every think (a module can become usable between two placements); the
-  // reconciler can then feed it and its output is a supply point (B134).
-  if (b.phase !== "done") {
+  // built as soon as all its own entities stand, on every think; the reconciler can then feed it and its output is a
+  // supply point (B134). Only in the place phase: before it the plan's ghosts are not stamped yet (`b.ghosts` unset), and
+  // "no ghost left" would mark every module of a plan still clearing (or retrying a failed stamp, B138) as built.
+  if (b.phase === "place" && b.ghosts !== undefined) {
     const layout = entry.job?.layout
     if (layout !== undefined) {
-      const ghosts = b.ghosts ?? []
       for (const gn of g.nodes) {
         const node = f.graph.nodes[gn.id]
         if (node === undefined || node.lifecycle === "built") continue
         const m = LO.findModule(layout, gn.id)
         if (m === undefined) continue
         const own: { x: number; y: number }[] = []
-        for (const e of m.def.entities) {
-          const t = prototypes.entity[e.name]?.type
-          if (t === "assembling-machine" || t === "furnace" || t === "mining-drill" || t === "lab" || t === "boiler" || t === "generator") own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
-        }
-        if (own.length === 0) for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
-        if (!GLC.modulePlaced(own, ghosts)) continue
+        for (const e of m.def.entities) own.push({ x: m.origin.x + e.x, y: m.origin.y + e.y })
+        if (!GLC.modulePlaced(own, b.ghosts)) continue
         node.lifecycle = "built"
         node.builtTick = ctx.tick
       }
@@ -1874,25 +1870,6 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
         b.retryAt = undefined
         return
       }
-    }
-    // B142: a failed ghost inside a module whose machines already stand (B135 marked it built) is a missing internal
-    // belt/inserter, not a reason to abandon the whole plan. The reconciler can repair the edge it feeds.
-    let onlyBuiltModules = true
-    for (const line of b.failed) {
-      let mm = string.match(line, "^ghost ([^:]+):")
-      if (mm === undefined) mm = string.match(line, "^([^:]+):")
-      const owner = mm !== undefined ? mm[0] : undefined
-      const node = owner !== undefined ? f.graph.nodes[owner] : undefined
-      if (node === undefined || node.lifecycle !== "built") {
-        onlyBuiltModules = false
-        break
-      }
-    }
-    if (onlyBuiltModules) {
-      b.failed.length = 0
-      b.retryAt = undefined
-      b.phase = "place"
-      return
     }
     if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
     g.lastRound = ctx.tick

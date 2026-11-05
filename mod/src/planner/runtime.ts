@@ -15,7 +15,7 @@ import { getJob } from "../jobs/board"
 import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
 import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { stampModule } from "../modules/stamp"
+import { ownGhostAt, stampModule } from "../modules/stamp"
 import { registerBuffer } from "../modules/buffers"
 import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles, routeEntities } from "./build-list"
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
@@ -368,7 +368,7 @@ function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buff
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
   // B142: a retried build re-stamps the same plan; an existing ghost is the wanted result.
   if (ghost) {
-    const existing = surface.find_entities_filtered({ name: "entity-ghost", ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+    const existing = ownGhostAt(surface, force, e.name, { x: e.x, y: e.y }, e.dir)
     if (existing !== undefined) return existing
   }
   const params: Record<string, unknown> = { name: ghost ? "entity-ghost" : e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
