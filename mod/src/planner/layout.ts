@@ -121,6 +121,11 @@ export interface Route {
     extent?: number
     pole?: string
   }
+  /**
+   * B132: a fluid route that ends beside a plain pipe of this other line of the same fluid, which already feeds the same
+   * port (a second provider's line joins the first, as a belt provider-group merge does), instead of at the port.
+   */
+  joins?: RouteId
 }
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */
@@ -901,8 +906,15 @@ function checkPipeRoute(state: LayoutState, r: Route, to: PlacedModule, toPort: 
       at = { x: s.x + 2 * DX[s.dir], y: s.y + 2 * DY[s.dir] }
     } else at = { x: s.x + DX[s.dir], y: s.y + DY[s.dir] }
   }
-  const end = portOutside(to, toPort)
   const last = r.steps[r.steps.length - 1]
+  if (r.joins !== undefined) {
+    const line = state.routes[r.joins]
+    const beside = line !== undefined && last !== undefined && last.kind === "pipe" && line.steps.some((t) => t.kind === "pipe" && math.abs(t.x - last.x) + math.abs(t.y - last.y) === 1)
+    if (line === undefined || line.fluid?.name !== r.fluid?.name || line.to.module !== r.to.module || line.to.port !== r.to.port) problems.push(`${r.id}: joins ${r.joins}, not a line of its fluid to ${r.to.module}.${r.to.port}`)
+    else if (!beside) problems.push(`${r.id}: does not end beside a pipe of ${r.joins}`)
+    return
+  }
+  const end = portOutside(to, toPort)
   const into = math.floor(toPort.dir / 4)
   const ok = last !== undefined && last.x === end.x && last.y === end.y && (last.kind === "pipe" || (last.kind === "pipe-ug-out" && last.dir === into))
   if (!ok) problems.push(`${r.id}: does not end on ${r.to.module}.${r.to.port}'s outside tile connecting into it`)
@@ -1217,6 +1229,13 @@ export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
 export function routeDangles(layout: LayoutState, rid: string): boolean {
   let r: Route | undefined = layout.routes[rid as RouteId]
   for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    // B132: a fluid line joining another dangles when that line is gone.
+    if (r.joins !== undefined) {
+      const next: Route | undefined = layout.routes[r.joins]
+      if (next === undefined || next.id === r.id) return true
+      r = next
+      continue
+    }
     const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
     if (join === undefined) return false
     const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]

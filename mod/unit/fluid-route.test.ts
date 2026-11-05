@@ -124,6 +124,28 @@ test("B130 (seed 11 g154): never runs a plain pipe next to a module's own pipe o
   }
 })
 
+test("B132 (seed 11 g198): a second provider's line joins the line already feeding the port", () => {
+  // The plastic row's petroleum port was fed by the second oil complex; the design added the third as a parallel provider
+  // into the same port. Its line could only aim at the port's outside tile, which the first line holds: "no pipe path".
+  const terrain = asciiTerrain(field(80, 40))
+  const state = newLayout()
+  const a = box("src-a", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const b = box("src-b", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const dst = box("dst-join", 3, 3, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 1.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, a, 2, 10)
+  place(state, b, 2, 30)
+  place(state, dst, 60, 15)
+  const c1: ConnectionRequest = { id: connectionId("crude-a"), from: { module: "src-a", port: "out" }, to: { module: "dst-join", port: "in" }, fluid: FLUID }
+  const first = runJob(newRoutingJob(request([a, b, dst], [c1], 80, 40), YELLOW, state), terrain, F, policy)
+  eq(first.phase, "done", `first: ${Object.values(first.failures ?? {}).join("; ")}`)
+  const c2: ConnectionRequest = { id: connectionId("crude-b"), from: { module: "src-b", port: "out" }, to: { module: "dst-join", port: "in" }, fluid: FLUID }
+  const job = runJob(newRoutingJob(request([a, b, dst], [c2], 80, 40), YELLOW, first.layout), terrain, F, policy)
+  eq(job.phase, "done", `second: ${Object.values(job.failures ?? {}).join("; ")}`)
+  const r = job.layout.routes["route:crude-b"]
+  eq(r.joins, "route:crude-a", "it joins the first line")
+  eq(checkLayout(job.layout, terrain, () => 10).problems.join("; "), "")
+})
+
 test("B130 (seed 11 g154): a stuck pipe route is rerouted with pipes around the stuck tile", () => {
   // The build's reroute rebuilt each connection without its fluid, so a pipe line was routed as a belt ("no belt-in
   // port") and the goal gave up its whole site over one pipe. Older routes have no stored limits: the facts give them.

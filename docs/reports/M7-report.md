@@ -1468,6 +1468,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      the battery plant never got acid (BUGS B131: the game's recipe lookup did not find fluid recipes). Fixed. The
      electric engine rows reported the same machine status as the acid-less battery plant (likely no lubricant; not
      traced yet), and the third oil complex's petroleum and crude pipes still find no path (next).
+     **Soak `m7d5-robots7` (minute 1200–1260, on the B131 fix):** the design plans the acid row now
+     (`sulfuric-acid>battery>…`), but no production plan finished: each failed on the third oil complex's petroleum
+     line into the plastic row, a port the second complex already fed (BUGS B132: a second same-fluid line now joins
+     the first beside the port). The replay of g198 still fails on its crude line from a pumpjack field ~1000 tiles
+     away and on belt rip-up loops at the labs and the mall (open).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

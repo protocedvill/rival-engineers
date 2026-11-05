@@ -537,6 +537,8 @@ export interface PipeJob {
   trunk: Record<number, string>
   /** Tiles of other fluids (other routes, other pipe ports). */
   fluids: Record<number, boolean>
+  /** B132: the line of this fluid already feeding the target port that the route ends beside (its goal), if any. */
+  joins?: string
   costReq: RouteRequest
   /** Work so far (only kept while `planTrace.searches` is set). */
   work?: number
@@ -644,15 +646,51 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       fluids[tkey(m.origin.x + lx, m.origin.y + ly)] = true
     }
   }
+  // B132 (seed 11 g198): a line of this fluid from another provider already feeds the target port and holds its outside
+  // tile: the route ends beside one of its plain pipes instead (the nearest free tile to the start), and joins it there.
+  let goalAt = { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) }
+  let goalRun = moduleFluidRun(tm, tp)
+  let joins: string | undefined
+  const fed = feedingLines(job, toRef, f.name, id)
+  if (fed.length > 0) {
+    let best: { x: number; y: number; dir: number; run: number; line: string; d: number } | undefined
+    for (const rid of fed) {
+      const route = job.layout.routes[rid]
+      const tiles: Record<number, boolean> = {}
+      for (const k of route.tiles) tiles[k] = true
+      const seg = segmentLengths(route.steps, route.from !== undefined ? fluidRunOf(job, route.from) : 0)
+      for (let i = 0; i < route.steps.length; i++) {
+        const st = route.steps[i]
+        if (st.kind !== "pipe") continue
+        for (let d = 0; d < 4; d++) {
+          const x = st.x + DX[d]
+          const y = st.y + DY[d]
+          const k = tkey(x, y)
+          if (tiles[k] || fluids[k] || trunk[k] !== undefined || job.layout.occ[k] !== undefined || job.layout.routeOcc[k] !== undefined) continue
+          // Its other neighbours must not be another fluid's (the arrival allows only the joined pipe).
+          let clear = true
+          for (let e = 0; e < 4 && clear; e++) if (e !== opposite4(d) && fluids[tkey(x + DX[e], y + DY[e])]) clear = false
+          if (!clear) continue
+          const dist = math.abs(x - start.x) + math.abs(y - start.y)
+          if (best === undefined || dist < best.d) best = { x, y, dir: opposite4(d), run: seg[i], line: rid, d: dist }
+        }
+      }
+    }
+    if (best !== undefined) {
+      goalAt = { x: best.x, y: best.y, dir: best.dir }
+      goalRun = best.run
+      joins = best.line
+    }
+  }
   const w = policy.router
   const search = newPipeSearch({
     start: { x: start.x, y: start.y, dir: math.floor(fp.dir / 4) },
     starts: starts.length > 0 ? starts : undefined,
-    goal: { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) },
+    goal: goalAt,
     maxUnderground: f.maxUnderground,
     extent: f.extent - PIPE_EXTENT_MARGIN,
     startRun: starts.length > 0 ? 0 : moduleFluidRun(fm, fp),
-    goalRun: moduleFluidRun(tm, tp),
+    goalRun,
     minCost: minTileCost(policy),
     ugCost: w.pipeUnderground ?? 2,
     pumpCost: w.pump ?? 10,
@@ -661,7 +699,25 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
     longRoute: w.longRoute,
     corridorCells: w.corridorCells,
   })
-  return { conn: c.id, search, trunk, fluids, costReq }
+  return { conn: c.id, search, trunk, fluids, costReq, joins }
+}
+
+/** B132: lines of fluid `fluid` (not connection `id`'s own, not dangling) that already feed port `to`. */
+function feedingLines(job: PlanJob, to: PortRef, fluid: string, id: string): string[] {
+  const out: string[] = []
+  for (const rid of job.layout.routeOrder) {
+    const r = job.layout.routes[rid]
+    if (r === undefined || rid === id || r.fluid?.name !== fluid || r.to.module !== to.module || r.to.port !== to.port) continue
+    if (!routeDangles(job.layout, rid)) out.push(rid)
+  }
+  return out
+}
+
+/** The in-module run of a route's source port (0 when the module or port is gone). */
+function fluidRunOf(job: PlanJob, from: PortRef): number {
+  const m = findModule(job.layout, from.module)
+  const p = m !== undefined ? findPort(m, from.port) : undefined
+  return m !== undefined && p !== undefined ? moduleFluidRun(m, p) : 0
 }
 
 /**
@@ -786,6 +842,7 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budg
   if (s.p.starts !== undefined && first !== undefined) for (let d = 0; d < 4 && tapOf === undefined; d++) tapOf = pj.trunk[tkey(first.x + DX[d], first.y + DY[d])]
   const route = pipeRoute(id, c, f, r.steps, r.cost)
   if (tapOf !== undefined) route.tapOf = routeId(tapOf)
+  if (pj.joins !== undefined) route.joins = routeId(pj.joins)
   commitRoute(job.layout, route)
   // Each pump needs power: a pole on a free tile beside it, as a pole line the pole step joins to the network.
   const poles: PoleId[] = []
