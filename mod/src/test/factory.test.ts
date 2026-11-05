@@ -1,15 +1,15 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag } from "../shared/ids"
+import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag, routeId } from "../shared/ids"
 import { createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { allParts } from "../planner/build-list"
+import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
 import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
-import { dropPlannedPoles, getFactory, startFactory } from "../strategy/factory"
+import { dropPlannedPoles, FactoryGoal, getFactory, startFactory } from "../strategy/factory"
 import { startBootstrap } from "../strategy/bootstrap"
 import { goalId } from "../shared/ids"
 import { recentDiagnosticBuckets } from "../diagnostic-events"
@@ -475,5 +475,60 @@ describe("M5a power and growth", () => {
     assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
     assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
     assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
+  })
+
+  test("B144: a repair goal (growBuild without growth) survives a hard ghost blocker", () => {
+    // The m7d5-robotsB run crashed at minute 1044: a repair goal reuses `growBuild` but has no `growth`, and the hard
+    // blocker branch dereferenced `g.growth.node`. A repair goal with two pieces on one tile is enough to reach it.
+    const lab = createLab(64)
+    const faction = createFaction(`b144-repair-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    for (let x = -20; x < 0; x++) for (let y = 30; y < 50; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
+    const layout = newLayout()
+    place(layout, "b144-src", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
+    place(layout, "b144-dst", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
+    const t = scan(lab, `b144-${game.tick}`, faction.force)
+    const job = runJob(newRoutingJob({
+      modules: [],
+      connections: [{ id: connectionId("b144"), from: { module: moduleId("b144-src"), port: "out" }, to: { module: moduleId("b144-dst"), port: "in-ore" } }],
+      center: { x: ox, y: oy },
+      region: { x: ox - 64, y: oy - 64, w: 128, h: 128 },
+    }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    assert(job.phase === "done", `the test route plans: ${job.phase}`)
+    f.layout = job.layout
+    const parts = { modules: [], routes: [routeId("route:b144")], poles: [] }
+    const stamped = stampParts(s, faction.force, job.layout, parts, true)
+    assert(stamped.failed.length === 0, stamped.failed.join("; "))
+    let belt
+    for (const e of partEntities(job.layout, parts)) if (belt === undefined && e.name === "transport-belt") belt = e
+    assert(belt !== undefined, "a route belt")
+    const clash = { name: "underground-belt", x: belt!.x, y: belt!.y, dir: belt!.dir, ioType: "input" as const, owner: "route:b144" }
+    const g: FactoryGoal = {
+      id: goalId("g144"),
+      kind: "repair",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 64,
+      createdTick: game.tick,
+      placed: 0,
+      rounds: 0,
+      growBuild: { phase: "clear", clearJobs: [], add: [belt!, clash], ghosts: [], placeJobs: [] },
+    }
+    f.goals = [g]
+    async(300)
+    on_tick(() => {
+      if (g.status !== "failed") return
+      done()
+      return false
+    })
   })
 })

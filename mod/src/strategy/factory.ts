@@ -1049,7 +1049,9 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
           node.lifecycle = "built"
           node.builtTick = ctx.tick
         }
-        CS.setValue((ctx.f.constraints ??= {}), "growFails", g.growth!.node, ST.GROW_MAX_FAILS)
+        // A repair goal reuses `growBuild` without `growth` (rerouteInPlace): only a real growth has a node to cap.
+        const gn = g.growth?.node
+        if (gn !== undefined) CS.setValue((ctx.f.constraints ??= {}), "growFails", gn, ST.GROW_MAX_FAILS)
         log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} growth blocked: ${hard.reason}`)
         return
       }
