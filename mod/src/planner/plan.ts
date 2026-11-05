@@ -627,6 +627,15 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
         const o = portOutside(m, p)
         const ko = tkey(o.x, o.y)
         if (trunk[ko] === undefined) fluids[ko] = true
+        // M7d.5 g198: a plain pipe joins every neighbour, so a pipe on the *side* of another fluid's outside tile seals
+        // that port (a petroleum line one tile east of an oil complex's water port). Keep one tile clear around it.
+        for (let d = 0; d < 4; d++) {
+          const nx = o.x + DX[d]
+          const ny = o.y + DY[d]
+          if (nx === t.x && ny === t.y) continue
+          const kn = tkey(nx, ny)
+          if (trunk[kn] === undefined) fluids[kn] = true
+        }
       }
     }
   }

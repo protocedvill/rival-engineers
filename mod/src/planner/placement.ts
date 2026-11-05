@@ -62,8 +62,8 @@ export interface SitePatch {
 interface TDef {
   t: Transform
   def: ModuleDef
-  /** Belt and pipe ports: local outside tile, outward normal, port id, whether it is a pipe port. */
-  ports: { id: string; ox: number; oy: number; nx: number; ny: number; pipe: boolean }[]
+  /** Belt and pipe ports: local outside tile, outward normal, port id, whether it is a pipe port (and its fluid). */
+  ports: { id: string; ox: number; oy: number; nx: number; ny: number; pipe: boolean; item?: string }[]
 }
 
 export interface PlacementSearch {
@@ -109,6 +109,8 @@ export interface PlacementSearch {
   /** The egress check of the best spot in progress (`egressStep`), and the last spot that passed it. */
   egress?: { key: string; job: EgressJob }
   egressOk?: string
+  /** M7d.5 g198: the fluid carried by each base/planned fluid route tile (a pipe port may not stand beside another). */
+  fluidRoutes?: Record<number, string>
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
@@ -170,7 +172,7 @@ function tdefOf(def: ModuleDef, t: Transform): TDef {
     const dx = DX[math.floor(p.dir / 4)]
     const dy = DY[math.floor(p.dir / 4)]
     const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
-    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy, pipe: p.kind === "pipe-in" || p.kind === "pipe-out" })
+    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy, pipe: p.kind === "pipe-in" || p.kind === "pipe-out", item: p.item })
   }
   return { t, def: d, ports }
 }
@@ -806,6 +808,18 @@ function remotePipe(s: PlacementSearch, policy: LayoutPolicy): boolean {
 }
 
 function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
+  // M7d.5 g198: a pipe stands on its port's outside tile and joins every neighbour. A fluid route of another kind one
+  // tile beside that tile seals the port (a built crude line beside a new oil complex's water port), so record which
+  // fluid each existing fluid route carries once per placement, not per candidate.
+  if (s.fluidRoutes === undefined) {
+    const fluidRoutes: Record<number, string> = {}
+    for (const rid of state.routeOrder) {
+      const r = state.routes[rid]
+      if (r.fluid === undefined) continue
+      for (const k of r.tiles) fluidRoutes[k] = r.fluid.name
+    }
+    s.fluidRoutes = fluidRoutes
+  }
   const R = radii(s, policy)[s.radiusIdx]
   // B26: an expandable module's own scored growth band (and its corridor ring) must fit in the window.
   const M = windowMargin(s, policy)
@@ -1091,6 +1105,19 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     // Port clearance: the tile beyond the outside tile is not another module or blocked, so the port has a lane out.
     if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) {
       return reject(s, "port-lane", ox, oy)
+    }
+    // M7d.5 g198: a pipe on the port's outside tile joins all four neighbours, so another fluid's route beside that tile
+    // seals the port. The port tile itself is its own pipe; the other three directions must be another fluid's free.
+    if (p.pipe && s.fluidRoutes !== undefined) {
+      const px = x - p.nx
+      const py = y - p.ny
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d]
+        const ny = y + DY[d]
+        if (nx === px && ny === py) continue
+        const fluid = s.fluidRoutes[tkey(nx, ny)]
+        if (fluid !== undefined && fluid !== p.item) return reject(s, "port-fluid", ox, oy)
+      }
     }
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]
@@ -1384,6 +1411,22 @@ function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainV
       const x = ox + p.ox + (reason === "port-lane" ? p.nx : 0)
       const y = oy + p.oy + (reason === "port-lane" ? p.ny : 0)
       if (hard(x, y) || (reason === "port-lane" && isMod(x, y))) return `port ${p.id} ${reason === "port-lane" ? "lane" : "outside tile"} at ${x},${y}: ${describeTile(state, terrain, x, y)}`
+    }
+  }
+  if (reason === "port-fluid") {
+    for (const p of td.ports) {
+      if (!p.pipe) continue
+      const x = ox + p.ox
+      const y = oy + p.oy
+      const px = x - p.nx
+      const py = y - p.ny
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d]
+        const ny = y + DY[d]
+        if (nx === px && ny === py) continue
+        const fluid = s.fluidRoutes?.[tkey(nx, ny)]
+        if (fluid !== undefined && fluid !== p.item) return `port ${p.id} outside tile ${x},${y} is beside a ${fluid} route at ${nx},${ny}`
+      }
     }
   }
   return reason

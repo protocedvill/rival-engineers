@@ -1,4 +1,5 @@
 import { assemblerRow, chemRow, oilComplex } from "../src/modules/generators"
+import { portOutsideTile, transformModule } from "../src/modules/geometry"
 import { powerCheck } from "../src/modules/poles"
 import { rateOf } from "../src/modules/rates"
 import { ModuleDef } from "../src/modules/types"
@@ -265,6 +266,36 @@ test("assembler row with lubricant: electric engines fed by pipe, 2–6 machines
         const ox = p.pos.x - v[0]
         const oy = p.pos.y - v[1]
         ok(ox < 0 || oy < 0 || ox > def.footprint.w || oy > def.footprint.h, `${tag}: ${p.id} enters from outside (${ox},${oy})`)
+      }
+    }
+  }
+})
+
+test("M7d.5 g198: no pipe port's outside tile touches another fluid's port in any rotation", () => {
+  // A plan rotates the complex (r3 here). A pipe stands on the port's outside tile and joins every neighbour, so another
+  // fluid's port or outside tile next to it makes the port unreachable (B147: Factorio refuses to mix fluids).
+  const def = oilComplex(F, { refineries: 1, lubePlants: 1 })
+  const pipePorts = def.ports.filter((p) => (p.kind === "pipe-in" || p.kind === "pipe-out") && p.item !== undefined)
+  ok(pipePorts.length >= 4, `${pipePorts.length} pipe ports`)
+  for (let rot = 0; rot < 4; rot++) {
+    const d = transformModule(def, { rot, mirror: false })
+    const ports = d.ports.filter((p) => (p.kind === "pipe-in" || p.kind === "pipe-out") && p.item !== undefined)
+    for (const p of ports) {
+      const o = portOutsideTile(p)
+      const ox = math.floor(o.x)
+      const oy = math.floor(o.y)
+      for (const q of ports) {
+        if (q === p || q.item === p.item) continue
+        const qx = math.floor(q.pos.x)
+        const qy = math.floor(q.pos.y)
+        const qo = portOutsideTile(q)
+        const qox = math.floor(qo.x)
+        const qoy = math.floor(qo.y)
+        const near = (x: number, y: number): boolean => math.abs(x - ox) + math.abs(y - oy) === 1
+        ok(!(qx === ox && qy === oy), `rot ${rot}: ${p.item} outside ${ox},${oy} is ${q.item}'s port tile`)
+        ok(!(qox === ox && qoy === oy), `rot ${rot}: ${p.item} outside ${ox},${oy} is ${q.item}'s outside tile`)
+        ok(!near(qx, qy), `rot ${rot}: ${p.item} outside ${ox},${oy} touches ${q.item}'s port ${qx},${qy}`)
+        ok(!near(qox, qoy), `rot ${rot}: ${p.item} outside ${ox},${oy} touches ${q.item}'s outside ${qox},${qoy}`)
       }
     }
   }

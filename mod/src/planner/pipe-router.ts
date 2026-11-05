@@ -777,13 +777,18 @@ export function pipeFailureNotes(s: PipeSearch, cb: PipeCallbacks): string {
   const g = s.p.goal
   let near = math.huge
   let at = ""
+  let nearRun = 0
   for (let i = 0; i < s.nx.length; i++) {
     const d = math.abs(s.nx[i] - g.x) + math.abs(s.ny[i] - g.y)
     if (d < near) {
       near = d
       at = `${s.nx[i]},${s.ny[i]}`
+      nearRun = s.nrun[i]
     }
   }
+  // M7d.5 g198: a goal reached but not accepted is usually the segment extent (the port's own run plus the approach):
+  // show both numbers beside the nearest node so the next failure does not have to be re-instrumented.
+  const runs = `run ${nearRun}+${s.p.goalRun ?? 0}/${s.p.extent}`
   // Rows north to south: `.` a pipe can go, `f` another fluid connects there, `#` no entity can go, `G` the goal.
   let open = 0
   const rows: string[] = []
@@ -798,7 +803,7 @@ export function pipeFailureNotes(s: PipeSearch, cb: PipeCallbacks): string {
     rows.push(row)
   }
   const pass = s.coarse !== undefined ? "coarse" : s.cdq !== undefined ? "corridor distances" : s.corridor !== undefined ? "corridor" : s.widened ? "widened" : "tiles"
-  return `pass ${pass}, ${s.nx.length} nodes, nearest ${near === math.huge ? "-" : `${near} at ${at}`}, goal dir ${g.dir} open ${open}/25 [${rows.join("/")}]`
+  return `pass ${pass}, ${s.nx.length} nodes, nearest ${near === math.huge ? "-" : `${near} at ${at}`}, ${runs}, goal dir ${g.dir} open ${open}/25 [${rows.join("/")}]`
 }
 
 /** Routes one pipe line to the end (tests, one-shot callers); `undefined` when no path was found within the budget. */

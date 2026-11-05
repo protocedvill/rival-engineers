@@ -254,6 +254,11 @@ replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-s
 // coarse pass now counts only crossable bands, and the corridor search gets half the budget.
 replay("m7-seed11-g160-crude")
 
+// M7d.5 g198 (seed 11, minute 1074): the robot chain's 23-module plan failed every attempt because a new oil complex
+// was placed with its water port beside a built crude route: a pipe on the outside tile would join the crude line and
+// mix fluids. Placement now rejects a pipe port whose outside tile has another fluid's route beside it.
+replay("m7d5-g198-water")
+
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
 test("replay seed222-production without undergrounds: routing fails, the underground alternative routes (infinitely shorter)", () => {
