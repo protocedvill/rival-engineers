@@ -116,13 +116,13 @@ export interface Route {
     pipe: string
     underground: string
     pump: string
-    /** B130: the connection's limits and pump pole, kept so a reroute can route it again (unset on older routes). */
+    /** B147: the connection's limits and pump pole, kept so a reroute can route it again (unset on older routes). */
     maxUnderground?: number
     extent?: number
     pole?: string
   }
   /**
-   * B132: a fluid route that ends beside a plain pipe of this other line of the same fluid, which already feeds the same
+   * B149: a fluid route that ends beside a plain pipe of this other line of the same fluid, which already feeds the same
    * port (a second provider's line joins the first, as a belt provider-group merge does), instead of at the port.
    */
   joins?: RouteId
@@ -1229,7 +1229,7 @@ export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
 export function routeDangles(layout: LayoutState, rid: string): boolean {
   let r: Route | undefined = layout.routes[rid as RouteId]
   for (let hop = 0; hop < 8 && r !== undefined; hop++) {
-    // B132: a fluid line joining another dangles when that line is gone.
+    // B149: a fluid line joining another dangles when that line is gone.
     if (r.joins !== undefined) {
       const next: Route | undefined = layout.routes[r.joins]
       if (next === undefined || next.id === r.id) return true

@@ -1429,13 +1429,13 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      (17,903 times) and all 4 attempts failed. That first solid now sideloads from the east (the row is one tile wider).
      A new T1 invariant checks every generated module: every belt and pipe port leads to a tile outside it. The replay
      `m7-seed11-g154-a1` (new `regenerate` option: rebuild a captured module from its params) then placed the row and
-     failed both oil complexes' water pipes (BUGS B129, hidden by the bad row). (1) A port's in-module run counted
+     failed both oil complexes' water pipes (BUGS B146, hidden by the bad row). (1) A port's in-module run counted
      every pipe of the module (221 of the 312-tile extent for the water port), now only the pipes joined to the port
      (76). (2) The pipe search kept one node per (tile, heading) by cost, so every path with a pump was dropped where a
      pump-free one came first; a dearer node with a shorter run is kept now. The plan completes (route work +2%; no
      other replay moved more than 5%).
    - **In game (soak `m7d5-robots3`, seed 11):** g154 planned on its first attempt and built all but one pipe, which
-     the game refused (BUGS B130). Its own crude line had turned right beside the second oil complex's water manifold
+     the game refused (BUGS B147). Its own crude line had turned right beside the second oil complex's water manifold
      on the module's edge, so crude flowed into the new water line, and its last pipe would have mixed the two. The
      stuck-build reroute then routed that pipe line as a belt and failed, and the goal gave up its whole site. Fixes:
      the pipe router keeps plain pipes away from other fluids' module pipes on a module edge, and a reroute keeps a
@@ -1465,12 +1465,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      **Then (soak `m7d5-robots6`, from minute 1080 on that fix):** g154 finished within 2 game-min of the load, and by
      minute 1200 the network had grown to 5 roboports (cells whose spot is taken by a module fail and are skipped).
      But no robot existed: the design had "no module makes sulfuric-acid" since the robot chain was first planned, so
-     the battery plant never got acid (BUGS B131: the game's recipe lookup did not find fluid recipes). Fixed. The
+     the battery plant never got acid (BUGS B148: the game's recipe lookup did not find fluid recipes). Fixed. The
      electric engine rows reported the same machine status as the acid-less battery plant (likely no lubricant; not
      traced yet), and the third oil complex's petroleum and crude pipes still find no path (next).
-     **Soak `m7d5-robots7` (minute 1200–1260, on the B131 fix):** the design plans the acid row now
+     **Soak `m7d5-robots7` (minute 1200–1260, on the B148 fix):** the design plans the acid row now
      (`sulfuric-acid>battery>…`), but no production plan finished: each failed on the third oil complex's petroleum
-     line into the plastic row, a port the second complex already fed (BUGS B132: a second same-fluid line now joins
+     line into the plastic row, a port the second complex already fed (BUGS B149: a second same-fluid line now joins
      the first beside the port). The replay of g198 still fails on its crude line from a pumpjack field ~1000 tiles
      away and on belt rip-up loops at the labs and the mall (open).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a

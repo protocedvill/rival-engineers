@@ -24,10 +24,10 @@ export interface ReroutePlan {
   routes: RouteId[]
 }
 
-/** Engine default of a 2.0 pipeline's extent (utility constant `default_pipeline_extent`), for routes stored before B130. */
+/** Engine default of a 2.0 pipeline's extent (utility constant `default_pipeline_extent`), for routes stored before B147. */
 const DEFAULT_PIPELINE_EXTENT = 320
 
-/** A fluid route's connection spec for routing it again (routes stored before B130 take their limits from the facts). */
+/** A fluid route's connection spec for routing it again (routes stored before B147 take their limits from the facts). */
 function rerouteFluid(f: Route["fluid"], facts: ProtoFacts): ConnectionRequest["fluid"] {
   if (f === undefined) return undefined
   return {
@@ -69,7 +69,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       for (const e of partEntities(layout, { modules: [], routes: [rid], poles: [] })) before.push(e)
       // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
       // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
-      // B130 (seed 11 g154): a fluid route is routed again with pipes. Without its fluid the routing job took it for a
+      // B147 (seed 11 g154): a fluid route is routed again with pipes. Without its fluid the routing job took it for a
       // belt ("no belt-in port"), and a stuck pipe line made its goal give up a 5000-entity site instead.
       conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined, fluid: rerouteFluid(r.fluid, facts) })
     }

@@ -537,7 +537,7 @@ export interface PipeJob {
   trunk: Record<number, string>
   /** Tiles of other fluids (other routes, other pipe ports). */
   fluids: Record<number, boolean>
-  /** B132: the line of this fluid already feeding the target port that the route ends beside (its goal), if any. */
+  /** B149: the line of this fluid already feeding the target port that the route ends beside (its goal), if any. */
   joins?: string
   costReq: RouteRequest
   /** Work so far (only kept while `planTrace.searches` is set). */
@@ -630,7 +630,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       }
     }
   }
-  // B130 (seed 11 g154): and every pipe on a module's edge, but the ones in this route's own ports' segments. A plain
+  // B147 (seed 11 g154): and every pipe on a module's edge, but the ones in this route's own ports' segments. A plain
   // pipe joins every neighbour: a crude line laid along an oil complex's top edge joined its water manifold, the crude
   // flowed down the new water line, and its last pipe could never be placed (Factorio refuses to mix fluids).
   for (const m of job.layout.modules) {
@@ -646,7 +646,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       fluids[tkey(m.origin.x + lx, m.origin.y + ly)] = true
     }
   }
-  // B132 (seed 11 g198): a line of this fluid from another provider already feeds the target port and holds its outside
+  // B149 (seed 11 g198): a line of this fluid from another provider already feeds the target port and holds its outside
   // tile: the route ends beside one of its plain pipes instead (the nearest free tile to the start), and joins it there.
   let goalAt = { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) }
   let goalRun = moduleFluidRun(tm, tp)
@@ -702,7 +702,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
   return { conn: c.id, search, trunk, fluids, costReq, joins }
 }
 
-/** B132: lines of fluid `fluid` (not connection `id`'s own, not dangling) that already feed port `to`. */
+/** B149: lines of fluid `fluid` (not connection `id`'s own, not dangling) that already feed port `to`. */
 function feedingLines(job: PlanJob, to: PortRef, fluid: string, id: string): string[] {
   const out: string[] = []
   for (const rid of job.layout.routeOrder) {
@@ -745,7 +745,7 @@ function segmentLengths(steps: RouteStep[], first: number): number[] {
 
 /**
  * M7c.8: an upper bound on the path a module's fluid takes inside it toward port `p`: the module's pipe tiles that
- * join the port's tile (pipe-to-ground pairs count their span, as the engine does). B129 (seed 11 g154): this counted
+ * join the port's tile (pipe-to-ground pairs count their span, as the engine does). B146 (seed 11 g154): this counted
  * every pipe of the module, so an oil complex's water port read 221 tiles (crude, gas, oil and lube lines with it) and
  * left 91 of the 312-tile extent for its water line, which no route from the lake could keep. A 2.0 segment is pipes
  * only (a machine's fluid box starts its own), so a port on a machine reads 0. A pipe-to-ground end joins on its

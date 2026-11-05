@@ -135,7 +135,7 @@ export interface PipeSearch {
   /** Best cost per (tile, heading) state. */
   best: Record<number, number>
   /**
-   * B129: the shortest run (tiles since the segment's start) any node at a (tile, heading) state had. A node that is
+   * B146: the shortest run (tiles since the segment's start) any node at a (tile, heading) state had. A node that is
    * dearer but has a shorter run is kept too: seed 11's g154 water line reached its goal only with runs over the extent,
    * because every path with a pump (cost +10) came to a state after a cheaper pump-free one and was dropped.
    */
@@ -539,7 +539,7 @@ function visit(s: PipeSearch, x: number, y: number, d: number, g: number, run: n
   }
   const key = tkey(x, y) * 4 + d
   const b = s.best[key]
-  // Searches saved before B129 have no run record: start one.
+  // Searches saved before B146 have no run record: start one.
   if (s.bestRun === undefined) s.bestRun = {}
   const br = s.bestRun[key]
   if (b !== undefined && b <= g && br !== undefined && br <= run) return

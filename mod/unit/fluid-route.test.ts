@@ -97,7 +97,7 @@ test("fluid route: never runs a plain pipe next to another module's pipe port", 
   ok(job.layout.routeOcc[tkey(15, 11)] === undefined, "the other port's tile stays its own")
 })
 
-test("B130 (seed 11 g154): never runs a plain pipe next to a module's own pipe on its edge", () => {
+test("B147 (seed 11 g154): never runs a plain pipe next to a module's own pipe on its edge", () => {
   // An oil complex's water manifold runs along its top edge. A crude line along the outside of that edge joined it: the
   // crude flowed down the complex's new water line, and its last pipe could never be placed (Factorio refuses to mix).
   const terrain = asciiTerrain(field(60, 30))
@@ -124,7 +124,7 @@ test("B130 (seed 11 g154): never runs a plain pipe next to a module's own pipe o
   }
 })
 
-test("B132 (seed 11 g198): a second provider's line joins the line already feeding the port", () => {
+test("B149 (seed 11 g198): a second provider's line joins the line already feeding the port", () => {
   // The plastic row's petroleum port was fed by the second oil complex; the design added the third as a parallel provider
   // into the same port. Its line could only aim at the port's outside tile, which the first line holds: "no pipe path".
   const terrain = asciiTerrain(field(80, 40))
@@ -146,7 +146,7 @@ test("B132 (seed 11 g198): a second provider's line joins the line already feedi
   eq(checkLayout(job.layout, terrain, () => 10).problems.join("; "), "")
 })
 
-test("B130 (seed 11 g154): a stuck pipe route is rerouted with pipes around the stuck tile", () => {
+test("B147 (seed 11 g154): a stuck pipe route is rerouted with pipes around the stuck tile", () => {
   // The build's reroute rebuilt each connection without its fluid, so a pipe line was routed as a belt ("no belt-in
   // port") and the goal gave up its whole site over one pipe. Older routes have no stored limits: the facts give them.
   const terrain = asciiTerrain(field(80, 30))
@@ -304,7 +304,7 @@ test("fluid route: pumps on a long line get a pole each, joined to the power net
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
 })
 
-test("B129 (seed 11 g154): a port's run inside its module counts its own fluid's pipes only", () => {
+test("B146 (seed 11 g154): a port's run inside its module counts its own fluid's pipes only", () => {
   // The oil complex's water reaches its plants along the bottom row, the west column and the top manifold (19 + 25 + 19
   // tiles, plus risers); its gas, oil and lube manifolds and their pipe-to-ground risers are other segments. Counting
   // every pipe read 221 and left the water line 91 tiles of the extent.
