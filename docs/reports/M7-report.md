@@ -1462,6 +1462,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      counts once it stands in the world. T2 `bootstrap-sources` "M7d.5: a stock row's chest supplies one roboport
      before its node is built…" (fails without the fix). The run ended 20 game-min after the hub was built, before
      robots could be seen working.
+     **Then (soak `m7d5-robots6`, from minute 1080 on that fix):** g154 finished within 2 game-min of the load, and by
+     minute 1200 the network had grown to 5 roboports (cells whose spot is taken by a module fail and are skipped).
+     But no robot existed: the design had "no module makes sulfuric-acid" since the robot chain was first planned, so
+     the battery plant never got acid (BUGS B131: the game's recipe lookup did not find fluid recipes). Fixed. The
+     electric engine rows reported the same machine status as the acid-less battery plant (likely no lubricant; not
+     traced yet), and the third oil complex's petroleum and crude pipes still find no path (next).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

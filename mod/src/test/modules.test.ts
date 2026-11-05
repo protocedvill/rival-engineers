@@ -5,6 +5,7 @@ import { ModuleDef } from "../modules/types"
 import { portOutsideTile } from "../modules/geometry"
 import { stampModule, worldPos } from "../modules/stamp"
 import { createLab } from "./lab"
+import { DesignContext, producerFor } from "../strategy/design"
 import { LabOptions, LabResult, labForce, runModuleLab } from "./module-lab"
 
 // M4 validation lab (SPEC §5.4 step 4, D33): every generator at representative parameters and every curated module is
@@ -150,6 +151,18 @@ function labTest(entry: CatalogEntry): void {
     runModuleLab(def, opts, (r) => check(entry.name, def, r))
   })
 }
+
+test("M7d.5: the game's facts find a fluid's recipe, so the design makes sulfuric acid in a chemistry row", () => {
+  // Soak m7d5-robots6: recipeForItem searched products by item only, so the design had "no module makes sulfuric-acid",
+  // the battery plant stood without acid, and no robot was ever made. T1 facts hid it (they look recipes up by name).
+  assert(prototypeFacts.recipeForItem("sulfuric-acid") === "sulfuric-acid", `acid: ${prototypeFacts.recipeForItem("sulfuric-acid")}`)
+  assert(prototypeFacts.recipeForItem("lubricant") === "lubricant", `lubricant: ${prototypeFacts.recipeForItem("lubricant")}`)
+  assert(prototypeFacts.recipeForItem("petroleum-gas") === undefined, "petroleum comes from the oil complex, not a recipe of its own")
+  assert(prototypeFacts.recipeForItem("battery") === "battery", "an item still finds its recipe")
+  const ctx = { facts: prototypeFacts, enabled: { "advanced-oil-processing": true }, assembler: "assembling-machine-2", assemblers: ["assembling-machine-2"], furnace: "stone-furnace", rowInputs: 4, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"] } as unknown as DesignContext
+  assert(producerFor(ctx, "sulfuric-acid") === "chem-row", `acid: ${producerFor(ctx, "sulfuric-acid")}`)
+  assert(producerFor(ctx, "battery") === "chem-row", `battery: ${producerFor(ctx, "battery")}`)
+})
 
 describe("module validation lab", () => {
   let speed = 1

@@ -157,8 +157,16 @@ export const prototypeFacts: ProtoFacts = {
     let c = recipeForItemCache[item]
     if (c === undefined) {
       const names: string[] = []
-      const found = prototypes.get_recipe_filtered([{ filter: "has-product-item", elem_filters: [{ filter: "name", name: item }] }])
-      for (const [name] of pairs(found)) names.push(name as string)
+      if (prototypes.fluid[item] !== undefined) {
+        // M7d.5 (soak m7d5-robots6: "no module makes sulfuric-acid", so no batteries and no robots): a fluid's recipes
+        // only match `has-product-fluid`. Only a same-named recipe counts (sulfuric acid, lubricant), as in the T1 facts:
+        // petroleum gas comes from the oil complex, not from one of its five refinery and cracking recipes.
+        const found = prototypes.get_recipe_filtered([{ filter: "has-product-fluid", elem_filters: [{ filter: "name", name: item }] }])
+        for (const [name] of pairs(found)) if (name === item) names.push(name as string)
+      } else {
+        const found = prototypes.get_recipe_filtered([{ filter: "has-product-item", elem_filters: [{ filter: "name", name: item }] }])
+        for (const [name] of pairs(found)) names.push(name as string)
+      }
       names.sort()
       c = names.indexOf(item) >= 0 ? item : (names[0] ?? false)
       recipeForItemCache[item] = c
