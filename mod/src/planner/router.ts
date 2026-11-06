@@ -22,6 +22,7 @@ import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteSte
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
 import { tunnelSite } from "./tunnel"
+import { proveSealFromGoal, SealOutcome } from "./route-seal"
 
 export interface RouteRequest {
   id: string
@@ -689,6 +690,78 @@ function stepSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: L
     else used += sealBackward(s, seal, state, terrain, policy, seal.rq[seal.ri++])
   }
   return used
+}
+
+/**
+ * B157: the belt's goal-side seal proof through the shared reverse-flood engine. `stepSeal` already proves most seals
+ * during the search; this runs only after a failure that left no proof, over the same real moves (`sealBackward`). A
+ * window edge marks the proof `edge`, which is not enclosure.
+ */
+export function proveBeltSeal(s: Search, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, cap: number): SealOutcome {
+  if (s.goalS < 0 || sealTile(s, s.req.goal.x, s.req.goal.y) < 0) return { visited: 0, inconclusive: true }
+  const pass: Record<number, boolean> = {}
+  let edge = false
+  const passAt = (x: number, y: number): boolean => {
+    const t = sealTile(s, x, y)
+    if (t < 0) return false
+    const cached = pass[t]
+    if (cached !== undefined) return cached
+    let ok = true
+    if (s.req.goal.side !== undefined && s.req.merge !== true) {
+      const b = blockerTile(s.req.goal)
+      if (b.x === x && b.y === y) ok = false
+    }
+    if (ok) ok = cachedCost(s, state, terrain, policy, x, y) >= 0
+    pass[t] = ok
+    return ok
+  }
+  const starts: Record<number, boolean> = {}
+  const add = (x: number, y: number, d: number): void => {
+    if (sealTile(s, x, y) >= 0) starts[encode(s, x, y, d)] = true
+  }
+  if (s.req.start !== undefined) add(s.req.start.x, s.req.start.y, s.req.start.dir)
+  for (const c of s.tapStarts) add(c.tap.x2 + DX[c.tap.dir], c.tap.y2 + DY[c.tap.dir], c.tap.dir)
+  if (s.tapStarts.length === 0 && s.req.start === undefined) return { visited: 0, inconclusive: true }
+  return proveSealFromGoal({
+    goals: [s.goalS],
+    start: (st) => starts[st] === true,
+    before: (st, emit) => {
+      const d = st % 4
+      const t = math.floor(st / 4)
+      const px = s.x0 + (t % s.w) - DX[d]
+      const py = s.y0 + math.floor(t / s.w) - DY[d]
+      if (sealTile(s, px, py) < 0) {
+        edge = true
+        return
+      }
+      // A tunnel cross arriving here: crossed tile P, entered from P − d.
+      const tun = s.req.tunnel
+      if (tun !== undefined && state.routeOcc[tkey(px, py)] !== undefined) {
+        const qx = px - DX[d]
+        const qy = py - DY[d]
+        if (sealTile(s, qx, qy) < 0) edge = true
+        else if (!s.req.avoid?.[tkey(px, py)] && passAt(qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy) !== undefined) {
+          for (const h of [d, cw(d), ccw(d)]) emit(encode(s, qx, qy, h))
+        }
+      }
+      if (!passAt(px, py)) return
+      for (const h of [d, cw(d), ccw(d)]) emit(encode(s, px, py, h))
+      // An underground ending at E = P, entered straight at E − k·d.
+      for (let k = 2; k <= s.req.tier.maxUnderground; k++) {
+        if (!underPassable(state, terrain, policy, px - DX[d] * (k - 1), py - DY[d] * (k - 1))) break
+        const ix = px - DX[d] * k
+        const iy = py - DY[d] * k
+        if (sealTile(s, ix, iy) < 0) {
+          edge = true
+          break
+        }
+        if (!passAt(ix, iy) || !sealSpanOk(s, state, ix, iy, px, py, d)) continue
+        emit(encode(s, ix, iy, d))
+      }
+    },
+    edge: () => edge,
+    cap,
+  })
 }
 
 /** `tileCost` of a window tile, cached for the search. */

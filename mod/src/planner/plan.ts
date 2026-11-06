@@ -18,7 +18,7 @@ import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
-import { minTileCost, newSearch, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
+import { minTileCost, newSearch, proveBeltSeal, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
 import { newPipeSearch, pipeFailureNotes, provePipeSeal, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import type { RouteFailure } from "./route-failure"
@@ -861,25 +861,32 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   if (s.status === "running") return used
   const c = connection(job, pj.conn)
   const f = c.fluid!
-  // B157 phase 2: `budget exhausted` is not a dead end. Resume the same search once with a larger budget (the heap and
-  // cached tiles are still there); before, one fixed budget failed the connection and the goal replanned from scratch.
-  if (s.status === "failed" && s.reason === "budget exhausted" && pj.retried !== true) {
-    pj.retried = true
-    s.p.budget *= PIPE_BUDGET_RETRY
-    s.status = "running"
-    s.reason = undefined
-    if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn} retry budget ${s.p.budget}`)
-    return used
+  if (s.status === "failed") {
+    const cb = pipeCallbacks(job, terrain, policy, pj)
+    // B156: prove the seal first. It is bounded (`sealCheck` states) and decisive: a sealed port is not helped by a
+    // bigger search budget, and the proof is what re-placement/relocation consumes.
+    if (s.sealed === undefined && (policy.router.sealCheck ?? 0) > 0) {
+      const seal = provePipeSeal(s, cb, s.p.starts ?? [s.p.start], policy.router.sealCheck!)
+      if (seal.proof !== undefined) {
+        s.sealed = seal.proof
+        if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: seal ${seal.proof.side} ${seal.proof.tiles} tiles (${seal.visited} states)`)
+      } else if (planTrace.searches !== undefined) {
+        planTrace.searches(`pipe ${pj.conn}: seal flood ${seal.inconclusive ? "hit its cap" : "reached the start side"} (${seal.visited} states)`)
+      }
+    }
+    // B157 phase 2: only a reachable-but-expensive goal gets the one budget retry; a sealed one goes to the remedies.
+    if (s.sealed === undefined && s.reason === "budget exhausted" && pj.retried !== true) {
+      pj.retried = true
+      s.p.budget *= PIPE_BUDGET_RETRY
+      s.status = "running"
+      s.reason = undefined
+      if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: budget exhausted, retrying at ${s.p.budget}`)
+      return used
+    }
   }
   job.pipe = undefined
   if (s.status === "failed") {
     const cb = pipeCallbacks(job, terrain, policy, pj)
-    // B156: flood the goal's pocket before giving up: a sealed goal becomes evidence (relocation, B57) and is re-placed
-    // if it is one of this plan's own modules (B106).
-    if ((policy.router.sealCheck ?? 0) > 0) {
-      const seal = provePipeSeal(s, cb, s.p.starts ?? [s.p.start], policy.router.sealCheck!)
-      if (seal.proof !== undefined) s.sealed = seal.proof
-    }
     const failure = pipeEvidence(job, pj.conn, s)
     if (failure.sealed !== undefined && !failure.sealed.edge && tryReplace(job, c, facts, policy, failure.sealed)) return used
     const st = s.p.start
@@ -1688,6 +1695,12 @@ function failRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur
 /** The current connection's search found no path: other merge goals (B60), a wider window (B28), rip mode, re-placement. */
 function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, cur: CurrentRoute): void {
   const c = connection(job, cur.conn)
+  // B157: the same reverse-goal flood the pipe uses, over the belt's real moves. `stepSeal` usually has an answer by
+  // now; this covers a failure it left unpriced (a cap, or a search that stopped before the seal finished).
+  if (cur.search.sealed === undefined && (policy.router.sealCheck ?? 0) > 0) {
+    const proof = proveBeltSeal(cur.search, job.layout, terrain, policy, policy.router.sealCheck!)
+    if (proof.proof !== undefined) cur.search.sealed = proof.proof
+  }
   routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
   // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
   // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).

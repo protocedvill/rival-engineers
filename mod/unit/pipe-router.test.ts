@@ -209,6 +209,19 @@ test("B156: a failed search's boxed-in goal is proved sealed; an open one is not
   eq(provePipeSeal(newPipeSearch(startBlocked), startBlocked, [startBlocked.start], 2000).proof!.side, "start")
 })
 
+test("B157: the goal flood uses pipeClear; a passable goal reached only around another fluid is sealed", () => {
+  // The goal tile is free and the start is connected, but a pipe at the goal would join another fluid one tile west.
+  // Every arrival from the west, north or south is rejected by `pipeClear`; with no pipe-to-ground and no pump, the
+  // exact reverse flood proves the seal (the old free-tile flood walked around and reached the goal).
+  const start = { x: 1, y: 2, dir: 1 }
+  const goal = { x: 10, y: 2, dir: 1 }
+  const fluids: Record<number, boolean> = { [tkey(9, 2)]: true }
+  const req = request(OPEN, start, goal, { maxUnderground: 1, pole: () => false }, fluids)
+  const seal = provePipeSeal(newPipeSearch(req), req, [start], 2000)
+  ok(seal.proof !== undefined, "a proof")
+  eq(seal.proof!.side, "goal")
+})
+
 test("pipe router: no route when the goal is walled in", () => {
   const rows = [".".repeat(20), ".........###........", ".........#.#........", ".........###........", ".".repeat(20)]
   eq(routePipe(request(rows, { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 }, { under: () => false, budget: 20000 })), undefined)

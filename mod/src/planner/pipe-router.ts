@@ -20,7 +20,7 @@
 // Pure: no Factorio globals; terrain, claims and other fluids come in as callbacks (T1: mod/unit/pipe-router.test.ts).
 
 import { DX, DY, keyX, keyY, opposite, tkey } from "./grid"
-import { proveSealAt, SealOutcome, SealProof } from "./route-seal"
+import { proveSealFromGoal, SealOutcome, SealProof } from "./route-seal"
 
 /** M7 B120: weighted A* keeps remote oil routes bounded when many near-equivalent pipe layouts exist. */
 const PIPE_HEURISTIC_WEIGHT = 4
@@ -817,29 +817,76 @@ export function pipeFailureNotes(s: PipeSearch, cb: PipeCallbacks): string {
 }
 
 /**
- * B156: proves the failed search's goal sealed, when the goal's own pocket runs out before it meets the starts (the
- * provider's outside tile or any tap start). A `budget exhausted` search says nothing about enclosure; this bounded
- * flood does, and its proof is what the strategy's relocation / re-placement remedies consume.
+ * B156/B157: proves the failed search's goal sealed by flooding backwards from the goal over the router's **actual**
+ * moves: a plain pipe with `pipeClear` (a pipe joins every neighbour, so another fluid beside it forbids it), a
+ * pipe-to-ground pair, and a pump (pole spot included). The goal seeds pass the same arrival rule the search uses. A
+ * `budget exhausted` search says nothing about enclosure; this bounded flood does, and only a proof is turned into
+ * evidence.
  */
-export function provePipeSeal(s: PipeSearch, cb: PipeCallbacks, starts: { x: number; y: number }[], cap: number): SealOutcome {
-  return proveSealAt(
-    {
-      pass: (x, y) => cachedCost(s, cb, x, y) >= 0,
-      step: (x, y, nx, ny) => !cb.fluidNear(nx, ny) && cachedCost(s, cb, nx, ny) >= 0,
-      span: (x, y, axis, k) => {
-        const dx = axis === 1 ? 1 : 0
-        const dy = axis === 0 ? 1 : 0
-        for (let i = 1; i < k; i++) if (!cachedUnder(s, cb, x + dx * i, y + dy * i, axis)) return false
-        const ex = x + dx * k
-        const ey = y + dy * k
-        return !cb.fluidNear(ex, ey) && cachedCost(s, cb, ex, ey) >= 0
-      },
-      maxSpan: s.p.maxUnderground,
-      starts,
-      cap,
-    },
-    s.p.goal,
-  )
+export function provePipeSeal(s: PipeSearch, cb: PipeCallbacks, starts: { x: number; y: number; dir: number }[], cap: number): SealOutcome {
+  // If no start tile can take a pipe, the provider is the sealed end; never blame the goal for a blocked provider.
+  let openStart = false
+  for (const st of starts) if (cachedCost(s, cb, st.x, st.y) >= 0) openStart = true
+  if (!openStart) return { proof: { side: "start", tiles: 0, edge: false }, visited: 0, inconclusive: false }
+  const encode = (x: number, y: number, d: number): number => tkey(x, y) * 4 + d
+  const g = s.p.goal
+  const goals: number[] = []
+  if (cachedCost(s, cb, g.x, g.y) >= 0) {
+    // A plain pipe on the goal tile, entered from any heading; the port's own back/next sides are exempt from the moat.
+    const next = tkey(g.x + DX[g.dir], g.y + DY[g.dir])
+    for (let d = 0; d < 4; d++) if (pipeClear(cb, g.x, g.y, tkey(g.x - DX[d], g.y - DY[d]), next)) goals.push(encode(g.x, g.y, d))
+    // A pipe-to-ground exit on the goal tile, facing into the port: seed its entrance state (same heading).
+    for (let k = 2; k <= s.p.maxUnderground; k++) {
+      if (!cachedUnder(s, cb, g.x - DX[g.dir] * (k - 1), g.y - DY[g.dir] * (k - 1), g.dir % 2)) break
+      const ix = g.x - DX[g.dir] * k
+      const iy = g.y - DY[g.dir] * k
+      if (cachedCost(s, cb, ix, iy) >= 0) goals.push(encode(ix, iy, g.dir))
+    }
+  }
+  const startSet: Record<number, boolean> = {}
+  for (const st of starts) startSet[encode(st.x, st.y, st.dir)] = true
+  return proveSealFromGoal({
+    goals,
+    start: (state) => startSet[state] === true,
+    before: (state, emit) => pipeBefore(s, cb, state, emit),
+    cap,
+  })
+}
+
+/** One reverse move under the pipe router's mechanics (see `expand`); emits every predecessor state. */
+function pipeBefore(s: PipeSearch, cb: PipeCallbacks, state: number, emit: (this: void, prev: number) => void): void {
+  const d = state % 4
+  const x = keyX(math.floor(state / 4))
+  const y = keyY(math.floor(state / 4))
+  // Plain pipe: P = T − d, arrived at P with any heading h that may turn into d. The move P→T must pass `pipeClear`.
+  const px = x - DX[d]
+  const py = y - DY[d]
+  if (cachedCost(s, cb, px, py) >= 0 && !cb.fluidNear(x, y)) {
+    for (let h = 0; h < 4; h++) {
+      if (h === opposite(d)) continue
+      if (!pipeClear(cb, px, py, tkey(px - DX[h], py - DY[h]), tkey(x, y))) continue
+      emit(tkey(px, py) * 4 + h)
+    }
+  }
+  // Pipe-to-ground: the exit E = T − d, the entrance P = E − k·d, entered straight at the same heading.
+  const ex = x - DX[d]
+  const ey = y - DY[d]
+  if (cachedCost(s, cb, ex, ey) >= 0) {
+    for (let k = 2; k <= s.p.maxUnderground; k++) {
+      const ix = ex - DX[d] * k
+      const iy = ey - DY[d] * k
+      if (cachedCost(s, cb, ix, iy) < 0) continue
+      let ok = true
+      for (let i = 1; i < k && ok; i++) ok = cachedUnder(s, cb, ix + DX[d] * i, iy + DY[d] * i, d % 2)
+      if (ok) emit(tkey(ix, iy) * 4 + d)
+    }
+  }
+  // Pump: at T − d, from P = T − 2d along the heading; it needs a pole spot, as the search does.
+  const mx = x - DX[d]
+  const my = y - DY[d]
+  const qx = x - 2 * DX[d]
+  const qy = y - 2 * DY[d]
+  if (cachedCost(s, cb, mx, my) >= 0 && cachedCost(s, cb, qx, qy) >= 0 && (cb.pole === undefined || cb.pole(mx, my, d))) emit(tkey(qx, qy) * 4 + d)
 }
 
 /** Routes one pipe line to the end (tests, one-shot callers); `undefined` when no path was found within the budget. */

@@ -1696,11 +1696,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       moves require a free pole spot, so a planned pump is powerable. Placement lane checks now judge a pipe port with
       the pipe's own rules: another fluid's route or port moat blocks the lane (`planner/fluids.ts`), and a
       pipe-to-ground span reaches `PIPE_LANE_HOP = 10` (belt `LANE_HOP` 5). One `RouteFailure` shape and one
-      `pushRouteEvidence` serve both transports; `wideJoin` is belt-only. In-game (`m7d5-phase23`, min-1170) the retry
-      fires (`budget exhausted, 400000 expansions`) with 0 stalls and 7.36 ms/tick planner. The run N water port still
-      refuses a pipe, and the goal-side flood over-approximates the pipe's neighbour rule (`pipeClear`), so it cannot
-      prove that seal: an exact port-approach seal, alternative join tiles, the full driver hoist and plan-time pipe
-      rip-up remain.
+      `pushRouteEvidence` serve both transports; `wideJoin` is belt-only. The goal-side seal is a shared reverse flood
+      over each transport's real moves (`route-seal.ts`): pipes use `pipeClear`, pipe-to-ground spans and pump/pole;
+      belts use turns, undergrounds and tunnels. In game (`m7d5-seal1200b`, min-1200) it proves the run N water port
+      sealed (`seal goal 15 tiles, 41 states`), and the seal is checked before the budget retry so a sealed port skips
+      the doubled search. Alternative join tiles, the full driver hoist and plan-time pipe rip-up remain.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
