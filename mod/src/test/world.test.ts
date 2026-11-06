@@ -143,4 +143,40 @@ describe("oil fields", () => {
     assert(f!.at.y + f!.def.footprint.h <= oy + 9, "the box ends above the pole")
     pole.destroy()
   })
+
+  test("B156: a layout claim in the field's box is treated like a cliff, not left for placeFixed", () => {
+    // Seed 11, minute ~1166: module n705 (a second crude provider) failed at its fixed spot with "occupied at
+    // 1390,-522" while no entity stood there. `occupied` is a planner claim (a port reservation, a route or another
+    // module's interaction tile), and `placeFixed` rejects the whole plan at the first claimed tile. The field must
+    // shrink away from claims the way it does from cliffs.
+    const lab = createLab(24)
+    const s = lab.surface
+    for (const w of [at(lab, -6.5, 0.5), at(lab, 0.5, 0.5)]) s.create_entity({ name: "crude-oil", position: w, amount: 300000 })
+    const region = { x: math.floor(lab.origin.x) - 24, y: math.floor(lab.origin.y) - 24, w: 48, h: 48 }
+    const claimedTile = { x: math.floor(lab.origin.x) - 6, y: math.floor(lab.origin.y) }
+    const claimed = (x: number, y: number): boolean => x === claimedTile.x && y === claimedTile.y
+    const find = (c?: (this: void, x: number, y: number) => boolean) => fieldModule(s, region, () => true, lab.origin, "crude-oil", 1, "pumpjack", (params) => generatedModule("pumpjack-field", params), undefined, [], c)
+    assert(wellCount(find()) === 2, "without the claim both wells are in the field")
+    const f = find(claimed)
+    assert(wellCount(f) === 1, `the well next to the claim is left out (${wellCount(f)})`)
+    assert(f!.at.x > claimedTile.x, `the box starts east of the claim (${f!.at.x} > ${claimedTile.x})`)
+  })
+
+  test("B156: a goal's second crude provider does not lay a field over the first field's box", () => {
+    // `takenWells` excludes the first field's wells, not its box: a second provider could reuse a well the first
+    // field's generator left out, and its fixed box then overlapped the first field's `m:` claim. A goal must pass its
+    // earlier field boxes as avoid rects too (as `planGoal` now does).
+    const lab = createLab(24)
+    const s = lab.surface
+    for (const w of [at(lab, 0.5, 0.5), at(lab, 0.5, 6.5)]) s.create_entity({ name: "crude-oil", position: w, amount: 300000 })
+    const region = { x: math.floor(lab.origin.x) - 24, y: math.floor(lab.origin.y) - 24, w: 48, h: 48 }
+    const find = (taken?: Record<string, boolean>, avoid?: Rect[]) => fieldModule(s, region, () => true, lab.origin, "crude-oil", 1, "pumpjack", (params) => generatedModule("pumpjack-field", params), taken, avoid)
+    const first = find()
+    assert(wellCount(first) === 2, "the first field takes both wells")
+    const firstRect: Rect = { x: first!.at.x, y: first!.at.y, w: first!.def.footprint.w, h: first!.def.footprint.h }
+    // Simulate the generator leaving one well out of the first field: the second must not build there.
+    const taken = { [`${math.floor(lab.origin.x)},${math.floor(lab.origin.y)}`]: true }
+    const second = find(taken, [firstRect])
+    assert(second === undefined, "the leftover well is inside the first field's box: no second field there")
+  })
 })

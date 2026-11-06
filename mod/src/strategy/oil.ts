@@ -66,7 +66,8 @@ export function fieldPotential(surface: LuaSurface, force: string, m: PlacedModu
 /**
  * A pumpjack field module for `need` per second of `resource` from the wells inside `region`: the nearest field to
  * `center` that yields enough, else the richest. Undefined when no well is known there. Only chunks `known` to the
- * faction count (home zone, explored strips, radar-scanned chunks).
+ * faction count (home zone, explored strips, radar-scanned chunks). `avoid` rects (the layout's modules and a goal's
+ * earlier fields) and `claimed` tiles (the layout's other claims) keep a fixed field box clear (B156).
  */
 /**
  * M7c.8 (seed 11, minute 720–747): whether a pumpjack (built or a ghost, any force) already stands on a well. A second
@@ -78,7 +79,7 @@ function wellTaken(surface: LuaSurface, at: Vec): boolean {
   return findEntities(surface, { type: "mining-drill", area, limit: 1 }).length > 0 || findEntities(surface, { ghost_type: "mining-drill", area, limit: 1 }).length > 0
 }
 
-export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, taken?: Record<string, boolean>, avoid: Rect[] = []): { def: ModuleDef; at: Vec } | undefined {
+export function fieldModule(surface: LuaSurface, region: Rect, known: (this: void, cx: number, cy: number) => boolean, center: Vec, resource: string, need: number, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, taken?: Record<string, boolean>, avoid: Rect[] = [], claimed?: (this: void, x: number, y: number) => boolean): { def: ModuleDef; at: Vec } | undefined {
   // B115: only known ground (the plan's chunk rule), generated now if it is not yet: a mine's patch search generates its
   // chunks through the planner's terrain scan, this search reads the surface directly.
   const chunks: Vec[] = []
@@ -151,13 +152,13 @@ export function fieldModule(surface: LuaSurface, region: Rect, known: (this: voi
     }
     if (best === undefined) return undefined
     tried[best.i] = true
-    const built = layField(surface, wells.filter((_, i) => field[i] === best!.i), resource, pumpjack, make, avoid)
+    const built = layField(surface, wells.filter((_, i) => field[i] === best!.i), resource, pumpjack, make, avoid, claimed)
     if (built !== undefined) return built
   }
 }
 
-/** One field's module: its wells minus those on cliffs or water (B119); undefined when none is left or no layout fits. */
-function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, avoid: Rect[]): { def: ModuleDef; at: Vec } | undefined {
+/** One field's module: its wells minus those on cliffs, water or a layout claim (B119, B156); undefined when none is left or no layout fits. */
+function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack: string, make: (this: void, params: Record<string, unknown>) => ModuleDef, avoid: Rect[], claimed?: (this: void, x: number, y: number) => boolean): { def: ModuleDef; at: Vec } | undefined {
   let chosen = wells
   // B119: cliffs and water in the field's box (seed 11's wells sit in a ring of cliffs). Pumpjacks on them are left
   // out; the generator routes pipes and poles around the rest.
@@ -189,6 +190,25 @@ function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack
     for (let x = math.floor(bb.left_top.x); x < math.ceil(bb.right_bottom.x); x++) for (let y = math.floor(bb.left_top.y); y < math.ceil(bb.right_bottom.y); y++) mark(x, y)
   }
   for (const t of surface.find_tiles_filtered({ area: fieldArea, collision_mask: "water_tile" })) mark(t.position.x, t.position.y)
+  // B156: a fixed field box must also avoid the layout's claims (a port reservation, a route, another module's
+  // interaction tile). `placeFixed` rejects the whole plan at the first claimed tile anywhere in the box, so shrink the
+  // box away from the claims like from a cliff. Contiguous claimed tiles are merged into runs: a box near the base can
+  // hold many claims, and one blocker per tile would make the shrink loop needlessly quadratic.
+  const claimRects: Rect[] = []
+  if (claimed !== undefined) {
+    for (let y = b.y; y < b.y + b.h; y++) {
+      let start = -1
+      for (let x = b.x; x < b.x + b.w; x++) {
+        if (claimed(x, y)) {
+          if (start < 0) start = x
+        } else if (start >= 0) {
+          claimRects.push({ x: start, y, w: x - start, h: 1 })
+          start = -1
+        }
+      }
+      if (start >= 0) claimRects.push({ x: start, y, w: b.x + b.w - start, h: 1 })
+    }
+  }
   chosen = chosen.filter((w) => {
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) if (hard[`${w.x + dx},${w.y + dy}`]) return false
     return true
@@ -199,6 +219,7 @@ function layField(surface: LuaSurface, wells: Well[], resource: string, pumpjack
   // poles 4 tiles off its edge well, a planned module) blocks it. Wells next to one are left out until the box is clear.
   const blockers: Rect[] = []
   for (const r of avoid) if (r.x < b.x + b.w && r.x + r.w > b.x && r.y < b.y + b.h && r.y + r.h > b.y) blockers.push(r)
+  for (const r of claimRects) blockers.push(r)
   // Seed 1212121 g111/g112: a cliff stood between the field's wells, so every well's own 3×3 was clear but the fixed
   // module box still covered it and the plan failed "blocked (terrain cliff)". Treat each hard tile in the box as a
   // blocker too, so the nearest well is dropped and the box shrinks away from it.

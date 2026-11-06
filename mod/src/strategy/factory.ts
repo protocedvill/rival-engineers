@@ -758,6 +758,40 @@ export function factoryRouteDebug(name: string, x?: number, y?: number, item?: s
   return out
 }
 
+/**
+ * Debug probe (B156): the layout claims on and around a tile and the modules whose rect covers it. A fixed-spot
+ * placement failure says `occupied at x,y` (or `reserved`, `routed`, `mine-claimed`); no entity need stand there,
+ * because these are planner claims. Used to explain why a generated field/module cannot go where its plan put it.
+ */
+export function factoryClaimDebug(name: string, x: number, y: number, radius = 3): unknown {
+  const f = storage.factories?.[name]
+  if (f === undefined) return undefined
+  const layout = f.layout
+  const covering: unknown[] = []
+  for (const m of layout.modules) {
+    const r = m.rect
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+      covering.push({ id: m.id, generator: m.canonical.generator, rect: r, wells: m.canonical.params?.wells })
+    }
+  }
+  const claims: unknown[] = []
+  const indexes: { index: "occ" | "reserved" | "routeOcc" | "mine"; map: Record<number, string> | undefined }[] = [
+    { index: "occ", map: layout.occ },
+    { index: "reserved", map: layout.reserved },
+    { index: "routeOcc", map: layout.routeOcc },
+    { index: "mine", map: layout.mine },
+  ]
+  for (const { index, map } of indexes) {
+    for (const [k, tag] of pairs(map ?? {})) {
+      const cx = keyX(k as number)
+      const cy = keyY(k as number)
+      if (math.abs(cx - x) > radius || math.abs(cy - y) > radius) continue
+      claims.push({ index, x: cx, y: cy, owner: tag })
+    }
+  }
+  return { at: { x, y }, covering, claims }
+}
+
 function advanceGoals(ctx: Ctx, d: Design | undefined): void {
   const f = ctx.f
   if (d === undefined) {
@@ -1220,11 +1254,26 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
   // M7c.8: wells of the layout's fields (planned too) and of this goal's earlier fields are taken.
   const takenWells = OIL.moduleWells(f.layout.modules.map((x) => x.canonical))
+  const moduleRects = f.layout.modules.map((x) => x.rect)
+  // B156: a fixed field box must not cover a tile the layout already claims. `layField` shrank only away from module
+  // rects, so a field could still cover a port reservation, a route or another module's interaction tile, and
+  // `placeFixed` then failed the whole plan at the first one ("occupied at x,y"). Match `placementClaimConflict`:
+  // poles give way, every other claim is hard.
+  function claimed(this: void, x: number, y: number): boolean {
+    const k = tkey(x, y)
+    const occ = f.layout.occ[k]
+    if (occ !== undefined && !LO.isPoleTag(occ)) return true
+    if (f.layout.reserved[k] !== undefined || f.layout.routeOcc[k] !== undefined) return true
+    return f.layout.mine !== undefined && f.layout.mine[k] !== undefined
+  }
+  // A goal with two crude providers must not lay its second field over the first field's box: only the wells were
+  // taken, so both boxes landed on the same patch and the second module failed at its fixed spot (B156).
+  const fieldBoxes: Rect[] = []
   for (const m of modules) {
     if (m.def.generator !== "pumpjack-field") continue
     const n = g.nodes.find((x) => x.id === m.id)!
     const resource = (n.params.resource as string | undefined) ?? "crude-oil"
-    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells, f.layout.modules.map((x) => x.rect))
+    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells, [...moduleRects, ...fieldBoxes], claimed)
     if (field === undefined) {
       transitionGoal(g, "failed")
       g.deferred = true
@@ -1235,6 +1284,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     m.def = field.def
     m.at = field.at
     OIL.moduleWells([field.def], takenWells)
+    fieldBoxes.push({ x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
     EX.knowRect(f, { x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
   }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
