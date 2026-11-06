@@ -178,6 +178,29 @@ test("B147 (seed 11 g154): a stuck pipe route is rerouted with pipes around the 
   ok(plan.add.length > 0 && plan.add.every((e) => e.name !== "transport-belt"), "builds pipes, no belts")
 })
 
+test("B156: a pipe port the flood proves sealed re-places its consumer, like a belt seal", () => {
+  // The refinery's in-water port outside tile (59,11) is a cliff: no pipe can stand there. The pipe search cannot route
+  // and reports budget/exhaustion; the goal-side flood proves the pocket, and the consumer is placed again away from it.
+  const rows: string[] = []
+  for (let y = 0; y < 30; y++) rows.push(string.rep(".", 80))
+  rows[11] = string.sub(rows[11], 1, 59) + "C" + string.sub(rows[11], 61)
+  const terrain = asciiTerrain(rows)
+  const state = newLayout()
+  const well = box("well", 3, 3, [{ id: "out", kind: "pipe-out", pos: { x: 2.5, y: 1.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const refinery = box("ref", 5, 5, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 2.5 }, dir: EAST as 0, item: "crude-oil" }])
+  place(state, well, 2, 10)
+  place(state, refinery, 60, 9)
+  const c: ConnectionRequest = { id: connectionId("crude"), from: { module: "well", port: "out" }, to: { module: "ref", port: "in" }, fluid: FLUID }
+  const job = newRoutingJob(request([well, refinery], [c], 80, 30), YELLOW, state)
+  // A routing job's modules are an existing base and never move. Here the refinery stands for a module this plan just
+  // placed: unmark it as base so the B106 re-placement path applies (a real plan's own module has no `replaced` entry).
+  job.replaced["ref"] = 0
+  runJob(job, terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  ok((job.stats.replacements ?? 0) >= 1, `the sealed consumer moved (${job.stats.replacements ?? 0} replacements)`)
+  ok(job.layout.routes["route:crude"]?.fluid !== undefined, "the re-placed consumer is piped")
+})
+
 test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a plastic block the planner places", () => {
   const terrain = asciiTerrain(field(140, 80))
   const wells = [

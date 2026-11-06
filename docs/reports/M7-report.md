@@ -1679,6 +1679,18 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       because a pumpjack field's spare used its `planned` output. `sharing` now computes a pumpjack field's spare from
       `fieldPotential`: `wellRate` over its built pumpjacks' current resource amounts. It is potential, not production,
       so a backed-up pumpjack still counts; other providers keep the planned-output rule. T1 `design`.
+      **Field siting (B156):** a generated field is placed at its wells' box exactly, and `placeFixed` rejects the whole
+      plan at the first tile another part of the layout claims (`occupied`/`reserved`/`routed`; no entity need stand
+      there). `layField` now treats those claims like cliffs (shrinking the box away from them, the generator routing
+      around), and `planGoal` passes the boxes of a goal's earlier fields as avoid rects, so a second crude provider
+      cannot lay its field over the first one's claim. `claim_debug` reports the claims and covering modules at a tile.
+      T2 `world` "oil fields".
+      **Pipe seals (B157):** the pipe router had no seal proof at all. A failed search was either `search exhausted`
+      (a proof, but never turned into evidence) or `budget exhausted` (no proof at all), and the pipe failure path did
+      not push `routeEvidence`, so `wideJoin`, B57 relocation and B106 re-placement could never fire for a pipe. A
+      goal-side flood (`planner/route-seal.ts`, bounded by `router.sealCheck`, over-approximating the moves so it can
+      only miss a seal, never invent one) now proves the pocket; `pipeStep` records it as evidence and re-places a
+      plan's own sealed consumer. T1 `pipe-router`, `fluid-route`; replay `m7-seed11-edge` now plans.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

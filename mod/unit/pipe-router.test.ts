@@ -1,6 +1,6 @@
 import { eq, ok, run, test } from "./harness"
 import { asciiTerrain, DX, DY, FREE, OWN, tkey, UNKNOWN } from "../src/planner/grid"
-import { newPipeSearch, PipeRequest, PipeResult, PipeStep, routePipe, stepPipeSearch } from "../src/planner/pipe-router"
+import { newPipeSearch, PipeRequest, PipeResult, PipeStep, provePipeSeal, routePipe, stepPipeSearch } from "../src/planner/pipe-router"
 
 // T1: M7b pipe router. One fluid from a pipe-out port to a pipe-in port, preferring pipe-to-ground pairs, never letting
 // a plain pipe touch another fluid, with a pump at least every pipeline extent.
@@ -163,6 +163,28 @@ test("pipe router: a remote 800-tile field has a bounded search", () => {
   const r = routePipe(req)
   ok(r !== undefined, "the remote field routes")
   ok(r!.expansions < 1000, `remote line is found without a broad search (${r!.expansions} expansions)`)
+})
+
+test("B156: a failed search's boxed-in goal is proved sealed; an open one is not", () => {
+  // The walled-in case above: the goal at (10,2) is a one-tile pocket behind a ring of cliffs.
+  const boxed = request([".".repeat(20), ".........###........", ".........#.#........", ".........###........", ".".repeat(20)], { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 }, { under: () => false, budget: 20000 })
+  const s = newPipeSearch(boxed)
+  const seal = provePipeSeal(s, boxed, [boxed.start], 2000)
+  ok(seal.proof !== undefined, "a proof")
+  eq(seal.proof!.side, "goal")
+  eq(seal.proof!.tiles, 1, "the pocket is one tile")
+  eq(seal.proof!.edge, false)
+  // Open ground: the goal reaches the start, so there is no seal to report.
+  const open = request(OPEN, { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 })
+  eq(provePipeSeal(newPipeSearch(open), open, [open.start], 2000).proof, undefined)
+  // A cap smaller than the pocket: inconclusive, never a false seal.
+  const capped = provePipeSeal(newPipeSearch(open), open, [open.start], 3)
+  eq(capped.proof, undefined)
+  ok(capped.inconclusive, "the cap was hit")
+  // The provider's own outside tile blocked: name the start side, never the goal.
+  const startRows = [".".repeat(20), ".".repeat(20), ".#" + ".".repeat(18), ".".repeat(20), ".".repeat(20)]
+  const startBlocked = request(startRows, { x: 1, y: 2, dir: 1 }, { x: 10, y: 2, dir: 0 })
+  eq(provePipeSeal(newPipeSearch(startBlocked), startBlocked, [startBlocked.start], 2000).proof!.side, "start")
 })
 
 test("pipe router: no route when the goal is walled in", () => {

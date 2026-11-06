@@ -19,7 +19,7 @@ import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, l
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
-import { newPipeSearch, pipeFailureNotes, stepPipeSearch } from "./pipe-router"
+import { newPipeSearch, pipeFailureNotes, provePipeSeal, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef, Port } from "../modules/types"
@@ -426,6 +426,19 @@ function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean,
   job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
 }
 
+/** B156: a failed fluid route's evidence, including the goal seal its flood proved (`provePipeSeal`). */
+function pipeEvidence(job: PlanJob, conn: string, s: PipeSearch): void {
+  job.evidence ??= []
+  const c = connection(job, conn)
+  const proof = s.sealed
+  let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
+  if (proof !== undefined) {
+    const ref = proof.side === "goal" ? c.to : c.from
+    if (ref !== undefined) sealed = { side: proof.side, port: resolve(job, ref), edge: proof.edge }
+  }
+  job.evidence.push({ kind: "route", subject: conn, reason: s.reason ?? "no pipe path", rip: false, windowScale: 1, expansions: s.work, sealed })
+}
+
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
   return { module: moduleId(job.alias[ref.module] ?? ref.module), port: ref.port }
 }
@@ -822,7 +835,7 @@ function opposite4(d: number): number {
 }
 
 /** Steps the running fluid connection (`job.pipe`); commits its route or records the failure when the search ends. */
-function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   const pj = job.pipe!
   const s = pj.search
   const used = stepPipeSearch(s, pipeCallbacks(job, terrain, policy, pj), budget)
@@ -837,11 +850,20 @@ function pipeStep(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budg
   const c = connection(job, pj.conn)
   const f = c.fluid!
   if (s.status === "failed") {
+    const cb = pipeCallbacks(job, terrain, policy, pj)
+    // B156: `budget exhausted` is not a proof. Flood the goal's pocket before giving up: a sealed goal becomes evidence
+    // (relocation, B57) and is re-placed if it is one of this plan's own modules (B106).
+    if ((policy.router.sealCheck ?? 0) > 0) {
+      const seal = provePipeSeal(s, cb, s.p.starts ?? [s.p.start], policy.router.sealCheck!)
+      if (seal.proof !== undefined) s.sealed = seal.proof
+    }
+    pipeEvidence(job, pj.conn, s)
+    if (s.sealed !== undefined && !s.sealed.edge && tryReplace(job, c, facts, policy, s.sealed)) return used
     const st = s.p.start
     const routeTerrain = pipeTerrain(terrain, f)
     const k = tkey(st.x, st.y)
     const g = s.p.goal
-    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}; ${pipeFailureNotes(s, pipeCallbacks(job, terrain, policy, pj))})`)
+    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${s.sealed !== undefined ? `, sealed ${s.sealed.side} ${s.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
     return used
   }
   const r = s.result!
@@ -1128,18 +1150,18 @@ export function replacementAvoid(rect: Rect, margin: number): Rect {
  * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
  * route touching it, and place it again away from its old footprint. Returns false if no module can move.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, search?: Search): boolean {
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, sealed?: { side: "start" | "goal"; edge?: boolean }): boolean {
   const ids = [c.to.module]
   if (c.from !== undefined) ids.push(c.from.module)
   // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
-  if (search?.sealed !== undefined && !search.sealed.edge && search.sealed.side === "start" && c.from !== undefined) ids.reverse()
+  if (sealed !== undefined && !sealed.edge && sealed.side === "start" && c.from !== undefined) ids.reverse()
   for (const mid of ids) {
     if (job.alias[mid] !== undefined) continue
     const m = findModule(job.layout, mid)
     // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
     // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
     // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
-    const provenSealed = search?.sealed !== undefined && !search.sealed.edge && (search.sealed.side === "start" ? c.from?.module : c.to.module) === mid
+    const provenSealed = sealed !== undefined && !sealed.edge && (sealed.side === "start" ? c.from?.module : c.to.module) === mid
     if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
     if (job.request.modules.some((r) => r.id === mid && r.at !== undefined)) continue
     for (const rid of [...job.layout.routeOrder]) {
@@ -1157,7 +1179,7 @@ function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, polic
     job.ripPairs = undefined
     // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
     // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
-    const pad = search?.sealed !== undefined ? policy.router.margin : 0
+    const pad = sealed !== undefined ? policy.router.margin : 0
     job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
     job.replaceQueue.push(mid)
     if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
@@ -1467,9 +1489,9 @@ function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy)
 }
 
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
-  if (job.pipe !== undefined) return pipeStep(job, terrain, policy, budget)
+  if (job.pipe !== undefined) return pipeStep(job, terrain, facts, policy, budget)
   if (job.current === undefined) {
-    const used = startConnection(job, terrain, policy, budget)
+    const used = startConnection(job, terrain, facts, policy, budget)
     // A new belt search runs in the same call; anything else (a pipe, a stub, a failure, the end) is done.
     if (job.current === undefined) return used
   }
@@ -1497,14 +1519,14 @@ type CurrentRoute = NonNullable<PlanJob["current"]>
  * The next queued connection: its search (`job.current`, stepped by the caller), a pipe search, an external stub, or a
  * recorded failure. With the queue empty, routing ends: the lane guards, then the next phase.
  */
-function startConnection(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+function startConnection(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   const id = job.queue.shift()
   if (id === undefined) return endRouting(job, terrain, policy)
   const c = connection(job, id)
   if (c.fluid !== undefined) {
     job.pipe = newPipeJob(job, policy, c)
     if (job.pipe === undefined) return 1
-    return pipeStep(job, terrain, policy, budget)
+    return pipeStep(job, terrain, facts, policy, budget)
   }
   const via = coveredBy(job, c)
   if (via !== undefined) {
@@ -1692,7 +1714,7 @@ function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, pol
     const reason = cur.search.reason ?? "no path"
     // Traced before tryReplace changes the layout; a re-placement only retries the connection.
     const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-    if (!tryReplace(job, c, facts, policy, cur.search)) fail(job, cur.conn, reason)
+    if (!tryReplace(job, c, facts, policy, cur.search.sealed)) fail(job, cur.conn, reason)
     else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
     job.current = undefined
   }

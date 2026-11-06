@@ -237,9 +237,11 @@ replay("m7-seed11-sulfur")
 // ~100 tiles inside the base's built block, and the ~900-tile crude line from the oil field stalled at its west edge.
 replay("m7-seed11-crude")
 // M7c.8: after the remote-pipe placement (resume from minute 360, goal g71 attempt 4): the chains at the base's west
-// edge, their crude lines failing one tile short of the ports. Routing fluid lines first routes the plastic one. The
-// captured sulfur chain still has both pipe inputs on its west edge (the generator now puts water on the east end),
-// facing a 2-wide gap by the steam block that cannot hold two fluids: its crude line stays unroutable here.
+// edge, their crude lines failing one tile short of the ports. Routing fluid lines first routes the plastic one.
+// B156: the sulfur chain's crude pipe port was the sealed one: the goal-side flood proves it, and B106 re-places n261
+// (6x18, at 434,21) away from the 2-wide pocket, so this capture now plans (it used to fail on
+// "sulfur>chemical-science-pack>labs.in-crude-oil").
+replay("m7-seed11-edge", { expect: "done" })
 // M7c.8 (seed 11 minute 654, goal g107 attempt 1, from the crew-fix save at minute 645): the sulfur chain's water line
 // searched its whole 200000-expansion budget (76 s of planner time in a game minute) though the goal was 13 tiles away,
 // and the advanced-circuit belt failed "route crosses itself": both searches let a path that loops over its own tile
@@ -247,7 +249,6 @@ replay("m7-seed11-crude")
 // failed on an ordinary rip-up limit (a later attempt re-placed). Since the g104 fixes (all of a module's belts must be
 // able to leave together; a rip-up loop moves a module at once) it plans.
 replay("m7-seed11-g107", { expect: "done" })
-replay("m7-seed11-edge", { expect: "failed", failureIncludes: "sulfur>chemical-science-pack>labs.in-crude-oil", failureExcludes: "=>plastic-bar>advanced-circuit>chemical-science-pack>labs.in-crude-oil" })
 // M7c.9 (seed 11 minute ~930, g160): an ~870-tile crude line into the base. The coarse corridor ran north of a module
 // block into ground closed by belt bands wider than a pipe-to-ground span, and the corridor search took the whole
 // 200000-unit budget there ("budget exhausted, nearest 110 at 415,17"); open ground just south reached the goal. The

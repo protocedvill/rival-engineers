@@ -20,6 +20,7 @@
 // Pure: no Factorio globals; terrain, claims and other fluids come in as callbacks (T1: mod/unit/pipe-router.test.ts).
 
 import { DX, DY, keyX, keyY, opposite, tkey } from "./grid"
+import { proveSealAt, SealOutcome, SealProof } from "./route-seal"
 
 /** M7 B120: weighted A* keeps remote oil routes bounded when many near-equivalent pipe layouts exist. */
 const PIPE_HEURISTIC_WEIGHT = 4
@@ -158,6 +159,8 @@ export interface PipeSearch {
   widened?: boolean
   /** The first step has set up the coarse pass or the tile search. */
   started?: boolean
+  /** B156: the goal-side flood proved the port sealed after the search failed (`provePipeSeal`). */
+  sealed?: SealProof
 }
 
 function heapPush(s: { hs: number[]; hf: number[] }, v: number, f: number): void {
@@ -804,6 +807,32 @@ export function pipeFailureNotes(s: PipeSearch, cb: PipeCallbacks): string {
   }
   const pass = s.coarse !== undefined ? "coarse" : s.cdq !== undefined ? "corridor distances" : s.corridor !== undefined ? "corridor" : s.widened ? "widened" : "tiles"
   return `pass ${pass}, ${s.nx.length} nodes, nearest ${near === math.huge ? "-" : `${near} at ${at}`}, ${runs}, goal dir ${g.dir} open ${open}/25 [${rows.join("/")}]`
+}
+
+/**
+ * B156: proves the failed search's goal sealed, when the goal's own pocket runs out before it meets the starts (the
+ * provider's outside tile or any tap start). A `budget exhausted` search says nothing about enclosure; this bounded
+ * flood does, and its proof is what the strategy's relocation / re-placement remedies consume.
+ */
+export function provePipeSeal(s: PipeSearch, cb: PipeCallbacks, starts: { x: number; y: number }[], cap: number): SealOutcome {
+  return proveSealAt(
+    {
+      pass: (x, y) => cachedCost(s, cb, x, y) >= 0,
+      step: (x, y, nx, ny) => !cb.fluidNear(nx, ny) && cachedCost(s, cb, nx, ny) >= 0,
+      span: (x, y, axis, k) => {
+        const dx = axis === 1 ? 1 : 0
+        const dy = axis === 0 ? 1 : 0
+        for (let i = 1; i < k; i++) if (!cachedUnder(s, cb, x + dx * i, y + dy * i, axis)) return false
+        const ex = x + dx * k
+        const ey = y + dy * k
+        return !cb.fluidNear(ex, ey) && cachedCost(s, cb, ex, ey) >= 0
+      },
+      maxSpan: s.p.maxUnderground,
+      starts,
+      cap,
+    },
+    s.p.goal,
+  )
 }
 
 /** Routes one pipe line to the end (tests, one-shot callers); `undefined` when no path was found within the budget. */
