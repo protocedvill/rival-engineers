@@ -1668,6 +1668,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       ports, so later placements were never stopped from walling in a pipe port. They now include pipe-in/pipe-out (and
       the existing `ownLanesOut`/`sealsPortLane` checks apply), T1 `planner` pins a chem row's pipe lane end. Existing
       saves keep their already-sealed port; the fix is validated by a plan from before the row was sited (min-1080).
+      **Spare fluid providers were never offered (B155, fixed `655b59b`):** `expandShared` only offered a built
+      provider's spare when one of its consumers was in the current design walk. A water/oil line whose old consumer sat
+      in another goal therefore could not take the new sulfur row, so the design added a new provider and line through
+      the built block. Fresh demands now try every spare provider of the item; the provider role is reused and the
+      planner's B120 same-source tap attaches the consumer to the existing line (provider spare covers the draw, and
+      the tap is downstream of the provider's pumps). T1 `design`.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
