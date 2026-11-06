@@ -1657,6 +1657,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       pointed at a finished job. `stampParts` now includes existing pole ghosts (the B41 live-pole skip stays) and
       `addPlaceJob` clears a stale/terminal mapping. A **one-time** `adoptPlannedPoles` migration (`poleAdoptDone`) fixes
       saves made before the change; it is not a recurring pass. On the min-1380 save it adopted 111.
+      **The shared iron feed (B153, fixed `e28c816`):** once power held, the battery/frame row n464 still had two iron
+      feeds and 0/s arrived; every repair failed `port n326.out already feeds a route (point-to-point topology; use
+      splitter-tap)`. `planReroute` kept the plan's point-to-point policy even though another route still left the
+      same port. It now switches to splitter-tap when a connection merges or its source port still feeds a route after
+      the rip (T1 `planner`, fails with the old policy).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
