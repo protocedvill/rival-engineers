@@ -1674,6 +1674,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       the built block. Fresh demands now try every spare provider of the item; the provider role is reused and the
       planner's B120 same-source tap attaches the consumer to the existing line (provider spare covers the draw, and
       the tap is downstream of the provider's pumps). T1 `design`.
+      **Crude capacity was measured against the plan (B156, fixed `be9ca2f`):** on the min-1200 save, 15 built pumpjacks
+      had ~209.6 crude/s of potential while the six crude edges planned 42.4/s, but the design added another oil complex
+      because a pumpjack field's spare used its `planned` output. `sharing` now computes a pumpjack field's spare from
+      `fieldPotential`: `wellRate` over its built pumpjacks' current resource amounts. It is potential, not production,
+      so a backed-up pumpjack still counts; other providers keep the planned-output rule. T1 `design`.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
