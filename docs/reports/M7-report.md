@@ -1700,7 +1700,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       over each transport's real moves (`route-seal.ts`): pipes use `pipeClear`, pipe-to-ground spans and pump/pole;
       belts use turns, undergrounds and tunnels. In game (`m7d5-seal1200b`, min-1200) it proves the run N water port
       sealed (`seal goal 15 tiles, 41 states`), and the seal is checked before the budget retry so a sealed port skips
-      the doubled search. Alternative join tiles, the full driver hoist and plan-time pipe rip-up remain.
+      the doubled search. The later `invalid-layout-indexes` (g209) was a re-rooting boundary bug: a trunk that is itself a
+      tap starts with a splitter on its **outer** trunk, and `rerootTap` claimed that head tile for the re-rooted route.
+      It now claims only tiles in `trunk.tiles`. T1 `planner` "re-rooting a tap trunk keeps its outer trunk's splitter
+      head"; the rejection message prints tap/merge and nearby steps. Alternative join tiles, the full driver hoist and
+      plan-time pipe rip-up remain.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

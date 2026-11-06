@@ -9,7 +9,7 @@
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { routeId, layoutClaimTag } from "../src/shared/ids"
 import { dirIndex, FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
-import { findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
+import { checkLayoutIndexes, findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
@@ -215,6 +215,11 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       if (fx.base !== undefined) for (const p of checkClaimOwners(fx.base)) before[p] = true
       const claims = checkClaimOwners(job.layout).filter((p) => !before[p])
       ok(claims.length === 0, `layout claims valid: ${claims.slice(0, 3).join("; ")}`)
+      // Problems the captured base already had are not the plan's (m6a2's base has two overlapping modules).
+      const beforeIdx: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const p of checkLayoutIndexes(fx.base).problems) beforeIdx[p] = true
+      const indexes = checkLayoutIndexes(job.layout).problems.filter((p) => !beforeIdx[p])
+      ok(indexes.length === 0, `layout indexes valid: ${indexes.slice(0, 3).join("; ")}`)
       // M7c.8: nothing the plan adds is left off the network (each pump pole counts on its own).
       const wasOff: Record<string, boolean> = {}
       if (fx.base !== undefined) for (const id of unpoweredModules(fx.base, F)) wasOff[id] = true

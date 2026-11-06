@@ -646,8 +646,16 @@ export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId): Rout
   }
   if (at < 0) return undefined
   const prefix = trunk.steps.slice(0, at)
+  // B158: claim only the tiles the trunk itself owns. A trunk that is itself a tap starts with a splitter on its outer
+  // trunk: that head tile belongs to the outer route (the tap's `tiles` exclude it), and claiming it here left the
+  // re-rooted route owning a tile the outer trunk still listed.
+  const owned: Record<number, boolean> = {}
+  for (const k of trunk.tiles) owned[k] = true
   const kept: Record<number, boolean> = {}
-  for (const st of prefix) kept[tkey(st.x, st.y)] = true
+  for (const st of prefix) {
+    const k = tkey(st.x, st.y)
+    if (owned[k] === true) kept[k] = true
+  }
   // Taps on the kept part move to the re-rooted route; the tap leaves the trunk, so the rip below spares them.
   for (const rid of state.routeOrder) {
     const r = state.routes[rid]
@@ -659,7 +667,10 @@ export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId): Rout
   const head = tkey(sp.x, sp.y)
   const dead = tkey(sp.x + DX[sp.dir], sp.y + DY[sp.dir])
   const tiles: number[] = []
-  for (const st of prefix) tiles.push(tkey(st.x, st.y))
+  for (const st of prefix) {
+    const k = tkey(st.x, st.y)
+    if (owned[k] === true) tiles.push(k)
+  }
   tiles.push(head)
   if (state.routeOcc[dead] === undefined && state.occ[dead] === undefined && state.reserved[dead] === undefined) tiles.push(dead)
   const spans: Route["spans"] = []
@@ -816,7 +827,21 @@ export function checkLayoutIndexes(state: LayoutState): LayoutIndexCheck {
     }
     // B88: a tap whose trunk is gone (a replanned connection's route replaced the trunk it tapped; telemetry crashed on it).
     if (route.tapOf !== undefined && state.routes[route.tapOf] === undefined) problems.push(`route ${id} taps missing route ${route.tapOf}`)
-    for (const k of route.tiles) if (state.routeOcc[k] !== id) problems.push(`route ${id} tile ${keyX(k)},${keyY(k)} indexed as ${state.routeOcc[k] ?? "free"}`)
+    for (const k of route.tiles) {
+      if (state.routeOcc[k] === id) continue
+      const owner = state.routeOcc[k]
+      const or = owner !== undefined ? state.routes[owner] : undefined
+      const kx = keyX(k)
+      const ky = keyY(k)
+      const joinText = (x: Route | undefined): string => x === undefined ? "-" : `tap=${x.tapOf ?? "-"} merge=${x.merge !== undefined ? `${x.merge.x},${x.merge.y}` : "-"} ms=${x.mergeSplitter !== undefined ? `${x.mergeSplitter.x},${x.mergeSplitter.y}` : "-"}`
+      const around = (x: Route | undefined): string => {
+        if (x === undefined) return "-"
+        const out: string[] = []
+        for (const st of x.steps) if (math.abs(st.x - kx) <= 1 && math.abs(st.y - ky) <= 1) out.push(`${st.kind}@${st.x},${st.y}/${st.dir}${st.kind === "splitter" ? ` x2=${st.x2},${st.y2}` : ""}`)
+        return out.join(" ")
+      }
+      problems.push(`route ${id} tile ${kx},${ky} indexed as ${owner ?? "free"} [${id}: ${joinText(route)} steps ${around(route)}; ${owner ?? "-"}: ${joinText(or)} steps ${around(or)}]`)
+    }
     for (const s of route.spans) {
       const found = state.spans[s.line]?.some((x) => x.route === id && x.a === s.span.a && x.b === s.span.b) ?? false
       if (!found) problems.push(`route ${id} span ${s.line}:${s.span.a}..${s.span.b} is not indexed`)

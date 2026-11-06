@@ -13,7 +13,7 @@ import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey,
 import { mergeGoals } from "./merge"
 import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, landsDownstream, pointFeeds, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { commitRoute, dependentRoutes, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, landsDownstream, pointFeeds, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
 import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
@@ -1178,49 +1178,40 @@ export function replacementAvoid(rect: Rect, margin: number): Rect {
 }
 
 /**
- * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
- * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
- * route touching it, and place it again away from its old footprint. Returns false if no module can move.
+ * B158: removes every plan route touching module `mid`, keeping `rerootTap`'s trunk prefix where it can, and takes the
+ * **merge joins** on that route's belt with it (the B91 rule growth uses). A merge join is not a tap: re-rooting/routing
+ * only the touching route left it pointing at a tile the re-rooted tap now owned, and the completed layout failed
+ * `checkLayoutIndexes`. Routes the plan does not own (base/fixed, or a connection not in its request) are left alone.
+ * Returns the removed route ids; their connections must be routed again after the module moves.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, sealed?: { side: "start" | "goal"; edge?: boolean }): boolean {
-  const ids = [c.to.module]
-  if (c.from !== undefined) ids.push(c.from.module)
-  // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
-  if (sealed !== undefined && !sealed.edge && sealed.side === "start" && c.from !== undefined) ids.reverse()
-  for (const mid of ids) {
-    if (job.alias[mid] !== undefined) continue
-    const m = findModule(job.layout, mid)
-    // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
-    // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
-    // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
-    const provenSealed = sealed !== undefined && !sealed.edge && (sealed.side === "start" ? c.from?.module : c.to.module) === mid
-    if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
-    if (job.request.modules.some((r) => r.id === mid && r.at !== undefined)) continue
-    for (const rid of [...job.layout.routeOrder]) {
-      const r = job.layout.routes[rid]
-      if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
-      for (const removed of rerootOrRip(job.layout, rid, mid)) {
-        const conn = removed.substring("route:".length)
-        if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
-      }
-    }
-    unmarkModule(job.layout, m, facts)
-    job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
-    job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
-    // New geometry: earlier rip-ups say nothing about loops around the new spot.
-    job.ripPairs = undefined
-    // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
-    // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
-    const pad = sealed !== undefined ? policy.router.margin : 0
-    job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
-    job.replaceQueue.push(mid)
-    if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
-    if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
-    job.stats.replacements++
-    job.phase = "place"
-    return true
+export function ripForReplace(layout: LayoutState, mid: string, requested: Record<string, boolean>): RouteId[] {
+  const handled: Record<RouteId, boolean> = {}
+  const removed: RouteId[] = []
+  const take = (id: RouteId): void => {
+    if (handled[id] === true) return
+    handled[id] = true
+    removed.push(id)
   }
-  return false
+  for (const rid of [...layout.routeOrder]) {
+    if (handled[rid] === true) continue
+    const r = layout.routes[rid]
+    if (r === undefined || r.fixed === true || requested[r.conn] !== true || (r.to.module !== mid && r.from?.module !== mid)) continue
+    let root: RouteId = rid
+    while (layout.routes[root]?.tapOf !== undefined) root = layout.routes[root]!.tapOf!
+    // Snapshot the merge joins on the group before `rerootTap` moves the trunk's prefix (and its tiles) onto the tap.
+    const merges: RouteId[] = []
+    for (const gid of dependentRoutes(layout, [root])) {
+      const gr = layout.routes[gid]
+      if (gr === undefined || gr.fixed === true || requested[gr.conn] !== true || gid === rid) continue
+      if (gr.tapOf === undefined && (gr.merge !== undefined || gr.mergeSplitter !== undefined)) merges.push(gid)
+    }
+    for (const id of rerootOrRip(layout, rid, mid)) take(id)
+    for (const gid of merges) {
+      if (handled[gid] === true || layout.routes[gid] === undefined) continue
+      for (const id of ripRoute(layout, gid)) take(id)
+    }
+  }
+  return removed
 }
 
 /**
@@ -1252,6 +1243,50 @@ function rerootOrRip(layout: LayoutState, rid: RouteId, mid: string): RouteId[] 
     }
   }
   return ripRoute(layout, rid)
+}
+
+/**
+ * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
+ * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
+ * route touching it, and place it again away from its old footprint. Returns false if no module can move.
+ */
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, sealed?: { side: "start" | "goal"; edge?: boolean }): boolean {
+  const ids = [c.to.module]
+  if (c.from !== undefined) ids.push(c.from.module)
+  // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
+  if (sealed !== undefined && !sealed.edge && sealed.side === "start" && c.from !== undefined) ids.reverse()
+  for (const mid of ids) {
+    if (job.alias[mid] !== undefined) continue
+    const m = findModule(job.layout, mid)
+    // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
+    // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
+    // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
+    const provenSealed = sealed !== undefined && !sealed.edge && (sealed.side === "start" ? c.from?.module : c.to.module) === mid
+    if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
+    if (job.request.modules.some((r) => r.id === mid && r.at !== undefined)) continue
+    const requested: Record<string, boolean> = {}
+    for (const x of job.request.connections) requested[x.id] = true
+    for (const removed of ripForReplace(job.layout, mid, requested)) {
+      const conn = removed.substring("route:".length)
+      if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
+    }
+    unmarkModule(job.layout, m, facts)
+    job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
+    job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
+    // New geometry: earlier rip-ups say nothing about loops around the new spot.
+    job.ripPairs = undefined
+    // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
+    // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
+    const pad = sealed !== undefined ? policy.router.margin : 0
+    job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
+    job.replaceQueue.push(mid)
+    if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
+    if (job.queue.indexOf(c.id) < 0) job.queue.push(c.id)
+    job.stats.replacements++
+    job.phase = "place"
+    return true
+  }
+  return false
 }
 
 function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {

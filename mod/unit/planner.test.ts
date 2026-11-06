@@ -11,7 +11,7 @@ import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute,
 import { LANE_HOP, laneWayOut, openPortEnds, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { planReroute } from "../src/planner/reroute"
-import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
+import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, ripForReplace, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
@@ -685,6 +685,78 @@ test("B151: a pipe port's lane is protected like a belt port's", () => {
     const a = portApproach(m, p)
     ok(ends.some((e) => e.x === a.x && e.y === a.y), `${p.id} lane end at ${a.x},${a.y} is protected`)
   }
+})
+
+test("B158: moving a module rips a merge join on its trunk too (seed 11 g203)", () => {
+  // trunk a→b, splitter tap a→c, and a second provider m merged onto the trunk. Moving a (the start-side seal remedy)
+  // must take the merge join too: ripping only the routes that touch a left m's join on a trunk the re-rooted tap now
+  // owns, and the completed layout failed `checkLayoutIndexes`.
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  const m = source("m", EAST)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  place(state, m, 2, 2)
+  const tp = policy({ topology: "splitter-tap" })
+  const base = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  eq(runJob(newRoutingJob(base, YELLOW, state, ["ab", "ac"]), terrain, F, tp).phase, "done", "trunk and tap")
+  const merge: ConnectionRequest = { ...conn("mb", "m", "b"), merge: true }
+  const merged = runJob(newRoutingJob(request([a, b, c, m], [merge], 40, 30), YELLOW, state, ["mb"]), terrain, F, policy())
+  eq(merged.phase, "done", `merge: ${serpentLine(merged.failures)}`)
+  ok(state.routes["route:mb"] !== undefined, "a merge route")
+  const removed = ripForReplace(state, "a", { ab: true, ac: true, mb: true })
+  ok(removed.indexOf(routeId("route:mb")) >= 0, `the merge dependent goes with the trunk (${removed.join(",")})`)
+  const problems = checkLayoutIndexes(state).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
+test("B158: re-rooting a tap trunk keeps its outer trunk's splitter head", () => {
+  // U (plain trunk) → T (tap of U) → S (tap of T). Re-rooting T onto S adopts T's prefix, but T's splitter head (5,5)
+  // belongs to U: claiming it for S left S owning a tile U still listed (the in-game invalid-layout-indexes).
+  const layout = newLayout()
+  const mk = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "iron-plate",
+    to: { module: "sink", port: "in" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  const u = mk("U", "u")
+  u.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }, { kind: "belt", x: 6, y: 5, dir: 1 }]
+  u.tiles = [tkey(5, 5), tkey(6, 5)]
+  commitRoute(layout, u)
+  const t = mk("T", "t", "U")
+  t.steps = [
+    { kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 },
+    { kind: "belt", x: 5, y: 6, dir: 1 },
+    { kind: "belt", x: 6, y: 6, dir: 1 },
+  ]
+  t.tiles = [tkey(5, 6), tkey(6, 6)]
+  commitRoute(layout, t)
+  const s = mk("S", "s", "T")
+  s.steps = [{ kind: "splitter", x: 6, y: 6, x2: 6, y2: 7, dir: 1 }, { kind: "belt", x: 6, y: 7, dir: 1 }]
+  s.tiles = [tkey(6, 7)]
+  commitRoute(layout, s)
+  const removed = rerootTap(layout, routeId("T"), routeId("S"))
+  ok((removed ?? []).indexOf(routeId("T")) >= 0, "T is ripped")
+  const problems = checkLayoutIndexes(layout).problems
+  eq(problems.length, 0, problems.join("; "))
+  eq(layout.routeOcc[tkey(5, 5)], "U", "U keeps its splitter head")
+  ok(layout.routes["S"].tiles.indexOf(tkey(5, 5)) < 0, "S does not claim U's head")
 })
 
 test("reroute: a route from a port that already feeds another route joins it with a tap", () => {
