@@ -1662,6 +1662,12 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       splitter-tap)`. `planReroute` kept the plan's point-to-point policy even though another route still left the
       same port. It now switches to splitter-tap when a connection merges or its source port still feeds a route after
       the rip (T1 `planner`, fails with the old policy).
+      **The sealed sulfur port (B154, fixed `6c4c35e`):** the robot chain's sulfur row had its petroleum pipe-in port at
+      367,-145 boxed in (`open 4/25`), so every oil complex the design added failed `no pipe path`; the acid row had no
+      sulfur, the battery no acid, and the frame/robot rows no engines. `openPortEnds`/`sealedInputs` only knew belt
+      ports, so later placements were never stopped from walling in a pipe port. They now include pipe-in/pipe-out (and
+      the existing `ownLanesOut`/`sealsPortLane` checks apply), T1 `planner` pins a chem row's pipe lane end. Existing
+      saves keep their already-sealed port; the fix is validated by a plan from before the row was sited (min-1080).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
