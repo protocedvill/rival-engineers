@@ -1647,14 +1647,16 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       completes (63 searches, 11 rip-ups, 3,615 route tiles). g200 remains open for a different reason: its built
       complex's water port is 78 tiles short behind built infrastructure (`run 264+68 > 312`), which needs a pump/route
       decision rather than a placement rule.
-      **The robot block's electric islands (B152, fixed `93edbf9`):** by minute 1380 the chain rows and five roboports
+      **The robot block's electric islands (B152, fixed `1b8e038`):** by minute 1380 the chain rows and five roboports
       were built, but each row was its own electric network while the base was net 6. `unpoweredModules` returned
       empty, so every power repair said "nothing missing". The new `power_debug` remote showed why: the connecting
       pole ghosts were in the layout but had **no place job** (`ghost job=none`, e.g. 407,-71; 408,-55; 386,-57). The
       layout's power graph counts a planned ghost as an edge, so the module looked powered while the world could never
-      build it. `strategy/ghost-adopt.ts` now adopts a planned pole ghost whose old job is gone/failed/done every 600
-      ticks at the power-build priority (unplanned ghosts and ghosts with a live job stay). On the min-1380 save it
-      adopted 111, which is the acceptance run for this fix.
+      build it. Root cause: a partial stamp creates pole ghosts but no jobs; on the retry `stampParts` saw each existing
+      ghost and skipped it instead of including it in the job loop, and `addPlaceJob` refused a ghost whose old mapping
+      pointed at a finished job. `stampParts` now includes existing pole ghosts (the B41 live-pole skip stays) and
+      `addPlaceJob` clears a stale/terminal mapping. A **one-time** `adoptPlannedPoles` migration (`poleAdoptDone`) fixes
+      saves made before the change; it is not a recurring pass. On the min-1380 save it adopted 111.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
