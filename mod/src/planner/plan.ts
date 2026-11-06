@@ -21,6 +21,7 @@ import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
 import { newPipeSearch, pipeFailureNotes, provePipeSeal, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
+import type { RouteFailure } from "./route-failure"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
 import { ModuleDef, Port } from "../modules/types"
 import { moduleId, poleId, routeId } from "../shared/ids"
@@ -159,6 +160,8 @@ export type PlanEvidence =
       rip: boolean
       windowScale: number
       expansions: number
+      /** Which router failed (B157): `wideJoin` only widens a belt window, so pipes are not offered it. */
+      mode?: "belt" | "pipe"
       /**
        * B57/B63: the seal check ran out at this end: its port, resolved. `edge` says the window boundary cut the flood,
        * i.e. the proof is only "no path *inside this window*".
@@ -415,28 +418,35 @@ function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): v
 }
 
 function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
-  job.evidence ??= []
-  const sl = search.sealed
-  let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
-  if (sl !== undefined) {
-    const c = connection(job, conn)
-    const ref = sl.side === "goal" ? c.to : c.from
-    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref), edge: sl.edge }
-  }
-  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
+  const sealed = search.sealed
+  const failure: RouteFailure = { kind: sealed !== undefined && !sealed.edge ? "sealed" : "no-path", reason: reason ?? search.reason ?? "route failed", work: search.expansions, sealed }
+  pushRouteEvidence(job, conn, failure, "belt", rip, windowScale)
 }
 
-/** B156: a failed fluid route's evidence, including the goal seal its flood proved (`provePipeSeal`). */
-function pipeEvidence(job: PlanJob, conn: string, s: PipeSearch): void {
+/** B157: one evidence shape for both transports: the failure, its work, and a proved seal (if any). */
+function pushRouteEvidence(job: PlanJob, conn: string, failure: RouteFailure, mode: "belt" | "pipe", rip: boolean, windowScale?: number): void {
   job.evidence ??= []
-  const c = connection(job, conn)
-  const proof = s.sealed
   let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
+  const proof = failure.sealed
   if (proof !== undefined) {
+    const c = connection(job, conn)
     const ref = proof.side === "goal" ? c.to : c.from
     if (ref !== undefined) sealed = { side: proof.side, port: resolve(job, ref), edge: proof.edge }
   }
-  job.evidence.push({ kind: "route", subject: conn, reason: s.reason ?? "no pipe path", rip: false, windowScale: 1, expansions: s.work, sealed })
+  job.evidence.push({ kind: "route", subject: conn, reason: failure.reason, mode, rip, windowScale: windowScale ?? 1, expansions: failure.work, sealed })
+}
+
+/** B156/B157: a failed fluid route's evidence, including the goal seal its flood proved (`provePipeSeal`). */
+function pipeEvidence(job: PlanJob, conn: string, s: PipeSearch): RouteFailure {
+  const proof = s.sealed
+  const failure: RouteFailure =
+    proof !== undefined && !proof.edge
+      ? { kind: "sealed", reason: s.reason ?? "no pipe path", work: s.work, sealed: proof }
+      : s.reason === "budget exhausted"
+        ? { kind: "budget", reason: s.reason, work: s.work, sealed: proof }
+        : { kind: "no-path", reason: s.reason ?? "no pipe path", work: s.work, sealed: proof }
+  pushRouteEvidence(job, conn, failure, "pipe", false)
+  return failure
 }
 
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
@@ -555,6 +565,8 @@ export interface PipeJob {
   costReq: RouteRequest
   /** Work so far (only kept while `planTrace.searches` is set). */
   work?: number
+  /** B157: a `budget exhausted` search was resumed once with a larger budget. */
+  retried?: boolean
 }
 
 /** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
@@ -565,6 +577,7 @@ function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy,
     cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
     under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y, "pipe") && pipeSpanAt(job.layout, x, y, axis) === undefined,
     fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
+    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }) !== undefined,
   }
 }
 
@@ -846,24 +859,34 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
     if (s.status !== "running") planTrace.searches(`pipe ${pj.conn} ${s.status} work=${math.floor(pj.work)}`)
   }
   if (s.status === "running") return used
-  job.pipe = undefined
   const c = connection(job, pj.conn)
   const f = c.fluid!
+  // B157 phase 2: `budget exhausted` is not a dead end. Resume the same search once with a larger budget (the heap and
+  // cached tiles are still there); before, one fixed budget failed the connection and the goal replanned from scratch.
+  if (s.status === "failed" && s.reason === "budget exhausted" && pj.retried !== true) {
+    pj.retried = true
+    s.p.budget *= PIPE_BUDGET_RETRY
+    s.status = "running"
+    s.reason = undefined
+    if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn} retry budget ${s.p.budget}`)
+    return used
+  }
+  job.pipe = undefined
   if (s.status === "failed") {
     const cb = pipeCallbacks(job, terrain, policy, pj)
-    // B156: `budget exhausted` is not a proof. Flood the goal's pocket before giving up: a sealed goal becomes evidence
-    // (relocation, B57) and is re-placed if it is one of this plan's own modules (B106).
+    // B156: flood the goal's pocket before giving up: a sealed goal becomes evidence (relocation, B57) and is re-placed
+    // if it is one of this plan's own modules (B106).
     if ((policy.router.sealCheck ?? 0) > 0) {
       const seal = provePipeSeal(s, cb, s.p.starts ?? [s.p.start], policy.router.sealCheck!)
       if (seal.proof !== undefined) s.sealed = seal.proof
     }
-    pipeEvidence(job, pj.conn, s)
-    if (s.sealed !== undefined && !s.sealed.edge && tryReplace(job, c, facts, policy, s.sealed)) return used
+    const failure = pipeEvidence(job, pj.conn, s)
+    if (failure.sealed !== undefined && !failure.sealed.edge && tryReplace(job, c, facts, policy, failure.sealed)) return used
     const st = s.p.start
     const routeTerrain = pipeTerrain(terrain, f)
     const k = tkey(st.x, st.y)
     const g = s.p.goal
-    fail(job, c.id, `no pipe path (${s.reason ?? "unknown"}, ${s.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${s.sealed !== undefined ? `, sealed ${s.sealed.side} ${s.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
+    fail(job, c.id, `no pipe path (${failure.reason}, ${failure.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${failure.sealed !== undefined ? `, sealed ${failure.sealed.side} ${failure.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
     return used
   }
   const r = s.result!
@@ -919,6 +942,8 @@ const PIPE_EXTENT_MARGIN = 8
 
 /** Expansions one fluid route may take (agent guess; a 600-tile line needs a few thousand). */
 const PIPE_BUDGET = 200000
+/** B157: multiplier for the one resumed search after `budget exhausted` (a 2× budget; one retry only). */
+const PIPE_BUDGET_RETRY = 2
 
 /** The line key of pipe-to-ground spans (apart from belt undergrounds: the two never connect). */
 function pipeLine(x: number, y: number, axis: number): string {

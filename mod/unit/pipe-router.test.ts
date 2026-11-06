@@ -125,6 +125,28 @@ test("pipe router: a pump at least every extent; none on a short line", () => {
   eq(route(request(OPEN, { x: 1, y: 2, dir: 1 }, { x: 40, y: 2, dir: 1 }, { extent: 100 })).steps.filter((s) => s.kind === "pump").length, 0, "no pump within the extent")
 })
 
+test("B157: a pump needs a pole spot; without one the extent cannot be crossed", () => {
+  const long = [".".repeat(120), ".".repeat(120), ".".repeat(120)]
+  const req = (pole: (x: number, y: number, dir: number) => boolean) => request(long, { x: 1, y: 1, dir: 1 }, { x: 110, y: 1, dir: 1 }, { extent: 20, pole })
+  eq(routePipe(req(() => false)), undefined, "no pump can stand: no route across the extent")
+  ok(routePipe(req(() => true)) !== undefined, "with pole spots the line routes")
+})
+
+test("B157: a budget-exhausted search resumes on the same heap with a larger budget", () => {
+  const req = request(OPEN, { x: 1, y: 2, dir: 1 }, { x: 55, y: 2, dir: 1 }, { budget: 1 })
+  const s = newPipeSearch(req)
+  while (s.status === "running") stepPipeSearch(s, req, 10)
+  eq(s.status, "failed")
+  eq(s.reason, "budget exhausted")
+  // The plan's one retry: same search, same heap, a doubled budget.
+  s.p.budget = 100000
+  s.status = "running"
+  s.reason = undefined
+  while (s.status === "running") stepPipeSearch(s, req, 100000)
+  eq(s.status, "found")
+  eq(connected(s.result!.steps, req), undefined)
+})
+
 test("pipe router: M7c.8 the source's and consumer's own pipes count toward the first and last segments", () => {
   const rows = [".".repeat(200), ".".repeat(200), ".".repeat(200)]
   // 95 tiles apart with extent 100: no pump alone; a source holding 30 tiles of its own pipe needs one, early enough.

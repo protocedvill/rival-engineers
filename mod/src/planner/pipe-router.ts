@@ -37,6 +37,11 @@ export interface PipeCallbacks {
   under: (this: void, x: number, y: number, axis: number) => boolean
   /** Whether another fluid box (another route's pipe, another port) connects into this tile. */
   fluidNear: (this: void, x: number, y: number) => boolean
+  /**
+   * B157: whether a pole can stand beside a pump at (x, y) facing `dir`. A pump without power carries nothing, so a
+   * pump move whose pole spot is taken is not a move. Absent: do not check (one-shot tests and old callers).
+   */
+  pole?: (this: void, x: number, y: number, dir: number) => boolean
 }
 
 export interface PipeParams {
@@ -712,7 +717,9 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const py = y + DY[d0]
   if (run > 0) {
     const cp = cachedCost(s, cb, px, py)
-    if (cp >= 0 && !heldBy(tkey(px, py)) && !heldBy(tkey(px + DX[d0], py + DY[d0]))) visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
+    if (cp >= 0 && !heldBy(tkey(px, py)) && !heldBy(tkey(px + DX[d0], py + DY[d0])) && (cb.pole === undefined || cb.pole(px, py, d0))) {
+      visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
+    }
   }
 }
 

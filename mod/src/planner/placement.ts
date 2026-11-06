@@ -18,6 +18,7 @@ import { ModuleDef, ModuleEntity, Port } from "../modules/types"
 import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
 import { laneTag } from "./claim-tags"
 import { EgressGround, EgressJob, newEgress, stepEgress } from "./egress"
+import { fluidConflicts, fluidRouteMap } from "./fluids"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, layoutMargins, lineKey, markModule, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
@@ -111,6 +112,8 @@ export interface PlacementSearch {
   egressOk?: string
   /** M7d.5 g198: the fluid carried by each base/planned fluid route tile (a pipe port may not stand beside another). */
   fluidRoutes?: Record<number, string>
+  /** B157 phase 3: per fluid item, the tiles a pipe of it may not take (other routes and other pipe ports' moats). */
+  fluidConflicts?: Record<string, Record<number, boolean>>
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
@@ -464,6 +467,12 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
  */
 export const LANE_HOP = 5
 
+/**
+ * B157 phase 3: a pipe-to-ground span's reach (`max_underground_distance`, vanilla 10). A pipe lane may pass under a
+ * band wider than a belt's 5 tiles; judging it with `LANE_HOP` rejected valid pipe ports.
+ */
+export const PIPE_LANE_HOP = 10
+
 /** Work units per node an egress check searches (a node's residual moves cost about a quarter of a placement unit). */
 const EGRESS_WORK = 0.25
 /** Crowded best spots (`egressGate`) a placement search rescans past before it takes the best unchecked. */
@@ -593,11 +602,14 @@ export function portLaneEnd(m: PlacedModule, p: Port): LaneEnd {
  * B51 / B57: the ground a lane of port `tag` may lead out over in a layout (not a module, route, mine claim or another
  * port's reservation; trees and rocks pass), and what its undergrounds may go under (anything but a module).
  */
-export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
+export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string, pipe?: { conflicts: Record<number, boolean>; hop: number }): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
   const protectedLane = laneTag(tag)
   const margins = layoutMargins(state)
+  const conflicts = pipe?.conflicts
   const free = (x: number, y: number): boolean => {
     const k = tkey(x, y)
+    // B157: a pipe may not lead out through another fluid's line or port moat, not even on its own port reservation.
+    if (conflicts !== undefined && conflicts[k] === true) return false
     if (laneClaimConflict(state, k, tag, protectedLane) !== undefined) return false
     const r = state.reserved[k]
     if (r === tag || r === protectedLane) return true
@@ -610,7 +622,7 @@ export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: 
     const o = state.occ[tkey(x, y)]
     return !(o !== undefined && string.sub(o, 1, 2) === "m:") && terrain.block(x, y) !== UNKNOWN
   }
-  return { free, hop: { under, max: LANE_HOP, state } }
+  return { free, hop: { under, max: pipe?.hop ?? LANE_HOP, state } }
 }
 
 /** B57: the reservation tag of a protected lane's way out (a plan keeps it clear; see plan.ts `guardLanes`). */
@@ -624,9 +636,13 @@ export function sealedInputs(state: LayoutState, terrain: TerrainView, id: strin
   const m = findModule(state, id)
   const out: string[] = []
   if (m === undefined) return out
+  const routes = fluidRouteMap(state)
+  const conflicts: Record<string, Record<number, boolean>> = {}
   for (const p of m.def.ports) {
     if ((p.kind !== "belt-in" && p.kind !== "pipe-in") || fed[p.id]) continue
-    const g = layoutLaneGround(state, terrain, portTag(m.id, p.id))
+    let pipe: { conflicts: Record<number, boolean>; hop: number } | undefined
+    if (p.kind === "pipe-in" && p.item !== undefined) pipe = { conflicts: (conflicts[p.item] ??= fluidConflicts(state, p.item, routes)), hop: PIPE_LANE_HOP }
+    const g = layoutLaneGround(state, terrain, portTag(m.id, p.id), pipe)
     if (!laneLeadsOut(portLaneEnd(m, p), g.free, need, g.hop)) out.push(p.id)
   }
   return out
@@ -705,9 +721,18 @@ function ownLanesOut(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   // B85: the candidate's own margin ring and the placed modules' rings are own ground once built: not a way out.
   const ring = inflate(rect, 1)
   const margins = layoutMargins(state)
-  const free = (x: number, y: number): boolean => !rectContains(ring, x, y) && !margins[tkey(x, y)] && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
-  const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of td.ports) {
+    // B157 phase 3: a pipe port's lane is judged with the pipe's own rules: no other fluid's route or port moat, and a
+    // pipe-to-ground span of 10, not a belt's 5. The conflicts are built once per fluid item per placement.
+    const pipe = p.pipe
+    let conflicts: Record<number, boolean> | undefined
+    if (pipe && p.item !== undefined) {
+      const cache = (s.fluidConflicts ??= {})
+      conflicts = cache[p.item] ??= fluidConflicts(state, p.item, s.fluidRoutes)
+    }
+    const free = (x: number, y: number): boolean =>
+      !rectContains(ring, x, y) && !margins[tkey(x, y)] && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (conflicts === undefined || conflicts[tkey(x, y)] !== true)
+    const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: pipe ? PIPE_LANE_HOP : LANE_HOP, state }
     // Reaching the port's connection (its target) is enough: the partner may share the pocket.
     if (!laneLeadsOut({ x: ox + p.ox + p.nx, y: oy + p.oy + p.ny, out: stepDir(p.nx, p.ny) }, free, need, hop, s.req.targets[p.id])) return false
   }

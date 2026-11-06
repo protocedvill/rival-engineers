@@ -1472,7 +1472,9 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     if (contest === undefined) {
       let widened = false
       for (const ev of entry.job?.evidence ?? []) {
-        if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
+        // B157: a pipe failure carries the same evidence shape, but `wideJoin` only widens a belt window; the pipe
+        // retry works inside its own plan, so do not queue a no-op constraint (and a misleading log).
+        if (ev.kind !== "route" || ev.mode === "pipe" || ev.sealed === undefined || ev.sealed.side !== "goal") continue
         const n = f.graph.nodes[ev.sealed.port.module]
         if (n === undefined) continue
         if (!CS.add((f.constraints ??= {}), "wideJoin", CS.portKey(n.role, ev.sealed.port.port))) continue

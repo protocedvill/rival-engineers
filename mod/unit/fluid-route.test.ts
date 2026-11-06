@@ -1,7 +1,8 @@
 import { ModuleDef, EAST, NORTH, Port, SOUTH } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
-import { checkLayout, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, portTag } from "../src/planner/layout"
+import { laneLeadsOut, layoutLaneGround, portLaneEnd, sealedInputs } from "../src/planner/placement"
 import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
 import { planReroute } from "../src/planner/reroute"
@@ -95,6 +96,40 @@ test("fluid route: never runs a plain pipe next to another module's pipe port", 
   }
   eq(checkLayout(job.layout, terrain, () => 10).problems.length, 0)
   ok(job.layout.routeOcc[tkey(15, 11)] === undefined, "the other port's tile stays its own")
+})
+
+test("B157 phase 3: a pipe lane is judged with pipe rules, not a belt's", () => {
+  // The dst crude port's lane end is (8,12), walled by 1x1 modules north and south (a module blocks an underground too).
+  // A 1x1 water module's pipe-out outside tile at (7,12) and its moat cover (8,11..13): every way out would mix fluids.
+  const rows = field(30, 30)
+  const dst = box("dst", 5, 5, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 2.5 }, dir: EAST as 0, item: "crude-oil" }])
+  const other = box("other", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "water" }])
+  const wallN = box("wall-n", 1, 1, [])
+  const wallS = box("wall-s", 1, 1, [])
+  const state = newLayout()
+  place(state, dst, 10, 10)
+  place(state, other, 6, 12)
+  place(state, wallN, 8, 11)
+  place(state, wallS, 8, 13)
+  ok(sealedInputs(state, asciiTerrain(rows), "dst", {}, 8).indexOf("in") >= 0, "another fluid's port moat seals the lane")
+  const clean = newLayout()
+  place(clean, dst, 10, 10)
+  place(clean, wallN, 8, 11)
+  place(clean, wallS, 8, 13)
+  eq(sealedInputs(clean, asciiTerrain(rows), "dst", {}, 8).length, 0, "without the water port the lane leads west, out")
+
+  // A 7-tile band west of the lane end: a pipe-to-ground span of 10 crosses it, a belt's 5 does not.
+  const band = field(30, 30)
+  for (let x = 2; x <= 7; x++) band[12] = band[12].substring(0, x) + "#" + band[12].substring(x + 1)
+  const bandState = newLayout()
+  place(bandState, dst, 10, 10)
+  place(bandState, wallN, 8, 11)
+  place(bandState, wallS, 8, 13)
+  const terrain = asciiTerrain(band)
+  eq(sealedInputs(bandState, terrain, "dst", {}, 8).length, 0, "the pipe hop crosses a 7-tile band")
+  const m = findModule(bandState, "dst")!
+  const belt = layoutLaneGround(bandState, terrain, portTag("dst", "in"))
+  eq(laneLeadsOut(portLaneEnd(m, m.def.ports[0]), belt.free, 8, belt.hop), false, "the belt hop does not")
 })
 
 test("B147 (seed 11 g154): never runs a plain pipe next to a module's own pipe on its edge", () => {
@@ -199,6 +234,10 @@ test("B156: a pipe port the flood proves sealed re-places its consumer, like a b
   eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
   ok((job.stats.replacements ?? 0) >= 1, `the sealed consumer moved (${job.stats.replacements ?? 0} replacements)`)
   ok(job.layout.routes["route:crude"]?.fluid !== undefined, "the re-placed consumer is piped")
+  ok(
+    (job.evidence ?? []).some((ev) => ev.kind === "route" && ev.mode === "pipe" && ev.sealed?.side === "goal"),
+    "the failed pipe route carries its seal evidence",
+  )
 })
 
 test("fluid route: a pumpjack field placed on its wells (fixed) pipes crude to a plastic block the planner places", () => {

@@ -1691,6 +1691,16 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       goal-side flood (`planner/route-seal.ts`, bounded by `router.sealCheck`, over-approximating the moves so it can
       only miss a seal, never invent one) now proves the pocket; `pipeStep` records it as evidence and re-places a
       plan's own sealed consumer. T1 `pipe-router`, `fluid-route`; replay `m7-seed11-edge` now plans.
+      **Pipe retry and lane rules (B158):** a connected-but-expensive fluid route used to fail once at
+      `PIPE_BUDGET = 200000` with no retry; it now resumes the same search once at ×2 (`PIPE_BUDGET_RETRY`). Pump
+      moves require a free pole spot, so a planned pump is powerable. Placement lane checks now judge a pipe port with
+      the pipe's own rules: another fluid's route or port moat blocks the lane (`planner/fluids.ts`), and a
+      pipe-to-ground span reaches `PIPE_LANE_HOP = 10` (belt `LANE_HOP` 5). One `RouteFailure` shape and one
+      `pushRouteEvidence` serve both transports; `wideJoin` is belt-only. In-game (`m7d5-phase23`, min-1170) the retry
+      fires (`budget exhausted, 400000 expansions`) with 0 stalls and 7.36 ms/tick planner. The run N water port still
+      refuses a pipe, and the goal-side flood over-approximates the pipe's neighbour rule (`pipeClear`), so it cannot
+      prove that seal: an exact port-approach seal, alternative join tiles, the full driver hoist and plan-time pipe
+      rip-up remain.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
@@ -1731,6 +1741,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Unreachable standing spot avoided for | `jobs/bad-spots.ts` `BAD_SPOT_TICKS` | 10 game-min | Agent guess (B111): long enough for the crew to move on, short enough that a cleared obstacle is tried again. | no |
 | Unreachable spot avoided around | `jobs/bad-spots.ts` `BAD_SPOT_RADIUS` | 2.5 tiles | Agent guess (B111): the next spot nearest the member is usually a tile over in the same pocket; 2.5 clears a four-tile stretch of corridor. | no |
 | Pumpjack field margin | `modules/generators.ts` `PUMPJACK_FIELD_MARGIN` | 2 tiles | Agent guess: room around the pumpjacks for the collector pipes and poles. | no |
+| Pipe budget retry | `planner/plan.ts` `PIPE_BUDGET_RETRY` | ×2 | Agent guess (B158): one resume of the same search after `budget exhausted`; a second retry would double planner stalls. | no |
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Slow-plan capture | `planner/runtime.ts` `SLOW_PLAN_TICKS` | 3600 ticks (1 game-min) | Agent guess (diagnostics only, soaks with frame dumps): most plans finish well within a game-minute; one still planning then is captured to `plans/slow/` for a replay. Adopted plans are now captured up to a 3,000-tile side like failed ones (was 400: production regions are 768² and were never kept). | no |
