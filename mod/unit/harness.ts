@@ -33,9 +33,28 @@ export function ok(condition: boolean, what = "condition"): void {
 export function run(suite: string): void {
   // UNIT_FILTER is the older name (B26), still accepted.
   const filter = os.getenv("UNIT_TEST_FILTER") ?? os.getenv("UNIT_FILTER")
+  // $UNIT_TEST_SHARD "i/n": run every n-th registered test (the T1 runner shards one big file so its replays run on
+  // several cores). Tests are independent; each shard still sees the same registration order, so the split is stable.
+  const shardEnv = os.getenv("UNIT_TEST_SHARD")
+  let shardIndex = 0
+  let shardCount = 1
+  if (shardEnv !== undefined && shardEnv !== "") {
+    const [i, n] = string.match(shardEnv, "^(%d+)/(%d+)$")
+    if (i !== undefined && n !== undefined && tonumber(n)! > 0) {
+      shardIndex = tonumber(i)!
+      shardCount = tonumber(n)!
+    }
+  }
   let failed = 0
   let skipped = 0
+  let slot = 0
   for (const t of tests) {
+    const mine = shardCount <= 1 || slot % shardCount === shardIndex
+    slot++
+    if (!mine) {
+      skipped++
+      continue
+    }
     if (filter !== undefined && filter !== "" && string.find(t.name, filter, 1, true)[0] === undefined) {
       skipped++
       continue
