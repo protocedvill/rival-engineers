@@ -2,7 +2,7 @@ import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, LuaSurface, MapPo
 import { createController, destroyController } from "../character/controller"
 import type { JobId } from "../shared/ids"
 import { getConfig } from "../config"
-import { addJob, newBoard, Rect } from "./board"
+import { addJob, getJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { findEntities } from "../work"
 import { hasNetwork, orderRemoval } from "./robot-orders"
@@ -160,7 +160,14 @@ export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {
  */
 export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: PlanGhostsOptions & { deps?: JobId[] } = {}): JobId | undefined {
   const key = ghost.unit_number!
-  if (faction.ghostJobs[key] !== undefined) return undefined
+  const old = faction.ghostJobs[key]
+  if (old !== undefined) {
+    // B152: a finished/failed job's mapping can outlive the job (pruneBoard removes the job, and some callers do not
+    // clear the mapping). Keeping it made every later attempt return undefined: the ghost could never be built.
+    const prev = getJob(faction.board, old)
+    if (prev !== undefined && prev.status !== "failed" && prev.status !== "done") return undefined
+    delete faction.ghostJobs[key]
+  }
   const proto = ghost.ghost_prototype as LuaEntityPrototype
   const toPlace = proto.items_to_place_this?.[0]
   if (!toPlace) return undefined

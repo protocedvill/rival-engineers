@@ -478,6 +478,22 @@ describe("M5a power and growth", () => {
     assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
   })
 
+  test("B152: a retried stamp adopts an existing pole ghost instead of skipping its job", () => {
+    // This was the upstream path: a partial stamp created pole ghosts but no jobs; the retry found each existing pole
+    // ghost and `continue`d, so the ghost never entered the job loop and stayed jobless for good.
+    const lab = createLab(32)
+    const faction = createFaction(`stamp-adopt-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const layout = newLayout()
+    layout.poles = [{ id: poleId("p"), name: "small-electric-pole", x: ox, y: oy, line: poleLineId("l") }]
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 0.5, y: oy + 0.5 }, force: faction.force })!
+    const r = stampParts(s, faction.force, layout, { modules: [], routes: [], poles: [poleId("p")] }, true)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    assert(r.entities.length === 1 && r.entities[0] === ghost, "the existing pole ghost is part of the stamp")
+  })
+
   test("M7d.5: a planned pole ghost with no job is adopted; an unplanned or already-jobbed one is not", () => {
     // The robot block's connecting pole ghosts had job=none, so the layout's power graph said "powered" while the
     // built networks were islands and no power repair ran.

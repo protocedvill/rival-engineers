@@ -9,9 +9,6 @@ import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import type { LayoutState } from "../planner/layout"
 
-/** Adopt planned pole orphans this often (agent guess: often enough for a repair, cheap enough for a big base). */
-export const GHOST_ADOPT_TICKS = 600
-
 /** Own pole ghosts the live layout plans, keyed name@tile. A module's own poles and the layout's line poles count. */
 function plannedPoles(layout: LayoutState): Record<string, boolean> {
   const out: Record<string, boolean> = {}

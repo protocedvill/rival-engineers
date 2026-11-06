@@ -26,7 +26,8 @@ function poleText(surface: ReturnType<typeof factionSurface>, force: string, nam
     // A ghost with no open place job will never be built (M7d.5 diagnosis).
     const id = ghost.unit_number !== undefined ? faction?.ghostJobs[ghost.unit_number] : undefined
     const job = id !== undefined && faction !== undefined ? getJob(faction.board, id) : undefined
-    return `ghost job=${job !== undefined ? `${job.status}` : "none"}`
+    if (job !== undefined) return `ghost job=${job.status}`
+    return id !== undefined ? `ghost job=STALE(${tostring(id)})` : "ghost job=none"
   }
   return "MISSING"
 }

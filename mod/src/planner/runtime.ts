@@ -424,8 +424,16 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
     // Factorio nevertheless permits a pole ghost on top of a live pole, and that ghost can never be revived.
     // Reuse the live pole instead of creating an impossible ghost/place job for it.
     if (ghost && findEntities(surface, { name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
-    // D71 (b): a replacement pole ghosted ahead of the build (`poles` phase) whose place job did not finish.
-    if (ghost && findEntities(surface, { ghost_name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 }).length > 0) continue
+    // D71 (b) / B152: a replacement pole ghosted ahead of the build, or a pole ghost left by a partial stamp whose
+    // other pieces failed. It must join `entities`: stepBuild gives a job to every entity of a successful stamp, and a
+    // skipped ghost would stay in the world with no job forever (its line then reads as power in the layout only).
+    if (ghost) {
+      const existing = findEntities(surface, { ghost_name: spec.name, position: { x: spec.x, y: spec.y }, force, limit: 1 })[0]
+      if (existing !== undefined) {
+        entities.push(existing)
+        continue
+      }
+    }
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) {
       failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)

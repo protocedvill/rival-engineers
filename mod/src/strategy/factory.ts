@@ -159,6 +159,8 @@ export interface FactoryState {
   growthDiagnostics?: Record<string, { tick: number; reason: string; units: number }>
   /** B98: node → the node still being built that its last growth plan had to wait for (B52); no replan until it is built. */
   growWaits?: Record<string, string>
+  /** B152: the one-time adoption of planned pole ghosts in a save made before the stamp fix (not a recurring pass). */
+  poleAdoptDone?: boolean
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
   design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
@@ -329,11 +331,13 @@ export function onFactoryTick(): void {
       if (brain.milestones["first-electricity-materials"] === undefined) continue
       f = startFactory(faction)
     }
-    // M7d.5/B67: a planned pole ghost whose job was lost keeps the layout's power graph connected while the built
-    // network is an island. Give it a place job back so the repair can actually connect the module.
-    if (tick % EX.GHOST_ADOPT_TICKS === 0) {
+    // B152: a save made before the stamp fix can hold planned pole ghosts that never got a job. Adopt them once, when
+    // the factory first runs in that save; the stamp path now keeps every ghost of a successful stamp jobbed, so this
+    // is a migration, not a recurring pass.
+    if (f.poleAdoptDone !== true) {
+      f.poleAdoptDone = true
       const adopted = EX.adoptPlannedPoles(factionSurface(faction), faction, f.layout, config.factoryPowerBuildPriority)
-      if (adopted > 0) log(`[rival-engineers] faction ${faction.name}: adopted ${adopted} planned pole ghost(s) with no job`)
+      if (adopted > 0) log(`[rival-engineers] faction ${faction.name}: adopted ${adopted} planned pole ghost(s) from before the stamp fix`)
     }
     think(faction, f, config)
   }
