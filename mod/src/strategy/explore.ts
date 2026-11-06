@@ -19,6 +19,8 @@ export { bufferChest, upgradeOutputChests } from "./provider-chests"
 // B144: the bad-build tile ledger, through the same namespace (the factory is close to Lua's local limit).
 export { badBuildRects, recordBadBuild } from "../planner/bad-build"
 export { hardGhostFailure } from "../planner/conflicts"
+// M7d.5/B67: planned pole ghosts whose place jobs were lost, through the same namespace for the factory local budget.
+export { adoptPlannedPoles, GHOST_ADOPT_TICKS } from "./ghost-adopt"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */

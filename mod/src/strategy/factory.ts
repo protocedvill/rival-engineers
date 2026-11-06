@@ -329,6 +329,12 @@ export function onFactoryTick(): void {
       if (brain.milestones["first-electricity-materials"] === undefined) continue
       f = startFactory(faction)
     }
+    // M7d.5/B67: a planned pole ghost whose job was lost keeps the layout's power graph connected while the built
+    // network is an island. Give it a place job back so the repair can actually connect the module.
+    if (tick % EX.GHOST_ADOPT_TICKS === 0) {
+      const adopted = EX.adoptPlannedPoles(factionSurface(faction), faction, f.layout, config.factoryPowerBuildPriority)
+      if (adopted > 0) log(`[rival-engineers] faction ${faction.name}: adopted ${adopted} planned pole ghost(s) with no job`)
+    }
     think(faction, f, config)
   }
 }

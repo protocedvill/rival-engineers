@@ -10,6 +10,7 @@ import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
 import { dropPlannedPoles, FactoryGoal, getFactory, startFactory } from "../strategy/factory"
+import { adoptPlannedPoles } from "../strategy/ghost-adopt"
 import { startBootstrap } from "../strategy/bootstrap"
 import { goalId } from "../shared/ids"
 import { recentDiagnosticBuckets } from "../diagnostic-events"
@@ -18,7 +19,7 @@ import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
 import { claimView, layoutEntityKeys, PlannerEntry, stampParts, startBuild, stepBuild, strayUnder } from "../planner/runtime"
-import { claim, complete } from "../jobs/board"
+import { claim, complete, getJob } from "../jobs/board"
 import { clearJobFor } from "../jobs/faction"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
@@ -475,6 +476,30 @@ describe("M5a power and growth", () => {
     assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
     assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
     assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
+  })
+
+  test("M7d.5: a planned pole ghost with no job is adopted; an unplanned or already-jobbed one is not", () => {
+    // The robot block's connecting pole ghosts had job=none, so the layout's power graph said "powered" while the
+    // built networks were islands and no power repair ran.
+    const lab = createLab(32)
+    const faction = createFaction(`adopt-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const layout = newLayout()
+    layout.poles = [
+      { id: poleId("planned"), name: "small-electric-pole", x: ox, y: oy, line: poleLineId("l") },
+      { id: poleId("planned2"), name: "small-electric-pole", x: ox + 8, y: oy, line: poleLineId("l") },
+    ]
+    const planned = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 0.5, y: oy + 0.5 }, force: faction.force })!
+    const unplanned = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 4.5, y: oy + 0.5 }, force: faction.force })!
+    assert(planned !== undefined && unplanned !== undefined, "ghosts placed")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 1, "one planned orphan adopted")
+    const id = faction.ghostJobs[planned.unit_number!]
+    assert(id !== undefined, "the planned ghost got a job")
+    assert(getJob(faction.board, id!)!.status !== "failed", "the job is open")
+    assert(faction.ghostJobs[unplanned.unit_number!] === undefined, "the unplanned ghost was left alone")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 0, "a live job is not duplicated")
   })
 
   test("B144: a repair goal (growBuild without growth) survives a hard ghost blocker", () => {
