@@ -596,6 +596,18 @@ test("B19: one coal outpost feeds both smelter columns and the power block (powe
   eq(tight.nodes.filter((n) => n.item === "coal").length, 2, "power's own + one shared")
 })
 
+test("M7d.5: a spare provider whose old consumer is not in this walk still takes a new consumer", () => {
+  // The robot chain's new sulfur row needed water. A built water line with spare ran beside its port, but its old
+  // consumer (an earlier sulfur row) was not part of the new goal, so `spare` was never offered and the design planned
+  // a new water pump/line through the built block. Fresh demands now try every spare provider of the item.
+  const d = design(ctx({ enabled: ELECTRIC, sharing: { keep: {}, spare: { coal: { "coal>power": 100 } } } }), { item: RED, perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const coal = d.nodes.filter((n) => n.item === "coal")
+  eq(coal.length, 1, `one coal provider: ${coal.map((n) => n.role).join(" | ")}`)
+  eq(coal[0].role, "coal>power", "the spare built provider")
+  ok(d.edges.filter((e) => e.from === "coal>power").length >= 3, "it feeds the power block and the smelters")
+})
+
 test("P36 (b): when a new coal outpost can't be placed, new consumers in every cluster tap the nearest built one, which grows", () => {
   const s1 = design(greenCtx({ researchUnitTime: 15 }), { item: RED, perSecond: 10 / 60 })
   const keep = keepOf(s1)

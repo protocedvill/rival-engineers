@@ -829,9 +829,19 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
   }
   producers.sort()
   const spare = shared.spare[item] ?? {}
-  for (const p of producers) {
+  // M7d.5: a provider with spare but **no consumer in this walk** is still a valid tap. Its old consumer may sit in a
+  // different goal (the water line feeding an older sulfur row). Without this, every new fluid consumer got a new
+  // provider and its line was planned through the built base, while a same-fluid line with room ran beside the port.
+  const assign = producers.slice()
+  for (const [p] of pairs(spare)) if (assign.indexOf(p as string) < 0) assign.push(p as string)
+  assign.sort()
+  for (const p of assign) {
     let room = spare[p] ?? 0
     if (room <= EPS) continue
+    if (byProducer[p] === undefined) {
+      byProducer[p] = []
+      producers.push(p)
+    }
     const rest: Demand[] = []
     for (const d of fresh) {
       if (d.rate <= room + EPS) {
@@ -842,6 +852,7 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     fresh.length = 0
     for (const d of rest) fresh.push(d)
   }
+  producers.sort()
   // P36 (b): no room for a new producer of this item: the nearest built one takes the new consumers (and grows),
   // a steam block too (a built producer never makes it wait).
   const fb = shared.fallback?.[item]?.[0]
