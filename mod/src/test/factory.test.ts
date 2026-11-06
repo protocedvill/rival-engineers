@@ -9,7 +9,8 @@ import { beltTiers } from "../planner/capacity"
 import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
-import { dropPlannedPoles, FactoryGoal, getFactory, startFactory } from "../strategy/factory"
+import { dropPlannedPoles, FactoryGoal, getFactory, rework, startFactory } from "../strategy/factory"
+import { getConfig } from "../config"
 import { adoptPlannedPoles } from "../strategy/ghost-adopt"
 import { startBootstrap } from "../strategy/bootstrap"
 import { goalId } from "../shared/ids"
@@ -476,6 +477,48 @@ describe("M5a power and growth", () => {
     assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
     assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
     assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
+  })
+
+  test("B152: a reroute's partial add retries instead of leaving its successful ghosts jobless", () => {
+    // The splitter at 350,-41.5: `applyDiff` is two-phase, so one failed add left every successful add jobless, and
+    // `rework` cleared itself and moved on. It must keep the add list and retry.
+    const lab = createLab(32)
+    const faction = createFaction(`rework-retry-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const good = { name: "transport-belt", x: ox + 2.5, y: oy + 0.5, dir: 0, owner: "route:r" }
+    const bad = { name: "transport-belt", x: ox + 4.5, y: oy + 0.5, dir: 0, owner: "route:r" }
+    const stale = s.create_entity({ name: "underground-belt", type: "input", position: { x: bad.x, y: bad.y }, direction: defines.direction.north, force: faction.force })!
+    const g: FactoryGoal = {
+      id: goalId("g-rework"),
+      kind: "production",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 0,
+      createdTick: game.tick,
+      placed: 0,
+      rounds: 0,
+      rework: { clearJobs: [], add: [good, bad] },
+    }
+    const b = { phase: "place", faction: faction.name, clearJobs: [], placeJobs: [], failed: [], ghosts: [] } as never
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: game.tick, entities: {} } as never
+    assert(rework(ctx, g, b) === false, "the partial add waits")
+    assert(g.rework !== undefined, "the add list is kept for a retry")
+    assert((b as unknown as { placeJobs: number[] }).placeJobs.length === 0, "no job while a ghost of the list is missing")
+    stale.destroy()
+    ;(ctx as unknown as { tick: number }).tick += 2000
+    ;(b as unknown as { retryAt?: number }).retryAt = undefined
+    assert(rework(ctx, g, b) === true, "the retry completes")
+    assert(g.rework === undefined && (b as unknown as { phase: string }).phase === "place", "the reroute proceeds")
+    assert((b as unknown as { placeJobs: number[] }).placeJobs.length === 2, "both successful ghosts got jobs")
   })
 
   test("B152: a retried stamp adopts an existing pole ghost instead of skipping its job", () => {

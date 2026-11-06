@@ -2075,8 +2075,9 @@ function reroute(ctx: Ctx, g: FactoryGoal, entry: Entry, routes: IDS.RouteId[], 
 }
 
 /** A reroute's second phase: once its pick-ups are done, its new ghosts and place jobs. Returns whether it is done. */
-function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boolean {
+export function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boolean {
   const w = g.rework!
+  if (b.retryAt !== undefined && ctx.tick < b.retryAt) return false
   for (const id of w.clearJobs) {
     const j = getJob(ctx.faction.board, id)
     if (j !== undefined && j.status !== "done" && j.status !== "failed") return false
@@ -2085,7 +2086,21 @@ function rework(ctx: Ctx, g: FactoryGoal, b: NonNullable<Entry["build"]>): boole
   const d = applyDiff(ctx.surface, ctx.faction, [], w.add, { fuel: b.fuel, priority: b.priority }, ctx.f.layout)
   for (const gh of d.ghosts) b.ghosts!.push(gh)
   for (const id of d.placeJobs) b.placeJobs.push(id)
-  if (d.failed.length > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${d.failed.length} rerouted ghosts could not be created: ${d.failed.slice(0, 4).join("; ")}`)
+  if (d.failed.length > 0) {
+    // B152: `applyDiff` is two-phase, so a partial add created ghosts but no jobs. Keep the add list and retry; the
+    // old path cleared `g.rework` and moved on, leaving every successful ghost jobless (the splitter at 350,-41.5).
+    g.reason = `${d.failed.length} rerouted ghosts could not be created: ${d.failed.slice(0, 4).join("; ")}`
+    log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id}: ${g.reason}`)
+    b.retryAt = ctx.tick + BUILD_ROUND_TICKS
+    if (!stuckRound(ctx, g, d.failed.length)) return false
+    // Persistent blocker: give the successful ghosts their jobs anyway rather than leaving them orphans; the failed
+    // piece stays missing and the reconciler can repair its edge.
+    for (const gh of d.ghosts) {
+      const id = addPlaceJob(ctx.faction, gh, { fuel: b.fuel, priority: b.priority })
+      if (id !== undefined) b.placeJobs.push(id)
+    }
+  }
+  b.retryAt = undefined
   g.rework = undefined
   b.phase = "place"
   return true
