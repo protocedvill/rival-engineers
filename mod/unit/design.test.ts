@@ -611,6 +611,8 @@ test("M7d.5: a pumpjack field's spare is its well capacity, not its planned draw
   near(spareForNode(node as never, 42, 180), 138, 1e-9, "a live potential overrides the plan-time rating")
   const smelter = { ...node, generator: "smelter-column" }
   near(spareForNode(smelter as never, 42), 0, 1e-9, "other providers keep the planned-output rule")
+  const water = { ...node, item: "water", generator: "water-pump", capacity: { inputs: [], outputs: [{ item: "water", perSecond: 1200 }] }, planned: { inputs: [], outputs: [{ item: "water", perSecond: 60 }] } }
+  near(spareForNode(water as never, 60), 1140, 1e-9, "a water pump's spare is its pump capacity")
 })
 
 test("M7d.5: a spare provider whose old consumer is not in this walk still takes a new consumer", () => {

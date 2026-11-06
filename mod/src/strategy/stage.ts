@@ -89,7 +89,11 @@ export function hasCapacity(f: FactoryState, id: string, item: string): boolean 
 export function spareForNode(p: LogicalNode, used: number, potential?: number): number {
   if (p.item === undefined) return 0
   const planned = rateIn(p.planned.outputs, p.item)
-  const room = p.generator === "pumpjack-field" ? potential ?? rateIn(p.capacity.outputs, p.item) : planned
+  // A pumpjack field's feed is its wells (potential, not production); a water pump's feed is the lake (its full pump
+  // capacity). Neither has an upstream supply that `planned` would protect. Everything else keeps the planned rule.
+  let room = planned
+  if (p.generator === "pumpjack-field") room = potential ?? rateIn(p.capacity.outputs, p.item)
+  else if (p.generator === "water-pump") room = rateIn(p.capacity.outputs, p.item)
   return room - used
 }
 
