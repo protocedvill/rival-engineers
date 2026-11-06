@@ -6,6 +6,7 @@ import { LuaSurface } from "factorio:runtime"
 import { decodeWells, encodeWells } from "../modules/generators"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
+import type { PlacedModule } from "../planner/layout"
 import type { Rect, Vec } from "../planner/grid"
 import type { ConnectionRequest } from "../planner/plan"
 import { isStructureType } from "../planner/terrain"
@@ -38,6 +39,28 @@ function wellRate(resource: string, amount: number, pumpjack: string): number {
   const speed = prototypes.entity[pumpjack]?.mining_speed ?? 1
   if (product === undefined || normal <= 0) return 0
   return ((product.amount ?? 10) * speed * (amount / normal)) / time
+}
+
+/**
+ * B155: a built pumpjack field's **potential** output now: the sum of `wellRateOf` over its built pumpjacks' current
+ * remaining wells. This is a potential, not produced items: a full output belt backs a pumpjack up and it makes nothing
+ * while still being able to make its well rate. Unbuilt pumpjacks and depleted wells count zero.
+ */
+export function fieldPotential(surface: LuaSurface, force: string, m: PlacedModule, resource: string): number {
+  let total = 0
+  for (const e of m.def.entities) {
+    if (e.name !== "pumpjack") continue
+    const x = math.floor(m.origin.x + e.x)
+    const y = math.floor(m.origin.y + e.y)
+    const built = findEntities(surface, { name: e.name, position: { x: x + 0.5, y: y + 0.5 }, force, limit: 1 })[0]
+    if (built === undefined) continue
+    let amount = 0
+    for (const r of surface.find_entities_filtered({ area: built.bounding_box, type: "resource", name: resource })) {
+      if (math.floor(r.position.x) === x && math.floor(r.position.y) === y) amount = r.amount
+    }
+    total += wellRate(resource, amount, e.name)
+  }
+  return total
 }
 
 /**

@@ -6,6 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -594,6 +595,22 @@ test("B19: one coal outpost feeds both smelter columns and the power block (powe
   // Without room the smelters share one new outpost: 2 mines instead of 3.
   const tight = design(ctx({ enabled: ELECTRIC, sharing: { keep, spare: {} } }), { item: RED, perSecond: 10 / 60 })
   eq(tight.nodes.filter((n) => n.item === "coal").length, 2, "power's own + one shared")
+})
+
+test("M7d.5: a pumpjack field's spare is its well capacity, not its planned draw", () => {
+  // Measured on seed 11: 15 pumpjacks made ~210 crude/s while the six crude edges planned 42/s. Using `planned` made the
+  // field look full and the design added another field for demand that did not exist.
+  const node = {
+    role: "crude-oil*>oil-complex",
+    item: "crude-oil",
+    generator: "pumpjack-field",
+    capacity: { inputs: [], outputs: [{ item: "crude-oil", perSecond: 210 }] },
+    planned: { inputs: [], outputs: [{ item: "crude-oil", perSecond: 42 }] },
+  }
+  near(spareForNode(node as never, 42), 168, 1e-9, "rated capacity minus draw")
+  near(spareForNode(node as never, 42, 180), 138, 1e-9, "a live potential overrides the plan-time rating")
+  const smelter = { ...node, generator: "smelter-column" }
+  near(spareForNode(smelter as never, 42), 0, 1e-9, "other providers keep the planned-output rule")
 })
 
 test("M7d.5: a spare provider whose old consumer is not in this walk still takes a new consumer", () => {

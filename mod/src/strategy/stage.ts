@@ -4,8 +4,11 @@ import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { edgeDraw, nodeByRole, rateIn, spareCapacity } from "../planner/logical"
+import type { LogicalNode } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
+import { factionSurface, getFaction } from "../jobs/faction"
+import * as OIL from "./oil"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
 import * as CS from "./constraints"
@@ -77,6 +80,19 @@ export function hasCapacity(f: FactoryState, id: string, item: string): boolean 
   return spareCapacity(f.graph, id) > 1e-6 || growableInPlace(f, id, item) > 0
 }
 
+/**
+ * What a built provider can still deliver of its item at the current plan. For every other provider this is the plan's
+ * `planned` output (B65: an under-fed mine's nameplate is not spare), but a **pumpjack field's feed is its own wells**:
+ * its capacity is the real well yield, while `planned` is only what it was sized for. Using `planned` there made a field
+ * producing ~210 crude/s look full at its 42/s plan, so the design added another field for demand that did not exist.
+ */
+export function spareForNode(p: LogicalNode, used: number, potential?: number): number {
+  if (p.item === undefined) return 0
+  const planned = rateIn(p.planned.outputs, p.item)
+  const room = p.generator === "pumpjack-field" ? potential ?? rateIn(p.capacity.outputs, p.item) : planned
+  return room - used
+}
+
 export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean>; draw?: Record<string, number> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
@@ -108,7 +124,13 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       // B65: spare is what the plan sized this provider to deliver (`planned`), not its nameplate capacity. A 4-wide
       // smelter running on a 0.183/s ore feed looks like it has 1.07/s spare by capacity; tapping that spare starves
       // the new consumer, because the plan never grew the feed (see `supplyGaps`).
-      const room = rateIn(p.planned.outputs, p.item) - (used as number)
+      let potential: number | undefined
+      if (p.generator === "pumpjack-field" && p.item !== undefined) {
+        const faction = getFaction(f.faction)
+        const m = findModule(f.layout, (p.alias ?? p.id) as never)
+        if (faction !== undefined && m !== undefined) potential = OIL.fieldPotential(factionSurface(faction), faction.force, m, p.item)
+      }
+      const room = spareForNode(p, used as number, potential)
       // B65: when the plan has no freed capacity, the provider can still take the consumer if it can GROW IN PLACE:
       // the consumer joins its role, the design node's `need` rises to the total, and `diffDesign` asks the built
       // module for expansion units (and, through `supplyPass`, its feed chain for the ore). Forking a whole new chain
