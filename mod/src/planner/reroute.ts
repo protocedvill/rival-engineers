@@ -76,6 +76,23 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
     for (const rid of group) ripRoute(layout, rid)
   }
   if (conns.length === 0) return { ok: false, reason: "no route to reroute", layout: base, remove: [], add: [], routes: [] }
+  // M7d.5: a reroute of a route whose source port already feeds another remaining route must join it with a splitter
+  // tap. Point-to-point is refused by the planner ("port already feeds a route"), which left the robot chain's shared
+  // iron feed with 0/s and no repair.
+  let pol = policy
+  if (pol.topology !== "splitter-tap") {
+    for (const c of conns) {
+      if (c.from === undefined) continue
+      let feeds = c.merge === true
+      for (const rid of layout.routeOrder) {
+        const r = layout.routes[rid]
+        if (r.from !== undefined && r.from.module === c.from.module && r.from.port === c.from.port) feeds = true
+      }
+      if (!feeds) continue
+      pol = { ...policy, topology: "splitter-tap" }
+      break
+    }
+  }
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
   const view: TerrainView = {
     block: (x, y) => {
@@ -90,7 +107,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
     },
     ore: (x, y) => terrain.ore(x, y),
   }
-  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: region.x + region.w / 2, y: region.y + region.h / 2 }, region }, tier, layout), view, facts, policy)
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: region.x + region.w / 2, y: region.y + region.h / 2 }, region }, tier, layout), view, facts, pol)
   if (job.phase !== "done") {
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k}: ${v}`)

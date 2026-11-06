@@ -10,6 +10,7 @@ import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } fr
 import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, rerootTap, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
+import { planReroute } from "../src/planner/reroute"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
@@ -669,6 +670,26 @@ test("router: splitter tap feeds a second consumer from an existing route (split
   const g = buildGraph(state, policy({ topology: "splitter-tap" }), { tiers: TIERS, researched: {} })
   eq(g.physical.edges.length, 2, "two physical edges")
   eq(g.logical.edges[1].physical.length, 2, "the tapped flow maps to trunk + branch")
+})
+
+test("reroute: a route from a port that already feeds another route joins it with a tap", () => {
+  // M7d.5: the robot chain's shared iron feed had 2 feeds and 0/s; every repair failed "port n326.out already feeds a
+  // route (point-to-point topology; use splitter-tap)". The reroute must choose the tap itself.
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  const req = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  const tp = policy({ topology: "splitter-tap" })
+  eq(runJob(newRoutingJob(req, YELLOW, state, ["ab", "ac"]), terrain, F, tp).phase, "done", "the tap plans")
+  const plan = planReroute(state, terrain, F, policy(), YELLOW, [routeId("route:ac")], { x: 0, y: 0, w: 40, h: 30 })
+  eq(plan.ok, true, plan.reason)
+  const r = plan.layout.routes["route:ac"]
+  ok(r !== undefined && r.tapOf === "route:ab", `the rerouted route taps the trunk (${r?.tapOf})`)
 })
 
 test("re-root: a tap keeps its belt and the trunk's first part when the trunk goes (seed 11 g108)", () => {
