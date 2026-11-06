@@ -1,4 +1,4 @@
-import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chemRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { connectionId, moduleId, routeId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
@@ -7,8 +7,8 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, rerootTap, Route, unmarkModule } from "../src/planner/layout"
-import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, portApproach, rerootTap, Route, unmarkModule } from "../src/planner/layout"
+import { LANE_HOP, laneWayOut, openPortEnds, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { planReroute } from "../src/planner/reroute"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
@@ -670,6 +670,21 @@ test("router: splitter tap feeds a second consumer from an existing route (split
   const g = buildGraph(state, policy({ topology: "splitter-tap" }), { tiers: TIERS, researched: {} })
   eq(g.physical.edges.length, 2, "two physical edges")
   eq(g.logical.edges[1].physical.length, 2, "the tapped flow maps to trunk + branch")
+})
+
+test("B151: a pipe port's lane is protected like a belt port's", () => {
+  // Placement only saw belt-in/belt-out lanes, so a later module could wall in a pipe-in port (the sulfur row's
+  // petroleum port at 367,-145): every new oil complex then failed "no pipe path".
+  const state = newLayout()
+  const def = chemRow(F, { recipe: "sulfur", chemPlants: 1 })
+  place(state, def, 10, 10)
+  const m = findModule(state, def.id)!
+  const ends = openPortEnds(state, undefined)
+  for (const p of def.ports) {
+    if (p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
+    const a = portApproach(m, p)
+    ok(ends.some((e) => e.x === a.x && e.y === a.y), `${p.id} lane end at ${a.x},${a.y} is protected`)
+  }
 })
 
 test("reroute: a route from a port that already feeds another route joins it with a tap", () => {

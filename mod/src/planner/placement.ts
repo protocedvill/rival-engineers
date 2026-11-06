@@ -443,11 +443,14 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
   for (const m of state.modules) {
     if (m.id === except) continue
     for (const p of m.def.ports) {
-      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const pipe = p.kind === "pipe-in" || p.kind === "pipe-out"
+      if (!pipe && p.kind !== "belt-in" && p.kind !== "belt-out") continue
       const o = portOutside(m, p)
       if (state.routeOcc[tkey(o.x, o.y)] !== undefined) continue
       const a = portLaneEnd(m, p)
-      if (state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
+      // B45/B57: a pipe port's lane must stay open too. A pipe port has no transport-belt lane reservation (the planner
+      // reserves `portTag` for belt lanes), so a pipe counts as open unless its outside tile already feeds a route.
+      if (!pipe && state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
       if (area !== undefined && !rectContains(area, a.x, a.y)) continue
       out.push(a)
     }
@@ -622,7 +625,7 @@ export function sealedInputs(state: LayoutState, terrain: TerrainView, id: strin
   const out: string[] = []
   if (m === undefined) return out
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" || fed[p.id]) continue
+    if ((p.kind !== "belt-in" && p.kind !== "pipe-in") || fed[p.id]) continue
     const g = layoutLaneGround(state, terrain, portTag(m.id, p.id))
     if (!laneLeadsOut(portLaneEnd(m, p), g.free, need, g.hop)) out.push(p.id)
   }
