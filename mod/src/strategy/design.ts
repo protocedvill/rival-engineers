@@ -1555,6 +1555,8 @@ export interface GoalSpec {
   cluster?: number
   /** M7d.5: the dependency layer of a split production goal (`raw`, `metals`, ...), for ordering and diagnostics. */
   phase?: string
+  /** Internal build-order key (`power`, `labs#1`, `production#1@metals`, ...). */
+  key?: string
   nodes: DesignNode[]
   edges: DesignEdge[]
   growth?: Growth
@@ -1585,10 +1587,6 @@ export function productionLayer(n: DesignNode): ProductionLayer {
   return "other"
 }
 
-function productionLayerIndex(layer: ProductionLayer): number {
-  return PRODUCTION_LAYERS.indexOf(layer)
-}
-
 export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false): GoalSpec[] {
   const goals: GoalSpec[] = []
   const byKind: Record<string, GoalSpec> = {}
@@ -1599,7 +1597,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     const key = (kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind) + suffix + (late ? "~trigger" : "")
     let gs = byKind[key]
     if (gs === undefined) {
-      gs = { kind, nodes: [], edges: [], techs: [] }
+      gs = { kind, nodes: [], edges: [], techs: [], key }
       if (kind === "production" || kind === "labs") gs.cluster = cluster
       if (splitProduction && kind === "production") gs.phase = layer + (late ? "~trigger" : "")
       byKind[key] = gs
@@ -1621,32 +1619,12 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
-  const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5, repair: 6, temp: 7, radar: 8, robots: 9 }
-  // Production layers order after each other; a trigger-late goal of a layer follows that layer's normal goal. An edge
-  // goes to the later endpoint's goal (the consumer when providers come first), so it is routed when both exist.
-  const goalRank = (gs: GoalSpec): number => {
-    let r = rank[gs.kind]
-    if (gs.kind === "production" && splitProduction && gs.phase !== undefined) {
-      const m = string.match(gs.phase, "^([a-z]+)")
-      const layer = m[0] !== undefined ? (m[0] as ProductionLayer) : "other"
-      r += productionLayerIndex(layer) / 100
-      if (string.find(gs.phase, "~trigger", 1, true)[0] !== undefined) r += 0.005
-    }
-    return r
-  }
-  const lateGoals: GoalSpec[] = []
-  for (const k of keys) if (string.find(k, "~trigger", 1, true)[0] !== undefined) lateGoals.push(byKind[k])
-  for (const e of diff.missingEdges) {
-    const a = goalOf[e.from]
-    const b = goalOf[e.to]
-    let gs = a ?? b ?? get("production")
-    if (a !== undefined && b !== undefined && goalRank(b) > goalRank(a)) gs = b
-    // An edge into a trigger-blocked part belongs to that later goal (it builds the consumer).
-    if (b !== undefined && b !== a && lateGoals.indexOf(b) >= 0 && (a === undefined || goalRank(b) >= goalRank(a))) gs = b
-    gs.edges.push(e)
-  }
+  // A missing edge whose endpoints are both built already still needs a route; create its production goal before the
+  // order is fixed (it would otherwise fall outside every goal).
+  for (const e of diff.missingEdges) if (goalOf[e.from] === undefined && goalOf[e.to] === undefined) get("production")
   // Build order: power, then each cluster's labs and production layers in turn (cluster 1 first), the mall after
-  // cluster 1. The non-split order stays the old one.
+  // cluster 1. An edge belongs to the later endpoint's goal in this order: a consumer's input route is planned with
+  // the consumer, and a provider feeding a built consumer is planned with the provider.
   let clusters = 1
   for (const k of keys) {
     const [c] = string.match(k, "#(%d+)")
@@ -1663,7 +1641,23 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     if (c === 1) order.push("mall")
   }
   order.push("mall~trigger")
+  const orderIndex: Record<string, number> = {}
+  for (let i = 0; i < order.length; i++) orderIndex[order[i]] = i
+  for (const e of diff.missingEdges) {
+    const a = goalOf[e.from]
+    const b = goalOf[e.to]
+    let gs = a ?? b
+    if (a !== undefined && b !== undefined) {
+      const ai = a.key !== undefined ? (orderIndex[a.key] ?? -1) : -1
+      const bi = b.key !== undefined ? (orderIndex[b.key] ?? -1) : -1
+      gs = bi > ai ? b : a
+    }
+    gs ??= get("production")
+    gs.edges.push(e)
+  }
   for (const k of order) if (byKind[k] !== undefined) goals.push(byKind[k])
+  // A fallback goal created for a fully-built edge and any other key not in the fixed order still belongs at the end.
+  for (const k of keys) if (byKind[k] !== undefined && goals.indexOf(byKind[k]) < 0) goals.push(byKind[k])
   for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
   for (const gs of goals) gs.techs.sort()
   return goals
