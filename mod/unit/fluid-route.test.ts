@@ -1,7 +1,7 @@
 import { ModuleDef, EAST, NORTH, Port, SOUTH } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
-import { checkLayout, commitModule, findModule, LayoutState, newLayout, PlacedModule, portTag } from "../src/planner/layout"
+import { checkLayout, commitModule, dependentRoutes, findModule, LayoutState, newLayout, PlacedModule, portTag } from "../src/planner/layout"
 import { laneLeadsOut, layoutLaneGround, portLaneEnd, sealedInputs } from "../src/planner/placement"
 import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
@@ -178,6 +178,8 @@ test("B149 (seed 11 g198): a second provider's line joins the line already feedi
   eq(job.phase, "done", `second: ${Object.values(job.failures ?? {}).join("; ")}`)
   const r = job.layout.routes["route:crude-b"]
   eq(r.joins, "route:crude-a", "it joins the first line")
+  const deps = dependentRoutes(job.layout, [routeId("route:crude-a")]).map((id) => id as string)
+  ok(deps.indexOf("route:crude-b") >= 0, `the joining line goes with the line it joins (${deps.join(",")})`)
   eq(checkLayout(job.layout, terrain, () => 10).problems.join("; "), "")
 })
 

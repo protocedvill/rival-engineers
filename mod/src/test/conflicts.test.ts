@@ -677,10 +677,16 @@ describe("faction conflicts", () => {
   test("B102: abandoning a tap's consumer picks up the splitter and puts the tapped route's belt back", () => {
     tapRoute("b102-tap", false, true)
   })
+
+  // B158: the other direction. A tap is a dependent of the trunk it hangs off, so abandoning the trunk's consumer must
+  // take the tap's world pieces too, not only its plan entry.
+  test("B158: abandoning a trunk's consumer takes its tap's built pieces with it", () => {
+    tapRoute("b158-trunk-tap", false, false, true)
+  })
 })
 
 /** B19/B69: a new smelter taps the built ore route; `unbuilt`: the tapped belt is still a ghost with a place job. */
-function tapRoute(id: string, unbuilt: boolean, abandon = false): void {
+function tapRoute(id: string, unbuilt: boolean, abandon = false, abandonTrunk = false): void {
   const lab = createLab(64)
   const f = faction(lab, "tap", 10, 0, false)
   f.brain!.goals = []
@@ -752,6 +758,29 @@ function tapRoute(id: string, unbuilt: boolean, abandon = false): void {
     assert(problems.length === 0, problems.join("; "))
     assert(lab.surface.count_entities_filtered({ name: "splitter", force: f.force }) === 1, "a splitter")
     assert(e.build!.failed.length === 0, `ghosts failed: ${e.build!.failed.join("; ")}`)
+    if (abandonTrunk) {
+      // B158: a tap (or merge/joins dependent) is part of what the trunk's abandonment removes. `ripRoute` took it out of
+      // the plan already, so before the fix its built pieces stayed on the ground with no clear job and no plan owner.
+      const specs = partEntities(job.layout, { modules: [], routes: [routeId("route:ore2")], poles: [] })
+      const built: LuaEntity[] = []
+      for (const spec of specs) {
+        const b = lab.surface.find_entities_filtered({ name: spec.name, position: { x: spec.x, y: spec.y }, force: f.force, limit: 1 })[0]
+        if (b !== undefined) built.push(b)
+      }
+      assert(built.length > 0, "the tap has built pieces")
+      const r = abandonParts(lab.surface, f, job.layout, { modules: [moduleId("smelt")], routes: [], poles: [] }, 90)
+      assert(r.routes.indexOf(routeId("route:ore2")) >= 0, `the tap goes with its trunk (${r.routes.join(",")})`)
+      const target: Record<number, boolean> = {}
+      for (const jid of r.clearJobs) {
+        const t = (f.board.jobs[jid].payload as { target?: LuaEntity }).target
+        if (t !== undefined && t.unit_number !== undefined) target[t.unit_number] = true
+      }
+      for (const b of built) assert(b.valid && target[b.unit_number!] === true, `the tap's ${b.name} at ${b.position.x},${b.position.y} is deconstructed with its trunk`)
+      delete storage.factories!["b19-base"]
+      removePlan(id)
+      done()
+      return false
+    }
     if (abandon) {
       abandoned = abandonParts(lab.surface, f, job.layout, { modules: [moduleId("smelt2")], routes: [], poles: [] }, 90)
       assert(job.layout.routes["route:ore2"] === undefined, "the tap route is dropped with its consumer")

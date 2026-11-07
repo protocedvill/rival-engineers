@@ -643,11 +643,16 @@ function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clear
 export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  const routes = [...parts.routes]
+  const touching: RouteId[] = [...parts.routes]
   for (const rid of layout.routeOrder) {
     const r = layout.routes[rid]
-    if ((mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) && routes.indexOf(rid) < 0) routes.push(rid)
+    if (mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) touching.push(rid)
   }
+  // B158: the routes that hang off these (splitter taps, merge joins, a same-fluid line that `joins` one of them) go
+  // with them. `ripRoute` already took the taps out of the plan, but their world pieces were never in the removal set, so
+  // a tap's ghost/job (or built belt) was left behind the moment its trunk was abandoned.
+  const routes = [...touching]
+  for (const rid of dependentRoutes(layout, touching)) if (routes.indexOf(rid) < 0) routes.push(rid)
   const lineIds: string[] = []
   for (const p of layout.poles ?? []) if (parts.poles.indexOf(p.id) >= 0 && lineIds.indexOf(p.line) < 0) lineIds.push(p.line)
   // M7b/B158: a fluid route's pump poles are part of its world, not of `parts.poles`. `ripRoute` removes them from the

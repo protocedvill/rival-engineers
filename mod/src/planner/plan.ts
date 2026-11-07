@@ -1198,15 +1198,19 @@ export function ripForReplace(layout: LayoutState, mid: string, requested: Recor
     if (r === undefined || r.fixed === true || requested[r.conn] !== true || (r.to.module !== mid && r.from?.module !== mid)) continue
     let root: RouteId = rid
     while (layout.routes[root]?.tapOf !== undefined) root = layout.routes[root]!.tapOf!
-    // Snapshot the merge joins on the group before `rerootTap` moves the trunk's prefix (and its tiles) onto the tap.
-    const merges: RouteId[] = []
+    // Snapshot the routes that hang off the group before `rerootTap` moves the trunk's prefix (and its tiles) onto the
+    // tap: a provider-group merge stands on one of the trunk's belts, and a fluid `joins` line ends beside one of its
+    // pipes; both are routed again with the group.
+    const dependents: RouteId[] = []
     for (const gid of dependentRoutes(layout, [root])) {
       const gr = layout.routes[gid]
       if (gr === undefined || gr.fixed === true || requested[gr.conn] !== true || gid === rid) continue
-      if (gr.tapOf === undefined && (gr.merge !== undefined || gr.mergeSplitter !== undefined)) merges.push(gid)
+      if (gr.tapOf === undefined && (gr.merge !== undefined || gr.mergeSplitter !== undefined)) dependents.push(gid)
+      // B149/B158: a joining line's end is only a connection while the joined line's pipe is there.
+      else if (gr.joins !== undefined) dependents.push(gid)
     }
     for (const id of rerootOrRip(layout, rid, mid)) take(id)
-    for (const gid of merges) {
+    for (const gid of dependents) {
       if (handled[gid] === true || layout.routes[gid] === undefined) continue
       for (const id of ripRoute(layout, gid)) take(id)
     }

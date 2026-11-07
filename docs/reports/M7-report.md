@@ -1707,8 +1707,10 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       B46 pole drop removed the plan part but left the stamped ghost and its place job (the layout still read as
       powered; 72 such ghosts in the min-1200 save). `dropEvictedPoleGhosts` now destroys them with the drop, and a
       versioned one-time migration repairs old saves. The same class pass also fixed `restoreLifted` (a lifted ghost now
-      comes back only while its plan key exists) and `pendingGhosts` (a kept-route piece now checks that its owner route
-      still owns the tile). `applyDiff` partial adds are already covered by the B144/B152 retry paths. Alternative join
+      comes back only while its plan key exists), `pendingGhosts` (a kept-route piece is dropped when its owner route is
+      gone; the B102 splitter-head case is left alone), and `abandonParts`, which now removes a fluid route's pump pole
+      line and every dependent route (tap, merge, `joins`) with its ghosts/jobs — `dependentRoutes` follows
+      `Route.joins` too. `applyDiff` partial adds are already covered by the B144/B152 retry paths. Alternative join
       tiles, the full driver hoist and plan-time pipe rip-up remain.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.

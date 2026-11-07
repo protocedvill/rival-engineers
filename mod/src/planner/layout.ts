@@ -727,10 +727,13 @@ export function tapTree(state: LayoutState, rids: RouteId[]): RouteId[] {
 }
 
 /**
- * B91: routes `rids` and every route that depends on one of them, at any depth: its splitter taps (`tapOf`) and the
- * provider-group joins onto its belt (a side-load `merge` or a `mergeSplitter` on one of its tiles). A route that moves
- * takes them with it: a join left behind points at a tile the trunk may no longer run straight through (sweep 922c77c
- * seed 2034469: a growth rerouted a trunk into a curve under a built merge splitter; the splitter cut it). Layout order.
+ * B91: routes `rids` and every route that depends on one of them, at any depth: its splitter taps (`tapOf`), the
+ * provider-group joins onto its belt (a side-load `merge` or a `mergeSplitter` on one of its tiles), and the same-fluid
+ * line that `joins` it beside a pipe (B149: a second provider ends beside the line already feeding the port). A route
+ * that moves takes them with it: a join left behind points at a tile the trunk may no longer run straight through
+ * (sweep 922c77c seed 2034469: a growth rerouted a trunk into a curve under a built merge splitter; the splitter cut
+ * it), and a fluid `joins` left behind ends beside a pipe that is no longer there (`checkLayoutIndexes`: "joins … not a
+ * line of its fluid"). Layout order.
  */
 export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] {
   const inTree: Record<string, boolean> = {}
@@ -748,7 +751,7 @@ export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] 
       const r = state.routes[id]
       if (r === undefined) continue
       const join = r.merge ?? r.mergeSplitter
-      if ((r.tapOf !== undefined && inTree[r.tapOf]) || (join !== undefined && tiles[tkey(join.x, join.y)])) {
+      if ((r.tapOf !== undefined && inTree[r.tapOf]) || (join !== undefined && tiles[tkey(join.x, join.y)]) || (r.joins !== undefined && inTree[r.joins])) {
         add(id)
         grew = true
       }
