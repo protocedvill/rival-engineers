@@ -615,6 +615,7 @@ export function placePendingGhosts(): void {
     const faction = storage.factions[name]
     const list = faction.pendingGhosts
     if (list === undefined || list.length === 0) continue
+    const f = storage.factories?.[name]
     const left: typeof list = []
     for (const p of list) {
       let waiting = false
@@ -625,6 +626,15 @@ export function placePendingGhosts(): void {
       if (waiting) {
         left.push(p)
         continue
+      }
+      // B158: a piece held for a kept route must not come back if that route was dropped or rerouted away from the
+      // tile in the meantime; it would be an unplanned ghost with a job.
+      if (p.owner !== undefined) {
+        const route = f?.layout.routes[p.owner as never]
+        if (route === undefined || route.tiles.indexOf(tkey(math.floor(p.x), math.floor(p.y))) < 0) {
+          log(`[rival-engineers] faction ${faction.name}: dropping the pending ${p.name} at ${p.x},${p.y}: ${p.owner} no longer owns the tile`)
+          continue
+        }
       }
       const params: Record<string, unknown> = { name: "entity-ghost", inner_name: p.name, position: { x: p.x, y: p.y }, direction: p.dir, force: faction.force }
       if (p.ioType !== undefined) params.type = p.ioType

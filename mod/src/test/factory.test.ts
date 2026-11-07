@@ -11,6 +11,8 @@ import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
 import { dropPlannedPoles, FactoryGoal, getFactory, rework, startFactory } from "../strategy/factory"
 import { dropEvictedPoleGhosts } from "../strategy/ghost-adopt"
+import { restoreLifted } from "../strategy/lifted"
+import { placePendingGhosts } from "../jobs/crew"
 import { getConfig } from "../config"
 import { adoptPlannedPoles } from "../strategy/ghost-adopt"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -470,6 +472,41 @@ describe("M5a power and growth", () => {
     assert(!gh.valid, "the ghost is gone")
     assert(faction.ghostJobs[unit] === undefined, "its job mapping is gone")
     assert(placeJobs.length === 0, "the build no longer waits on it")
+  })
+
+  test("B158: a lifted ghost comes back only while its plan part still exists", () => {
+    const lab = createLab(16)
+    const faction = createFaction(`b158-lift-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x) + 0.5
+    const y = math.floor(lab.origin.y) + 0.5
+    const lift = { name: "small-electric-pole", position: { x, y }, direction: 0 as defines.direction, surface: s.name, clear: 0 }
+    const owner = { id: "g158", lifted: [lift] }
+    const ghosts: LuaEntity[] = []
+    assert(restoreLifted(owner, faction, ghosts, () => ({})) === false, "nothing waits")
+    assert(ghosts.length === 0 && owner.lifted === undefined, "the unplanned lift is dropped, not restored")
+    const planned: Record<string, boolean> = { [string.format("small-electric-pole@%g,%g", x, y)]: true }
+    const owner2 = { id: "g158b", lifted: [lift] }
+    assert(restoreLifted(owner2, faction, ghosts, () => planned) === false, "nothing waits after restoring")
+    assert(ghosts.length === 1 && ghosts[0].valid && ghosts[0].name === "entity-ghost", "the planned lift is restored")
+    destroyFaction(faction.name)
+  })
+
+  test("B158: a pending ghost whose kept route is gone is dropped instead of created", () => {
+    const lab = createLab(16)
+    const faction = createFaction(`b158-pending-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x) + 0.5
+    const y = math.floor(lab.origin.y) + 0.5
+    faction.pendingGhosts = [{ name: "transport-belt", x, y, dir: 0, after: [], priority: 90, owner: "route:missing" }]
+    placePendingGhosts()
+    assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: { x, y }, force: faction.force }).length === 0, "no unplanned ghost")
+    assert((faction.pendingGhosts ?? []).length === 0, "the entry is gone")
+    // A legacy entry (no owner) keeps the old path.
+    faction.pendingGhosts = [{ name: "transport-belt", x, y, dir: 0, after: [], priority: 90 }]
+    placePendingGhosts()
+    assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: { x, y }, force: faction.force }).length === 1, "the legacy entry is restored")
+    destroyFaction(faction.name)
   })
 
   test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {

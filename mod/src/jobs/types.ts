@@ -77,7 +77,7 @@ export interface FactionState {
    * B102: entities to ghost once the listed clear jobs are over (a kept route's belt where a dropped splitter stands:
    * no ghost can go over the live splitter). `jobs/crew.ts` `placePendingGhosts` serves them.
    */
-  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number }[]
+  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number; owner?: string }[]
   /**
    * B144: tiles where a plan could not stamp a ghost and a retry cannot clear it (terrain, a foreign entity, a module,
    * or an overlap in the plan's own add list). The next plan for the role avoids them until `until`.

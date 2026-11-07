@@ -40,13 +40,21 @@ export function restoreGhost(l: LiftedGhost, force: string): LuaEntity | undefin
  * Puts `owner`'s lifted ghosts back once their clear jobs have ended, into `ghosts` (the build's, so its next round
  * re-places them). Returns whether one still waits: the build is not done while it does.
  */
-export function restoreLifted(owner: { id: string; lifted?: LiftedGhost[] }, faction: FactionState, ghosts: LuaEntity[]): boolean {
+export function restoreLifted(owner: { id: string; lifted?: LiftedGhost[] }, faction: FactionState, ghosts: LuaEntity[], planned: (this: void) => Record<string, boolean>): boolean {
   if (owner.lifted === undefined) return false
   const keep: LiftedGhost[] = []
+  let plannedMap: Record<string, boolean> | undefined
   for (const l of owner.lifted) {
     const j = getJob(faction.board, l.clear as never)
     if (j !== undefined && j.status !== "done" && j.status !== "failed") {
       keep.push(l)
+      continue
+    }
+    // B158: a ghost is put back only while its layout part is still planned. A dropped/evicted/rerouted part must not
+    // come back as an unplanned ghost; the lift entry goes with it.
+    plannedMap ??= planned()
+    if (plannedMap[string.format("%s@%g,%g", l.name, l.position.x, l.position.y)] !== true) {
+      log(`[rival-engineers] faction ${faction.name}: goal ${owner.id}: dropping the lifted ${l.name} ghost at ${l.position.x},${l.position.y}: its plan part is gone`)
       continue
     }
     const gh = restoreGhost(l, faction.force)

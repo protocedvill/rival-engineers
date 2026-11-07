@@ -1141,7 +1141,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
     g.progressTick = ctx.tick
   }
   if (open) return
-  if (LIFT.restoreLifted(g, ctx.faction, b.ghosts)) return
+  if (LIFT.restoreLifted(g, ctx.faction, b.ghosts, () => RT.layoutEntityKeys(ctx.f.layout))) return
   const left = b.ghosts.filter((gh) => gh.valid)
   if (left.length > 0) {
     if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
@@ -1992,7 +1992,7 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   }
   if (b.phase !== "done") return
   // Every job finished: ghosts left over (failed jobs, a replan dropping jobs) get new place jobs.
-  if (LIFT.restoreLifted(g, ctx.faction, (b.ghosts ??= []))) return
+  if (LIFT.restoreLifted(g, ctx.faction, (b.ghosts ??= []), () => RT.layoutEntityKeys(entry.job?.layout ?? ctx.f.layout))) return
   const left: LuaEntity[] = []
   for (const gh of b.ghosts) if (gh.valid) left.push(gh)
   if (left.length > 0 && ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return

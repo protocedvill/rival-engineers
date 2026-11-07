@@ -636,7 +636,7 @@ function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clear
       if (e.x > b.left_top.x && e.x < b.right_bottom.x && e.y > b.left_top.y && e.y < b.right_bottom.y) after.push(id)
     }
     faction.pendingGhosts ??= []
-    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority })
+    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority, owner: e.owner })
   }
 }
 
