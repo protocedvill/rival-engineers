@@ -444,6 +444,7 @@ describe("M5a power and growth", () => {
     assert(dropped.length === 1, `one pole dropped (${dropped.length})`)
     assert(parts.poles.length === 1 && parts.poles[0] === "kept", `parts keep the other pole (${parts.poles.join(",")})`)
     assert(layout.occ[tkey(x, y)] === undefined && layout.occ[tkey(x + 6, y)] === "x:poles:b46:0", "its tile is no longer the goal's")
+    assert(layout.poleLines?.[0]?.poles.join(",") === "kept", `the line drops the removed pole (${layout.poleLines?.[0]?.poles.join(",")})`)
     const r = stampParts(s, force.name, layout, parts, true)
     assert(r.failed.length === 0, r.failed.join("; "))
     assert(r.entities.length === 1 && r.entities[0].position.x === x + 6.5, `only the kept pole is ghosted (${r.entities.length})`)

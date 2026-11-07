@@ -1664,6 +1664,15 @@ export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefi
   if (dropped.length === 0) return dropped
   layout.poles = kept
   if (parts !== undefined) parts.poles = parts.poles.filter((id) => !drop[id])
+  // B158: a line must not keep the id of a pole that no longer exists (`checkLayoutIndexes`: "names missing pole").
+  if (layout.poleLines !== undefined) {
+    const lines: typeof layout.poleLines = []
+    for (const line of layout.poleLines) {
+      const poles = line.poles.filter((id) => drop[id] !== true)
+      if (poles.length > 0) lines.push({ ...line, poles })
+    }
+    layout.poleLines = lines
+  }
   LO.bumpLayout(layout)
   return dropped
 }
