@@ -1033,6 +1033,37 @@ test("M7d.5: construction robots and roboports stocked: the robot frame chain is
   eq(portRow.params.roboport, undefined, "the roboport stock row has none")
 })
 
+test("M7d.5: a large robot production goal is split into dependency layers", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true, "flying-robot-frame": true, "construction-robot": true, roboport: true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const stock = robotStock((t) => t === "construction-robotics", (r) => enabled[r as keyof typeof enabled] === true)
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
+  const diff = diffDesign(d, newGraph(), () => undefined)
+  const one = goalsFrom(diff, {})
+  eq(one.filter((g) => g.kind === "production").length, 1, "the default is still one production goal")
+  const split = goalsFrom(diff, {}, undefined, true)
+  const prod = split.filter((g) => g.kind === "production")
+  ok(prod.length >= 4, `the robot chain is split (${prod.length} production goals)`)
+  const layerOf = (g: (typeof prod)[number]): string => {
+    if (g.nodes.some((n) => n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump")) return "raw"
+    if (g.nodes.some((n) => n.generator === "smelter-column")) return "metals"
+    if (g.nodes.some((n) => n.generator === "oil-complex")) return "oil"
+    if (g.nodes.some((n) => n.generator === "chem-row" || n.generator === "fluid-chain")) return "chemicals"
+    if (g.nodes.some((n) => n.generator === "circuit-block" || n.generator === "engine-cell")) return "circuits"
+    if (g.nodes.some((n) => n.generator === "robot-cell")) return "robot"
+    return "parts/other"
+  }
+  const layers = prod.map((g) => layerOf(g))
+  const pos = (l: string): number => layers.indexOf(l)
+  ok(pos("raw") >= 0 && pos("metals") > pos("raw"), `raw before metals (${layers.join(",")})`)
+  ok(pos("robot") > pos("parts/other") && pos("robot") > pos("circuits"), `the robot cell comes after its parts (${layers.join(",")})`)
+  const robot = prod.find((g) => layerOf(g) === "robot")!
+  ok(robot.nodes.some((n) => n.generator === "robot-cell"), "the robot cell is its own goal")
+  ok(robot.edges.some((e) => e.to === stockRole("construction-robot")), "its input routes are planned with it")
+  const metals = prod.find((g) => layerOf(g) === "metals")!
+  ok(metals.edges.some((e) => e.item === "iron-ore"), "the ore edges are planned with the smelters")
+})
+
 test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry rows, no fluid chains", () => {
   const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true }
   const blue = ctx({

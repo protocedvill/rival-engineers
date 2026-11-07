@@ -1553,6 +1553,8 @@ export interface GoalSpec {
   kind: GoalKind
   /** Production goals: one per production cluster (M6: a stage split into clusters plans and builds them in turn). */
   cluster?: number
+  /** M7d.5: the dependency layer of a split production goal (`raw`, `metals`, ...), for ordering and diagnostics. */
+  phase?: string
   nodes: DesignNode[]
   edges: DesignEdge[]
   growth?: Growth
@@ -1564,17 +1566,42 @@ export interface GoalSpec {
  * Build goals from a diff, in build order: power (the steam block and its fuel supply), labs, then the production
  * chain, then growth of existing modules. An edge belongs to the goal that builds its later end.
  */
-export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean): GoalSpec[] {
+/** Production layers, raw first: each layer plans only its own providers, then waits for that goal to be built. */
+export const PRODUCTION_LAYERS = ["raw", "metals", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
+export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
+
+/**
+ * M7d.5 (user, 2026-11-07): the layer of a production provider. Splitting a large blue/robot production goal by layer
+ * keeps each plan to a handful of modules and lets the next layer see the previous one built.
+ */
+export function productionLayer(n: DesignNode): ProductionLayer {
+  if (n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump") return "raw"
+  if (n.generator === "smelter-column") return "metals"
+  if (n.generator === "oil-complex") return "oil"
+  if (n.generator === "chem-row" || n.generator === "fluid-chain") return "chemicals"
+  if (n.generator === "circuit-block" || n.generator === "engine-cell") return "circuits"
+  if (n.generator === "robot-cell") return "robot"
+  if (n.generator === "assembler-row" || n.generator === "red-line") return "parts"
+  return "other"
+}
+
+function productionLayerIndex(layer: ProductionLayer): number {
+  return PRODUCTION_LAYERS.indexOf(layer)
+}
+
+export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false): GoalSpec[] {
   const goals: GoalSpec[] = []
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
   const keys: string[] = []
-  const get = (kind: GoalKind, cluster = 1, late = false): GoalSpec => {
-    const key = (kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind) + (late ? "~trigger" : "")
+  const get = (kind: GoalKind, cluster = 1, late = false, layer: ProductionLayer = "other"): GoalSpec => {
+    const suffix = splitProduction && kind === "production" ? `@${layer}` : ""
+    const key = (kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind) + suffix + (late ? "~trigger" : "")
     let gs = byKind[key]
     if (gs === undefined) {
       gs = { kind, nodes: [], edges: [], techs: [] }
       if (kind === "production" || kind === "labs") gs.cluster = cluster
+      if (splitProduction && kind === "production") gs.phase = layer + (late ? "~trigger" : "")
       byKind[key] = gs
       keys.push(key)
     }
@@ -1589,24 +1616,37 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     let late = false
     // Only goals that wait for their technologies (production, mall): labs and power never did.
     if (waitsOnTrigger !== undefined && (kind === "production" || kind === "mall")) for (const t of n.def.requiresTech) if (!researched[t] && waitsOnTrigger(t)) late = true
-    const gs = get(kind, n.cluster, late)
+    const gs = get(kind, n.cluster, late, kind === "production" ? productionLayer(n) : "other")
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
   const rank: Record<GoalKind, number> = { power: 1, labs: 2, production: 3, mall: 4, grow: 5, repair: 6, temp: 7, radar: 8, robots: 9 }
+  // Production layers order after each other; a trigger-late goal of a layer follows that layer's normal goal. An edge
+  // goes to the later endpoint's goal (the consumer when providers come first), so it is routed when both exist.
+  const goalRank = (gs: GoalSpec): number => {
+    let r = rank[gs.kind]
+    if (gs.kind === "production" && splitProduction && gs.phase !== undefined) {
+      const m = string.match(gs.phase, "^([a-z]+)")
+      const layer = m[0] !== undefined ? (m[0] as ProductionLayer) : "other"
+      r += productionLayerIndex(layer) / 100
+      if (string.find(gs.phase, "~trigger", 1, true)[0] !== undefined) r += 0.005
+    }
+    return r
+  }
   const lateGoals: GoalSpec[] = []
   for (const k of keys) if (string.find(k, "~trigger", 1, true)[0] !== undefined) lateGoals.push(byKind[k])
   for (const e of diff.missingEdges) {
     const a = goalOf[e.from]
     const b = goalOf[e.to]
     let gs = a ?? b ?? get("production")
-    if (a !== undefined && b !== undefined && rank[b.kind] > rank[a.kind]) gs = b
+    if (a !== undefined && b !== undefined && goalRank(b) > goalRank(a)) gs = b
     // An edge into a trigger-blocked part belongs to that later goal (it builds the consumer).
-    if (b !== undefined && b !== a && lateGoals.indexOf(b) >= 0) gs = b
+    if (b !== undefined && b !== a && lateGoals.indexOf(b) >= 0 && (a === undefined || goalRank(b) >= goalRank(a))) gs = b
     gs.edges.push(e)
   }
-  // Build order: power, then each cluster's labs and production in turn (cluster 1 first), the mall after cluster 1.
+  // Build order: power, then each cluster's labs and production layers in turn (cluster 1 first), the mall after
+  // cluster 1. The non-split order stays the old one.
   let clusters = 1
   for (const k of keys) {
     const [c] = string.match(k, "#(%d+)")
@@ -1614,7 +1654,12 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
   }
   const order = ["power"]
   for (let c = 1; c <= clusters; c++) {
-    order.push(`labs#${c}`, `production#${c}`, `production#${c}~trigger`)
+    order.push(`labs#${c}`)
+    if (splitProduction) {
+      for (const layer of PRODUCTION_LAYERS) order.push(`production#${c}@${layer}`, `production#${c}@${layer}~trigger`)
+    } else {
+      order.push(`production#${c}`, `production#${c}~trigger`)
+    }
     if (c === 1) order.push("mall")
   }
   order.push("mall~trigger")

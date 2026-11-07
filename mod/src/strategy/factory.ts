@@ -580,7 +580,10 @@ function designNow(ctx: Ctx): Design | undefined {
     triggerMemo[tech] = blocked
     return blocked
   }
-  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger)
+  // M7d.5 (user, 2026-11-07): once the design contains a cell, split a production goal by dependency layer, so no
+  // plan carries the whole blue/robot chain (the 15-module g202 plan).
+  const splitProduction = d.nodes.some((n) => n.generator === "engine-cell" || n.generator === "robot-cell")
+  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger, splitProduction)
   for (const tech of [f.needUndergrounds, f.needSplitters]) {
     if (tech === undefined || researched[tech]) continue
     if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]
