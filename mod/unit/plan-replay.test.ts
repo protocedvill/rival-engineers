@@ -1,6 +1,7 @@
 // T1 replays of in-game plans that failed (soak regressions). A soak with frame dumps on writes each failed plan's
 // input to script-output/rival-engineers/failed-plans/<faction>/<goal>-a<attempt>-t<tick>.input.lua (runtime.ts
-// exportPlanInput); copy one into mod/unit/fixtures/ and list it below. Each replay runs the plan unbudgeted on the
+// exportPlanInput); copy one into mod/unit/fixtures/ and list it below. REPLAY_TIME=1 prints the fixture load, job setup
+// and plan CPU seconds (plain Lua's clock), so a T1 wall can be split from the plan itself. Each replay runs the plan unbudgeted on the
 // captured terrain and base layout and must succeed. (Plain Lua's `pairs` order is not Factorio's, so a replay is the
 // same scenario, not a bit-exact rerun.) Each replay prints a `REPLAY {json}` metrics line (tabulated by
 // `npm run replay:sweep`) and, when it fails or with REPLAY_DUMP=1, writes a decision dump (dump.ts) to
@@ -64,7 +65,7 @@ function fixtureView(fx: PlanInput): TerrainView {
   }
 }
 
-declare const os: { getenv(this: void, name: string): string | undefined }
+declare const os: { getenv(this: void, name: string): string | undefined; clock(this: void): number }
 declare function loadfile(this: void, path: string): ((this: void) => unknown) | undefined
 
 function load(name: string, captured = false): PlanInput {
@@ -176,7 +177,9 @@ function startProfile(): () => void {
 
 function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
+    const tLoad = os.clock()
     const fx = load(name)
+    const tLoaded = os.clock()
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     for (const m of fx.request.modules) if (opts.newSites !== undefined && opts.newSites.indexOf(m.id) >= 0) m.newSite = true
     for (const m of fx.request.modules) if (opts.regenerate !== undefined && opts.regenerate.indexOf(m.id) >= 0) m.def = generate(F, m.def.generator as GeneratorName, m.def.params ?? {})
@@ -184,6 +187,7 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
     const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+    const tJob = os.clock()
     const view = fixtureView(fx)
     const free = opts.free ?? []
     const terrain: TerrainView = {
@@ -197,7 +201,9 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     startTrace()
     const stopProfile = os.getenv("REPLAY_PROFILE") !== undefined ? startProfile() : undefined
     runJob(job, terrain, F, fx.policy, 100000)
+    const tRan = os.clock()
     if (stopProfile !== undefined) stopProfile()
+    if (os.getenv("REPLAY_TIME") !== undefined) print(`  TIME ${name}: load ${string.format("%.2f", tLoaded - tLoad)}s, job ${string.format("%.2f", tJob - tLoaded)}s, run ${string.format("%.2f", tRan - tJob)}s (${job.stats.work} work)`)
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)

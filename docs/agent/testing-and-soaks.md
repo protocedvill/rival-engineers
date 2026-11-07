@@ -89,6 +89,13 @@ diagnostics, and paths to the newest frame/graph/plan artifact.
 
 ## Performance work: prove "no behaviour change" cheaply
 
+- **T1 runs Lua 5.4; Factorio runs Lua 5.2.** The same microbenchmark (`tools/harness/lua-bench`) gives 1.6× for
+  function calls, 3.3× for small integer table keys, and **27×** for the planner's `tkey` values (~2×10^12); arithmetic
+  is 1×. The planner's hot maps (`occ`, `reserved`, `routeOcc`, terrain chunks, claims) are keyed by `tkey`, so T1
+  timings are a lower bound for key-heavy work and optimisations that look flat in T1 can matter in game. The engine
+  is not the cause: in the min-1191 profile `terrain` is ~0.02 ms/tick against `planner` ~11.6 ms/tick (the rest of
+  the wall is the engine/GC, ~1.4 ms/tick). Use the in-game `[re-profile]` table or `lua-bench` for key-heavy changes;
+  the next step is small/local keys with a one-time rekey migration, not more T1 milliseconds.
 - **Find the cost before changing code.** Replay a captured plan in plain Lua at the in-game budget (400 units a step)
   and time each `stepPlan` call: a single step far over the budget is uncounted work (M7: one pipe route took 7.2 s in
   one step while counting as "expansions"). For per-tick runtime cost, wrap suspects in temporary `LuaProfiler`s logged
