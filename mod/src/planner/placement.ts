@@ -93,6 +93,8 @@ export interface PlacementSearch {
   wh: number
   row: number
   sat: Record<string, number[]>
+  /** Layers this search builds: a module only needs the ones its type and policy query (see `startWindow`). */
+  satLayers?: string[]
   /** B26: tiles of the window in the near band of other modules' growth areas (built with the window). */
   band?: Record<number, boolean>
   /** Candidate cursor: transform index and origin offset index (on a grid of `stride`). */
@@ -860,14 +862,31 @@ function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   s.sat = {}
   s.band = nearBandTiles(s, state, policy)
   s.openPorts = openPortEnds(state, s.req.id, { x: s.wx, y: s.wy, w: s.ww, h: s.wh })
-  for (const l of LAYERS) {
+  // Only the layers this module can query: `sum` reads a missing layer as 0, and every rejection that needs a layer
+  // (mining's ore/res, a shore's water, an expandable module's gblock) gets it here. The window SAT is a big share of
+  // placement work, and a non-mining, non-shore, non-expandable row uses three of the nine.
+  const def = s.req.def
+  const mining = isMining(def)
+  const layers: string[] = ["hard", "clear", "mods", "soft"]
+  if (mining || policy.protectOre) layers.push("ore")
+  if (mining) layers.push("res")
+  if (def.site === "shore" || def.anchor?.wet !== undefined) layers.push("water")
+  if (s.band !== undefined) layers.push("band")
+  if (!mining && def.expand !== undefined && def.expand.maxUnits > 0 && (policy.placement.growthBlocked ?? 0) > 0) layers.push("gblock")
+  s.satLayers = layers
+  for (const l of layers) {
     const a: number[] = []
     for (let i = 0; i < s.ww + 1; i++) a.push(0)
     s.sat[l] = a
   }
   s.ti = 0
   s.ci = 0
-  s.stride = 2
+  // Large windows (a remote module's radius 96 search) coarse-scan at stride 4: the refine pass around the coarse top
+  // covers the immediate neighbourhood, and a coarse pass with nothing feasible falls back to stride 2, then 1. Fluid
+  // modules keep stride 2: their pipe ports need a spot whose side lanes are free, the pocket is narrow, and a coarse
+  // grid can pick a site that later re-placement cannot replace (replay m7-seed11-g154-a1's oil complex).
+  const simple = s.req.def.ports.every((p) => p.kind !== "pipe-in" && p.kind !== "pipe-out")
+  s.stride = simple && R >= 64 ? 4 : 2
   s.top = []
   s.refine = []
   s.ri = -1
@@ -885,7 +904,7 @@ function keepTop(s: PlacementSearch, ti: number, score: number, ox: number, oy: 
   if (list.length > TOP_K) list.pop()
 }
 
-/** Builds one row of the summed-area tables. */
+/** Builds one row of the summed-area tables (only the layers `startWindow` selected). */
 function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
   const y = s.wy + s.row
   const W = s.ww + 1
@@ -908,6 +927,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   // B26: tiles where this module's own growth would be refused (`tryExpand`'s checks), for expandable non-mining modules.
   const ownGrowth = ownGrowthLength(s.req.def) > 0
   const oreBlocks = policy.protectOre && !isMining(s.req.def)
+  const wantOre = aOre !== undefined || aRes !== undefined || (aGblock !== undefined && oreBlocks)
   const treeBlocks = policy.obstacles.trees !== "clear"
   const rockBlocks = policy.obstacles.rocks !== "clear"
   const self = s.req.id
@@ -929,14 +949,14 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const base = (s.row + 1) * W
   const prev = base - W
   aHard[base] = 0
-  aOre[base] = 0
   aClear[base] = 0
-  aWater[base] = 0
   aMods[base] = 0
-  aRes[base] = 0
-  aSoft[base] = 0
-  aBand[base] = 0
-  aGblock[base] = 0
+  if (aOre !== undefined) aOre[base] = 0
+  if (aWater !== undefined) aWater[base] = 0
+  if (aRes !== undefined) aRes[base] = 0
+  if (aSoft !== undefined) aSoft[base] = 0
+  if (aBand !== undefined) aBand[base] = 0
+  if (aGblock !== undefined) aGblock[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
@@ -945,19 +965,20 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const pole = isPoleTag(occ[k])
     const o = pole ? undefined : occ[k]
     if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined || (mine[k] !== undefined && mine[k] !== s.req.id)) hard++
-    const ore = terrain.ore(x, y)
+    const ore = wantOre ? terrain.ore(x, y) : undefined
     if (ore !== undefined) {
-      ores++
-      if (ore === resource) res++
+      if (aOre !== undefined) ores++
+      if (aRes !== undefined && ore === resource) res++
     }
     if (b === TREE) clear += clearTree
     else if (b === ROCK) clear += clearRock
     if (pole) clear += clearPole
-    else if (b === WATER) water++
+    else if (aWater !== undefined && b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
-    if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
-    if (band[k]) nearBand++
+    if (aSoft !== undefined && softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
+    if (aBand !== undefined && band[k]) nearBand++
     if (
+      aGblock !== undefined &&
       ownGrowth &&
       ((b !== FREE && !(b === TREE && !treeBlocks) && !(b === ROCK && !rockBlocks)) ||
         o !== undefined ||
@@ -971,14 +992,14 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard
-    aOre[j] = aOre[p] + ores
     aClear[j] = aClear[p] + clear
-    aWater[j] = aWater[p] + water
     aMods[j] = aMods[p] + mods
-    aRes[j] = aRes[p] + res
-    aSoft[j] = aSoft[p] + soft
-    aBand[j] = aBand[p] + nearBand
-    aGblock[j] = aGblock[p] + gblock
+    if (aOre !== undefined) aOre[j] = aOre[p] + ores
+    if (aWater !== undefined) aWater[j] = aWater[p] + water
+    if (aRes !== undefined) aRes[j] = aRes[p] + res
+    if (aSoft !== undefined) aSoft[j] = aSoft[p] + soft
+    if (aBand !== undefined) aBand[j] = aBand[p] + nearBand
+    if (aGblock !== undefined) aGblock[j] = aGblock[p] + gblock
   }
   s.row++
 }
@@ -1205,7 +1226,7 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
         continue
       }
       satRow(s, state, terrain, policy)
-      used += s.ww / 2
+      used += (s.ww * (s.satLayers?.length ?? LAYERS.length)) / (2 * LAYERS.length)
     } else if (s.egress !== undefined) used += egressStep(s, state, budget - used)
     else if (s.ri >= 0) used += refineStep(s, state, policy)
     else if (s.ti >= s.tdefs.length) passEnd(s, state, terrain, policy)
@@ -1274,6 +1295,25 @@ function scanSide(s: PlacementSearch, policy: LayoutPolicy): { n: number; R: num
 }
 
 /** Scores the next candidate of the scan: transform `ti`, origin `ci` every `stride` tiles around the target. */
+/**
+ * The cheap first checks of `evaluate` (region, hard/wet, avoid, ore, corridor). `scanStep`/`refineStep` run them before
+ * the full evaluation: in a dense plan most candidates die here (96% of one 213k-candidate module), and the ports,
+ * coverage and growth checks afterwards are not cheap.
+ */
+function precheck(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number): string | undefined {
+  const def = td.def
+  const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
+  if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) return "region"
+  const hard = sum(s, "hard", rect)
+  if (hard !== 0 && !wetOnly(s, def, rect, hard)) return "hard"
+  for (const a of s.req.avoid ?? []) {
+    if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) return "avoid"
+  }
+  if (policy.protectOre && !isMining(def) && def.anchor?.resource === undefined && sum(s, "ore", rect) !== 0) return "ore"
+  if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) return "corridor"
+  return undefined
+}
+
 function scanStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
   const { n, R } = scanSide(s, policy)
   const td = s.tdefs[s.ti]
@@ -1282,12 +1322,13 @@ function scanStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy):
   const cy = math.floor(s.ci / n) * s.stride
   const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
   const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
-  const e = evaluate(s, policy, td, ox, oy, state)
+  const why = precheck(s, policy, td, ox, oy)
+  const e = why !== undefined ? reject(s, why, ox, oy) : evaluate(s, policy, td, ox, oy, state)
   s.candidates = (s.candidates ?? 0) + 1
   if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
   if (e !== undefined) {
     if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
-    if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
+    if (s.stride >= 2) keepTop(s, s.ti, e.score, ox, oy)
   }
   s.ci++
   if (s.ci >= n * n) {
@@ -1308,10 +1349,12 @@ function refineStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy
     return 0
   }
   const c = s.refine[s.ri]
-  const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy, state)
+  const td = s.tdefs[c.ti]
+  const why = precheck(s, policy, td, c.ox, c.oy)
+  const e = why !== undefined ? reject(s, why, c.ox, c.oy) : evaluate(s, policy, td, c.ox, c.oy, state)
   s.candidates = (s.candidates ?? 0) + 1
   if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
-  if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, s.tdefs[c.ti], c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
+  if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
   s.ri++
   return 1
 }
@@ -1321,12 +1364,15 @@ function refineStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy
  * feasible; then place the best, or widen the radius, or try the next patch, or fail.
  */
 function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
-  if (s.stride === 2 && s.best !== undefined) {
+  if (s.stride >= 2 && s.best !== undefined) {
+    // Refine around the coarse top: ±1 from a stride-2 pass, ±(stride-1) from a stride-4 one, so the true best inside
+    // the coarse cell is still seen.
     const seen: Record<string, boolean> = {}
+    const dmax = s.stride - 1
     for (let ti = 0; ti < s.tdefs.length; ti++) {
       for (const c of s.top[ti] ?? []) {
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -dmax; dx <= dmax; dx++) {
+          for (let dy = -dmax; dy <= dmax; dy++) {
             const key = `${ti}:${c.ox + dx},${c.oy + dy}`
             if ((dx === 0 && dy === 0) || seen[key]) continue
             seen[key] = true
@@ -1338,8 +1384,15 @@ function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, p
     s.ri = 0
     return
   }
+  if (s.stride > 2) {
+    // Nothing feasible on the coarse grid: try the finer grid before scanning every origin.
+    s.stride = 2
+    s.ti = 0
+    s.ci = 0
+    return
+  }
   if (s.stride === 2) {
-    // Nothing feasible on the coarse grid: scan every origin before widening the radius.
+    // Still nothing feasible on the stride-2 grid: scan every origin before widening the radius.
     s.stride = 1
     s.ti = 0
     s.ci = 0
