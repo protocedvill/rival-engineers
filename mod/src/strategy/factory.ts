@@ -210,6 +210,8 @@ export interface FactoryState {
   relocation?: Record<string, IDS.JobId[]>
   /** D57 (c): ore patches (`patchKey`) a mine found no room on, with the terrain stamp then; skipped until it changes. */
   deadPatches?: Record<string, string>
+  /** M7d.5: crude wells whose pumpjack field had no pole path; `fieldModule` skips them for later providers. */
+  badWells?: Record<string, boolean>
   /** B63 diagnostics: orphan claim tiles seen (`orphanEvents` = plans rejected for them), and the last log tick. */
   orphanClaims?: number
   orphanEvents?: number
@@ -1265,6 +1267,8 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
   // M7c.8: wells of the layout's fields (planned too) and of this goal's earlier fields are taken.
   const takenWells = OIL.moduleWells(f.layout.modules.map((x) => x.canonical))
+  // M7d.5: fields whose pumpjack provider had no pole path are not offered again.
+  for (const [wk, wv] of pairs(f.badWells ?? {})) takenWells[wk as string] = wv as boolean
   const moduleRects = f.layout.modules.map((x) => x.rect)
   // B156: a fixed field box must not cover a tile the layout already claims. `layField` shrank only away from module
   // rects, so a field could still cover a port reservation, a route or another module's interaction tile, and

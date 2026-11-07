@@ -7,6 +7,7 @@ import type { LayoutState } from "../planner/layout"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
 import { patchKey, sealedInputs } from "../planner/placement"
+import { decodeWells } from "../modules/generators"
 import * as RT from "../planner/runtime"
 import { markDirty, terrainView } from "../planner/terrain"
 import { findEntities } from "../work"
@@ -179,6 +180,21 @@ export function markUnreachableMinePatches(ctx: FuelCtx, goal: string, layout: L
   const brain = ctx.faction.brain
   if (brain === undefined) return
   for (const m of layout.modules) {
+    if (m.def.generator === "pumpjack-field" && typeof m.def.params?.wells === "string") {
+      // A crude field whose pumpjack provider cannot reach power is not offered again; another field may be nearer.
+      const wells = decodeWells(m.def.params.wells as string)
+      ctx.f.badWells ??= {}
+      let added = 0
+      for (const w of wells) {
+        const key = `${w.x},${w.y}`
+        if (ctx.f.badWells[key] !== true) {
+          ctx.f.badWells[key] = true
+          added++
+        }
+      }
+      if (added > 0) log(`[rival-engineers] faction ${ctx.faction.name}: ${goal} pumpjack field has no pole path; marking ${added} well(s) bad for later plans`)
+      continue
+    }
     if (m.def.generator !== "mining-outpost") continue
     const resource = m.def.params?.resource as string | undefined
     if (resource === undefined) continue
