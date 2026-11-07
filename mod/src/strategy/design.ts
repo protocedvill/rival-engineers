@@ -1568,17 +1568,25 @@ export interface GoalSpec {
  * Build goals from a diff, in build order: power (the steam block and its fuel supply), labs, then the production
  * chain, then growth of existing modules. An edge belongs to the goal that builds its later end.
  */
-/** Production layers, raw first: each layer plans only its own providers, then waits for that goal to be built. */
-export const PRODUCTION_LAYERS = ["raw", "metals", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
+/**
+ * Production layers, raw first: each layer plans only its own providers, then waits for that goal to be built. Raw
+ * resources and smelter metals are split by item: one plan for six coal mines plus two large ore mines was still a
+ * multi-minute site search.
+ */
+export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "raw-oil", "raw-water", "metals-iron", "metals-copper", "metals-steel", "metals-other", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
 export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
 
-/**
- * M7d.5 (user, 2026-11-07): the layer of a production provider. Splitting a large blue/robot production goal by layer
- * keeps each plan to a handful of modules and lets the next layer see the previous one built.
- */
+/** M7d.5 (user, 2026-11-07): the layer of a production provider; smaller layers keep each plan to a handful of modules. */
 export function productionLayer(n: DesignNode): ProductionLayer {
-  if (n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump") return "raw"
-  if (n.generator === "smelter-column") return "metals"
+  if (n.generator === "mining-outpost") return n.item === "coal" ? "raw-coal" : "raw-ore"
+  if (n.generator === "pumpjack-field") return "raw-oil"
+  if (n.generator === "water-pump") return "raw-water"
+  if (n.generator === "smelter-column") {
+    if (n.item === "iron-plate") return "metals-iron"
+    if (n.item === "copper-plate") return "metals-copper"
+    if (n.item === "steel-plate") return "metals-steel"
+    return "metals-other"
+  }
   if (n.generator === "oil-complex") return "oil"
   if (n.generator === "chem-row" || n.generator === "fluid-chain") return "chemicals"
   if (n.generator === "circuit-block" || n.generator === "engine-cell") return "circuits"
