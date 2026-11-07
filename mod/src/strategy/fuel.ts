@@ -3,9 +3,10 @@ import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
 import { findModule } from "../planner/layout"
+import type { LayoutState } from "../planner/layout"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
-import { sealedInputs } from "../planner/placement"
+import { patchKey, sealedInputs } from "../planner/placement"
 import * as RT from "../planner/runtime"
 import { markDirty, terrainView } from "../planner/terrain"
 import { findEntities } from "../work"
@@ -168,6 +169,32 @@ interface FuelCtx {
   config: Config
   surface: LuaSurface
   tick: number
+}
+
+/**
+ * M7d.5: a fixed-site raw provider whose only failure is its power pole line is not helped by a region-radius retry:
+ * the patch is across ground the line cannot cross. Mark the patch dead so the next design searches another patch.
+ */
+export function markUnreachableMinePatches(ctx: FuelCtx, goal: string, layout: LayoutState): void {
+  const brain = ctx.faction.brain
+  if (brain === undefined) return
+  for (const m of layout.modules) {
+    if (m.def.generator !== "mining-outpost") continue
+    const resource = m.def.params?.resource as string | undefined
+    if (resource === undefined) continue
+    const cx = m.rect.x + m.rect.w / 2
+    const cy = m.rect.y + m.rect.h / 2
+    for (const p of brain.patches) {
+      if (p.name !== resource) continue
+      if (cx < p.x1 || cx > p.x2 + 1 || cy < p.y1 || cy > p.y2 + 1) continue
+      const key = patchKey(resource, p)
+      ctx.f.deadPatches ??= {}
+      if (ctx.f.deadPatches[key] === undefined) {
+        ctx.f.deadPatches[key] = tostring(ctx.tick)
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${goal} outpost patch ${p.id} (${resource}) has no pole path; marking it dead for later plans`)
+      }
+    }
+  }
 }
 
 /** B51: how far (Manhattan steps over free ground) an input lane must lead out, as B45's `portEscape` (B57: 32). */
