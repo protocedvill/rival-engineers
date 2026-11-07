@@ -15,7 +15,7 @@ import { foreignEntitiesOn } from "../world/claims"
 import { allParts, BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
 import { ccw, DX, DY, keyX, keyY, tkey, Vec } from "./grid"
-import { dependentRoutes, findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
+import { dependentRoutes, findModule, findPort, LayoutState, portTile, pumpPoleLine, removeModule, ripRoute } from "./layout"
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
@@ -650,6 +650,15 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   }
   const lineIds: string[] = []
   for (const p of layout.poles ?? []) if (parts.poles.indexOf(p.id) >= 0 && lineIds.indexOf(p.line) < 0) lineIds.push(p.line)
+  // M7b/B158: a fluid route's pump poles are part of its world, not of `parts.poles`. `ripRoute` removes them from the
+  // layout; without adding their line here their ghosts/place jobs stayed in the world as orphans.
+  for (const rid of routes) {
+    const r = layout.routes[rid]
+    if (r !== undefined && r.fluid !== undefined) {
+      const line = pumpPoleLine(rid)
+      if (lineIds.indexOf(line) < 0) lineIds.push(line)
+    }
+  }
   // B63 (bridge rule): a pole that is the only path from a generator to a module that stays is not removed with the
   // abandoned ground. A line passing through it can carry everything behind it (3891760: 91 modules on a 17-tile gap).
   const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules)

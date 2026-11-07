@@ -629,12 +629,12 @@ export function placePendingGhosts(): void {
       }
       // B158: a piece held for a kept route must not come back if that route was dropped or rerouted away from the
       // tile in the meantime; it would be an unplanned ghost with a job.
-      if (p.owner !== undefined) {
-        const route = f?.layout.routes[p.owner as never]
-        if (route === undefined || route.tiles.indexOf(tkey(math.floor(p.x), math.floor(p.y))) < 0) {
-          log(`[rival-engineers] faction ${faction.name}: dropping the pending ${p.name} at ${p.x},${p.y}: ${p.owner} no longer owns the tile`)
-          continue
-        }
+      if (p.owner !== undefined && f !== undefined && f.layout.routes[p.owner as never] === undefined) {
+        // B158: the kept route was dropped; a piece held for it must not come back as an unplanned ghost. (Do not require
+        // the tile in `route.tiles`: while the splitter is cleared, the head tile is owned by the tap, not the trunk —
+        // the B102 splitter-hole case.)
+        log(`[rival-engineers] faction ${faction.name}: dropping the pending ${p.name} at ${p.x},${p.y}: ${p.owner} is gone`)
+        continue
       }
       const params: Record<string, unknown> = { name: "entity-ghost", inner_name: p.name, position: { x: p.x, y: p.y }, direction: p.dir, force: faction.force }
       if (p.ioType !== undefined) params.type = p.ioType

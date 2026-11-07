@@ -498,6 +498,9 @@ describe("M5a power and growth", () => {
     const s = lab.surface
     const x = math.floor(lab.origin.x) + 0.5
     const y = math.floor(lab.origin.y) + 0.5
+    // The jobs layer reads the running factory's layout; install a minimal one for the test.
+    storage.factories ??= {}
+    storage.factories[faction.name] = { layout: newLayout() } as never
     faction.pendingGhosts = [{ name: "transport-belt", x, y, dir: 0, after: [], priority: 90, owner: "route:missing" }]
     placePendingGhosts()
     assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: { x, y }, force: faction.force }).length === 0, "no unplanned ghost")
