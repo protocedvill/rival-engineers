@@ -1703,8 +1703,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       the doubled search. The later `invalid-layout-indexes` (g209) was a re-rooting boundary bug: a trunk that is itself a
       tap starts with a splitter on its **outer** trunk, and `rerootTap` claimed that head tile for the re-rooted route.
       It now claims only tiles in `trunk.tiles`. T1 `planner` "re-rooting a tap trunk keeps its outer trunk's splitter
-      head"; the rejection message prints tap/merge and nearby steps. Alternative join tiles, the full driver hoist and
-      plan-time pipe rip-up remain.
+      head"; the rejection message prints tap/merge and nearby steps. The robot gate then exposed the orphan source: a
+      B46 pole drop removed the plan part but left the stamped ghost and its place job (the layout still read as
+      powered; 72 such ghosts in the min-1200 save). `dropEvictedPoleGhosts` now destroys them with the drop, and a
+      versioned one-time migration repairs old saves. Alternative join tiles, the full driver hoist and plan-time pipe
+      rip-up remain.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.

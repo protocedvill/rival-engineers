@@ -7,7 +7,10 @@ import { getJob } from "../jobs/board"
 import { addPlaceJob } from "../jobs/faction"
 import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
-import type { LayoutState } from "../planner/layout"
+import type { LayoutState, PlannedPole } from "../planner/layout"
+import { destroyEntity } from "../planner/terrain"
+import type { JobId } from "../shared/ids"
+import { findEntities } from "../work"
 
 /** Own pole ghosts the live layout plans, keyed name@tile. A module's own poles and the layout's line poles count. */
 function plannedPoles(layout: LayoutState): Record<string, boolean> {
@@ -40,4 +43,29 @@ export function adoptPlannedPoles(surface: LuaSurface, faction: FactionState, la
     if (addPlaceJob(faction, gh, { priority }) !== undefined) adopted++
   }
   return adopted
+}
+
+/**
+ * B158: a pole dropped from a building goal's plan by B46 must leave the world too. The goal's ghost (and its place
+ * job) was stamped before the drop; leaving it behind is an orphan: the layout no longer plans the pole, the build no
+ * longer owns it, and nothing gives it a job. It then blocks the crew, reads as a leftover and is never rebuilt, while
+ * the layout's power graph still counted it (consumers read "powered" and the world is an island).
+ */
+export function dropEvictedPoleGhosts(surface: LuaSurface, faction: FactionState, dropped: PlannedPole[], placeJobs?: JobId[]): number {
+  let removed = 0
+  for (const p of dropped) {
+    for (const gh of findEntities(surface, { ghost_name: p.name, position: { x: p.x + 0.5, y: p.y + 0.5 }, force: faction.force, limit: 1 })) {
+      const unit = gh.unit_number
+      destroyEntity(gh)
+      removed++
+      if (unit === undefined) continue
+      const job = faction.ghostJobs[unit]
+      delete faction.ghostJobs[unit]
+      if (job !== undefined && placeJobs !== undefined) {
+        const i = placeJobs.indexOf(job)
+        if (i >= 0) placeJobs.splice(i, 1)
+      }
+    }
+  }
+  return removed
 }

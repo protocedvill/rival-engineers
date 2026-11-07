@@ -1,7 +1,7 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
 import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag, routeId } from "../shared/ids"
-import { createFaction, destroyFaction } from "../jobs/faction"
+import { addPlaceJob, createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { allParts, partEntities } from "../planner/build-list"
@@ -10,6 +10,7 @@ import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
 import { dropPlannedPoles, FactoryGoal, getFactory, rework, startFactory } from "../strategy/factory"
+import { dropEvictedPoleGhosts } from "../strategy/ghost-adopt"
 import { getConfig } from "../config"
 import { adoptPlannedPoles } from "../strategy/ghost-adopt"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -439,15 +440,35 @@ describe("M5a power and growth", () => {
     layout.occ[tkey(x + 6, y)] = layoutClaimTag("x:poles:b46:0")
     const parts = { modules: [], routes: [], poles: [poleId("evicted"), poleId("kept")] }
     // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
-    const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
-    assert(n === 1, `one pole dropped (${n})`)
+    const dropped = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
+    assert(dropped.length === 1, `one pole dropped (${dropped.length})`)
     assert(parts.poles.length === 1 && parts.poles[0] === "kept", `parts keep the other pole (${parts.poles.join(",")})`)
     assert(layout.occ[tkey(x, y)] === undefined && layout.occ[tkey(x + 6, y)] === "x:poles:b46:0", "its tile is no longer the goal's")
     const r = stampParts(s, force.name, layout, parts, true)
     assert(r.failed.length === 0, r.failed.join("; "))
     assert(r.entities.length === 1 && r.entities[0].position.x === x + 6.5, `only the kept pole is ghosted (${r.entities.length})`)
     assert(s.find_entities_filtered({ ghost_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 } }).length === 0, "no ghost where the other plan's belt goes")
-    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }) === 0, "idempotent")
+    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }).length === 0, "idempotent")
+  })
+
+  test("B158: dropping an evicted pole also removes its stamped ghost and place job", () => {
+    // B46 removes the pole from the building goal's plan. If the goal had already stamped its ghost, the world kept a
+    // ghost no plan owned and no job built: the power graph said "powered", the world was an island.
+    const lab = createLab(16)
+    const faction = createFaction(`b158-drop-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    const gh = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: faction.force })!
+    const unit = gh.unit_number!
+    const job = addPlaceJob(faction, gh, { priority: 90 })!
+    assert(job !== undefined && faction.ghostJobs[unit] === job, "the ghost has a place job")
+    const placeJobs = [job]
+    const n = dropEvictedPoleGhosts(s, faction, [{ id: poleId("evicted"), name: "small-electric-pole", x, y, line: poleLineId("l") }], placeJobs)
+    assert(n === 1, `one stamped ghost removed (${n})`)
+    assert(!gh.valid, "the ghost is gone")
+    assert(faction.ghostJobs[unit] === undefined, "its job mapping is gone")
+    assert(placeJobs.length === 0, "the build no longer waits on it")
   })
 
   test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {

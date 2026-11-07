@@ -159,8 +159,10 @@ export interface FactoryState {
   growthDiagnostics?: Record<string, { tick: number; reason: string; units: number }>
   /** B98: node → the node still being built that its last growth plan had to wait for (B52); no replan until it is built. */
   growWaits?: Record<string, string>
-  /** B152: the one-time adoption of planned pole ghosts in a save made before the stamp fix (not a recurring pass). */
+  /** B152: the one-time adoption of planned pole ghosts in a save made before the stamp fix (kept for old saves). */
   poleAdoptDone?: boolean
+  /** B158: version of the one-time planned-pole adoption (2: also repairs saves whose old flag is already set). */
+  poleAdoptVersion?: number
   nextGoal: number
   /** Last design (summary for telemetry and stall reports). */
   design?: { cluster1Share?: number; stage: number; nodes: number; edges: number; electricW: number; techs: string[]; errors: string[]; overflow: Record<string, string>; clusters: number; missing: number; grow: number }
@@ -331,13 +333,17 @@ export function onFactoryTick(): void {
       if (brain.milestones["first-electricity-materials"] === undefined) continue
       f = startFactory(faction)
     }
-    // B152: a save made before the stamp fix can hold planned pole ghosts that never got a job. Adopt them once, when
-    // the factory first runs in that save; the stamp path now keeps every ghost of a successful stamp jobbed, so this
-    // is a migration, not a recurring pass.
-    if (f.poleAdoptDone !== true) {
+    // B152/B158: a planned pole ghost whose place job was dropped is invisible to `unpoweredModules` (the layout still
+    // has the pole) while the world is an island. The source is fixed at the drop (`dropEvictedPoleGhosts`); this is the
+    // one-time repair for saves that already carry such ghosts, versioned so a save with the old `poleAdoptDone` runs it
+    // once more.
+    // Version 2 also repairs saves whose old one-shot flag is already set; bump only for a new repair migration.
+    const poleAdopt = f.poleAdoptVersion ?? (f.poleAdoptDone === true ? 1 : 0)
+    if (poleAdopt < 2) {
+      f.poleAdoptVersion = 2
       f.poleAdoptDone = true
       const adopted = EX.adoptPlannedPoles(factionSurface(faction), faction, f.layout, config.factoryPowerBuildPriority)
-      if (adopted > 0) log(`[rival-engineers] faction ${faction.name}: adopted ${adopted} planned pole ghost(s) from before the stamp fix`)
+      if (adopted > 0) log(`[rival-engineers] faction ${faction.name}: adopted ${adopted} planned pole ghost(s) without a job (one-time migration)`)
     }
     think(faction, f, config)
   }
@@ -1642,23 +1648,24 @@ function contested(ctx: Ctx, entry: NonNullable<ReturnType<typeof RT.getPlannerE
 }
 
 /** B46: removes the poles at `gone` (`name@x,y`) from a building goal's own layout and parts; returns how many. */
-export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefined, gone: Record<string, boolean>): number {
+export function dropPlannedPoles(layout: LayoutState, parts: BuildParts | undefined, gone: Record<string, boolean>): PlannedPole[] {
   const drop: Record<string, boolean> = {}
   const kept: PlannedPole[] = []
+  const dropped: PlannedPole[] = []
   for (const p of layout.poles ?? []) {
     if (!gone[`${p.name}@${p.x},${p.y}`]) {
       kept.push(p)
       continue
     }
     drop[p.id] = true
+    dropped.push(p)
     LO.releasePoleTile(layout, tkey(p.x, p.y), p.line)
   }
-  const n = (layout.poles?.length ?? 0) - kept.length
-  if (n === 0) return 0
+  if (dropped.length === 0) return dropped
   layout.poles = kept
   if (parts !== undefined) parts.poles = parts.poles.filter((id) => !drop[id])
   LO.bumpLayout(layout)
-  return n
+  return dropped
 }
 
 /**
@@ -1762,8 +1769,11 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     if (other === g || other.status !== "building" || other.plan === undefined) continue
     const oe = RT.getPlannerEntry(other.plan)
     if (oe?.job === undefined) continue
-    const n = dropPlannedPoles(oe.job.layout, oe.build?.parts, gone)
-    if (n > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${n} poles goal ${other.id} has not built yet (B46)`)
+    const dropped = dropPlannedPoles(oe.job.layout, oe.build?.parts, gone)
+    if (dropped.length > 0) {
+      const ghosts = EX.dropEvictedPoleGhosts(ctx.surface, ctx.faction, dropped, oe.build?.placeJobs)
+      log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${dropped.length} poles goal ${other.id} has not built yet (B46)${ghosts > 0 ? ` (removes ${ghosts} ghost(s))` : ""}`)
+    }
   }
   if ((layout.evictedPoles?.length ?? 0) > 0) log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} evicts ${layout.evictedPoles!.length} poles (B37)`)
   f.layout.evictedPoles = undefined
