@@ -127,6 +127,11 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "assembler-row advanced-circuit 2", generator: "assembler-row", params: { recipe: "advanced-circuit", count: 2, machine: "assembling-machine-2" } },
   // M7d.5: four ingredients (the two used most on row 7's lanes).
   { name: "assembler-row flying-robot-frame 2", generator: "assembler-row", params: { recipe: "flying-robot-frame", count: 2, machine: "assembling-machine-2" }, slow: true },
+  // M7d.5: self-contained cells. The robot cell is validated without the roboport (the lab measures its chests; a
+  // roboport would move robots out of them); the roboport variant is covered by the pure generator test.
+  { name: "circuit-block advanced 1", generator: "circuit-block", params: { recipe: "advanced-circuit", units: 1, machine: "assembling-machine-2" } },
+  { name: "engine-cell 2", generator: "engine-cell", params: { count: 2, machine: "assembling-machine-2" }, slow: true },
+  { name: "robot-cell 2", generator: "robot-cell", params: { count: 2, machine: "assembling-machine-1" }, slow: true },
 ]
 
 export function catalogModule(entry: CatalogEntry): ModuleDef {

@@ -19,7 +19,7 @@
 
 import { ProtoFacts, RecipeFacts } from "../modules/facts"
 import { encodeWells } from "../modules/generators"
-import { GeneratorName } from "../modules/generators"
+import { GeneratorName, smelterMaxFurnaces } from "../modules/generators"
 import { ModuleDef, Rate } from "../modules/types"
 import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../planner/capacity"
 import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../planner/logical"
@@ -158,6 +158,11 @@ export interface DesignContext {
    * stage's) can't grow far enough, so the other clusters make the rest. Absent: equal shares.
    */
   cluster1Max?: number
+  /**
+   * M7d.5 (user, 2026-11-07): from the first blue-science stage on, every new furnace stack is planned at
+   * `smelterMaxFurnaces` instead of the smallest column that covers its demand. Growth and sharing policy are unchanged.
+   */
+  maxSmelters?: boolean
 }
 
 export interface DesignTarget {
@@ -314,6 +319,11 @@ export function producerFor(ctx: DesignContext, item: string): ModuleKind | unde
 function chainProducible(ctx: DesignContext, item: string, depth: number): boolean {
   if (depth > 8) return false
   if (resourceFor(ctx, item) !== undefined) return true
+  const cell = CELLS[item]
+  if (cell !== undefined) {
+    for (const ing of cell.inputs) if (!chainProducible(ctx, ing, depth + 1)) return false
+    return true
+  }
   const gen = generatorRule({ ...ctx, rowInputs: 2 }, item)
   if (gen === undefined) return false
   const rn = ctx.facts.recipeForItem(item)
@@ -323,7 +333,20 @@ function chainProducible(ctx: DesignContext, item: string, depth: number): boole
   return true
 }
 
+/**
+ * M7d.5: self-contained production cells and the only inputs that cross their boundary. The intermediate (copper
+ * cable, gears, pipes, robot frames) is made and consumed inside one module; the design graph sees one provider and
+ * no intermediate route.
+ */
+const CELLS: Record<string, { generator: GeneratorName; inputs: string[] }> = {
+  "advanced-circuit": { generator: "circuit-block", inputs: ["electronic-circuit", "plastic-bar", "copper-plate"] },
+  "engine-unit": { generator: "engine-cell", inputs: ["steel-plate", "iron-plate"] },
+  "construction-robot": { generator: "robot-cell", inputs: ["electric-engine-unit", "battery", "steel-plate", "electronic-circuit"] },
+}
+
 function generatorRule(ctx: DesignContext, item: string): GeneratorName | undefined {
+  const cell = CELLS[item]
+  if (cell !== undefined) return cell.generator
   const fluid = ctx.facts.isFluid?.(item) === true
   // M7c: a fluid resource is pumped (pumpjack field), the offshore-pumped fluid comes from a water pump, and other fluids
   // are made and used inside a module (a fluid chain's petroleum): no producer of their own.
@@ -422,11 +445,23 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
     }
   } else if (gen === "smelter-column") {
     const recipe = ctx.facts.recipeForItem(item)!
-    for (let n = 4; n <= 48; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
+    const max = smelterMaxFurnaces(ctx.facts, recipe, ctx.furnace)
+    // M7d.5 (user, 2026-11-07): from the first blue stage on, a furnace stack is always planned at its maximum feasible
+    // size. The stage target still decides how many stacks exist; it no longer decides how tall each one is.
+    if (ctx.maxSmelters === true) out.push({ recipe, furnaces: max, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
+    else for (let n = 4; n <= max; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
   } else if (gen === "red-line") {
     for (let u = 1; u <= 12; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
   } else if (gen === "circuit-block") {
     for (let u = 1; u <= 8; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler, buffer: ctx.buffer ?? "" })
+  } else if (gen === "engine-cell") {
+    const recipe = ctx.facts.recipeForItem(item)!
+    const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? "assembling-machine-2"
+    for (let n = 2; n <= 24; n += 2) out.push({ count: n, machine, buffer: ctx.buffer ?? "iron-chest" })
+  } else if (gen === "robot-cell") {
+    const recipe = ctx.facts.recipeForItem(item)!
+    const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? ctx.assembler
+    for (let n = 2; n <= 24; n += 2) out.push({ count: n, machine, buffer: ctx.buffer ?? "iron-chest" })
   } else if (gen === "assembler-row") {
     const recipe = ctx.facts.recipeForItem(item)!
     const machine = machineFor(ctx, ctx.facts.recipe(recipe)?.category ?? "crafting") ?? ctx.assembler
@@ -530,13 +565,18 @@ function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: nu
   }
   const machine = machineFor(ctx, r.category) ?? ctx.assembler
   const hub = ctx.robotHub !== undefined && ctx.robotHub.robot === st.item ? ctx.robotHub : undefined
-  const params: Record<string, unknown> = { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
-  if (hub !== undefined) {
+  // M7d.5 (user, 2026-11-07): the construction-robot stock is one self-contained cell: frames, robots and the first
+  // roboport. The cell's first buffer chest fills the roboport, so the stock becomes an active network.
+  const cell = producerFor(ctx, st.item) === "robot-cell"
+  const params: Record<string, unknown> = cell
+    ? { count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest", roboport: hub?.roboport ?? "roboport" }
+    : { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
+  if (!cell && hub !== undefined) {
     params.roboport = hub.roboport
     params.storageChest = hub.storageChest
     params.storage = hub.storage
   }
-  const [ok, made] = pcall(ctx.make, "assembler-row", params)
+  const [ok, made] = pcall(ctx.make, cell ? "robot-cell" : "assembler-row", params)
   if (!ok) {
     w.errors.push(`stock ${st.item}: ${tostring(made)}`)
     return
@@ -547,7 +587,7 @@ function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: nu
   const utilization = math.min(1, st.perSecond / full)
   const role = stockRole(st.item)
   const inputs = inputPorts(def, utilization)
-  w.nodes.push({ role, kind: "sink", generator: "assembler-row", params, def, item: st.item, need: utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * utilization, cluster })
+  w.nodes.push({ role, kind: "sink", generator: cell ? "robot-cell" : "assembler-row", params, def, item: st.item, need: utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * utilization, cluster })
   for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
 }
 

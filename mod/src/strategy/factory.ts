@@ -483,6 +483,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
+    maxSmelters: stage >= 0 && ST.firstLateStage(ctx.config) >= 0 && stage >= ST.firstLateStage(ctx.config),
   }
 }
 

@@ -27,6 +27,18 @@ export function isTempRole(role: string): boolean {
   return string.sub(role, 1, TEMP_PREFIX.length) === TEMP_PREFIX
 }
 
+/** Science packs the first two stages use; a later pack (chemical, production, ...) starts the blue-and-beyond era. */
+const EARLY_PACKS = ["automation-science-pack", "logistic-science-pack"]
+
+/** The first stage whose target uses a pack beyond red/green (0-based), or -1. */
+export function firstLateStage(config: Config): number {
+  const stages = parseStages(config.factoryTargets)
+  for (let i = 0; i < stages.length; i++) {
+    for (const t of stages[i]) if (EARLY_PACKS.indexOf(t.item) < 0) return i
+  }
+  return -1
+}
+
 /** Stages of `factory-targets`: per stage, item → packs per minute. */
 export function parseStages(value: string): { item: string; perMinute: number }[][] {
   const stages: { item: string; perMinute: number }[][] = []

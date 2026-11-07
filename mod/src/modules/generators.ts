@@ -63,6 +63,25 @@ export function laneCapacity(facts: ProtoFacts, belt: string): number {
   return speed * 60 * 4
 }
 
+/**
+ * The largest smelter column a single input belt can feed, in furnaces (a multiple of 4): the ore lane carries
+ * `laneCapacity` items/s and each furnace eats `speed / recipe.energy * ore.amount`. Also capped by
+ * `SMELTER_MAX_FURNACES`, the largest layout the design considers (the generator's unit geometry and the planner's
+ * practical size; a longer column is a second provider).
+ */
+export const SMELTER_MAX_FURNACES = 48
+
+export function smelterMaxFurnaces(facts: ProtoFacts, recipeName: string, furnace: string, belt = "transport-belt"): number {
+  const recipe = solidRecipe(facts, recipeName)
+  if (recipe.ingredients.length !== 1) error(`smelter: ${recipeName} must have one ingredient`)
+  const speed = facts.entity(furnace)?.craftingSpeed ?? 1
+  const orePerFurnace = (speed / recipe.energy) * recipe.ingredients[0].amount
+  if (orePerFurnace <= 0) return 4
+  const fit = math.floor(laneCapacity(facts, belt) / orePerFurnace + 1e-9)
+  const capped = math.min(SMELTER_MAX_FURNACES, fit)
+  return math.max(4, capped - (capped % 4))
+}
+
 function solidRecipe(facts: ProtoFacts, name: string): RecipeFacts {
   const r = need(facts.recipe(name), `unknown recipe ${name}`)
   return r
@@ -752,11 +771,18 @@ export interface CircuitBlockParams extends CommonParams {
   intermediate?: string
   /** D51 / B14: buffer depot chest at the head ("" or absent: none). */
   buffer?: string
+  /** M7d.5: the inserter that reaches the cable-copper belt one row below (default long-handed-inserter). */
+  longInserter?: string
 }
 
 /**
  * Units of five assemblers C K C K C (C = cable, K = circuit): every circuit assembler takes cable from both
  * neighbours through two inserters each; the middle cable assembler feeds both. Copper and iron arrive on one belt.
+ *
+ * M7d.5 (user, 2026-11-07): advanced circuits contain their copper cable. The same pattern is used, but the circuit
+ * machines take their two *other* ingredients (electronic circuits and plastic) on the belt below, while the cable
+ * machines take copper plates from a second belt one row further down through long-handed inserters. Only the final
+ * product, electronic circuits, plastic and copper plates cross the module boundary; no cable route does.
  */
 export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDef {
   const machine = p.machine ?? "assembling-machine-1"
@@ -767,10 +793,17 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
   const mid = solidRecipe(facts, midName)
   if (p.units < 1) error("circuit-block: units must be ≥ 1")
   const product = mainProduct(recipe)
-  let other: string | undefined
-  for (const ing of recipe.ingredients) if (ing.name !== mainProduct(mid).name) other = ing.name
+  const midProduct = mainProduct(mid)
+  const others: string[] = []
+  for (const ing of recipe.ingredients) if (ing.name !== midProduct.name) others.push(ing.name)
+  if (others.length < 1 || others.length > 2) error(`circuit-block: ${recipeName} needs one or two ingredients besides ${midName}`)
   if (mid.ingredients.length !== 1) error(`circuit-block: ${midName} must have one ingredient`)
-  const inputs = [mid.ingredients[0].name, need(other, `circuit-block: ${recipeName} needs another ingredient`)]
+  const midInput = mid.ingredients[0].name
+  // Two other ingredients cannot share a lane with copper: put them on the row-6 belt (one per lane) and copper on
+  // row 7, reached by long-handed inserters over the row-6 belt.
+  const splitInputs = others.length === 2
+  if (splitInputs && others.indexOf(midInput) >= 0) error(`circuit-block: ${recipeName} takes ${midInput} itself and two more ingredients`)
+  const inputs = splitInputs ? others : [midInput, others[0]]
   const xt = 20 * p.units
   for (let u = 0; u < p.units; u++) {
     const ux = 20 * u
@@ -783,8 +816,20 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
     ]
     for (const [x0, r] of kinds) {
       L.add(machine, ux + x0 + 1.5, 3.5, undefined, { recipe: r })
-      L.ins(ux + x0 + 1.5, 5.5, SOUTH)
-      L.ins(ux + x0 + 2.5, 5.5, SOUTH)
+      // A split-input block's cable machines take copper from row 7 with long-handed inserters; its circuit machines
+      // take the two other ingredients from row 6 with normal inserters.
+      if (splitInputs) {
+        if (r === midName) {
+          L.add(p.longInserter ?? "long-handed-inserter", ux + x0 + 1.5, 5.5, SOUTH)
+          L.add(p.longInserter ?? "long-handed-inserter", ux + x0 + 2.5, 5.5, SOUTH)
+        } else {
+          L.ins(ux + x0 + 1.5, 5.5, SOUTH)
+          L.ins(ux + x0 + 2.5, 5.5, SOUTH)
+        }
+      } else {
+        L.ins(ux + x0 + 1.5, 5.5, SOUTH)
+        L.ins(ux + x0 + 2.5, 5.5, SOUTH)
+      }
       if (r === recipeName) {
         L.ins(ux + x0 + 1.5, 1.5, SOUTH)
         L.ins(ux + x0 + 2.5, 1.5, SOUTH)
@@ -809,17 +854,36 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
     }
   }
   const ports = rowTail(L, xt, inputs, 6)
+  if (splitInputs) {
+    // The copper belt runs the other way, from the west edge, so it never shares the row-6 merge column at the east
+    // edge. It stops at the last cable machine's right-hand inserter.
+    for (let x = 0; x <= xt - 2; x++) L.beltAt(x + 0.5, 7.5, EAST)
+    ports.push({ id: `in-${midInput}`, kind: "belt-in", pos: { x: 0.5, y: 7.5 }, dir: EAST, item: midInput })
+  }
   ports.unshift({ id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name })
   ports.push({ id: "power", kind: "power", pos: { x: 3.5, y: 3.5 }, dir: NORTH })
   const buffered = rowBufferHead(facts, L, ports, p.buffer)
   const head = buffered ? ROW_BUFFER_W : 0
   const lane = laneCapacity(facts, L.belt)
+  // The growth cap is the input belt(s), not the number of cable machines: cable machines only run as fast as the
+  // circuit machines consume them. For a split-input block the copper lane carries `2 * crafts * cablePerCraft *
+  // copperPerCable` per unit; for electronic circuits the old 3-cable-machine bound stays (it is what the existing
+  // blocks were grown to, and changing it would change expansion policy).
+  let maxUnits: number
+  if (splitInputs) {
+    const cablePerCraft = need(recipe.ingredients.find((i) => i.name === midProduct.name), `${recipeName} takes no ${midName}`).amount
+    const copperPerCable = mid.ingredients[0].amount / midProduct.amount
+    const copperPerUnit = 2 * (machineSpeed(facts, machine) / recipe.energy) * cablePerCraft * copperPerCable
+    maxUnits = copperPerUnit > 0 ? math.floor(lane / copperPerUnit + 1e-9) - p.units : 0
+  } else {
+    maxUnits = math.floor(lane / ((3 * machineSpeed(facts, machine)) / mid.energy) + 1e-9) - p.units
+  }
   const draft: ModuleDraft = {
-    id: `circuit-block/${recipeName}/${p.units}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
+    id: `circuit-block/${recipeName}/${p.units}/${machine}/${L.belt}/${L.inserter}${splitInputs ? "/split" : ""}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",
     generator: "circuit-block",
     provenance: "generator circuit-block (Rival Engineers)",
-    description: `${3 * p.units} ${midName} : ${2 * p.units} ${recipeName} assemblers, direct insertion`,
+    description: `${3 * p.units} ${midName} : ${2 * p.units} ${recipeName} assemblers, direct insertion${splitInputs ? "; cable copper on its own belt" : ""}`,
     footprint: { w: xt + 1 + head, h: 8 },
     entities: L.entities,
     ports,
@@ -831,12 +895,213 @@ export function circuitBlock(facts: ProtoFacts, p: CircuitBlockParams): ModuleDe
       unit: { footprint: { w: 20, h: 8 }, entities: sliceUnit(L.entities, "x", head, head + 20) },
       axis: "x",
       insertAt: xt + head,
-      // Copper is the limiting lane: 3 cable assemblers × their ingredient rate per unit.
-      maxUnits: Math.max(0, Math.floor(lane / ((3 * machineSpeed(facts, machine)) / mid.energy) + 1e-9) - p.units),
+      maxUnits: Math.max(0, maxUnits),
     },
   }
   // B25: the input belt ends at the first machine's inserters (a buffer head already moved it off the edge).
   if (!buffered) draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Engine cell (M7d.5)
+
+export interface EngineCellParams extends CommonParams {
+  /** Engine-unit assemblers, even (each is fed by one gear and one pipe assembler). */
+  count: number
+  machine?: string
+  /** The inserter that reaches the iron belt one row below (default long-handed-inserter). */
+  longInserter?: string
+  /** D51 / B14: buffer depot chest at the head ("" or absent: none). */
+  buffer?: string
+}
+
+/**
+ * Engine units with their gears and pipes inside the module (M7d.5, user 2026-11-07). Machines alternate
+ * P E G E P E G E ... P, where P = pipe, G = gear and E = engine: every engine takes its gear and pipe from the
+ * internal assemblers on either side through gap inserters, so no gear or pipe route leaves the cell. Steel plates
+ * arrive on the row-6 belt for the engines; iron plates on row 7 for the gear and pipe assemblers (long-handed
+ * inserters reach over the steel belt). Only iron plates and steel plates cross the module boundary.
+ */
+export function engineCell(facts: ProtoFacts, p: EngineCellParams): ModuleDef {
+  const machine = p.machine ?? "assembling-machine-2"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  if (p.count < 2 || p.count % 2 !== 0) error(`engine-cell: count must be a positive even number, got ${p.count}`)
+  const engine = solidRecipe(facts, "engine-unit")
+  solidRecipe(facts, "iron-gear-wheel")
+  solidRecipe(facts, "pipe")
+  const product = mainProduct(engine)
+  const units = p.count / 2
+  const m = 4 * units + 1
+  const W = 4 * m - 1
+  need(engine.ingredients.find((i) => i.name === "steel-plate"), "engine-unit takes no steel plate")
+  const recipes: string[] = []
+  for (let i = 0; i < m; i++) {
+    // P E G E, then the trailing P that feeds the last engine from its right.
+    const kind = i === m - 1 ? "pipe" : i % 4 === 0 ? "pipe" : i % 4 === 1 ? "engine-unit" : i % 4 === 2 ? "iron-gear-wheel" : "engine-unit"
+    recipes.push(kind)
+  }
+  // A pole in every gap; the first machine's output pole is the power port.
+  for (let i = 0; i < m; i++) {
+    const x = 1.5 + 4 * i
+    const r = recipes[i]
+    L.add(machine, x, 3.5, undefined, { recipe: r })
+    if (r === "engine-unit") {
+      L.ins(x, 1.5, SOUTH)
+      L.ins(x, 5.5, SOUTH)
+    } else {
+      // Long-handed: the iron belt is one tile beyond the steel belt.
+      L.add(p.longInserter ?? "long-handed-inserter", x, 5.5, SOUTH)
+    }
+  }
+  for (let i = 0; i < m - 1; i++) {
+    const xm = 1.5 + 4 * i + 2
+    // The right machine of the pair is an engine: pick from the left internal machine. Otherwise pick from the right.
+    const d = recipes[i + 1] === "engine-unit" ? WEST : EAST
+    L.ins(xm, 2.5, d)
+    L.ins(xm, 4.5, d)
+    L.poleAt(xm, 3.5)
+  }
+  L.poleAt(0.5, 1.5)
+  for (let x = 0; x < W; x++) {
+    L.beltAt(x + 0.5, 0.5, WEST)
+    L.beltAt(x + 0.5, 6.5, WEST)
+    L.beltAt(x + 0.5, 7.5, WEST)
+  }
+  const ports: Port[] = [
+    { id: "out", kind: "belt-out", pos: { x: 0.5, y: 0.5 }, dir: WEST, item: product.name },
+    { id: "in-steel-plate", kind: "belt-in", pos: { x: W - 0.5, y: 6.5 }, dir: WEST, item: "steel-plate" },
+    { id: "in-iron-plate", kind: "belt-in", pos: { x: W - 0.5, y: 7.5 }, dir: WEST, item: "iron-plate" },
+    { id: "power", kind: "power", pos: { x: 0.5, y: 1.5 }, dir: NORTH },
+  ]
+  const buffered = rowBufferHead(facts, L, ports, p.buffer)
+  const head = buffered ? ROW_BUFFER_W : 0
+  const draft: ModuleDraft = {
+    id: `engine-cell/${p.count}/${machine}/${L.belt}/${L.inserter}${buffered ? `/buffer=${p.buffer}` : ""}`,
+    source: "generated",
+    generator: "engine-cell",
+    provenance: "generator engine-cell (Rival Engineers)",
+    description: `${units * 2} engine, ${units * 2 + 1} gear/pipe assemblers; gears and pipes direct-inserted`,
+    footprint: { w: W + head, h: 8 },
+    entities: L.entities,
+    ports,
+    recipe: product.name,
+    rotatable: true,
+    mirrorable: true,
+    params: { count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: buffered ? p.buffer! : "" },
+  }
+  // B25: the input belts end at the first machine's inserters.
+  if (!buffered) {
+    draft.entities = dropBelt(draft.entities, L.belt, 0.5, 6.5)
+    draft.entities = dropBelt(draft.entities, L.belt, 0.5, 7.5)
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Robot cell (M7d.5): flying robot frames and construction robots in one module
+
+export interface RobotCellParams extends CommonParams {
+  /** Construction-robot assemblers, even; each has one flying-robot-frame assembler below it. */
+  count: number
+  machine?: string
+  /** The inserter that reaches the lower frame belt (default long-handed-inserter). */
+  longInserter?: string
+  /** The chest each robot assembler fills (default iron-chest; the crew collects robots from it). */
+  buffer?: string
+  /** M7d.5 (user, 2026-11-07): the roboport at the head of the cell, which the first buffer chest fills. */
+  roboport?: string
+}
+
+/**
+ * Construction robots with their flying robot frames and the first roboport inside one module (M7d.5, user
+ * 2026-11-07). Each robot assembler on row 8 has a frame assembler directly below on row 13; a long-handed inserter
+ * takes frames straight up into the robot. Every robot assembler drops its output into a buffer chest on row 5; an
+ * inserter beside the first chest fills the 4x4 roboport above it, so the cell's robots become a network. Frame inputs
+ * arrive on two belts: steel + electronic circuits on row 16 (flowing west from the east edge) and electric engines +
+ * batteries on row 17 (flowing east from the west edge). Both belts feed the frames only, so their mixed lanes are
+ * harmless; the robots' own electronic circuits come on row 11. Only electric engines, batteries, steel plates and
+ * electronic circuits cross the module boundary; no frame route does.
+ */
+export function robotCell(facts: ProtoFacts, p: RobotCellParams): ModuleDef {
+  const machine = p.machine ?? "assembling-machine-1"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "small-electric-pole")
+  if (p.count < 2 || p.count % 2 !== 0) error(`robot-cell: count must be a positive even number, got ${p.count}`)
+  const robot = solidRecipe(facts, "construction-robot")
+  const product = mainProduct(robot)
+  const n = p.count
+  const W = 4 * n
+  const long = p.longInserter ?? "long-handed-inserter"
+  const bufferName = p.buffer !== undefined && p.buffer !== "" ? p.buffer : "iron-chest"
+  const bufferFlag = p.buffer !== undefined && p.buffer !== ""
+  const robo = p.roboport !== undefined && p.roboport !== "" ? need(facts.entity(p.roboport), `unknown roboport ${p.roboport}`) : undefined
+  if (robo !== undefined && (robo.tileW !== 4 || robo.tileH !== 4)) error(`robot-cell: ${p.roboport} is not 4x4`)
+  for (let i = 0; i < n; i++) {
+    const x = 1.5 + 4 * i
+    L.add(machine, x, 8.5, undefined, { recipe: "construction-robot" })
+    L.add(machine, x, 13.5, undefined, { recipe: "flying-robot-frame" })
+    // Each robot drops into its own buffer chest; the first chest also feeds the roboport.
+    L.add(bufferName, x, 5.5, undefined, { buffer: bufferFlag })
+    L.ins(x, 6.5, SOUTH)
+    // Robot: electronic circuit from row 11, frames from the frame machine below.
+    L.ins(x, 10.5, SOUTH)
+    L.add(long, x + 1, 10.5, SOUTH)
+    // Frame: steel + electronic circuit from row 16, electric engines + batteries from row 17.
+    L.ins(x, 15.5, SOUTH)
+    L.add(long, x - 1, 15.5, SOUTH)
+    // One pole beside every inserter group; long-handed inserters draw power at the far end of the row.
+    L.poleAt(x + 1, 6.5)
+    L.poleAt(x - 1, 10.5)
+    L.poleAt(x + 1, 15.5)
+    if (i < n - 1) {
+      const xm = 1.5 + 4 * i + 2
+      L.poleAt(xm, 8.5)
+      L.poleAt(xm, 13.5)
+    }
+  }
+  if (robo !== undefined) {
+    L.add(p.roboport!, 2, 2)
+    // The first buffer chest (row 5) fills the roboport above it.
+    L.ins(1.5, 4.5, SOUTH)
+    L.poleAt(0.5, 4.5)
+  }
+  L.poleAt(4.5, 4.5)
+  for (let x = 0; x < W; x++) {
+    L.beltAt(x + 0.5, 11.5, WEST)
+    L.beltAt(x + 0.5, 16.5, WEST)
+    // Row 17 ends at the last frame machine: the east edge tile is the row-16 merge.
+    if (x < W - 2) L.beltAt(x + 0.5, 17.5, EAST)
+  }
+  // Row 16's second lane enters from below at the east edge; row 17's from below at the west edge.
+  L.beltAt(W - 0.5, 17.5, NORTH)
+  L.beltAt(0.5, 18.5, NORTH)
+  const ports: Port[] = []
+  for (let i = 0; i < n; i++) ports.push({ id: `out-${i}`, kind: "chest-out", pos: { x: 1.5 + 4 * i, y: 5.5 }, dir: NORTH, item: product.name })
+  ports.push(
+    { id: "in-electronic-circuit-robot", kind: "belt-in", pos: { x: W - 0.5, y: 11.5 }, dir: WEST, item: "electronic-circuit" },
+    { id: "in-steel-plate", kind: "belt-in", pos: { x: W - 0.5, y: 16.5 }, dir: WEST, item: "steel-plate" },
+    { id: "in-electronic-circuit-frame", kind: "belt-in", pos: { x: W - 0.5, y: 17.5 }, dir: NORTH, item: "electronic-circuit" },
+    { id: "in-electric-engine-unit", kind: "belt-in", pos: { x: 0.5, y: 17.5 }, dir: EAST, item: "electric-engine-unit" },
+    { id: "in-battery", kind: "belt-in", pos: { x: 0.5, y: 18.5 }, dir: NORTH, item: "battery" },
+    { id: "power", kind: "power", pos: { x: 4.5, y: 4.5 }, dir: NORTH },
+  )
+  const draft: ModuleDraft = {
+    id: `robot-cell/${p.count}/${machine}/${L.belt}/${L.inserter}${p.buffer !== undefined && p.buffer !== "" ? `/buffer=${p.buffer}` : ""}${robo !== undefined ? `/roboport=${p.roboport}` : ""}`,
+    source: "generated",
+    generator: "robot-cell",
+    provenance: "generator robot-cell (Rival Engineers)",
+    description: `${n} construction-robot and ${n} flying-robot-frame assemblers; frames direct-inserted${robo !== undefined ? ", first roboport" : ""}`,
+    footprint: { w: W, h: 19 },
+    entities: L.entities,
+    ports,
+    recipe: product.name,
+    rotatable: true,
+    mirrorable: true,
+    params: { count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: bufferFlag ? bufferName : "", roboport: p.roboport ?? "" },
+  }
+  // Rows 11 and 16 flow west out of the module without a port: drop their west edge tile.
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 11.5)
+  draft.entities = dropBelt(draft.entities, L.belt, 0.5, 16.5)
   return finalizeModule(draft, facts)
 }
 
@@ -1690,7 +1955,7 @@ export function decodeWells(s: string): { x: number; y: number; perSecond: numbe
 /** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
 const PUMPJACK_FIELD_MARGIN = 2
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "lab-array" | "chest-cell" | "radar" | "roboport" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "engine-cell" | "robot-cell" | "lab-array" | "chest-cell" | "radar" | "roboport" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1701,6 +1966,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "assembler-row") return assemblerRow(facts, P)
   if (name === "red-line") return redLine(facts, P)
   if (name === "circuit-block") return circuitBlock(facts, P)
+  if (name === "engine-cell") return engineCell(facts, P)
+  if (name === "robot-cell") return robotCell(facts, P)
   if (name === "lab-array") return labArray(facts, P)
   if (name === "chest-cell") return chestCell(facts, P)
   if (name === "radar") return radarCell(facts, P)
@@ -1713,4 +1980,4 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "lab-array", "chest-cell", "radar", "roboport", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "engine-cell", "robot-cell", "lab-array", "chest-cell", "radar", "roboport", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]

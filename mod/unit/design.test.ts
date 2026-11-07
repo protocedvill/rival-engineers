@@ -120,6 +120,17 @@ test("M7c.8 (user, 2026-11-02): rows of the listed products get a buffer depot: 
   eq(pack.params.buffer, "", "the pack row has none")
 })
 
+test("M7d.5: from the first blue stage on, a furnace stack is planned at its maximum size", () => {
+  const d = design(ctx({ maxSmelters: true }), { item: RED, perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  for (const role of [`iron-plate>${RED}>labs`, `copper-plate>${RED}>labs`]) {
+    const smelter = byRole(d.nodes, role)!
+    eq(smelter.params.furnaces, 24, `${role} is a full 24-furnace stack`)
+  }
+  // The rule is size-only: a small need still plans one stack, and the stage target never asks for a second one.
+  eq(d.nodes.filter((n) => n.generator === "smelter-column").length, 2, "one iron and one copper stack")
+})
+
 test("D54: once electric drills are researched the steam block's coal comes from an electric mine", () => {
   const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
@@ -884,7 +895,7 @@ test("M7c: blue packs: fluid chains for plastic and sulfur, a pumpjack field, a 
   eq(tostring(generatorFor(blue, "petroleum-gas")), "nil", "petroleum is made inside a fluid chain")
   eq(generatorFor(blue, "plastic-bar"), "fluid-chain", "plastic")
   eq(generatorFor(blue, "sulfur"), "fluid-chain", "sulfur")
-  eq(generatorFor(blue, "engine-unit"), "assembler-row", "engines")
+  eq(generatorFor(blue, "engine-unit"), "engine-cell", "engines: gears and pipes inside the cell")
   eq(generatorFor(blue, "steel-plate"), "smelter-column", "steel")
   const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
   const gens: Record<string, string[]> = {}
@@ -898,6 +909,31 @@ test("M7c: blue packs: fluid chains for plastic and sulfur, a pumpjack field, a 
   const crude = d.edges.filter((e) => e.item === "crude-oil")
   ok(crude.length >= 1, "crude is delivered")
   eq(d.errors.length, 0, d.errors.join("; "))
+})
+
+test("M7d.5: advanced circuits and engines are self-contained cells (no cable, gear or pipe provider)", () => {
+  const c = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+    buffer: "passive-provider-chest",
+  })
+  eq(generatorFor(c, "advanced-circuit"), "circuit-block", "advanced circuits: cable inside the block")
+  eq(generatorFor(c, "engine-unit"), "engine-cell", "engines: gears and pipes inside the cell")
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const ac = d.nodes.find((n) => n.item === "advanced-circuit")!
+  eq(ac.generator, "circuit-block", "advanced circuit block")
+  ok(ac.def.recipes.indexOf("copper-cable") >= 0, "the advanced block makes its cable")
+  eq(d.nodes.filter((n) => n.item === "copper-cable").length, 0, "no copper-cable provider")
+  eq(d.edges.filter((e) => e.item === "copper-cable").length, 0, "no copper-cable route")
+  const engine = d.nodes.find((n) => n.item === "engine-unit")!
+  eq(engine.generator, "engine-cell", "engine cell")
+  ok(engine.def.recipes.indexOf("iron-gear-wheel") >= 0 && engine.def.recipes.indexOf("pipe") >= 0, "the engine cell makes gears and pipes")
+  eq(d.nodes.filter((n) => n.item === "iron-gear-wheel" || n.item === "pipe").length, 0, "no gear or pipe provider")
+  eq(d.edges.filter((e) => e.item === "iron-gear-wheel" || e.item === "pipe").length, 0, "no gear or pipe route")
 })
 
 test("M7c: two-input rows by default keep v1's curated green line (no three-ingredient rows)", () => {
@@ -970,29 +1006,31 @@ test("M7d.5: construction robots and roboports stocked: the robot frame chain is
   const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true, "flying-robot-frame": true, "construction-robot": true, roboport: true }
   const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
   eq(generatorFor(c, "flying-robot-frame"), "assembler-row", "robot frames: a four-ingredient row")
+  eq(generatorFor(c, "construction-robot"), "robot-cell", "construction robots: frames inside the cell")
   const stock = robotStock((t) => t === "construction-robotics", (r) => enabled[r as keyof typeof enabled] === true)
   eq(stock.map((s) => s.item).join(","), "construction-robot,roboport", "robots and roboports once researched")
   eq(robotStock(() => false, () => true).length, 0, "nothing before the research")
   const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
   eq(d.errors.length, 0, d.errors.join("; "))
   const robots = d.nodes.find((n) => n.role === stockRole("construction-robot"))!
-  ok(robots !== undefined && robots.kind === "sink" && robots.generator === "assembler-row", "a robot stock sink")
-  ok((robots.params.buffer as string) !== "", "with a buffer head the crew collects from")
+  ok(robots !== undefined && robots.kind === "sink" && robots.generator === "robot-cell", "a self-contained robot cell")
+  ok((robots.params.buffer as string) !== "", "with buffer chests the crew collects from")
   ok(d.nodes.some((n) => n.role === stockRole("roboport")), "a roboport stock sink")
-  ok(d.edges.some((e) => e.to === stockRole("construction-robot") && e.item === "flying-robot-frame"), "frames go to the robot row")
-  ok(d.nodes.some((n) => n.item === "flying-robot-frame" && n.generator === "assembler-row"), "a robot frame row")
+  ok(robots.def.recipes.indexOf("flying-robot-frame") >= 0, "the cell makes its frames")
+  eq(d.nodes.filter((n) => n.item === "flying-robot-frame").length, 0, "no separate frame provider")
+  eq(d.edges.filter((e) => e.item === "flying-robot-frame").length, 0, "no frame route")
   ok(d.nodes.some((n) => n.item === "electric-engine-unit" && n.generator === "assembler-row"), "an electric engine row")
   ok(d.nodes.some((n) => n.item === "battery" && n.generator === "chem-row"), "a battery row")
   ok(d.edges.some((e) => e.item === "lubricant"), "lubricant is piped")
-  // M7d.5 (user request in-session 2026-11-04): with a robot hub, the robot row's robots go into its roboport head.
+  // M7d.5 (user, 2026-11-07): the first roboport is inside the same cell; the hub only names the entity.
   const hubbed = design({ ...c, buffer: "passive-provider-chest", robotHub: { robot: "construction-robot", roboport: "roboport", storageChest: "storage-chest", storage: 2 } }, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
   eq(hubbed.errors.length, 0, hubbed.errors.join("; "))
   const hubRow = hubbed.nodes.find((n) => n.role === stockRole("construction-robot"))!
-  eq(hubRow.params.roboport as string, "roboport", "the robot row has the roboport head")
-  ok(string.find(hubRow.def.id, "/roboport=", 1, true)[0] !== undefined, `its module id marks the head (${hubRow.def.id})`)
+  eq(hubRow.generator, "robot-cell", "still one robot cell")
+  eq(hubRow.params.roboport as string, "roboport", "the cell has the roboport")
   eq(hubRow.def.entities.filter((e) => e.name === "roboport").length, 1, "one roboport in it")
   const portRow = hubbed.nodes.find((n) => n.role === stockRole("roboport"))!
-  eq(portRow.params.roboport, undefined, "the roboport row has none")
+  eq(portRow.params.roboport, undefined, "the roboport stock row has none")
 })
 
 test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry rows, no fluid chains", () => {
