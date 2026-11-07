@@ -282,8 +282,12 @@ function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolic
   return c
 }
 
-/** Window margins tried in turn (detours around lakes need room). */
-const MARGINS = [16, 48, 112]
+/**
+ * Window margins tried in turn (detours around lakes need room). The 240/480 steps are agent guesses (M7d.5,
+ * 2026-11-07): a power block on the far side of a lake arm had no pole path at 112, and the search window, not the
+ * ground, bounded it.
+ */
+const MARGINS = [16, 48, 112, 240, 480]
 
 /** Picks the pending owner nearest the powered set and starts a search for it. */
 function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): boolean {

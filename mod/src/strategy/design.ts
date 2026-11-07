@@ -158,6 +158,8 @@ export interface DesignContext {
    * stage's) can't grow far enough, so the other clusters make the rest. Absent: equal shares.
    */
   cluster1Max?: number
+  /** B57/B61: consumer ports proved sealed while their module waits to relocate; plan no provider for them. */
+  noFeed?: Record<string, boolean>
   /**
    * M7d.5 (user, 2026-11-07): from the first blue-science stage on, every new furnace stack is planned at
    * `smelterMaxFurnaces` instead of the smallest column that covers its demand. Growth and sharing policy are unchanged.
@@ -591,6 +593,12 @@ function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: nu
   for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
 }
 
+/** Adds a demand unless a sealed port is waiting for its consumer's relocation (B57/B61). */
+function addDemand(w: Walk, item: string, rate: number, to: string, toPort: string): void {
+  if (w.ctx.noFeed?.[`${to}.${toPort}`] === true) return
+  w.demands.push({ item, rate, to, toPort })
+}
+
 function inputPorts(def: ModuleDef, utilization: number): DesignPort[] {
   const out: DesignPort[] = []
   const count: Record<string, number> = {}
@@ -807,7 +815,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   w.nodes.push(node)
   const from = outPort(s.def, item)
   for (const c of consumers) w.edges.push(edge(w, node.role, from, c, mergePorts?.[`${c.to}.${c.toPort}`] === true))
-  for (const p of node.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+  for (const p of node.inputs) if (p.rate > EPS) addDemand(w, p.item, p.rate, role, p.port)
 }
 
 function edge(w: Walk, from: string, fromPort: string, c: Demand, merge = false): DesignEdge {
@@ -1075,7 +1083,7 @@ function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity
   }
   w.nodes.push(node)
   for (const c of consumers) w.edges.push(edge(w, role, outPort(chosen.def, c.item), c))
-  for (const p of node.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+  for (const p of node.inputs) if (p.rate > EPS) addDemand(w, p.item, p.rate, role, p.port)
 }
 
 function expandItem(w: Walk, item: string): void {

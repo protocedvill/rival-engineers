@@ -483,6 +483,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
+    noFeed: CS.flags(getFactory(ctx.faction.name)?.constraints, "noFeed"),
     maxSmelters: stage >= 0 && ST.firstLateStage(ctx.config) >= 0 && stage >= ST.firstLateStage(ctx.config),
   }
 }
@@ -516,7 +517,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const role of CS.keys(c, "providerShort")) short += `${role}:${string.format("%.6g", caps[role] ?? 0)};`
   let retiring = ""
   for (const [role] of pairs(f.retiring ?? {})) retiring += `${role as string};`
-  const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
+  const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "noFeed", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
   const key = `${flagKey}|${blocked}|${short}|${retiring}|${ST.designSignals(f)}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
@@ -1476,6 +1477,13 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       RT.exportPlanInput(entry, `${name}.input.lua`, 3000)
     }
     RT.removePlan(entry.id)
+    // B57/B61: a sealed consumer port is authoritative even while relocation waits. Mark it now, so the next design
+    // plans no provider for a port that cannot receive one.
+    for (const { port, subject } of LO.sealedGoalPorts(f.layout, entry.job?.evidence ?? [])) {
+      const n = f.graph.nodes[port.module]
+      if (n === undefined) continue
+      if (CS.add((f.constraints ??= {}), "noFeed", CS.portKey(n.role, port.port))) log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${port.port} port sealed (goal ${g.id}: ${subject}); its input stays unplanned until the module moves`)
+    }
     // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route
     // window first: the blockage was built by the plan's other routes under the narrow window, so widening a single
     // connection rescues nothing while the wider plan routes (seed 1376111: 265k work, vs 50k spent failing).
@@ -1533,7 +1541,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     // M7c.8: a radar outpost whose pole line can't reach the base (seed 11: lakes 90-300 tiles wide across the E and S
     // arms) fails the same way on every attempt: the region radius doesn't bound the pole search. It fails at once, so
     // the exploration tries the next arm instead of spending 4 plans per arm (8 failed plans in a row stopped the soak).
-    if (g.attempts >= MAX_PLAN_ATTEMPTS || FR.retryCannotHelp(g.site !== undefined, failures)) {
+    if (g.attempts >= MAX_PLAN_ATTEMPTS || FR.retryCannotHelp(g.site !== undefined || g.kind === "power", failures)) {
       transitionGoal(g, "failed")
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
       // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.

@@ -26,6 +26,8 @@ export const CONSTRAINT_SCOPE = {
   providerNoTap: "feed",
   /** B71/B80: a consumer port whose route offers no side-load or splitter merge: no demand is split there. */
   noMerge: "port",
+  /** B57/B61: a built consumer port proved sealed; while its module waits to relocate, plan no provider for it. */
+  noFeed: "port",
   /** B63: a consumer port proved boxed in: plans that feed it use a wider route window. */
   wideJoin: "port",
   /** D68: an item whose new producer could not be placed: new consumers tap a built producer with capacity. */
@@ -36,7 +38,7 @@ export type ConstraintKind = keyof typeof CONSTRAINT_SCOPE
 export type ConstraintScope = (typeof CONSTRAINT_SCOPE)[ConstraintKind]
 
 /** Kinds in a fixed order (cache keys, iteration). */
-export const CONSTRAINT_KINDS: ConstraintKind[] = ["noTap", "providerShort", "providerSplit", "ownSite", "growFails", "cluster1Caps", "providerNoTap", "noMerge", "wideJoin", "fallback"]
+export const CONSTRAINT_KINDS: ConstraintKind[] = ["noTap", "providerShort", "providerSplit", "ownSite", "growFails", "cluster1Caps", "providerNoTap", "noMerge", "noFeed", "wideJoin", "fallback"]
 
 /** Flag kinds hold `true`; counting kinds (`growFails`, `cluster1Caps`) hold a number. */
 export type ConstraintStore = { [K in ConstraintKind]?: Record<string, number | true> }
@@ -113,6 +115,11 @@ export function dropRole(s: ConstraintStore | undefined, role: string): void {
     if (scope === "provider") delete t[role]
     else if (scope === "feed") {
       const prefix = `${role}=>`
+      for (const [k] of pairs(t)) if (string.sub(k as string, 1, prefix.length) === prefix) delete t[k as string]
+    } else if (kind === "noFeed") {
+      // A relocated consumer's sealed-port mark goes with its role. Other port constraints (noMerge, wideJoin) stay
+      // until the same role is replanned, as before.
+      const prefix = `${role}.`
       for (const [k] of pairs(t)) if (string.sub(k as string, 1, prefix.length) === prefix) delete t[k as string]
     }
   }

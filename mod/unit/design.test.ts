@@ -936,6 +936,21 @@ test("M7d.5: advanced circuits and engines are self-contained cells (no cable, g
   eq(d.edges.filter((e) => e.item === "iron-gear-wheel" || e.item === "pipe").length, 0, "no gear or pipe route")
 })
 
+test("B57/B61: a sealed consumer port plans no provider until its module moves", () => {
+  const blue = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+    noFeed: { "chemical-science-pack>labs.in-advanced-circuit": true },
+  })
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  eq(d.edges.filter((e) => e.to === "chemical-science-pack>labs" && e.toPort === "in-advanced-circuit").length, 0, "no provider for the sealed port")
+  ok(d.nodes.every((n) => n.item !== "advanced-circuit"), "no advanced-circuit provider at all")
+})
+
 test("M7c: two-input rows by default keep v1's curated green line (no three-ingredient rows)", () => {
   eq(tostring(generatorFor(ctx(), "inserter")), "nil", "inserter: still no generator at rowInputs 2")
 })
