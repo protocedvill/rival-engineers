@@ -44,6 +44,8 @@ export interface Rect {
 // Tile keys: one number per tile, exact in doubles (|x|, |y| < 2^20).
 const OFF = 1048576
 const SPAN = 2097152
+/** Exported for hot loops that derive a neighbour's `tkey` arithmetically (x + 1 adds `KEY_SPAN`, y + 1 adds 1). */
+export const KEY_SPAN = SPAN
 
 export function tkey(x: number, y: number): number {
   return (x + OFF) * SPAN + (y + OFF)

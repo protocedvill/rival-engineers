@@ -17,7 +17,7 @@ import { connectionId, routeId } from "../shared/ids"
 import type { RouteId } from "../shared/ids"
 import { BeltTier } from "./capacity"
 import { routeClaimConflict } from "./claims"
-import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
+import { ccw, cw, DX, DY, FREE, KEY_SPAN, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
 import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
@@ -101,7 +101,7 @@ export interface Search {
   cellsW: number
   /** The corridor search found no path and the whole window was searched instead. */
   widened?: boolean
-  /** Tile costs by window tile, cached for the search's life (the layout does not change while it runs). */
+  /** Tile costs by window tile for this search's life: the hot path, one array lookup per visit. */
   tc: Record<number, number>
   /** Heuristic weight: 1 (exact A*), `corridorWeight` while inside a corridor. */
   hw?: number
@@ -264,16 +264,18 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
   let f = state.corridor[k] ? w.corridorFactor : 1
   // B7: next to another route's belt, routes bundle.
   const bf = w.bundleFactor ?? 1
-  if (bf < 1 && nextToRoute(state, x, y, req.id)) f *= bf
+  if (bf < 1 && nextToRoute(state, k, req.id)) f *= bf
   return f + extra
 }
 
 /** Whether a 4-neighbour of the tile holds a belt of another route (existing or planned). */
-function nextToRoute(state: LayoutState, x: number, y: number, self: string): boolean {
-  for (let d = 0; d < 4; d++) {
-    const o = state.routeOcc[tkey(x + DX[d], y + DY[d])]
-    if (o !== undefined && o !== self) return true
-  }
+function nextToRoute(state: LayoutState, k: number, self: string): boolean {
+  // `tkey` is linear: x + 1 adds `KEY_SPAN`, y + 1 adds 1. Avoid four more `tkey` calls in the router's hottest path.
+  const o = state.routeOcc[k - KEY_SPAN]
+  if (o !== undefined && o !== self) return true
+  if (state.routeOcc[k + KEY_SPAN] !== undefined && state.routeOcc[k + KEY_SPAN] !== self) return true
+  if (state.routeOcc[k - 1] !== undefined && state.routeOcc[k - 1] !== self) return true
+  if (state.routeOcc[k + 1] !== undefined && state.routeOcc[k + 1] !== self) return true
   return false
 }
 
