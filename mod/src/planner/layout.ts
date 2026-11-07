@@ -1112,6 +1112,14 @@ export function routesLand(layout: LayoutState, rids: string[], to: PortRef): bo
   for (const rid of rids) {
     let r: Route | undefined = layout.routes[rid as RouteId]
     for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+      // B149/B158: a fluid line joining another ends beside one of its pipes, not on the port's tile; follow the joined
+      // line. Without this a valid second feed read as "does not reach its port" and the reconciler rerouted it in place
+      // forever (`2 feeds: 0/s arrives`, B83/B88).
+      if (r.joins !== undefined) {
+        const next: Route | undefined = layout.routes[r.joins]
+        r = next !== undefined && next.id !== r.id ? next : undefined
+        continue
+      }
       const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
       if (join === undefined) {
         if (endsAt(r, to, goal, inner)) return true

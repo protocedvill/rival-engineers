@@ -1712,6 +1712,16 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       line and every dependent route (tap, merge, `joins`) with its ghosts/jobs — `dependentRoutes` follows
       `Route.joins` too. `applyDiff` partial adds are already covered by the B144/B152 retry paths. Alternative join
       tiles, the full driver hoist and plan-time pipe rip-up remain.
+      **Water was not the shortage (B159):** the min-1440 chain probe showed the acid row holding `water=200` and
+      reading `item_ingredient_shortage` — it lacked **sulfur**, not water; the sulfur plants' outputs were full, the
+      new sulfur plant had water but no petroleum, and the petroleum port n457 had 2 feeds with 0/s arriving. Two
+      causes: `routesLand` did not follow `Route.joins` (a B149 joining line ends beside the joined pipe, not on the
+      port's tile), so the reconciler treated the valid second feed as "does not reach its port" and rerouted it in
+      place forever (`0 entities to pick up, 0 to build`); and the replacement complex's petroleum plan failed at
+      `no room for a pole beside the pump at 412,35` because the pole search only tried the pump's sides and the two
+      diagonal-ahead tiles, though a small pole's 5×5 supply area reaches two tiles. `routesLand` now follows `joins`,
+      and `pumpPoleSpot` searches the 5×5 ring (nearest first, route tiles excluded). T1 `fluid-route` B149/B159.
+      The separate `water*>oil-complex~4` goal still fails on a port boxed in at 405,30 (`open 8/25`).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
@@ -1768,6 +1778,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Bad-build avoid radius | `planner/bad-build.ts` `BAD_BUILD_RADIUS` | 1 tile | Agent guess (B144, proposed): covers the blocked footprint and its edge without keeping a whole area free. | no |
 | Robot stock | `strategy/design.ts` `ROBOT_STOCK`, `ROBOPORT_STOCK` | 50 construction robots, 10 roboports | Agent guess (M7d.5, proposed): 50 robots is D77's "about 50"; 10 roboports is the network's default size. | no |
 | Robot stock fill time | `strategy/design.ts` `STOCK_FILL_SECONDS` | 1,800 s | Agent guess (proposed): the stock rows are sized to fill their buffers in 30 game-min, so they stay small. | no |
+| Pump pole search reach | `planner/plan.ts` `pumpPoleSpot` | 2 tiles | Derived from a small electric pole's 5×5 supply area (2.5 tiles): a pump two tiles off is powered. The agent chose the square ring after B159 (the old 4-tile pattern failed a pump deep in the oil complex). | no |
 | Roboport grid spacing | `settings.ts` `factory-roboport-spacing` | 36 tiles | Agent guess (proposed): neighbours may each land 6 tiles off their point, and 36 + 12 = 48 keeps their logistic areas (reach 50 for the vanilla roboport) touching. | yes |
 | Roboports per faction | `settings.ts` `factory-roboports-max` | 10 | Agent guess (proposed): about a 400 × 400 base at spacing 36. | yes |
 | Robots in the network | `settings.ts` `factory-network-robots` | 50 | D77 ("about 50 construction robots"). | yes |

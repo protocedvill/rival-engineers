@@ -1,9 +1,9 @@
 import { ModuleDef, EAST, NORTH, Port, SOUTH } from "../src/modules/types"
 import { routeEntities } from "../src/planner/build-list"
 import { asciiTerrain, DX, DY, tkey } from "../src/planner/grid"
-import { checkLayout, commitModule, dependentRoutes, findModule, LayoutState, newLayout, PlacedModule, portTag } from "../src/planner/layout"
+import { checkLayout, commitModule, dependentRoutes, findModule, LayoutState, newLayout, PlacedModule, portTag, routesLand } from "../src/planner/layout"
 import { laneLeadsOut, layoutLaneGround, portLaneEnd, sealedInputs } from "../src/planner/placement"
-import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
+import { ConnectionRequest, moduleFluidRun, newPlanJob, newRoutingJob, PlanRequest, pumpPoleSpot, runJob } from "../src/planner/plan"
 import { selectPolicy } from "../src/planner/policy"
 import { planReroute } from "../src/planner/reroute"
 import { unpoweredModules } from "../src/planner/power"
@@ -180,7 +180,25 @@ test("B149 (seed 11 g198): a second provider's line joins the line already feedi
   eq(r.joins, "route:crude-a", "it joins the first line")
   const deps = dependentRoutes(job.layout, [routeId("route:crude-a")]).map((id) => id as string)
   ok(deps.indexOf("route:crude-b") >= 0, `the joining line goes with the line it joins (${deps.join(",")})`)
+  // B158: the joining line lands through the line it joins; without this the reconciler reads a valid second feed as
+  // "does not reach its port" and reroutes it in place forever (2 feeds, 0/s).
+  ok(routesLand(job.layout, [routeId("route:crude-b")], { module: "dst-join", port: "in" }), "the joining line lands at the port through the joined one")
   eq(checkLayout(job.layout, terrain, () => 10).problems.join("; "), "")
+})
+
+test("B159: a pump's pole may stand two tiles off, inside the pole's supply area", () => {
+  // The robot-chain oil complex failed every petroleum plan with "no room for a pole beside the pump at 412,35": its
+  // pump sits deep in the module, where the two side tiles and the two diagonal-ahead tiles are taken. A small pole two
+  // tiles off still powers the pump (its supply area is 5×5), so the search must look that far.
+  const state = newLayout()
+  const terrain = asciiTerrain(field(12, 12))
+  const req = { id: "route:x", conn: "c", item: "water", to: { module: "m", port: "p" }, goal: { x: 0, y: 0, dir: 0 }, tier: YELLOW, own: {} } as never
+  const pump = { kind: "pump" as const, x: 5, y: 5, dir: 1 }
+  for (const k of [tkey(5, 4), tkey(5, 6), tkey(6, 4), tkey(6, 6), tkey(4, 5), tkey(6, 5)]) state.occ[k] = "occ" as never
+  const spot = pumpPoleSpot(state, terrain, policy, req, pump)
+  ok(spot !== undefined, "a pole spot two tiles off")
+  ok(math.max(math.abs(spot!.x - 5), math.abs(spot!.y - 5)) <= 2, `in the pole's supply area (${spot!.x},${spot!.y})`)
+  eq(math.abs(spot!.x - 5) + math.abs(spot!.y - 5), 2, "the nearest free ring")
 })
 
 test("B147 (seed 11 g154): a stuck pipe route is rerouted with pipes around the stuck tile", () => {

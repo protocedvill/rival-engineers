@@ -569,6 +569,15 @@ export interface PipeJob {
   retried?: boolean
 }
 
+/** The pump's tile and the pipe tiles immediately before and after it: its pole may not stand on the line it powers. */
+function pumpLineTiles(x: number, y: number, dir: number): Record<number, boolean> {
+  const out: Record<number, boolean> = {}
+  out[tkey(x, y)] = true
+  out[tkey(x - DX[dir], y - DY[dir])] = true
+  out[tkey(x + DX[dir], y + DY[dir])] = true
+  return out
+}
+
 /** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
 function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, pj: PipeJob): PipeCallbacks {
   const f = connection(job, pj.conn).fluid!
@@ -577,7 +586,7 @@ function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy,
     cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
     under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y, "pipe") && pipeSpanAt(job.layout, x, y, axis) === undefined,
     fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
-    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }) !== undefined,
+    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }, pumpLineTiles(x, y, dir)) !== undefined,
   }
 }
 
@@ -908,10 +917,12 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   // Each pump needs power: a pole on a free tile beside it, as a pole line the pole step joins to the network.
   const poles: PoleId[] = []
   const line = pumpPoleLine(id)
+  const routeTiles: Record<number, boolean> = {}
+  for (const st of r.steps) routeTiles[tkey(st.x, st.y)] = true
   for (let i = 0; i < r.steps.length; i++) {
     const st = r.steps[i]
     if (st.kind !== "pump") continue
-    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st)
+    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st, routeTiles)
     if (spot === undefined) {
       fail(job, c.id, `no room for a pole beside the pump at ${st.x},${st.y}`)
       return used
@@ -925,19 +936,39 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   return used
 }
 
-/** A free tile beside a pump (either of its two tiles) for its pole. */
-function pumpPoleSpot(layout: LayoutState, terrain: TerrainView, policy: LayoutPolicy, req: RouteRequest, st: PipeStep): Vec | undefined {
-  const side = [(st.dir + 1) % 4, (st.dir + 3) % 4]
-  for (let along = 0; along < 2; along++) {
-    for (const d of side) {
-      const x = st.x + DX[st.dir] * along + DX[d]
-      const y = st.y + DY[st.dir] * along + DY[d]
+/** A free tile beside a pump for its pole, within the pole's supply area. */
+export function pumpPoleSpot(
+  layout: LayoutState,
+  terrain: TerrainView,
+  policy: LayoutPolicy,
+  req: RouteRequest,
+  st: PipeStep,
+  forbid?: Record<number, boolean>,
+): Vec | undefined {
+  // The pump must be in the pole's supply area; a small electric pole's 5×5 covers a pump two tiles off (including
+  // diagonally). The old pattern (the two sides and the two diagonal-ahead tiles) failed a pump deep inside a module
+  // even though a pole on the module's edge would power it (B159: robot-chain oil complex, "no room for a pole beside
+  // the pump at 412,35" with free tiles two away).
+  const reach = 2
+  let best: Vec | undefined
+  let bestD = 99
+  for (let dx = -reach; dx <= reach; dx++) {
+    for (let dy = -reach; dy <= reach; dy++) {
+      if (dx === 0 && dy === 0) continue
+      const x = st.x + dx
+      const y = st.y + dy
       const k = tkey(x, y)
+      if (forbid !== undefined && forbid[k] === true) continue
       if (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined) continue
-      if (tileCost(layout, terrain, policy, req, false, x, y) >= 0) return { x, y }
+      if (tileCost(layout, terrain, policy, req, false, x, y) < 0) continue
+      const d = math.abs(dx) + math.abs(dy)
+      if (d < bestD) {
+        bestD = d
+        best = { x, y }
+      }
     }
   }
-  return undefined
+  return best
 }
 
 /**
