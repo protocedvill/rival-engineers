@@ -52,6 +52,12 @@ If the process crashed, open `seed-N/failure.json` before either log: it contain
 diagnostics, and paths to the newest frame/graph/plan artifact.
 
 - Use fail-fast rules to stop known-dead runs.
+- **Reaching a late milestone quickly:** `tools/harness/m7-bench.toml` is a parity-breaking benchmark mode for exactly
+  this, never for acceptance or performance numbers. The crew teleports along its already-found path
+  (`benchmarkWalkTiles`, tiles per tick; 0 = walking) and hand-crafts at `benchmarkCraftingMultiplier` (1 = parity),
+  both force-wide; e.g. `soak.py -c tools/harness/m7-bench.toml --from-save <snapshot.zip> --seeds 11 --hours 1 -j 1`.
+  A huge `character_running_speed_modifier` cannot be used instead: the walker advances a waypoint only within 0.3
+  tiles, so a body moving farther per tick skips waypoints and turns back. T2 `controller` pins both.
 - Use `--snapshots N`, then `--from-save`, for bugs that appear late. `--benchmark` cannot save.
 - For work past a milestone (M7: blue science after red/green), keep a save library: `--save-at stage-3
   --stop-after-saves` files one save per seed in `out/saves/<config>/seed-N/`, and `--resume-from stage-3` starts every

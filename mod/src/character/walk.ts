@@ -135,6 +135,33 @@ function teleportAhead(character: LuaEntity, walk: WalkState, stats: ActionStats
   return true
 }
 
+/**
+ * Benchmark only (parity-breaking): move along the stored path up to `tiles` in one tick. A running-speed modifier big
+ * enough for a benchmark cannot be used: the stepper advances a waypoint only within 0.3 tiles (`nextWaypointIndex`), so
+ * a body moving farther than that per tick skips waypoints and turns back towards one behind it. Teleporting along the
+ * same path keeps its length, its curves and the reach check, without the walking time.
+ */
+function teleportAlong(character: LuaEntity, waypoints: MapPosition[], index: number, tiles: number): number {
+  let at = character.position
+  let j = index
+  let left = tiles
+  while (j < waypoints.length) {
+    const wp = waypoints[j]
+    const d = distance(at, wp)
+    if (d > left) break
+    left -= d
+    at = wp
+    j++
+  }
+  // The next waypoint is farther than a whole step (rare: path nodes are about a tile apart): let the walker step.
+  if (j === index) return index
+  const target = waypoints[j - 1]
+  stopWalking(character) // a player-less character's walking_state persists
+  const spot = character.surface.find_non_colliding_position("character", target, 1, 0.1) ?? target
+  if (!character.teleport(spot)) return index
+  return j
+}
+
 export function stepWalk(character: LuaEntity, walk: WalkState, stats: ActionStats, config: Config, tick: number): StepResult {
   if (arrived(character, walk)) {
     stopWalking(character)
@@ -208,6 +235,14 @@ export function stepWalk(character: LuaEntity, walk: WalkState, stats: ActionSta
 
   // phase === "follow"
   const waypoints = walk.waypoints!
+  if (config.benchmarkWalkTiles > 0) {
+    const moved = teleportAlong(character, waypoints, walk.index, config.benchmarkWalkTiles)
+    if (moved > walk.index) {
+      walk.index = moved
+      stats.walkTicks++
+      return "running"
+    }
+  }
   const pos = character.position
   walk.index = nextWaypointIndex(pos, waypoints, walk.index, WAYPOINT_TOLERANCE, Math.min(WAYPOINT_TOLERANCE, walk.radius / 2))
   if (walk.index >= waypoints.length) {

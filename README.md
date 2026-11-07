@@ -96,6 +96,9 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
    (a sped-up headless server: `--benchmark` can't save) to `.factorio-test/soak/snap/seed-N/data/saves/min-MMMM.zip`.
    `soak.py ... --seeds N --name repro --from-save <that zip>` rebuilds and continues it with the current code: a
    fix to a late failure is checked in 15–60 s instead of a full run (works while the storage layout stays compatible).
+   To reach a late milestone quickly instead of replaying a bug, `tools/harness/m7-bench.toml` is a **benchmark mode**
+   that teleports the crew along its path and multiplies hand-crafting speed (`benchmarkWalkTiles`,
+   `benchmarkCraftingMultiplier`). It is parity-breaking: never use it for acceptance or performance numbers.
 3. **Failed plans as T1 tests:** with frame dumps on, every failed plan writes `failed-plans/<faction>/<goal>-aN-tT`
    `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
    Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the

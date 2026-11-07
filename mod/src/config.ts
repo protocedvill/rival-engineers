@@ -21,6 +21,14 @@ export interface Config {
   debugReachMultiplier: number
   /** Debug/soak only: after the normal research goal, repeat a hidden infinite technology to keep labs consuming packs. */
   debugInfiniteResearch: boolean
+  /**
+   * Benchmark only (parity-breaking, never in acceptance runs): crew members teleport along their path up to this many
+   * tiles per tick instead of walking (0 = normal walking). A huge `character_running_speed_modifier` cannot be used:
+   * the walker advances a waypoint only within 0.3 tiles, so a body moving more than that per tick skips waypoints.
+   */
+  benchmarkWalkTiles: number
+  /** Benchmark only: force-wide hand-crafting speed multiplier (1 = player parity, 20 = 21× faster). */
+  benchmarkCraftingMultiplier: number
   /** Attempts before a failing job is marked failed (Job Board). */
   jobMaxAttempts: number
   /** Back-off before a released job may be claimed again; doubles with each failed attempt. */

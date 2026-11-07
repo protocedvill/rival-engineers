@@ -3,7 +3,7 @@ import { keyTaken, pruneFailedKeys } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
-import { addStockpile, factionForce, factionSurface, tileRect } from "../jobs/faction"
+import { addStockpile, applyBenchmarkModifiers, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { hasNetwork, orderRemoval } from "../jobs/robot-orders"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
@@ -192,6 +192,9 @@ export function onBrainTick(): void {
     const brain = faction.brain
     if (!brain || faction.paused || tick < brain.nextThink) continue
     config ??= getConfig()
+    // Benchmark mode (parity-breaking, default off) also applies to a resumed save: the harness sets the overrides
+    // after on_init, so the force is corrected at its next think.
+    applyBenchmarkModifiers(factionForce(faction), config)
     brain.nextThink = tick + config.brainIntervalTicks
     think(faction, brain, config, tick)
   }

@@ -45,7 +45,7 @@ describe("review tools", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1 && config.benchmarkWalkTiles === 0 && config.benchmarkCraftingMultiplier === 1, "debug parity toggles must be off")
   })
 
   test("time accounting: a walking crew member accrues walking time and categories sum to elapsed ticks", () => {

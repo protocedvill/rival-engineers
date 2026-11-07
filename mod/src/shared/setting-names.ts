@@ -10,6 +10,8 @@ export const Settings = {
   debugInstantCraft: "rival-engineers-debug-instant-craft",
   debugReachMultiplier: "rival-engineers-debug-reach-multiplier",
   debugInfiniteResearch: "rival-engineers-debug-infinite-research",
+  benchmarkWalkTiles: "rival-engineers-benchmark-walk-tiles",
+  benchmarkCraftingMultiplier: "rival-engineers-benchmark-crafting-multiplier",
   jobMaxAttempts: "rival-engineers-job-max-attempts",
   jobRetryTicks: "rival-engineers-job-retry-ticks",
   batchMaxJobs: "rival-engineers-batch-max-jobs",

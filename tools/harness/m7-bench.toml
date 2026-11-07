@@ -1,0 +1,40 @@
+# M7 benchmark mode: the M7 scenario with the crew sped up so a wall-clock run covers more game time per CPU hour.
+#
+# PARITY-BREAKING. Use it to reach a milestone (the robot gate, a chain row) quickly, never for acceptance runs or
+# performance numbers: the crew teleports along its path and hand-crafts 20× faster, so the work mix is not the game's.
+#
+#   python3 tools/harness/soak.py -c tools/harness/m7-bench.toml \
+#     --from-save .factorio-test/soak/saves-keep/m7d5-robotsL-min1200.zip --seeds 11 --hours 0.5 -j 1
+#
+# `benchmarkWalkTiles` is tiles per tick along the already-found path (0 = normal walking); `benchmarkCraftingMultiplier`
+# is the force-wide hand-crafting multiplier (1 = player parity).
+
+[run]
+name = "m7-bench"
+seeds = [11]
+game_hours = 0.5
+stop_when_done = true
+
+[run.fail_fast]
+stalls = 2
+consecutive_plan_failures = 8
+ghost_rounds = 20
+exploring_minutes = 120
+
+[mapgen]
+enemy_bases = false
+
+[mod]
+factionCount = 1
+telemetryIntervalTicks = 3600
+frameDumpIntervalTicks = 36000
+frameDumpRadius = 160
+soakDoneMilestone = "v1-done"
+debugInfiniteResearch = true
+researchSciencePacks = "automation-science-pack,logistic-science-pack,chemical-science-pack"
+researchExcludedTriggers = "uranium-ore"
+researchSkipCombat = true
+factoryRowInputs = 4
+factoryTargets = "automation-science-pack=10;automation-science-pack=30,logistic-science-pack=30;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=10;automation-science-pack=30,logistic-science-pack=30,chemical-science-pack=30"
+benchmarkWalkTiles = 16
+benchmarkCraftingMultiplier = 20

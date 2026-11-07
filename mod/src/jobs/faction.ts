@@ -1,7 +1,7 @@
 import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { createController, destroyController } from "../character/controller"
 import type { JobId } from "../shared/ids"
-import { getConfig } from "../config"
+import { getConfig, Config } from "../config"
 import { addJob, getJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { findEntities } from "../work"
@@ -46,11 +46,23 @@ function makeNeutral(force: LuaForce): void {
   }
 }
 
+/**
+ * Benchmark only (parity-breaking, never in acceptance runs): the crew's force hand-crafts `benchmarkCraftingMultiplier`
+ * times as fast (the engine's force-wide manual-crafting modifier, so it covers every character of the force including
+ * one spawned later). Movement is handled by the walker's path teleport (`character/walk.ts`): a running-speed modifier
+ * big enough for a benchmark makes the waypoint stepper skip waypoints and turn back.
+ */
+export function applyBenchmarkModifiers(force: LuaForce, config: Config): void {
+  const craft = math.max(0, config.benchmarkCraftingMultiplier - 1)
+  if (force.manual_crafting_speed_modifier !== craft) force.manual_crafting_speed_modifier = craft
+}
+
 export function createFaction(name: string, options: CreateFactionOptions = {}): FactionState {
   assert(storage.factions[name] === undefined, `faction ${name} exists`)
   const forceName = FORCE_PREFIX + name
   const force = game.forces[forceName] ?? game.create_force(forceName)
   makeNeutral(force)
+  applyBenchmarkModifiers(force, getConfig())
   const faction: FactionState = {
     name,
     surface: options.surface ?? game.surfaces[1].name,
