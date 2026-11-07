@@ -1298,6 +1298,9 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     }
     m.def = field.def
     m.at = field.at
+    // The field may lie in charted-but-unscanned chunks; scan its ground and the corridor from the plan centre before
+    // the pole step sees UNKNOWN there.
+    RT.requestCorridor(storage.terrains?.[f.terrain], center, field.at)
     OIL.moduleWells([field.def], takenWells)
     fieldBoxes.push({ x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
     EX.knowRect(f, { x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })

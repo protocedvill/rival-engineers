@@ -9,6 +9,7 @@ import type { JobId } from "../shared/ids"
 import { hardGhostFailure, preflightSpecs, staleUnderRoutes, staleUnderSpecs, tuneMergeSplitters } from "./conflicts"
 
 export { tuneMergeSplitters }
+export { requestCorridor } from "./terrain"
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { getJob } from "../jobs/board"

@@ -4,7 +4,7 @@
 // the planner uses.
 
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
-import { boxTiles, CLIFF, FOREIGN, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+import { boxTiles, CLIFF, FOREIGN, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { findEntities } from "../work"
 
 export interface ChunkScan {
@@ -89,6 +89,23 @@ function enqueue(t: TerrainState, cx: number, cy: number): void {
  * Queues every chunk overlapping `area` (world tiles) that is not scanned yet. D62: with `known`, only the chunks it
  * allows (the rest stay UNKNOWN to the planner).
  */
+/**
+ * M7d.5: scan the ground a remote site and its connection to the plan's centre need. A pumpjack field chosen from the
+ * surface can sit in charted-but-unscanned chunks; the planner then sees UNKNOWN there and refuses a pole line that
+ * exists on the map. Queue a corridor, not the whole bounding box, so the scan cost stays proportional to the route.
+ */
+export function requestCorridor(t: TerrainState | undefined, from: Vec, to: Vec, halfWidth = 48): void {
+  if (t === undefined) return
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const steps = math.max(1, math.ceil(math.max(math.abs(dx), math.abs(dy)) / 32))
+  for (let i = 0; i <= steps; i++) {
+    const x = from.x + (dx * i) / steps
+    const y = from.y + (dy * i) / steps
+    requestArea(t, { x: math.floor(x - halfWidth), y: math.floor(y - halfWidth), w: 2 * halfWidth, h: 2 * halfWidth })
+  }
+}
+
 export function requestArea(t: TerrainState, area: Rect, known?: (this: void, cx: number, cy: number) => boolean): void {
   const cx1 = math.floor(area.x / 32)
   const cy1 = math.floor(area.y / 32)
