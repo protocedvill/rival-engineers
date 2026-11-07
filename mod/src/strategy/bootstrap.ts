@@ -1,4 +1,5 @@
 import { BoundingBox, LuaEntity, LuaForce, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
+import { tkey as TILEKEY } from "../planner/grid"
 import { keyTaken, pruneFailedKeys } from "../jobs/keys"
 import { Config, getConfig } from "../config"
 import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
@@ -279,7 +280,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
 // Sites
 
 function tkey(x: number, y: number): number {
-  return (x + 1048576) * 2097152 + (y + 1048576)
+  return TILEKEY(x, y)
 }
 
 const UNIT: Record<number, [number, number]> = { 0: [0, -1], 4: [1, 0], 8: [0, 1], 12: [-1, 0] }

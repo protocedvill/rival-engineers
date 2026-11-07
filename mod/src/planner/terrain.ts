@@ -4,7 +4,7 @@
 // the planner uses.
 
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
-import { boxTiles, CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+import { boxTiles, CLIFF, FOREIGN, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
 import { findEntities } from "../work"
 
 export interface ChunkScan {
@@ -174,8 +174,8 @@ export function stepTerrain(t: TerrainState, maxChunks: number): number {
   let tries = t.queue.length
   while (scanned < maxChunks && t.queue.length > 0 && tries-- > 0) {
     const k = t.queue.shift()!
-    const cx = math.floor(k / 2097152) - 1048576
-    const cy = (k % 2097152) - 1048576
+    const cx = keyX(k)
+    const cy = keyY(k)
     if (!surface.is_chunk_generated({ x: cx, y: cy })) {
       surface.request_to_generate_chunks({ x: cx * 32 + 16, y: cy * 32 + 16 }, 0)
       t.queue.push(k)

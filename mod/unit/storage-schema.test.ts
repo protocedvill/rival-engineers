@@ -7,7 +7,7 @@ test("an unversioned save is adopted without changing its fields", () => {
   eq(result.from, 0)
   eq(result.to, CURRENT_STORAGE_SCHEMA)
   eq(result.applied[0], 1)
-  eq(old.schemaVersion, 1)
+  eq(old.schemaVersion, CURRENT_STORAGE_SCHEMA)
   eq(old.marker, "kept")
 })
 

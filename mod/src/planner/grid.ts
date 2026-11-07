@@ -41,21 +41,39 @@ export interface Rect {
   h: number
 }
 
-// Tile keys: one number per tile, exact in doubles (|x|, |y| < 2^20).
+// Tile keys: one number per tile, exact in doubles. The active area uses a **small** encoding because Factorio's Lua
+// 5.2 hashes large numeric keys very slowly (a microbenchmark: ~27x slower at 2e12 than at 1e6; see
+// tools/harness/lua-bench). The old full-map encoding is kept for far coordinates (as a negative number) and for
+// decoding pre-schema-2 saves; `storage-schema` migrates those keys once.
 const OFF = 1048576
 const SPAN = 2097152
-/** Exported for hot loops that derive a neighbour's `tkey` arithmetically (x + 1 adds `KEY_SPAN`, y + 1 adds 1). */
-export const KEY_SPAN = SPAN
+/** The local fast box: |x|, |y| < 32768 tiles. Keys are < 2^32, where Factorio's Lua stays fast. */
+const LOCAL_OFF = 32768
+const LOCAL_SPAN = 65536
+const LOCAL_MAX = LOCAL_SPAN * LOCAL_SPAN - 1
 
+/** Tile key. Near the origin it is small; farther out it is the negative full-map encoding (unique, no collision). */
 export function tkey(x: number, y: number): number {
-  return (x + OFF) * SPAN + (y + OFF)
+  if (x >= -LOCAL_OFF && x < LOCAL_OFF && y >= -LOCAL_OFF && y < LOCAL_OFF) {
+    return (x + LOCAL_OFF) * LOCAL_SPAN + (y + LOCAL_OFF)
+  }
+  return -((x + OFF) * SPAN + (y + OFF)) - 1
 }
 
+/**
+ * Tile x of a key: a negative key is a far tile, a key up to `LOCAL_MAX` is the local encoding, and a larger positive
+ * key is a pre-schema-2 key (fixtures and old saves before `rekeyStorage`).
+ */
 export function keyX(k: number): number {
+  if (k < 0) return math.floor((-k - 1) / SPAN) - OFF
+  if (k <= LOCAL_MAX) return math.floor(k / LOCAL_SPAN) - LOCAL_OFF
   return math.floor(k / SPAN) - OFF
 }
 
+/** Tile y of a key; see `keyX` for the three forms. */
 export function keyY(k: number): number {
+  if (k < 0) return ((-k - 1) % SPAN) - OFF
+  if (k <= LOCAL_MAX) return (k % LOCAL_SPAN) - LOCAL_OFF
   return (k % SPAN) - OFF
 }
 

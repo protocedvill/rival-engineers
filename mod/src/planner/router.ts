@@ -17,7 +17,7 @@ import { connectionId, routeId } from "../shared/ids"
 import type { RouteId } from "../shared/ids"
 import { BeltTier } from "./capacity"
 import { routeClaimConflict } from "./claims"
-import { ccw, cw, DX, DY, FREE, KEY_SPAN, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
+import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
 import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
@@ -270,12 +270,15 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
 
 /** Whether a 4-neighbour of the tile holds a belt of another route (existing or planned). */
 function nextToRoute(state: LayoutState, k: number, self: string): boolean {
-  // `tkey` is linear: x + 1 adds `KEY_SPAN`, y + 1 adds 1. Avoid four more `tkey` calls in the router's hottest path.
-  const o = state.routeOcc[k - KEY_SPAN]
+  // Derive the neighbours through `tkey` (not key arithmetic): local keys are linear, but a tile at the local box's
+  // edge has a far-encoded neighbour, and the two encodings are not offset-compatible.
+  const x = keyX(k)
+  const y = keyY(k)
+  const o = state.routeOcc[tkey(x + 1, y)]
   if (o !== undefined && o !== self) return true
-  if (state.routeOcc[k + KEY_SPAN] !== undefined && state.routeOcc[k + KEY_SPAN] !== self) return true
-  if (state.routeOcc[k - 1] !== undefined && state.routeOcc[k - 1] !== self) return true
-  if (state.routeOcc[k + 1] !== undefined && state.routeOcc[k + 1] !== self) return true
+  if (state.routeOcc[tkey(x - 1, y)] !== undefined && state.routeOcc[tkey(x - 1, y)] !== self) return true
+  if (state.routeOcc[tkey(x, y + 1)] !== undefined && state.routeOcc[tkey(x, y + 1)] !== self) return true
+  if (state.routeOcc[tkey(x, y - 1)] !== undefined && state.routeOcc[tkey(x, y - 1)] !== self) return true
   return false
 }
 

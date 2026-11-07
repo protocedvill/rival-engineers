@@ -9,6 +9,7 @@
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { routeId, layoutClaimTag } from "../src/shared/ids"
+import { rekeyLayout, rekeyRequest } from "../src/planner/rekey"
 import { dirIndex, FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
 import { checkLayoutIndexes, findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
@@ -74,6 +75,10 @@ function load(name: string, captured = false): PlanInput {
   const chunk = loadfile(string.sub(name, 1, 1) === "/" ? name : `${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
   if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
   const fx = chunk() as PlanInput
+  // Captures made before storage schema 2 carry the old full-map tile keys; rekey the base layout exactly as the save
+  // migration does, so lookups match the current encoder.
+  if (fx.base !== undefined) rekeyLayout(fx.base)
+  rekeyRequest(fx.request)
   // M7c.8 captures run-length encode their rows (runtime.ts exportPlanInput).
   if (fx.rle === true) {
     fx.blocks = fx.blocks.map((row) => unRunLength(row))

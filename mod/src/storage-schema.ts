@@ -1,7 +1,9 @@
 // Persistent storage versioning. Pure: migrations operate on plain tables and must not read game, prototypes or
 // settings. Keep old fields readable until the migration that replaces them has shipped and been exercised by T2.
 
-export const CURRENT_STORAGE_SCHEMA = 1
+import { rekeyStorage, RekeyStorage } from "./planner/rekey"
+
+export const CURRENT_STORAGE_SCHEMA = 2
 
 export interface StorageMigrationResult {
   from: number
@@ -9,13 +11,15 @@ export interface StorageMigrationResult {
   applied: number[]
 }
 
-type VersionedStorage = { schemaVersion?: number }
+type VersionedStorage = RekeyStorage & { schemaVersion?: number }
 type Migration = (this: void, value: VersionedStorage) => void
 
 // Schema 1 names the legacy shape. It intentionally transforms nothing: saves written before versioning already
 // have this shape, and all optional subsystem tables continue to be initialized by their owning adapters.
 const migrations: Record<number, Migration> = {
   1: () => {},
+  // 2 rekeys every stored tile key to the small local encoding (B159 follow-up).
+  2: (value) => rekeyStorage(value),
 }
 
 /** Upgrade in ascending, one-version steps. Throws rather than loading a save written by newer code incorrectly. */

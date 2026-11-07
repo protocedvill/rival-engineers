@@ -19,6 +19,12 @@ script.on_init(() => {
   initStorage()
   storage.autoSpawnPending = true
 })
+// Schema migrations must also run on a plain load: Factorio does not fire `on_configuration_changed` when the mod set
+// and versions are unchanged, and a resumed snapshot can carry an older tile-key encoding.
+script.on_load(() => {
+  invalidateConfig()
+  initStorage()
+})
 script.on_configuration_changed(() => {
   invalidateConfig()
   initStorage()

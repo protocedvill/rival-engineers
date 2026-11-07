@@ -1,4 +1,5 @@
 import { LuaSurface, MapPosition } from "factorio:runtime"
+import { tkey as TILEKEY } from "../planner/grid"
 import { findEntities } from "../work"
 
 // World knowledge (SPEC §5.5, M3): crew don't chart. A faction learns about resources by generating the
@@ -44,8 +45,7 @@ export function resourceProduct(name: string): string | undefined {
 }
 
 function key(x: number, y: number): number {
-  // Tile coordinates fit easily: |x|, |y| < 2^20 on any sane map.
-  return (x + 1048576) * 2097152 + (y + 1048576)
+  return TILEKEY(x, y)
 }
 
 /**

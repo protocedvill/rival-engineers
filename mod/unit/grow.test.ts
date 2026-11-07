@@ -4,7 +4,7 @@ import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
 import { entityDiff, EntitySpec, factoryReserveTiles, partEntities, routeEntities } from "../src/planner/build-list"
-import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
+import { FREE, keyX, keyY, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
 import { checkLayout, checkLayoutIndexes, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts, tapTree } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
@@ -196,8 +196,8 @@ test("the factory's reserved tiles follow its layout: tiles a growth or reroute 
   const now: Record<number, boolean> = {}
   for (const k of factoryReserveTiles(g.layout)) now[k] = true
   const near = (k: number): boolean => {
-    const x = math.floor(k / 2097152) - 1048576
-    const y = (k % 2097152) - 1048576
+    const x = keyX(k)
+    const y = keyY(k)
     for (const m of g.layout.modules) if (x >= m.rect.x - 1 && x <= m.rect.x + m.rect.w && y >= m.rect.y - 1 && y <= m.rect.y + m.rect.h) return true
     return false
   }
