@@ -39,7 +39,10 @@ T1 options (`tools/run-unit-tests.mjs`): `--no-build` skips the delete + TSTL co
 build (it stops with an error if there is none); `--out DIR` or `$UNIT_OUT` builds and runs in DIR instead of
 `mod/build-unit`, so concurrent runs in one checkout don't clobber each other (any number of runs may share one build
 read-only with `--no-build`); `-t TEXT` (`$UNIT_TEST_FILTER`) runs only the tests whose name contains TEXT; the last
-argument filters test files. Without options it rebuilds and runs everything, as before.
+argument filters test files. Without options it rebuilds and runs everything, as before. `mod/build-unit` is separate
+from the mod build (`mod/build`) that T2, soaks and the game load: `--no-build` on either never rebuilds, so after a
+`mod/src` change run `npm run build` before a `--no-build` T2 or soak (and check `npm run doctor` says the build is
+newer than the sources).
 
 `npm test` (`tools/test-parallel.mjs`) runs one `factorio-test run` per shard, each with its own write-data directory
 `.factorio-test/shards/N/` (vendored mods copied from `ci/mods/`). A test file is one unit; `tools/test-shards.json`

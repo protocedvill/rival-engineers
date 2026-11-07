@@ -18,6 +18,12 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 ## Traps that invalidate results
 
 - T2 filters are Lua patterns: `-` must be escaped as `%-`, and `|` is not alternation. Pass several filters instead.
+- **Two build directories, and `--no-build` never rebuilds either.** T1 (`npm run test:unit`) compiles to
+  `mod/build-unit`; T2 (`test-parallel`, `npm test`), soaks and the game load `mod/build`. A change tested with T1 and
+  then run with `--no-build` T2/soak silently exercises the **old** mod (2026-11-07: a benchmark run reproduced an
+  already-fixed `no room for a pole beside the pump` failure because only `build-unit` had been rebuilt). After any
+  `mod/src` change, run `npm run build` (or omit `--no-build`), and trust a soak/benchmark only when
+  `npm run doctor` prints `OK Build: present and newer than TypeScript sources`.
 - Parallel shards are separate Factorio games. A test may only consume state created in its own shard unit. Configure
   intentional grouping in `tools/test-shards.json`.
 - Do not run the full T2 suite as one shard (`TEST_JOBS=1`): every file then shares one game, the tests' factions pass

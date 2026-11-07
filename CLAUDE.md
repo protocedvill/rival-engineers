@@ -25,7 +25,9 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Prefer configurable settings over constants (SPEC §5.7).
 - When a plan, placement or route misbehaves, read its dump (`REPLAY_DUMP=1` / the failure dump in
   `out/replay-dumps/`) before running variants; sweep variants with `npm run replay:sweep`, not one replay at a time.
-  Rerun T1 with `--no-build -t <test>` after a build instead of recompiling for every run.
+  Rerun T1 with `--no-build -t <test>` after a build instead of recompiling for every run. T1 builds `mod/build-unit`;
+  T2, soaks and the game load `mod/build`, and `--no-build` never rebuilds either (run `npm run build` after `mod/src`
+  changes).
 - **Escalate magic numbers to the user.** Every tuning number you introduce (thresholds, distances, counts, timeouts,
   weights, margins...) is listed in the milestone report's "Magic numbers for the user" table: name, where it lives,
   current value, why that value, and whether it is already a setting. The user decides which become settings and their
