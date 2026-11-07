@@ -9,6 +9,7 @@ import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
 import { factoryCheckDebug, factoryClaimDebug, factoryDesignDebug, factoryEdgeDebug, factoryRouteDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
 import { factoryPowerDebug } from "./strategy/power-debug"
+import { factoryGhostDebug } from "./strategy/ghost-debug"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
 import { tkey } from "./planner/grid"
@@ -108,6 +109,8 @@ export function registerRemoteInterface(): void {
     check_debug: (name: string, filter: string) => factoryCheckDebug(name, filter),
     /** B67/M7d.5: the layout's pole graph beside its built world for modules whose id contains `filter`. */
     power_debug: (name: string, filter?: string) => factoryPowerDebug(name, filter ?? ""),
+    /** B158/B159: every ghost with its plan key and place job; `planned=no` is an orphan, `job=none` unbuilt. */
+    ghost_debug: (name: string) => factoryGhostDebug(name),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
     goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
     /** T4 determinism: the canonical state (sorted storage, the factions' entities) to script-output/`file`. */
