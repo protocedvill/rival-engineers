@@ -1479,11 +1479,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     RT.removePlan(entry.id)
     // B57/B61: a sealed consumer port is authoritative even while relocation waits. Mark it now, so the next design
     // plans no provider for a port that cannot receive one.
-    for (const { port, subject } of LO.sealedGoalPorts(f.layout, entry.job?.evidence ?? [])) {
-      const n = f.graph.nodes[port.module]
-      if (n === undefined) continue
-      if (CS.add((f.constraints ??= {}), "noFeed", CS.portKey(n.role, port.port))) log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${port.port} port sealed (goal ${g.id}: ${subject}); its input stays unplanned until the module moves`)
-    }
+    markSealedNoFeed(ctx, entry.job?.evidence ?? [], g)
     // B63: a consumer's own input port was proved boxed in (or the window cut it). Re-plan this goal with a wider route
     // window first: the blockage was built by the plan's other routes under the narrow window, so widening a single
     // connection rescues nothing while the wider plan routes (seed 1376111: 265k work, vs 50k spent failing).
@@ -2446,6 +2442,37 @@ export function growNow(faction: FactionState, f: FactoryState, growth: NonNulla
   const r = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth })
   f.waiting = ctx.waiting
   return r
+}
+
+/**
+ * B57/B61: mark every consumer port the failed plan proved sealed as `noFeed`, before relocation (which may wait for
+ * another goal) and even when the plan is contested. The design then stops planning providers for a port that cannot
+ * receive one. The mark goes with the role when the module moves (`constraints.ts` `dropRole`).
+ */
+function markSealedNoFeed(ctx: Ctx, evidence: PlanEvidence[], g: FactoryGoal): void {
+  const f = ctx.f
+  const t = storage.terrains?.[f.terrain]
+  if (t === undefined) return
+  const escape = policyFor(ctx.config).placement.portEscape ?? 0
+  const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
+  const sealed: Record<string, string> = {}
+  for (const { port } of LO.sealedGoalPorts(f.layout, evidence)) sealed[port.module] = port.port
+  if (escape > 0) {
+    for (const ev of evidence) {
+      if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.edge === true) continue
+      const m = string.match(ev.subject, "=>([^%.]+)%.([^%s]+)")
+      if (m[0] === undefined || m[1] === undefined) continue
+      let n: LogicalNode | undefined
+      for (const x of g.nodes) if (x.role === m[0]) n = f.graph.nodes[x.id]
+      if (n === undefined || LO.findModule(f.layout, n.id) === undefined) continue
+      if (sealedInputs(f.layout, view, n.id, {}, escape).length > 0) sealed[n.id] = m[1]
+    }
+  }
+  for (const [id, port] of pairs(sealed)) {
+    const n = f.graph.nodes[id as string]
+    if (n === undefined) continue
+    if (CS.add((f.constraints ??= {}), "noFeed", CS.portKey(n.role, port as string))) log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${port} port sealed (goal ${g.id}); its input stays unplanned until the module moves`)
+  }
 }
 
 /**
