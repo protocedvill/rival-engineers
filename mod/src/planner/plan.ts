@@ -936,6 +936,22 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   return used
 }
 
+/** Whether (x, y) can hold a pump's pole: free, not on the route, and buildable. */
+function poleSpotFree(
+  layout: LayoutState,
+  terrain: TerrainView,
+  policy: LayoutPolicy,
+  req: RouteRequest,
+  x: number,
+  y: number,
+  forbid: Record<number, boolean> | undefined,
+): boolean {
+  const k = tkey(x, y)
+  if (forbid !== undefined && forbid[k] === true) return false
+  if (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined) return false
+  return tileCost(layout, terrain, policy, req, false, x, y) >= 0
+}
+
 /** A free tile beside a pump for its pole, within the pole's supply area. */
 export function pumpPoleSpot(
   layout: LayoutState,
@@ -945,10 +961,18 @@ export function pumpPoleSpot(
   st: PipeStep,
   forbid?: Record<number, boolean>,
 ): Vec | undefined {
-  // The pump must be in the pole's supply area; a small electric pole's 5×5 covers a pump two tiles off (including
-  // diagonally). The old pattern (the two sides and the two diagonal-ahead tiles) failed a pump deep inside a module
-  // even though a pole on the module's edge would power it (B159: robot-chain oil complex, "no room for a pole beside
-  // the pump at 412,35" with free tiles two away).
+  // The router asks this for every pump candidate, and the old pattern's two sides plus the two diagonal-ahead tiles
+  // are free in almost every case: check them first so the common path never pays for the full square. A small
+  // electric pole's 5×5 supply area covers a pump two tiles off (including diagonally), so a crowded pump falls back to
+  // the full square (B159: oil complex, "no room for a pole beside the pump at 412,35" with free tiles two away).
+  const side = [(st.dir + 1) % 4, (st.dir + 3) % 4]
+  for (let along = 0; along < 2; along++) {
+    for (const d of side) {
+      const x = st.x + DX[st.dir] * along + DX[d]
+      const y = st.y + DY[st.dir] * along + DY[d]
+      if (poleSpotFree(layout, terrain, policy, req, x, y, forbid)) return { x, y }
+    }
+  }
   const reach = 2
   let best: Vec | undefined
   let bestD = 99
@@ -957,10 +981,7 @@ export function pumpPoleSpot(
       if (dx === 0 && dy === 0) continue
       const x = st.x + dx
       const y = st.y + dy
-      const k = tkey(x, y)
-      if (forbid !== undefined && forbid[k] === true) continue
-      if (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined) continue
-      if (tileCost(layout, terrain, policy, req, false, x, y) < 0) continue
+      if (!poleSpotFree(layout, terrain, policy, req, x, y, forbid)) continue
       const d = math.abs(dx) + math.abs(dy)
       if (d < bestD) {
         bestD = d

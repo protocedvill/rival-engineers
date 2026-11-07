@@ -1720,7 +1720,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       place forever (`0 entities to pick up, 0 to build`); and the replacement complex's petroleum plan failed at
       `no room for a pole beside the pump at 412,35` because the pole search only tried the pump's sides and the two
       diagonal-ahead tiles, though a small pole's 5×5 supply area reaches two tiles. `routesLand` now follows `joins`,
-      and `pumpPoleSpot` searches the 5×5 ring (nearest first, route tiles excluded). T1 `fluid-route` B149/B159.
+      and `pumpPoleSpot` searches the 5×5 ring (nearest first, route tiles excluded), staged: the old four-tile pattern first, the whole ring only when those are taken (the router calls it for every pump candidate; a replay profile of g202 measured the unconditional ring at 15.5% inclusive). T1 `fluid-route` B149/B159.
       The separate `water*>oil-complex~4` goal still fails on a port boxed in at 405,30 (`open 8/25`).
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
