@@ -2992,7 +2992,16 @@ function checkStall(ctx: Ctx): void {
   const brain = ctx.faction.brain!
   // Research progress counts as progress (the plan is waiting on it).
   const units = ctx.force.research_progress + (ctx.force.current_research !== undefined ? 0 : 1)
-  const key = brain.steps * 1000 + math.floor(units * 100)
+  // Planner work counts too. A chain plan can legitimately run past `stallTicks` (the 26-module g207 robot chain took
+  // >15 game-min in a benchmark): while it plans, nothing is placed and `brain.steps` does not move, so the old key read
+  // a working planner as a stall, reset the crew and fail-fasted the run on the second one.
+  let planWork = 0
+  for (const g of f.goals) {
+    if (g.status !== "planning" && g.status !== "building") continue
+    const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
+    planWork += entry?.job?.stats.work ?? 0
+  }
+  const key = brain.steps * 1000 + math.floor(units * 100) + math.floor(planWork)
   if (key !== f.progressSteps) {
     f.progressSteps = key
     f.progressTick = ctx.tick

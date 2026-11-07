@@ -1722,6 +1722,14 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       diagonal-ahead tiles, though a small pole's 5×5 supply area reaches two tiles. `routesLand` now follows `joins`,
       and `pumpPoleSpot` searches the 5×5 ring (nearest first, route tiles excluded), staged: the old four-tile pattern first, the whole ring only when those are taken (the router calls it for every pump candidate; a replay profile of g202 measured the unconditional ring at 15.5% inclusive). T1 `fluid-route` B149/B159.
       The separate `water*>oil-complex~4` goal still fails on a port boxed in at 405,30 (`open 8/25`).
+      **The stalled robot-chain plan (B160):** the first long benchmark from min-1140 fail-fasted at minute 1191 on two
+      STALLs, both `g207 production planning (placed 0)`. g207 was the chain itself (26 modules, 50 connections, two
+      pumpjack fields ~1000 tiles out, eight coal outposts, a 2466×2169 region). The planner was working (11.6 ms/tick)
+      but `checkStall` counted only `brain.steps` and research: during a long plan nothing is placed, so a working plan
+      looked idle; `recover` reset the crew and the second false stall stopped the run. The progress key now includes the
+      active goals' cumulative planner work. The plan is still too big for one goal at this planner speed (the 10-module
+      g202 plan alone is 141 s unbudgeted), and the existing rows cannot grow in place (`cannot grow`, 6 failed
+      expansions), which is why the design batched the chain plus its remote supply in one request.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
 6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
