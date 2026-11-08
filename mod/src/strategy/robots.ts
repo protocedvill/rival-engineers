@@ -116,6 +116,9 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
 }
 
 /** M7d.5: starts the next roboport goal when the network can grow (one goal at a time). */
+/** M7d.5: optional grid cells that can find no site before the network pauses expansion (the hub still works). */
+export const MAX_GRID_FAILURES = 2
+
 export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   const f = ctx.f
   if (!ctx.config.factoryRobots) return
@@ -123,19 +126,29 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   if (ctx.force.recipes[prototypeFacts.recipeForItem(roboport) ?? roboport]?.enabled !== true) return
   if (hooks.busy() !== undefined) return
   const failed: Record<string, boolean> = {}
+  let failedCells = 0
   for (const g of f.goals) {
     if (g.kind !== "robots") continue
     if (g.status === "planning" || g.status === "building") return
     if (g.status !== "failed") continue
     for (const n of g.nodes) {
       const c = RG.parseCellRole(n.role)
-      if (c !== undefined) failed[RG.cellKey(c)] = true
+      if (c !== undefined && failed[RG.cellKey(c)] !== true) {
+        failed[RG.cellKey(c)] = true
+        failedCells++
+      }
     }
   }
   const cells: RG.GridCell[] = []
   for (const n of LG.nodesOf(f.graph)) {
     const c = RG.parseCellRole(n.role)
     if (c !== undefined && !failed[RG.cellKey(c)]) cells.push(c)
+  }
+  // The hub already gives the network a working radius. Optional grid cells in a dense base can have no site; stop
+  // spending plans on them after a couple of failures instead of tripping the soak fail-fast.
+  if (cells.length > 0 && failedCells >= MAX_GRID_FAILURES) {
+    ctx.waiting.push(`robots: network grid paused after ${failedCells} cells with no site`)
+    return
   }
   // The hub in the construction-robot stock row: cell 0,0 once the row is built; the design plans it (no hub goal).
   const hub = hubNode(ctx)
