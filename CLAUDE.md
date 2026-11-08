@@ -134,6 +134,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `LuaProfiler` output in a log line needs a localised string: `log(["", "text ", profiler])`.
 - **Inserter direction is the side it picks up from** (2.0): an inserter facing north takes from the tile north of
   it and drops south. Yellow inserters move about one item per full turn (0.84/s), a bit more from belts.
+- **A module port's outside tile must lie outside the module's footprint** (B113, B161). A belt-in on the module's
+  last row facing inward has its outside tile one row further out; if that row is still inside the footprint, no
+  route can ever start there and every plan fails `no path`. Add every new generator to the `port-edges` T1 sample
+  list: it checks all rotations, not only the one a plan happened to use.
 - **An inserter won't put ore into a burner furnace that has no fuel.** Furnaces early on a thin fuel lane hoard coal
   and the last ones start late: at exactly the declared coal rate a column takes 15–23 game-min to reach its rate
   (D33 validation waits for steady state; a real build should prime its fuel lane).
