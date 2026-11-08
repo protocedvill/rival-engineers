@@ -447,6 +447,17 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
   const bufferRows: string[] = []
   for (const [p] of string.gmatch(ctx.config.moduleBufferRows, "[^,%s]+")) bufferRows.push(p)
   const e = ctx.entities
+  const factory = getFactory(ctx.faction.name)
+  const oilLube: Record<string, boolean> = {}
+  if (factory !== undefined) {
+    for (const id of factory.graph.nodeOrder) {
+      const n = factory.graph.nodes[id]
+      if (n.generator !== "oil-complex") continue
+      const m = LO.findModule(factory.layout, id)
+      const lube = (m?.canonical.params?.lubePlants as number | undefined) ?? 0
+      if (lube > 0) oilLube[n.role] = true
+    }
+  }
   return {
     facts: prototypeFacts,
     make: makeModule,
@@ -481,6 +492,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     minTopUp: ctx.config.factoryMinTopUp,
     ownSite: CS.flags(getFactory(ctx.faction.name)?.constraints, "ownSite"),
     providerCaps: ST.providerCaps(getFactory(ctx.faction.name)),
+    oilLube,
     builtGenerators: ST.builtGenerators(getFactory(ctx.faction.name)),
     providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
     powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),

@@ -1132,6 +1132,23 @@ test("M7d.4: after advanced oil processing: one oil complex, pipe-fed chemistry 
   eq(complex.params.lubePlants, 0, "no lubricant asked for: no lubricant plants")
 })
 
+test("M7d.5: an oil family reuses its built complex instead of forking per design", () => {
+  const blue = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+    providerCaps: { "oil-complex": 10 },
+    oilLube: { "oil-complex": true },
+  })
+  const d = design(blue, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const complexes = d.nodes.filter((n) => n.generator === "oil-complex")
+  eq(complexes.map((n) => n.role).join(","), "oil-complex", "one family member, no ~2")
+  eq(complexes[0].capacity, 10, "the built capacity is kept")
+})
+
 test("M7d.4: electric engines and plastic: one oil complex makes the lubricant and the petroleum", () => {
   const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "plastic-bar": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "electric-engine-unit": true }
   const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 3, packs: ["electric-engine-unit"] })

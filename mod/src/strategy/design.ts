@@ -114,6 +114,8 @@ export interface DesignContext {
   advancedOil?: string
   /** M7d.4: the fluids the oil complex makes (default petroleum gas and lubricant). */
   oilComplexOutputs?: string[]
+  /** M7d.5: built oil-complex roles that have a lubricant plant, so they can serve lubricant demand. */
+  oilLube?: Record<string, boolean>
   /**
    * M7d.4: generators of the roles already in the factory graph. A built (or building) fluid chain keeps its role as
    * a fluid chain after the switch to the oil complex: only new providers and parallel ones use the new modules.
@@ -1029,18 +1031,39 @@ function expandOilComplex(w: Walk): void {
   if (mine.length === 0) return
   w.demands = rest
   const role = `oil-complex${w.suffix}`
-  const cap = ctx.providerCaps?.[role]
-  if (ctx.providerShort?.[role] === true && cap !== undefined && cap > EPS && !w.nodes.some((n) => n.role === role)) {
-    // The built complex: petroleum consumers up to its capacity, everything else to the parallel one.
-    const pet = mine.filter((d) => d.item === outs[0])
-    const split = splitDemand(pet, cap)
-    addOilComplex(w, role, split.keep, cap)
-    const others = mine.filter((d) => d.item !== outs[0])
-    for (const d of split.rest) others.push(d)
-    if (others.length > 0) addOilComplex(w, parallelRole(w, role, true), others)
+  // Consumers an existing oil complex already feeds keep it; only new consumers need this plan.
+  const fresh: Demand[] = []
+  for (const d of mine) {
+    const kept = ctx.sharing?.keep[`${d.item}@${d.to}@${d.toPort}`] ?? ctx.sharing?.keep[`${d.item}@${d.to}`]
+    if (kept !== undefined && string.sub(kept, 1, 12) === "oil-complex") continue
+    fresh.push(d)
+  }
+  if (fresh.length === 0) return
+  let needPet = 0
+  let needLube = 0
+  for (const d of fresh) {
+    if (d.item === outs[0]) needPet += d.rate
+    if (d.item === outs[1]) needLube += d.rate
+  }
+  // The oil family (base and ~N) is one provider group. Reuse a built role with a lubricant plant when lubricant is
+  // needed, otherwise any family role with enough capacity. This is the B19 sharing path the old early return skipped.
+  const family: string[] = []
+  for (const [r] of pairs(ctx.providerCaps ?? {})) {
+    const name = r as string
+    if (string.sub(name, 1, role.length) !== role) continue
+    const tail = string.sub(name, role.length + 1, role.length + 1)
+    if (name === role || tail === "~") family.push(name)
+  }
+  family.sort()
+  for (const r of family) {
+    const cap = ctx.providerCaps?.[r] ?? 0
+    if (cap + EPS < needPet) continue
+    if (needLube > EPS && ctx.oilLube?.[r] !== true) continue
+    addOilComplex(w, r, fresh, cap)
     return
   }
-  addOilComplex(w, w.nodes.some((n) => n.role === role) ? parallelRole(w, role, true) : role, mine)
+  // No single built role covers it: one new complex for the whole residual.
+  addOilComplex(w, w.nodes.some((n) => n.role === role) ? parallelRole(w, role, true) : role, fresh)
 }
 
 function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity?: number): void {
@@ -1059,8 +1082,9 @@ function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity
       const d = def as ModuleDef
       chosen = { params, def: d }
       const fits = outs.every((o) => outputRate(d, o) + EPS >= (need[o] ?? 0))
-      // A built complex keeps the size that matches its capacity.
-      if (fixedCapacity !== undefined ? outputRate(d, pet) + EPS >= fixedCapacity : fits) {
+      // A built complex keeps the size that matches its capacity, but must still make every demanded output (a 1/0
+      // complex cannot serve lubricant).
+      if (fixedCapacity !== undefined ? outputRate(d, pet) + EPS >= fixedCapacity && fits : fits) {
         short = false
         break
       }
@@ -1096,10 +1120,8 @@ function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity
 }
 
 function expandItem(w: Walk, item: string): void {
-  if (producerFor(w.ctx, item) === "oil-complex") {
-    expandOilComplex(w)
-    return
-  }
+  // Petroleum/lubricant are expanded once, after all other consumers are known (see `designCluster`).
+  if (producerFor(w.ctx, item) === "oil-complex") return
   const mine: Demand[] = []
   const rest: Demand[] = []
   for (const d of w.demands) (d.item === item ? mine : rest).push(d)
@@ -1181,12 +1203,24 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
     for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: "mall", toPort: p.port })
   }
   if (cluster === 1) for (const st of target.stock ?? []) addStock(ctx, w, st, cluster)
-  for (const item of order) if (item !== ctx.fuel) expandItem(w, item)
+  const oilOuts = ctx.oilComplexOutputs ?? OIL_COMPLEX_OUTPUTS
+  for (const item of order) if (item !== ctx.fuel && oilOuts.indexOf(item) < 0) expandItem(w, item)
   // M7c: a module may ask for an item the recipe walk never reaches (a fluid chain's crude oil and water: its petroleum
   // has no recipe of its own). Expand those too, until nothing new is asked for.
+  // M7d.5 (user, 2026-11-08): petroleum and lubricant are deliberately left in `w.demands` until every other consumer
+  // has added its draw. Expanding them item by item created one new oil complex per consumer (24 tiny complexes).
   for (let pass = 0; pass < 4; pass++) {
     const left: string[] = []
-    for (const d of w.demands) if (d.item !== ctx.fuel && left.indexOf(d.item) < 0) left.push(d.item)
+    for (const d of w.demands) if (d.item !== ctx.fuel && oilOuts.indexOf(d.item) < 0 && left.indexOf(d.item) < 0) left.push(d.item)
+    if (left.length === 0) break
+    for (const item of left) expandItem(w, item)
+  }
+  // One oil family decision for the whole stage: all petroleum and lubricant demands are known here.
+  if (w.demands.some((d) => oilOuts.indexOf(d.item) >= 0)) expandOilComplex(w)
+  // The oil complex's own inputs (crude, water, ...) may not have been expanded yet.
+  for (let pass = 0; pass < 4; pass++) {
+    const left: string[] = []
+    for (const d of w.demands) if (d.item !== ctx.fuel && oilOuts.indexOf(d.item) < 0 && left.indexOf(d.item) < 0) left.push(d.item)
     if (left.length === 0) break
     for (const item of left) expandItem(w, item)
   }
