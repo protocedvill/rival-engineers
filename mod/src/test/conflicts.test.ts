@@ -613,16 +613,20 @@ describe("faction conflicts", () => {
     const branch = route("route:branch", aSteps, aTiles, {})
     const ms = { x: x0 + 3, y: y0, dir: 1, x2: x0 + 3, y2: y0 + 1 }
     route("route:merge", [{ kind: "belt", x: x0 + 2, y: y0 + 1, dir: 1 }, { kind: "splitter", ...ms }], [tkey(x0 + 2, y0 + 1), tkey(x0 + 3, y0 + 1)], { mergeSplitter: ms })
+    // A tap of the same provider: its splitter sits on the branch and its belt hangs off it. A repo of a shared trunk
+    // must rebuild it; the merge's own belt above belongs to another edge.
+    const tap = route("route:tap", [{ kind: "splitter", x: x0 + 4, y: y0, dir: 1, x2: x0 + 4, y2: y0 + 1 }, { kind: "belt", x: x0 + 4, y: y0 + 1, dir: 1 }], [tkey(x0 + 4, y0), tkey(x0 + 4, y0 + 1)], { tapOf: routeId("route:branch") })
     // Every belt of the branch stands, the one under the merge splitter too; the splitter is missing.
     for (let i = 0; i < 6; i++) s.create_entity({ name: "transport-belt", position: { x: x0 + i + 0.5, y: y0 + 0.5 }, direction: 4 as never, force: a.force })
     // The merge route's own belt off the branch is missing too: not the branch's to repair.
     const own = checkBuild(s, a.force, layout, { modules: [], routes: [branch.id], poles: [] })
     assert(own.missing.length === 0 && own.stale.length === 0, `the branch alone: nothing missing (${own.missing.length} missing, ${own.stale.length} stale)`)
     const rc = routeCheck(layout, [branch.id])
-    assert(rc.routes.length === 2, `the merge route joins the check (${rc.routes.length})`)
+    assert(rc.routes.length === 3, `the tap and merge routes join the check (${rc.routes.length})`)
     const check = checkBuild(s, a.force, layout, { modules: [], routes: rc.routes, poles: [] }, rc.only)
-    assert(check.stale.length === 1 && check.stale[0].spec.name === "splitter", `the merge splitter over the old belt (${check.stale.length} stale: ${check.stale.map((x) => x.spec.name).join(",")})`)
-    assert(check.missing.length === 0, `the merge route's own belt off the branch is not checked (${check.missing.length} missing)`)
+    assert(check.stale.length === 2 && check.stale.some((x) => x.spec.name === "splitter"), `the merge and tap splitters over the old belt (${check.stale.length} stale: ${check.stale.map((x) => x.spec.name).join(",")})`)
+    assert(check.missing.length === 1 && check.missing[0].owner === tap.id, `the tap's belt is repaired with the trunk (${check.missing.length} missing: ${check.missing.map((x) => `${x.owner}@${x.x},${x.y}`).join(",")})`)
+    assert(!check.missing.some((x) => x.owner === "route:merge"), "the merge route's own belt off the branch is not checked")
   })
 
   test("a module whose ground another force took is given up: built entities deconstructed, parts dropped", () => {

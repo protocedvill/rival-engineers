@@ -353,10 +353,15 @@ export function routeCheck(layout: LayoutState, routes: RouteId[]): { routes: Ro
   if (deps.length <= routes.length) return { routes }
   const own: Record<string, boolean> = {}
   const tiles: Record<number, boolean> = {}
-  for (const rid of routes) {
+  const include = (rid: RouteId): void => {
     own[rid] = true
     for (const k of layout.routes[rid]?.tiles ?? []) tiles[k] = true
   }
+  for (const rid of routes) include(rid)
+  // A provider's taps are part of its own repair tree: their splitter sits on the trunk and their belts hang off it.
+  // Repairing a shared trunk must rebuild them too (M7d.5: a trunk repair left two taps at 0/s). A merge join from
+  // another provider is not included: that edge repairs its own belt (its splitter on our tile is stale instead).
+  for (const rid of deps) if (layout.routes[rid]?.tapOf !== undefined) include(rid)
   return { routes: deps, only: (e) => own[e.owner] === true || specTiles(e).some((k) => tiles[k] === true) }
 }
 
