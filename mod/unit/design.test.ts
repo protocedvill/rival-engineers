@@ -412,6 +412,24 @@ test("goal diff: built power and labs leave only production; a short smelter gro
   eq(goals2[goals2.length - 1].kind, "grow", "a grow goal")
 })
 
+test("M7d.5 (user): power is one pool, so a short cluster block does not grow while the pool covers the need", () => {
+  const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
+  const first = byRole(d.nodes, "power")!
+  d.nodes.push({ ...first, role: "power#2", need: 30e6, capacity: 10e6, powerW: 10e6 })
+  const roles = d.nodes.map((n) => n.role)
+  const caps: Record<string, number> = {}
+  for (const n of d.nodes) caps[n.role] = n.capacity
+  caps.power = 40e6
+  caps["power#2"] = 10e6
+  // Cluster 3's own block is short (30 MW > 10 MW), but the installed pool (40 + 10) covers the total need.
+  const diff = diffDesign(d, graphWith(d, roles, caps), () => undefined)
+  for (const gr of diff.grow) ok(gr.role !== "power#2", "the short per-cluster block is not grown while the pool covers it")
+  // When the pool itself is short, a short power block still gets its grow goal.
+  caps.power = 10e6
+  const short = diffDesign(d, graphWith(d, roles, caps), () => undefined)
+  ok(short.grow.some((gr) => gr.role === "power#2"), "a real pool shortfall still grows a power block")
+})
+
 test("goal diff: a built mall (a sink planned at a utilization, no output rate) is never a growth (M6a.2)", () => {
   const d = design(ctx(), { item: RED, perSecond: 10 / 60 })
   const base = d.nodes[0]

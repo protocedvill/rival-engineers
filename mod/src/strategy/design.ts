@@ -1561,6 +1561,17 @@ function labCount(def: ModuleDef | undefined, lab: string): number | undefined {
 export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, node: string) => ModuleDef | undefined): DesignDiff {
   const missing: DesignNode[] = []
   const grow: Growth[] = []
+  // M7d.5 (user, 2026-11-08): electricity is one pool. Steam blocks feed one grid, so a cluster's block is not short
+  // while the installed power capacity as a whole covers the design's total need. Without this, a blocked cluster-3
+  // block (9 MW built vs 15.1 MW allocated) was grown forever although the other blocks had 17 MW of spare capacity.
+  let powerNeed = 0
+  let powerHave = 0
+  for (const n of d.nodes) if (n.kind === "power") powerNeed += n.need
+  for (const id of g.nodeOrder) {
+    const n = g.nodes[id]
+    if (n.kind === "power") powerHave += rateIn(n.capacity.outputs, "electricity")
+  }
+  const powerPoolShort = powerNeed > powerHave + 1e-6
   for (const n of d.nodes) {
     const have = nodeByRole(g, n.role)
     if (have === undefined) {
@@ -1570,6 +1581,8 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
     // A sink (the mall) has no output rate to grow: its "need" is the utilization it was planned at (M6a.2: every
     // failing seed listed "mall short (0/0.25): cannot grow").
     if (n.kind === "sink") continue
+    // One power pool: while the pool covers the total need, no individual steam block is asked to grow.
+    if (n.kind === "power" && !powerPoolShort) continue
     const def = canonical(have.id)
     if (n.kind === "labs") {
       // Labs by count (their declared rate depends on the unit time they were sized for): grow by pairs (expand units).
