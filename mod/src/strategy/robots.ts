@@ -117,7 +117,7 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
 
 /** M7d.5: starts the next roboport goal when the network can grow (one goal at a time). */
 /** M7d.5: optional grid cells that can find no site before the network pauses expansion (the hub still works). */
-export const MAX_GRID_FAILURES = 2
+export const MAX_GRID_FAILURES = 1
 
 export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   const f = ctx.f
