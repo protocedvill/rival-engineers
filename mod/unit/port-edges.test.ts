@@ -1,4 +1,4 @@
-import { assemblerRow, circuitBlock, fluidChain, labArray, miningOutpost, pumpjackField, redLine, smelterColumn, steamBlock, waterPump } from "../src/modules/generators"
+import { assemblerRow, circuitBlock, fluidChain, labArray, miningOutpost, pumpjackField, redLine, robotCell, smelterColumn, steamBlock, waterPump } from "../src/modules/generators"
 import { portOutsideTile } from "../src/modules/geometry"
 import { ModuleDef } from "../src/modules/types"
 import { ok, run, test } from "./harness"
@@ -28,6 +28,7 @@ const samples: [string, ModuleDef][] = [
   ["sulfur", fluidChain(F, { recipe: "sulfur", chemPlants: 1, refineries: 1 })],
   ["water", waterPump(F, {})],
   ["field", pumpjackField(F, { wells: [{ x: 0, y: 0, perSecond: 10 }, { x: 6, y: 1, perSecond: 10 }] })],
+  ["robot cell", robotCell(F, { count: 2, buffer: "iron-chest", roboport: "roboport" })],
 ]
 
 test("every belt and pipe port is on the footprint with its outside tile outside", () => {

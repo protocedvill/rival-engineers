@@ -1072,15 +1072,17 @@ export function robotCell(facts: ProtoFacts, p: RobotCellParams): ModuleDef {
     // Row 17 ends at the last frame machine: the east edge tile is the row-16 merge.
     if (x < W - 2) L.beltAt(x + 0.5, 17.5, EAST)
   }
-  // Row 16's second lane enters from below at the east edge; row 17's from below at the west edge.
+  // Row 16's second lane enters from below at the east edge; row 17's from below at the west edge. Both need a belt
+  // tile on the south-edge row: the port must sit outside the footprint, not one tile inside it.
   L.beltAt(W - 0.5, 17.5, NORTH)
+  L.beltAt(W - 0.5, 18.5, NORTH)
   L.beltAt(0.5, 18.5, NORTH)
   const ports: Port[] = []
   for (let i = 0; i < n; i++) ports.push({ id: `out-${i}`, kind: "chest-out", pos: { x: 1.5 + 4 * i, y: 5.5 }, dir: NORTH, item: product.name })
   ports.push(
     { id: "in-electronic-circuit-robot", kind: "belt-in", pos: { x: W - 0.5, y: 11.5 }, dir: WEST, item: "electronic-circuit" },
     { id: "in-steel-plate", kind: "belt-in", pos: { x: W - 0.5, y: 16.5 }, dir: WEST, item: "steel-plate" },
-    { id: "in-electronic-circuit-frame", kind: "belt-in", pos: { x: W - 0.5, y: 17.5 }, dir: NORTH, item: "electronic-circuit" },
+    { id: "in-electronic-circuit-frame", kind: "belt-in", pos: { x: W - 0.5, y: 18.5 }, dir: NORTH, item: "electronic-circuit" },
     { id: "in-electric-engine-unit", kind: "belt-in", pos: { x: 0.5, y: 17.5 }, dir: EAST, item: "electric-engine-unit" },
     { id: "in-battery", kind: "belt-in", pos: { x: 0.5, y: 18.5 }, dir: NORTH, item: "battery" },
     { id: "power", kind: "power", pos: { x: 4.5, y: 4.5 }, dir: NORTH },
