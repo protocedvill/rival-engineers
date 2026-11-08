@@ -2528,6 +2528,31 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
     FU.relocate(ctx, n, `B57 ${n.role}`, `has its ${port.port} lane walled in (goal ${g.id}: ${subject})`)
     return n.role
   }
+  // M7d.5: the seal can be on a built provider's output side. A later fixed route (or a tree at the port) can wall in
+  // that output; the consumer is innocent, so moving the goal or forking a provider for the consumer cannot help. Move
+  // the provider and let the design plan its replacement.
+  for (const ev of evidence) {
+    if (ev.kind !== "route") continue
+    const sealed = ev.sealed
+    if (sealed === undefined || sealed.side !== "start" || sealed.edge === true) continue
+    const n = f.graph.nodes[sealed.port.module]
+    if (n === undefined) continue
+    const m = LO.findModule(f.layout, n.id)
+    if (m === undefined) continue
+    const p = LO.findPort(m, sealed.port.port)
+    if (p === undefined || (p.kind !== "belt-out" && p.kind !== "pipe-out")) continue
+    let busy: string | undefined
+    for (const o of f.goals) {
+      if (o === g || (o.status !== "building" && o.status !== "planning")) continue
+      for (const e of o.edges) if (e.from === n.role || e.to === n.role) busy = o.id
+    }
+    if (busy !== undefined) {
+      log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} (${n.id}) has its ${sealed.port.port} output lane sealed; relocation waits for goal ${busy}`)
+      continue
+    }
+    FU.relocate(ctx, n, `output-sealed ${n.role}`, `has its ${sealed.port.port} output lane sealed (goal ${g.id}: ${ev.subject})`)
+    return n.role
+  }
   // B61 (2229258): a route can fail from the start side while its goal module's input lane is also sealed. The seal
   // evidence may name the start, so the B57 loop above never sees the real walled-in consumer. Inspect the goal module of
   // every failed route, and relocate that consumer when its own input lane cannot lead out.
