@@ -951,6 +951,23 @@ test("B57/B61: a sealed consumer port plans no provider until its module moves",
   ok(d.nodes.every((n) => n.item !== "advanced-circuit"), "no advanced-circuit provider at all")
 })
 
+test("M7d.5: a built pre-cell provider keeps its old generator until it is replaced", () => {
+  const c = ctx({
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+    builtGenerators: { "engine-unit>chemical-science-pack>labs": "assembler-row", "advanced-circuit>chemical-science-pack>labs": "assembler-row" },
+  })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const engine = d.nodes.find((n) => n.item === "engine-unit")!
+  eq(engine.generator, "assembler-row", "the built engine row keeps its ports")
+  const advanced = d.nodes.find((n) => n.item === "advanced-circuit")!
+  eq(advanced.generator, "assembler-row", "the built advanced row keeps its ports")
+})
+
 test("M7c: two-input rows by default keep v1's curated green line (no three-ingredient rows)", () => {
   eq(tostring(generatorFor(ctx(), "inserter")), "nil", "inserter: still no generator at rowInputs 2")
 })

@@ -569,7 +569,9 @@ function addStock(ctx: DesignContext, w: Walk, st: { item: string; perSecond: nu
   const hub = ctx.robotHub !== undefined && ctx.robotHub.robot === st.item ? ctx.robotHub : undefined
   // M7d.5 (user, 2026-11-07): the construction-robot stock is one self-contained cell: frames, robots and the first
   // roboport. The cell's first buffer chest fills the roboport, so the stock becomes an active network.
-  const cell = producerFor(ctx, st.item) === "robot-cell"
+  const stockRoleName = stockRole(st.item)
+  const builtStock = ctx.builtGenerators?.[stockRoleName]
+  const cell = producerFor(ctx, st.item) === "robot-cell" && (builtStock === undefined || builtStock === "robot-cell")
   const params: Record<string, unknown> = cell
     ? { count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest", roboport: hub?.roboport ?? "roboport" }
     : { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
@@ -700,6 +702,13 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   if (gen === "chem-row" && ctx.builtGenerators?.[builtRole] === "fluid-chain") {
     const r = recipeOf(ctx, item)
     if (r !== undefined && fluidSourceFor(ctx, r) !== undefined) gen = "fluid-chain"
+  }
+  // M7d.5: an old save's built row keeps its generator until it is replaced. The new cell's ports (engine-cell iron
+  // input, circuit-block split copper, robot-cell frame inputs) do not exist on an assembler row built before the
+  // change; planning to them failed "no belt-in port". New roles still get the cell.
+  const builtGen = ctx.builtGenerators?.[builtRole]
+  if (builtGen !== undefined && builtGen !== gen && (builtGen === "assembler-row" || builtGen === "circuit-block" || builtGen === "engine-cell" || builtGen === "robot-cell")) {
+    if (gen === "engine-cell" || gen === "robot-cell" || gen === "circuit-block" || gen === "assembler-row") gen = builtGen
   }
   if (gen === undefined) {
     w.errors.push(`no module makes ${item}`)
