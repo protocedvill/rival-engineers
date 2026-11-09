@@ -1024,6 +1024,12 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       }
       if (expect !== undefined && (s.x !== expect.x || s.y !== expect.y)) problems.push(`${id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${expect.x},${expect.y}`)
       if (s.kind === "splitter") {
+        // B172: a tap's splitter replaces a straight belt of its trunk, in the same direction. On an underground end
+        // it replaces that end and cuts the trunk (a tap's tunnel under its own trunk put the entrance there).
+        if (i === 0 && r.tapOf !== undefined) {
+          const on = state.routes[r.tapOf]?.steps.find((t) => t.kind !== "splitter" && t.x === s.x && t.y === s.y)
+          if (on !== undefined && (on.kind !== "belt" || on.dir !== s.dir)) problems.push(`${id}: tap splitter at ${s.x},${s.y} stands on ${on.kind}/${on.dir} of ${r.tapOf}`)
+        }
         claim(r, s.x2!, s.y2!, "splitter")
         expect = { x: s.x2! + DX[s.dir], y: s.y2! + DY[s.dir] }
         heading = s.dir

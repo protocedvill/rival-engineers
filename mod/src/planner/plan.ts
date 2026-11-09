@@ -221,7 +221,7 @@ export interface PlanJob {
   deferred?: Record<string, number>
   /** M7: the fluid connection being routed (its search runs over several steps). */
   pipe?: PipeJob
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; noSplit?: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
   failures: Record<string, string>
   /** D69: the same failures, typed (the factory decides from `kind`, never from the text). */
   failed?: Record<string, PlanFailure>
@@ -1073,7 +1073,7 @@ function fail(job: PlanJob, key: string, failure: PlanFailure | string): void {
   ;(job.failed ??= {})[key] = f
 }
 
-function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | PlanFailure {
+function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number, noSplit?: Record<number, boolean>): RouteRequest | PlanFailure {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
   const tp = tm ? findPort(tm, to.port) : undefined
@@ -1106,6 +1106,7 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
     if (taps.length > 0) {
       if (policy.topology !== "splitter-tap") return planFailure("other", `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`)
       req.taps = taps
+      req.noSplit = noSplit
     } else {
       const o = portOutside(fm, fp)
       req.start = { x: o.x, y: o.y, dir: dirIndex(fp.dir) }
@@ -1771,7 +1772,7 @@ function endRouting(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): n
 /** Searches the current connection again (`rip` mode, `retry` after "no path"), or fails it if its request can't be made. */
 function restartRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur: CurrentRoute, rip: boolean, retry = false): void {
   const c = connection(job, cur.conn)
-  const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
+  const req = routeRequest(job, c, policy, cur.avoid, cur.winScale, cur.noSplit)
   if (isPlanFailure(req)) {
     fail(job, cur.conn, req)
     traceRouteFailure(job.layout, terrain, policy, cur.conn, req.reason, job.compareProbe ? "compare" : "plan")
@@ -1812,7 +1813,7 @@ function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, pol
         return
       }
     }
-    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
+    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale, cur.noSplit)
     if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
       applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
       cur.rip = false
@@ -1888,9 +1889,29 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     } else failRoute(job, terrain, policy, cur, "splitter tap would rip its own route")
     return
   }
+  // B172 (m7-benchLayers14 g227): a tap that tunnels under its own trunk next to its splitter would put the tunnel's
+  // underground end on the splitter's tile; the splitter replaces it and cuts the trunk. The search can't see it (its
+  // states don't carry their tap start), so retry with no splitter on that run: the crossing itself stays allowed.
+  const s0 = route.steps[0]
+  const ownSplit = route.tapOf !== undefined && s0?.kind === "splitter" ? tkey(s0.x, s0.y) : undefined
+  if (ownSplit !== undefined) {
+    for (const t of res.tunnels ?? []) {
+      if (job.layout.routeOcc[tkey(t.x, t.y)] !== route.tapOf) continue
+      const site = tunnelSite(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy)
+      if (site === undefined || tunnelSite(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy, ownSplit) !== undefined) continue
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `tunnel at ${t.x},${t.y} runs over the tap's own splitter at ${s0!.x},${s0!.y}`)
+      if (cur.retries < 3) {
+        cur.retries++
+        cur.noSplit ??= {}
+        for (let j = -2; j <= 2; j++) cur.noSplit[tkey(t.x + DX[site.dir] * j, t.y + DY[site.dir] * j)] = true
+        restartRoute(job, terrain, policy, cur, cur.rip)
+      } else failRoute(job, terrain, policy, cur, "tunnel crossing runs over the tap's splitter")
+      return
+    }
+  }
   // Tunnel crossings: every crossed run must still allow its tunnel, and two on one route need 3 steps between them
   // (each rebuilds steps i-2..i+2). Checked before anything changes; a bad one is avoided on a retry.
-  const bad = badTunnel(job.layout, res.tunnels ?? [], route.id, cur.search.req.tunnel?.busy)
+  const bad = badTunnel(job.layout, res.tunnels ?? [], route.id, cur.search.req.tunnel?.busy, ownSplit)
   if (bad !== undefined) {
     routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `tunnel at ${keyX(bad)},${keyY(bad)} no longer possible`)
     if (cur.retries < 3) {
@@ -1939,7 +1960,7 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   // The crossed runs become underground pairs, freeing the tiles this route takes (a ripped run needs none).
   for (const t of res.tunnels ?? []) {
     const on = job.layout.routeOcc[tkey(t.x, t.y)]
-    if (on !== undefined && tunnelRoute(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy) === undefined) {
+    if (on !== undefined && tunnelRoute(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy, ownSplit) === undefined) {
       fail(job, cur.conn, `tunnel at ${t.x},${t.y} failed after its check`)
       job.current = undefined
       return
@@ -1955,10 +1976,10 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
 }
 
 /** The first tunnel of `tunnels` that cannot be made (see `searchFound`), as a tile key; undefined when all can. */
-function badTunnel(layout: LayoutState, tunnels: { x: number; y: number; dir: number }[], self: string, busy?: Record<string, boolean>): number | undefined {
+function badTunnel(layout: LayoutState, tunnels: { x: number; y: number; dir: number }[], self: string, busy?: Record<string, boolean>, ownSplit?: number): number | undefined {
   const seen: Record<string, number[]> = {}
   for (const t of tunnels) {
-    const site = tunnelSite(layout, t.x, t.y, t.dir, self, busy)
+    const site = tunnelSite(layout, t.x, t.y, t.dir, self, busy, ownSplit)
     if (site === undefined) return tkey(t.x, t.y)
     const list = (seen[site.route] ??= [])
     for (const i of list) if (math.abs(i - site.i) < 3) return tkey(t.x, t.y)

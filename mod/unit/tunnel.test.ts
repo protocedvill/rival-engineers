@@ -10,7 +10,7 @@ import { ConnectionRequest, newPlanJob, newRoutingJob, PlanRequest, runJob } fro
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { tunnelRoute, tunnelSite } from "../src/planner/tunnel"
 import { IDENTITY } from "../src/modules/geometry"
-import { ModuleDef, Port, SOUTH } from "../src/modules/types"
+import { ModuleDef, Port, SOUTH, WEST } from "../src/modules/types"
 import { connectionId, moduleId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -197,6 +197,41 @@ test("tunnel: a plan's delta rebuilds only the crossed run of a base route", () 
   eq(fmt(r.remove), "transport-belt@10.5,transport-belt@11.5,transport-belt@9.5")
   eq(fmt(r.add), "underground-belt@11.5,underground-belt@9.5")
   eq(ready.delta.add.routes.join(","), "route:c", "v is not re-added whole")
+})
+
+/**
+ * B172 (m7-benchLayers14, g227): trunk v down x = 15; a tap of v must reach w-dst on the west, and the only way west is
+ * the gap at (14, 12). The tap splits east of v, runs down x = 16 and tunnels under v at (15, 12). Split at (15, 11),
+ * the tunnel's entrance would be the splitter's own tile: the splitter replaced the entrance and cut v (its consumer
+ * got nothing, and every repair found "nothing missing").
+ */
+function tapArena(): string[] {
+  const rows: string[] = []
+  for (let y = 0; y < 20; y++) {
+    let row = ""
+    for (let x = 0; x < 20; x++) row += x >= 17 || (x === 14 && y !== 12) || (x <= 13 && y !== 12) ? "X" : "."
+    rows.push(row)
+  }
+  return rows
+}
+
+test("B172: a tap that tunnels under its own trunk keeps its splitter off the tunnel's run", () => {
+  const terrain = asciiTerrain(tapArena())
+  const state = newLayout()
+  place(state, source("v-src", SOUTH), 15, 0)
+  place(state, sink("v-dst", SOUTH), 15, 19)
+  place(state, sink("w-dst", WEST), 10, 12)
+  const p: LayoutPolicy = { ...policy(), topology: "splitter-tap" }
+  eq(runJob(newRoutingJob(request([conn("v", "v-src", "v-dst")]), YELLOW, state), terrain, F, p).phase, "done", "v routed")
+  const job = runJob(newRoutingJob(request([conn("w", "v-src", "w-dst")]), YELLOW, state), terrain, F, p)
+  eq(job.phase, "done", `phase (${Object.values(job.failures).join("; ")})`)
+  const w = state.routes["route:w"]
+  eq(w.tapOf, "route:v", "w taps v")
+  eq(job.stats.tunnels, 1, "w tunnels under v")
+  const sp = w.steps[0]
+  const under = state.routes["route:v"].steps.find((s) => s.x === sp.x && s.y === sp.y)
+  eq(`${under?.kind}`, "belt", `the splitter at ${sp.x},${sp.y} stands on a belt of v`)
+  noProblems(state, terrain, "tap tunnel")
 })
 
 run("tunnel")

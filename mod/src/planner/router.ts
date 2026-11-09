@@ -46,6 +46,8 @@ export interface RouteRequest {
   mergeSplitter?: { x: number; y: number; dir: number; x2: number; y2: number }
   /** Routes of the same producer port this one may tap with a splitter (splitter-tap topology). */
   taps?: string[]
+  /** B172: tapped routes' tiles a splitter may not stand on (a retry after the tap's tunnel ran over its splitter). */
+  noSplit?: Record<number, boolean>
   tier: BeltTier
   /** Reserved tags this route may use (its own ports' outside tiles). */
   own: Record<string, boolean>
@@ -370,7 +372,7 @@ function tapCandidates(state: LayoutState, terrain: TerrainView, policy: LayoutP
     const st = route.steps[i]
     const incoming = i === 0 ? (route.tapOf === undefined ? heading : -1) : prevDir
     prevDir = st.dir
-    if (st.kind !== "belt" || st.dir !== incoming || splitAt[tkey(st.x, st.y)]) continue
+    if (st.kind !== "belt" || st.dir !== incoming || splitAt[tkey(st.x, st.y)] || req.noSplit?.[tkey(st.x, st.y)]) continue
     // The next step must take the belt's output straight (any belt or entrance at T + d does).
     const next = route.steps[i + 1]
     if (next === undefined || next.x !== st.x + DX[st.dir] || next.y !== st.y + DY[st.dir]) continue

@@ -9,7 +9,9 @@
 //     i-2: a belt or an underground exit in that direction) and something after the exit (step i+2) to output into;
 //     so a port's own tile, a curve, a splitter or an existing underground end is never rebuilt;
 //   - no route joins it there (a side-load or merge splitter onto i-2..i+2), nor taps it (a tap's splitter stands on
-//     one of its tiles): an underground end changes what a side-load or splitter does;
+//     one of its tiles): an underground end changes what a side-load or splitter does. That includes the crossing
+//     route's own splitter (`ownSplit`): a tap that crosses its trunk right after splitting off it would put the
+//     entrance under its own splitter, which replaces it and cuts the trunk (B172);
 //   - none of the five tiles is reserved (a port's tile or lane) or occupied by anything else;
 //   - no other underground runs along the run's line over the new span (it could take the new pair's end);
 //   - the crossed route is not a pipe, not the crossing route itself, and not one still being built by another goal
@@ -72,9 +74,10 @@ function at(s: RouteStep | undefined, x: number, y: number): boolean {
 
 /**
  * Whether a belt heading `d` may cross the tile (x, y) by a tunnel through the route on it (see the file comment).
- * `self` is the crossing route's id; `busy` lists routes that may not be rebuilt.
+ * `self` is the crossing route's id; `busy` lists routes that may not be rebuilt; `ownSplit` is the tile key of the
+ * crossing route's own tap splitter, not committed yet.
  */
-export function tunnelSite(state: LayoutState, x: number, y: number, d: number, self: string, busy?: Record<string, boolean>): TunnelSite | undefined {
+export function tunnelSite(state: LayoutState, x: number, y: number, d: number, self: string, busy?: Record<string, boolean>, ownSplit?: number): TunnelSite | undefined {
   const id = state.routeOcc[tkey(x, y)]
   if (id === undefined || id === self || busy?.[id]) return undefined
   const r = state.routes[id]
@@ -94,7 +97,7 @@ export function tunnelSite(state: LayoutState, x: number, y: number, d: number, 
   const joins = joinTiles(state)
   for (let j = -2; j <= 2; j++) {
     const k = tkey(x + DX[D] * j, y + DY[D] * j)
-    if (joins[k]) return undefined
+    if (joins[k] || k === ownSplit) return undefined
     if (math.abs(j) <= 1 && (state.reserved[k] !== undefined || state.occ[k] !== undefined)) return undefined
   }
   const line = lineKey(x, y, D)
@@ -108,8 +111,8 @@ export function tunnelSite(state: LayoutState, x: number, y: number, d: number, 
  * crossing belt's heading); returns false, changing nothing, if it no longer holds. The route is replaced by a new
  * object (plans share route objects with the faction's layout until adoption).
  */
-export function tunnelRoute(state: LayoutState, x: number, y: number, d: number, self: string, busy?: Record<string, boolean>): RouteId | undefined {
-  const site = tunnelSite(state, x, y, d, self, busy)
+export function tunnelRoute(state: LayoutState, x: number, y: number, d: number, self: string, busy?: Record<string, boolean>, ownSplit?: number): RouteId | undefined {
+  const site = tunnelSite(state, x, y, d, self, busy, ownSplit)
   if (site === undefined) return undefined
   const r = state.routes[site.route]
   const { i, dir } = site

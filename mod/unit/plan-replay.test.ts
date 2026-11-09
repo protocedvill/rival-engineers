@@ -788,21 +788,13 @@ test("B85: the lab-cluster plan leaves its new red assembler's unconnected outpu
   ok(!sealed, "a later plan's route from n53.out is not sealed at its start")
 })
 
-// B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
-// used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under
-// the splitter's input, so the branch stood with no belt to take from. A tap may not rip a route it could tap.
-test("B58: a splitter tap never sits on the span of the route it taps", () => {
-  const fx = load("b58-g16")
-  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
-  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
-  const view = fixtureView(fx)
-  runJob(job, view, F, fx.policy, 100000)
-  ok(job.phase === "done", `plan done (${job.phase})`)
+/** Splitter taps standing on an underground span of the route they tap (they would replace an end or cut the run). */
+function tapsOnTrunkSpans(layout: LayoutState): string[] {
   const overlaps: string[] = []
-  for (const id of job.layout.routeOrder) {
-    const r = job.layout.routes[id]
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
     if (r.tapOf === undefined) continue
-    const parent = job.layout.routes[r.tapOf]
+    const parent = layout.routes[r.tapOf]
     if (parent === undefined) continue
     for (const s of r.steps) {
       if (s.kind !== "splitter") continue
@@ -818,7 +810,34 @@ test("B58: a splitter tap never sits on the span of the route it taps", () => {
       }
     }
   }
+  return overlaps
+}
+
+function replayTaps(name: string): LayoutState {
+  const fx = load(name)
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const overlaps = tapsOnTrunkSpans(job.layout)
   ok(overlaps.length === 0, `tap splitter on its trunk's span: ${overlaps.join("; ")}`)
+  return job.layout
+}
+
+// B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
+// used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under
+// the splitter's input, so the branch stood with no belt to take from. A tap may not rip a route it could tap.
+test("B58: a splitter tap never sits on the span of the route it taps", () => {
+  replayTaps("b58-g16")
+})
+
+// B172 (m7-benchLayers14 seed 11, goal g227): the robot mall's circuit tap split off the n431 -> n433 circuit trunk at
+// (554, -115) and tunnelled under it at (554, -116); the tunnel's entrance was the splitter's own tile, the splitter
+// replaced it, and n433 got no circuits for the rest of the run ("nothing missing" on every repair).
+test("B172: a tap's tunnel under its own trunk leaves its splitter on a belt", () => {
+  const layout = replayTaps("m7d5-g227-tap-tunnel")
+  const tap = layout.routes[routeId("route:electronic-circuit*>stock:construction-robot=>stock:construction-robot.in-electronic-circuit-robot")]
+  ok(tap !== undefined && tap.tapOf !== undefined, "the robot circuit feed is a tap")
 })
 
 // B60 (m6-b60n-provider, seed 8646103 g19): after a route-infeasible shared coal provider is split per consumer,
