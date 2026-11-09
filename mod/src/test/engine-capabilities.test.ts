@@ -577,3 +577,20 @@ describe("fluids", () => {
     })
   })
 })
+
+describe("ghosts", () => {
+  // B173 (m7-benchLayers15 g216): unlike a pole (B41/B66), a belt ghost is refused on its live twin, and on a belt facing
+  // another way. A route piece that already stands as planned must be reused, not ghosted (`stampParts`).
+  test("B173 finding: a belt ghost is refused on a live belt, its twin included; a pole ghost is accepted", () => {
+    const lab = createLab(16)
+    const s = lab.surface
+    const ghostOn = (x: number, live: string, liveDir: defines.direction, ghostDir: defines.direction): boolean => {
+      const pos = at(lab, x + 0.5, 0.5)
+      s.create_entity({ name: live, position: pos, direction: liveDir, force: "player" })
+      return s.create_entity({ name: "entity-ghost", inner_name: live, position: pos, direction: ghostDir, force: "player" }) !== undefined
+    }
+    assert(!ghostOn(0, "transport-belt", defines.direction.west, defines.direction.west), "a belt ghost on its live twin is refused")
+    assert(!ghostOn(2, "transport-belt", defines.direction.north, defines.direction.west), "a belt ghost on a belt facing another way is refused")
+    assert(ghostOn(4, "small-electric-pole", defines.direction.north, defines.direction.north), "a pole ghost on its live pole is accepted")
+  })
+})

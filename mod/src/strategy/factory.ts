@@ -2009,6 +2009,10 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
   // B138: the plan is still in its clear phase because a ghost could not be created. Count the retry rounds and give up
   // the location after `build-stuck-rounds` instead of leaving the goal building forever.
   if (b.phase === "clear" && (b.failed?.length ?? 0) > 0) {
+    // B173: once per round. A reroute that found no path was searched again on every tick of the round (m7-benchLayers15
+    // g216: 601 searches of a 550-tile route in 11 rounds).
+    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
+    g.lastRound = ctx.tick
     // B142: when every failed ghost is a route piece, reroute those routes around the failing tiles (B123) instead of
     // abandoning the whole plan. Seed 1212121 g111 had 281 blocked route pieces and was relocated twice for them.
     const specs = b.failedSpecs ?? []
@@ -2034,8 +2038,6 @@ function updateBuilding(ctx: Ctx, g: FactoryGoal): void {
         return
       }
     }
-    if (ctx.tick - (g.lastRound ?? 0) < BUILD_ROUND_TICKS) return
-    g.lastRound = ctx.tick
     g.rounds++
     g.reason = `${b.failed.length} ghosts could not be created (round ${g.rounds}): ${b.failed.slice(0, 4).join("; ")}`
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} ${g.reason}`)

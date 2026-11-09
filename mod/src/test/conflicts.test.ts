@@ -94,6 +94,38 @@ describe("faction conflicts", () => {
     clearConfigOverrides()
   })
 
+  test("B173: a route piece already standing as planned is reused by the stamp; one facing another way still fails", () => {
+    // m7-benchLayers15 g216: the route into n325's fuel port ended on the port's receive belt, already built facing the
+    // same way. The engine refuses a belt ghost on its live twin, so that one ghost failed every round.
+    const lab = createLab(64)
+    const force = `b173-${++seq}`
+    game.create_force(force)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    for (let x = -20; x < 0; x++) for (let y = 30; y < 50; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
+    const t = scan(lab, `conf-${++seq}`, force)
+    const layout = newLayout()
+    place(layout, "smelt", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
+    place(layout, "mine", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
+    const job = runJob(newRoutingJob({ modules: [], connections: [{ id: connectionId("ore"), from: { module: moduleId("mine"), port: "out" }, to: { module: moduleId("smelt"), port: "in-ore" } }], center: { x: ox, y: oy }, region: { x: ox - 64, y: oy - 64, w: 128, h: 128 } }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    assert(job.phase === "done", "ore routed")
+    assert(stampParts(s, force, job.layout, { modules: [moduleId("smelt"), moduleId("mine")], routes: [], poles: [] }, false).failed.length === 0, "modules built")
+    const parts = { modules: [], routes: [routeId("route:ore")], poles: [] }
+    const belts = partEntities(job.layout, parts).filter((e) => e.name === "transport-belt")
+    const last = belts[belts.length - 1]
+    const twin = s.create_entity({ name: last.name, position: { x: last.x, y: last.y }, direction: last.dir, force })!
+    const r = stampParts(s, force, job.layout, parts, true)
+    assert(r.failed.length === 0, `stamp failed: ${r.failed.join("; ")}`)
+    assert(twin.valid, "the live belt stays")
+    assert(s.find_entities_filtered({ name: "entity-ghost", position: { x: last.x, y: last.y } }).length === 0, "no ghost on the live belt")
+    assert(r.entities.length === partEntities(job.layout, parts).length - 1, `ghosts for every other piece (${r.entities.length})`)
+    // A belt facing another way is not the planned piece: it still fails (the reconciler picks it up, B52).
+    for (const g of r.entities) if (g.valid) g.destroy()
+    twin.direction = (last.dir + 4) % 16
+    assert(stampParts(s, force, job.layout, parts, true).failed.length === 1, "a turned belt is not reused")
+  })
+
   test("another faction's claimed tiles and ghosts are foreign to a faction's planner", () => {
     const lab = createLab(32)
     const a = faction(lab, "a", -20, 0)

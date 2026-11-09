@@ -370,6 +370,21 @@ function registerModuleBuffers(surface: LuaSurface, force: string, specs: { buff
   }
 }
 
+/**
+ * B173 (m7-benchLayers15 g216): whether route piece `e` already stands as the faction's own built entity (same name,
+ * position and direction, and the same underground end). Unlike a pole's (B41), a belt's ghost is refused on its live
+ * twin: the route into a port whose receive belt already stood failed that one ghost every round for 25 game-minutes.
+ * Such a piece is reused as built.
+ */
+function liveTwin(surface: LuaSurface, force: string, e: EntitySpec): boolean {
+  for (const x of findEntities(surface, { name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })) {
+    if (x.supports_direction && x.direction !== e.dir) continue
+    if (e.ioType !== undefined && x.belt_to_ground_type !== e.ioType) continue
+    return true
+  }
+  return false
+}
+
 function createSpec(surface: LuaSurface, force: string, e: EntitySpec, ghost: boolean): LuaEntity | undefined {
   // B142: a retried build re-stamps the same plan; an existing ghost is the wanted result.
   if (ghost) {
@@ -413,6 +428,7 @@ export function stampParts(surface: LuaSurface, force: string, layout: LayoutSta
   }
   const routes: BuildParts = { modules: [], routes: parts.routes, poles: [] }
   for (const spec of partEntities(layout, routes)) {
+    if (ghost && liveTwin(surface, force, spec)) continue
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) {
       failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
@@ -462,6 +478,7 @@ export function stampLayout(surface: LuaSurface, force: string, layout: LayoutSt
     }
   }
   for (const spec of routeEntities(layout)) {
+    if (ghost && liveTwin(surface, force, spec)) continue
     const e = createSpec(surface, force, spec, ghost)
     if (e === undefined) {
       failed.push(`${spec.owner}: ${spec.name}@${spec.x},${spec.y}`)
