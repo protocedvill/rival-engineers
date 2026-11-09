@@ -629,12 +629,12 @@ export function stepBuild(entry: PlannerEntry): void {
     const layout = entry.job!.layout
     if (tapsPending(b, surface, entry.force, layout)) return
     // B144: a ghost of an earlier, abandoned route (or a completion ghost the layout never got) cannot be built and
-    // blocks a different entity's ghost on its tile. Sweep only the plan's tiles and only ghosts no live layout part
-    // owns, so another goal's build is untouched. Two pieces on one tile, or a tile another planned piece owns, reject
+    // blocks a different entity's ghost on its tile. Remove only ghosts on the plan's tiles that no live plan of the
+    // faction owns (so another goal's build is untouched), and report each one: it is a leak, not routine. Two pieces on one tile, or a tile another planned piece owns, reject
     // the plan before any ghost is created (creating over a ghost deletes it).
     const built = b.parts ?? allParts(layout)
-    const pre = preflightSpecs(surface, faction, layout, partEntities(layout, built))
-    if (pre.swept > 0) log(`[rival-engineers] plan ${entry.id}: swept ${pre.swept} orphan ghost(s) off its tiles`)
+    const pre = preflightSpecs(surface, faction, layout, partEntities(layout, built), `the tiles of plan ${entry.id}`)
+    if (pre.swept > 0) log(`[rival-engineers] plan ${entry.id}: removed ${pre.swept} ORPHAN GHOST(s) off its tiles (each reported above: a leak to fix upstream)`)
     const hardTiles: Vec[] = []
     let hardReason: string | undefined
     for (const [, why] of pairs(pre.blocked)) {

@@ -15,7 +15,7 @@ import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
 import { commitRoute, dependentRoutes, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, landsDownstream, pointFeeds, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
-import { commitPlacement, expansionCandidate, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitPlacement, expansionCandidate, placedPatch, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
 import { newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, proveBeltSeal, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
@@ -194,6 +194,8 @@ export interface PlanJob {
   alias: Record<string, string>
   /** D57 (c): patches this plan's mines found no room on (the strategy remembers them for later plans). */
   deadPatches?: Record<string, string>
+  /** Module id → the patch its mining placement stands on (D57 key and stamp rect), for a later dead-site mark. */
+  sitePatches?: Record<string, { key: string; area: Rect }>
   queue: string[]
   ripCount: Record<string, number>
   /**
@@ -1207,8 +1209,10 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     if (job.wholePatch !== undefined) return used
   }
   if (s.phase === "done" || s.phase === "failed") {
-    if (s.phase === "done") commitPlacement(job.layout, s.result!, facts, policy)
-    else {
+    if (s.phase === "done") {
+      commitPlacement(job.layout, s.result!, facts, policy)
+      notePlacedPatch(job, id, s)
+    } else {
       placementEvidence(job, id, s)
       fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason: `re-placement: ${s.reason ?? "failed"}`, what: s.failure?.what })
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
@@ -1425,6 +1429,7 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (job.wholePatch !== undefined) return used
     delete (job.wholeFail ?? {})[id]
     commitPlacement(job.layout, s.result!, facts, policy)
+    notePlacedPatch(job, id, s)
     job.placement = undefined
     job.placeIdx++
   } else if (s.phase === "failed") {
@@ -1533,6 +1538,8 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.stats = stats
   job.evidence = evidence
   job.deadPatches = dead
+  // Every module is placed again: the earlier placements' patches no longer describe this plan.
+  job.sitePatches = undefined
   job.laneKeep = keep
   job.newLaneTried = undefined
   job.newLaneKeep = undefined
@@ -1987,6 +1994,14 @@ function unroutedCopy(job: PlanJob): LayoutState {
 function portItem(job: PlanJob, ref: PortRef): string | undefined {
   const m = findModule(job.layout, resolve(job, ref).module)
   return m !== undefined ? findPort(m, ref.port)?.item : undefined
+}
+
+/** The patch a mining module was placed on (absent for every other module). */
+function notePlacedPatch(job: PlanJob, id: string, s: PlacementSearch): void {
+  const site = placedPatch(s)
+  if (site === undefined) return
+  job.sitePatches ??= {}
+  job.sitePatches[id] = site
 }
 
 /** D57 (c): the patches a placement found no room on, for the strategy to remember. */

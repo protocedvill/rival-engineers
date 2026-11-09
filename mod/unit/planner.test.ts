@@ -8,7 +8,7 @@ import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
 import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, portApproach, rerootTap, Route, unmarkModule } from "../src/planner/layout"
-import { LANE_HOP, laneWayOut, openPortEnds, placeNow } from "../src/planner/placement"
+import { LANE_HOP, laneWayOut, openPortEnds, placedPatch, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { planReroute } from "../src/planner/reroute"
 import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, ripForReplace, runJob } from "../src/planner/plan"
@@ -1093,6 +1093,28 @@ test("placement D57 (c): a patch remembered as full under the same terrain stamp
   ok(again.candidates < first.candidates, `fewer candidates (${again.candidates} < ${first.candidates})`)
   const changed = placeNow({ ...req, dead: first.deadFound }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
   eq(changed.candidates, first.candidates, "searched again once the terrain changed")
+})
+
+test("review fix: a placed mine's patch (placedPatch) marked dead is skipped by the next search on that terrain", () => {
+  // Two full patches: the near one is chosen first. A later failure (its pole line cannot reach) marks the site dead
+  // under the placement's own key and stamp; the next search goes to the far patch, until the terrain changes.
+  const rows = field(360, 40)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 20) + string.rep("i", 20) + rows[y].substring(40, 320) + string.rep("i", 20) + rows[y].substring(340)
+  const base = asciiTerrain(rows)
+  const terrain = { block: base.block, ore: base.ore, stamp: () => "s1" }
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }
+  const first = placeNow(req, newLayout(), terrain, policy())
+  eq(first.phase, "done", `placed (${first.reason})`)
+  ok(first.result!.origin.x < 60, `near patch first (x ${first.result!.origin.x})`)
+  const site = placedPatch(first)!
+  ok(site !== undefined, "the placement names its patch")
+  const dead = { [site.key]: terrain.stamp() }
+  const again = placeNow({ ...req, dead }, newLayout(), terrain, policy())
+  eq(again.phase, "done", `placed again (${again.reason})`)
+  ok(again.result!.origin.x >= 300, `the dead site is skipped (x ${again.result!.origin.x})`)
+  const changed = placeNow({ ...req, dead }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
+  eq(changed.result!.origin.x, first.result!.origin.x, "the near patch again once its ground changed")
 })
 
 test("placement D57: a fresh field counts `newField` tiles farther than a field the faction already mines", () => {

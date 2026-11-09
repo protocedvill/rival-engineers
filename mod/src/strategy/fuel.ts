@@ -4,9 +4,10 @@ import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
 import { findModule } from "../planner/layout"
 import type { LayoutState } from "../planner/layout"
+import type { Rect } from "../planner/grid"
 import * as LG from "../planner/logical"
 import type { LogicalGraph, LogicalNode } from "../planner/logical"
-import { patchKey, sealedInputs } from "../planner/placement"
+import { sealedInputs } from "../planner/placement"
 import { decodeWells } from "../modules/generators"
 import * as RT from "../planner/runtime"
 import { markDirty, terrainView } from "../planner/terrain"
@@ -174,12 +175,18 @@ interface FuelCtx {
 
 /**
  * M7d.5: a fixed-site raw provider whose only failure is its power pole line is not helped by a region-radius retry:
- * the patch is across ground the line cannot cross. Mark the patch dead so the next design searches another patch.
+ * the site is across ground the line cannot cross. Only the failed goal's **own** new modules are marked (the plan's
+ * layout also holds the whole base): a mine's patch is remembered dead under the placement's own D57 key and terrain
+ * stamp (`sitePatches`, as `noteDeadPatch` does), so the next plan's patch search skips it until that ground changes;
+ * a pumpjack field's wells are not offered again.
  */
-export function markUnreachableMinePatches(ctx: FuelCtx, goal: string, layout: LayoutState): void {
-  const brain = ctx.faction.brain
-  if (brain === undefined) return
+export function markUnreachableMinePatches(ctx: FuelCtx, goal: string, layout: LayoutState, own: string[], sites: Record<string, { key: string; area: Rect }> | undefined): void {
+  const mine: Record<string, boolean> = {}
+  for (const id of own) mine[id] = true
+  const t = storage.terrains?.[ctx.f.terrain]
+  const stamp = t !== undefined ? terrainView(t).stamp : undefined
   for (const m of layout.modules) {
+    if (mine[m.id] !== true || m.fixed === true) continue
     if (m.def.generator === "pumpjack-field" && typeof m.def.params?.wells === "string") {
       // A crude field whose pumpjack provider cannot reach power is not offered again; another field may be nearer.
       const wells = decodeWells(m.def.params.wells as string)
@@ -195,21 +202,11 @@ export function markUnreachableMinePatches(ctx: FuelCtx, goal: string, layout: L
       if (added > 0) log(`[rival-engineers] faction ${ctx.faction.name}: ${goal} pumpjack field has no pole path; marking ${added} well(s) bad for later plans`)
       continue
     }
-    if (m.def.generator !== "mining-outpost") continue
-    const resource = m.def.params?.resource as string | undefined
-    if (resource === undefined) continue
-    const cx = m.rect.x + m.rect.w / 2
-    const cy = m.rect.y + m.rect.h / 2
-    for (const p of brain.patches) {
-      if (p.name !== resource) continue
-      if (cx < p.x1 || cx > p.x2 + 1 || cy < p.y1 || cy > p.y2 + 1) continue
-      const key = patchKey(resource, p)
-      ctx.f.deadPatches ??= {}
-      if (ctx.f.deadPatches[key] === undefined) {
-        ctx.f.deadPatches[key] = tostring(ctx.tick)
-        log(`[rival-engineers] faction ${ctx.faction.name}: ${goal} outpost patch ${p.id} (${resource}) has no pole path; marking it dead for later plans`)
-      }
-    }
+    const site = sites?.[m.id]
+    if (m.def.generator !== "mining-outpost" || site === undefined || stamp === undefined) continue
+    ctx.f.deadPatches ??= {}
+    ctx.f.deadPatches[site.key] = stamp(site.area)
+    log(`[rival-engineers] faction ${ctx.faction.name}: ${goal} outpost patch ${site.key} has no pole path; marking it dead for later plans`)
   }
 }
 

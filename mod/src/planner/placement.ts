@@ -347,6 +347,17 @@ function noteDeadPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainV
   s.deadFound[p.key] = terrain.stamp(area)
 }
 
+/**
+ * The patch a finished mining placement stands on: its D57 key and the window rect whose terrain stamp identifies it.
+ * A later failure that proves this site useless (its power line cannot reach) remembers it under the same key and the
+ * stamp of the same rect, exactly as `noteDeadPatch` does for a patch with no room.
+ */
+export function placedPatch(s: PlacementSearch): { key: string; area: Rect } | undefined {
+  const p = s.patch
+  if (s.phase !== "done" || p === undefined) return undefined
+  return { key: p.key, area: patchArea(p, maxDim(s)) }
+}
+
 function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): boolean {
   if (def.site === "shore") {
     if (terrain.block(x, y) !== WATER) return false

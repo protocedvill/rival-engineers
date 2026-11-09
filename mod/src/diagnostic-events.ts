@@ -8,7 +8,7 @@ export type DiagnosticEventKind = "crew-plan" | "crew-supply" | "goal" | "planne
  * Stable decision codes for host tools. Keep them free of prose and stable across saves; put the explanation in
  * `reason`/`detail`. A new decision is added here so a typo cannot silently create a new code in telemetry.
  */
-export type DiagnosticDecision = "idle" | "batch" | "haul" | "growth-rejected" | "adoption-resumed" | "adoption-intent-orphaned" | "adoption-intent-cleared" | "stale-plan-rejected" | "invalid-plan-delta" | "orphan-claims"
+export type DiagnosticDecision = "idle" | "batch" | "haul" | "growth-rejected" | "adoption-resumed" | "adoption-intent-orphaned" | "adoption-intent-cleared" | "stale-plan-rejected" | "invalid-plan-delta" | "orphan-claims" | "orphan-ghost"
 
 export interface DiagnosticEvent {
   seq?: number

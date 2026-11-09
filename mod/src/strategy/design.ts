@@ -1035,7 +1035,7 @@ function expandOilComplex(w: Walk): void {
   const fresh: Demand[] = []
   for (const d of mine) {
     const kept = ctx.sharing?.keep[`${d.item}@${d.to}@${d.toPort}`] ?? ctx.sharing?.keep[`${d.item}@${d.to}`]
-    if (kept !== undefined && string.sub(kept, 1, 12) === "oil-complex") continue
+    if (kept !== undefined && isOilComplexRole(kept)) continue
     fresh.push(d)
   }
   if (fresh.length === 0) return
@@ -1064,6 +1064,12 @@ function expandOilComplex(w: Walk): void {
   }
   // No single built role covers it: one new complex for the whole residual.
   addOilComplex(w, w.nodes.some((n) => n.role === role) ? parallelRole(w, role, true) : role, fresh)
+}
+
+/** Whether `role` is a member of an oil family: the base complex or a cluster/parallel one (`#2`, `~2`). */
+export function isOilComplexRole(role: string): boolean {
+  const base = "oil-complex"
+  return string.sub(role, 1, base.length) === base
 }
 
 function addOilComplex(w: Walk, role: string, consumers: Demand[], fixedCapacity?: number): void {

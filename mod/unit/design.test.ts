@@ -4,9 +4,10 @@ import { rateOf } from "../src/modules/rates"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
+import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
-import { spareForNode } from "../src/strategy/stage"
+import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -1167,6 +1168,24 @@ test("M7d.5: an oil family reuses its built complex instead of forking per desig
   eq(complexes[0].capacity, 10, "the built capacity is kept")
 })
 
+test("review fix: consumers kept by a parallel oil complex (oil-complex~2) are not planned again", () => {
+  const base = {
+    enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true },
+    resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+    assemblers: ["assembling-machine-1", "assembling-machine-2"],
+    rowInputs: 3,
+    packs: [RED, "logistic-science-pack", "chemical-science-pack"],
+  }
+  const first = design(ctx(base), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const keep: Record<string, string> = {}
+  for (const e of first.edges) if (e.item === "petroleum-gas" || e.item === "lubricant") keep[`${e.item}@${e.to}@${e.toPort}`] = "oil-complex~2"
+  ok(Object.keys(keep).length >= 2, "the first design has oil consumers")
+  const again = design(ctx({ ...base, sharing: { keep, spare: {} } }), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(again.nodes.filter((n) => n.generator === "oil-complex").map((n) => n.role).join(","), "", "every oil consumer is kept: no new complex")
+  ok(isOilComplexRole("oil-complex") && isOilComplexRole("oil-complex~2") && isOilComplexRole("oil-complex#2~3"), "family roles")
+  ok(!isOilComplexRole("oil-comple"), "not a prefix of the base name")
+})
+
 test("M7d.4: electric engines and plastic: one oil complex makes the lubricant and the petroleum", () => {
   const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "plastic-bar": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "electric-engine-unit": true }
   const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 3, packs: ["electric-engine-unit"] })
@@ -1193,6 +1212,19 @@ test("M7d.4: a fluid chain already built keeps its role as a fluid chain after t
   const again = design(ctx({ ...base, builtGenerators: { [plastic.role]: "fluid-chain" } }), { item: "chemical-science-pack", perSecond: 10 / 60 })
   eq(again.nodes.find((n) => n.role === plastic.role)?.generator, "fluid-chain", "built: still a fluid chain")
   eq(again.errors.length, 0, again.errors.join("; "))
+})
+
+test("review fix (Layers14): a built provider with no belt edge is offered as spare, not skipped", () => {
+  const g = newGraph()
+  const coal = [{ item: "coal", perSecond: 2 }]
+  addNode(g, { id: moduleId("idle"), role: "coal*>smelter", kind: "outpost", item: "coal", capacity: { inputs: [], outputs: coal }, planned: { inputs: [], outputs: coal }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  addNode(g, { id: moduleId("planned"), role: "coal*>other", kind: "outpost", item: "coal", capacity: { inputs: [], outputs: coal }, planned: { inputs: [], outputs: coal }, powerW: 0, lifecycle: "planned", status: "unknown", createdTick: 0 })
+  addNode(g, { id: moduleId("steam"), role: "power", kind: "power", item: "electricity", capacity: { inputs: [], outputs: [{ item: "electricity", perSecond: 1e6 }] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: 0 })
+  const f = { faction: "x", graph: g, layout: newLayout() } as never
+  const s = sharing({ config: { factorySharedProviders: 1 } as never, force: {} as never }, f, 0, true)!
+  eq(s.spare.coal?.["coal*>smelter"], 2, "the idle built mine's planned output is spare")
+  eq(s.spare.coal?.["coal*>other"], undefined, "a provider not built yet is not")
+  eq(s.spare.electricity, undefined, "power is not a tap")
 })
 
 run("design")

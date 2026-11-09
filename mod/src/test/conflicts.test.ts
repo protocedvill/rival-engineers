@@ -295,6 +295,51 @@ describe("faction conflicts", () => {
     assert(made !== undefined && made.direction === defines.direction.north, "the planned belt ghost stands")
   })
 
+  test("review fix (risk 7): a multi-tile orphan ghost covering a spec tile is found, removed and reported", () => {
+    const lab = createLab(64)
+    const a = faction(lab, "orphan3x3", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // A 3x3 assembler ghost centred at (25.5, 5.5) covers tiles 24..26; the belt spec sits on tile 26 (not its centre).
+    const orphan = s.create_entity({ name: "entity-ghost", inner_name: "assembling-machine-1", position: { x: ox + 25.5, y: oy + 5.5 }, force: a.force })!
+    assert(orphan !== undefined, "orphan placed")
+    const spec = { name: "transport-belt", x: ox + 26.5, y: oy + 5.5, dir: 0, owner: "route:orphan3x3" }
+    const kind = ghostBlockerKind(s, a, layout, spec)
+    assert(kind.kind === "orphan", `classified as an orphan, not missed (${kind.kind})`)
+    const before = a.diagnosticEvents?.buckets.planner?.length ?? 0
+    const d = applyDiff(s, a, [], [spec], {}, layout)
+    assert(d.failed.length === 0, `ghost: ${d.failed.join("; ")}`)
+    assert(!orphan.valid, "the orphan is gone")
+    const events = a.diagnosticEvents?.buckets.planner ?? []
+    assert(events.length === before + 1 && events[events.length - 1].decision === "orphan-ghost", "one orphan-ghost alert")
+  })
+
+  test("review fix (risk 8): a ghost another live plan owns is not an orphan, even if this plan's layout lacks it", () => {
+    const lab = createLab(64)
+    const a = faction(lab, "orphanlive", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    // The faction's persistent layout plans a belt this plan's (older) layout copy does not know.
+    const other = newLayout()
+    const theirs = { name: "transport-belt", x: ox + 27.5, y: oy + 7.5, dir: 0, owner: "route:theirs" }
+    other.routes[routeId("route:theirs")] = { ...layout.routes[routeId("route:ore")], id: routeId("route:theirs"), steps: [{ kind: "belt", x: theirs.x - 0.5, y: theirs.y - 0.5, dir: 0 }], tiles: [tkey(theirs.x - 0.5, theirs.y - 0.5)], spans: [] } as never
+    other.routeOrder.push(routeId("route:theirs"))
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: { x: theirs.x, y: theirs.y }, direction: defines.direction.north, force: a.force })!
+    storage.factories ??= {}
+    storage.factories[a.name] = { layout: other } as never
+    const mine = { name: "underground-belt", x: theirs.x, y: theirs.y, dir: 0, ioType: "input" as const, owner: "route:mine" }
+    const kind = ghostBlockerKind(s, a, layout, mine)
+    const d = applyDiff(s, a, [], [mine], {}, layout)
+    delete storage.factories[a.name]
+    assert(kind.kind === "planned", `another live plan's piece (${kind.kind})`)
+    assert(ghost.valid, "its ghost is not deleted")
+    assert(d.failed.length === 1, `this spec is blocked, not stamped over it (${d.failed.join("; ")})`)
+  })
+
   test("B144: an overlap inside the plan's own add list is classified, and no partial place job is created", () => {
     // The other half of the g111 evidence: at 520.5,-161.5 the tile was buildable and no orphan stood there; one piece's
     // ghost had been created before another piece of the same plan wanted the same tile. A retry cannot clear that: the

@@ -176,6 +176,10 @@ export interface FactoryState {
   verify?: { tick: number; leftover: number; units: number; tech?: string; progress: number; made: number }
   progressSteps: number
   progressTick: number
+  /** Plans adopted so far (a long plan that finishes is progress; see `checkStall`). */
+  adoptions?: number
+  /** The plan entries an overdue stall waits for (`GLC.stallDecision`); cleared on progress. */
+  stallHold?: string[]
   lastUpkeep: number
   /**
    * A plan adoption that has begun but not committed (the goal is not yet `building`). Persisted so a Lua error
@@ -1452,7 +1456,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       why.push(`${m !== undefined ? `module ${m} (${roles[m] ?? "?"})` : k}: ${v}`)
       failures.push({ key: k as string, failure: entry.job?.failed?.[k as string] ?? { kind: "other", reason: v as string } })
     }
-    const learned = FR.learnFromFailure({
+    const failureFacts: FR.FailedPlanFacts = {
       failures,
       edges: g.edges.map((e) => ({ role: e.role, from: e.from, to: e.to, toPort: e.toPort })),
       nodes: g.nodes.map((n) => ({ id: n.id, role: n.role, item: n.item })),
@@ -1466,7 +1470,17 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       },
       aliasOf: (id) => entry.job?.alias[id],
       fallbackFor: (item) => ctx.config.factoryFuelFallback && (ST.fallbackProducers(f, [item])?.[item]?.length ?? 0) > 0,
-    })
+      connected: (role) => {
+        const n = nodeByRoleIn(f, role)
+        if (n === undefined) return false
+        for (const id of f.graph.edgeOrder) {
+          const e = f.graph.edges[id]
+          if (e.kind === "belt" && e.from === n.id) return true
+        }
+        return false
+      },
+    }
+    const learned = FR.learnFromFailure(failureFacts)
     const added: FR.Replan[] = []
     for (const l of learned) {
       if (!CS.add((f.constraints ??= {}), l.kind, l.key)) continue
@@ -1556,8 +1570,17 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     // M7c.8: a radar outpost whose pole line can't reach the base (seed 11: lakes 90-300 tiles wide across the E and S
     // arms) fails the same way on every attempt: the region radius doesn't bound the pole search. It fails at once, so
     // the exploration tries the next arm instead of spending 4 plans per arm (8 failed plans in a row stopped the soak).
-    if (g.attempts >= MAX_PLAN_ATTEMPTS || FR.retryCannotHelp(g.site !== undefined || g.kind === "power" || g.nodes.some((n) => n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump" || n.generator === "steam-block"), failures)) {
-      if (FR.retryCannotHelp(g.site !== undefined || g.kind === "power" || g.nodes.some((n) => n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump" || n.generator === "steam-block"), failures)) FU.markUnreachableMinePatches(ctx, g.id, entry.job!.layout)
+    const fixedSite = g.site !== undefined || g.kind === "power" || g.nodes.some((n) => n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump" || n.generator === "steam-block")
+    const cannotHelp = FR.retryCannotHelp(fixedSite, failures)
+    if (g.attempts >= MAX_PLAN_ATTEMPTS || cannotHelp) {
+      if (cannotHelp) FU.markUnreachableMinePatches(ctx, g.id, entry.job!.layout, g.nodes.map((n) => n.id), entry.job!.sitePatches)
+      // An idle provider an earlier layer goal built for a route that never came is moved, so the design plans it again
+      // with that route toward its (built) consumer instead of leaving it unconnected.
+      for (const role of FR.idleProviderMoves(failureFacts)) {
+        const n = nodeByRoleIn(f, role)
+        if (n === undefined || LO.findModule(f.layout, n.id) === undefined) continue
+        FU.relocate(ctx, n, `idle provider ${role}`, `has no route to its built consumer after ${g.attempts} plans (goal ${g.id})`)
+      }
       transitionGoal(g, "failed")
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
       // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.
@@ -1889,6 +1912,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} tunnels under ${rw.route}: ${cleared} belts to pick up, ${add.length} underground ends to build`)
   }
   transitionGoal(g, "building")
+  f.adoptions = (f.adoptions ?? 0) + 1
   if (f.adoption === intent) f.adoption = undefined
   g.plannedTick = ctx.tick
   g.progressTick = ctx.tick
@@ -2475,23 +2499,14 @@ function markSealedNoFeed(ctx: Ctx, evidence: PlanEvidence[], g: FactoryGoal): v
   if (t === undefined) return
   const escape = policyFor(ctx.config).placement.portEscape ?? 0
   const view = RT.claimView(ctx.faction.name, ctx.faction.surface, terrainView(t))
-  const sealed: Record<string, string> = {}
-  for (const { port } of LO.sealedGoalPorts(f.layout, evidence)) sealed[port.module] = port.port
-  if (escape > 0) {
-    for (const ev of evidence) {
-      if (ev.kind !== "route" || ev.sealed === undefined || ev.sealed.edge === true) continue
-      const m = string.match(ev.subject, "=>([^%.]+)%.([^%s]+)")
-      if (m[0] === undefined || m[1] === undefined) continue
-      let n: LogicalNode | undefined
-      for (const x of g.nodes) if (x.role === m[0]) n = f.graph.nodes[x.id]
-      if (n === undefined || LO.findModule(f.layout, n.id) === undefined) continue
-      if (sealedInputs(f.layout, view, n.id, {}, escape).length > 0) sealed[n.id] = m[1]
-    }
+  const idOfRole = (role: string): string | undefined => {
+    for (const x of g.nodes) if (x.role === role) return x.id
+    return LG.nodeByRole(f.graph, role)?.id
   }
-  for (const [id, port] of pairs(sealed)) {
-    const n = f.graph.nodes[id as string]
+  for (const port of FR.noFeedPorts(f.layout, view, evidence, idOfRole, escape)) {
+    const n = f.graph.nodes[port.module]
     if (n === undefined) continue
-    if (CS.add((f.constraints ??= {}), "noFeed", CS.portKey(n.role, port as string))) log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${port} port sealed (goal ${g.id}); its input stays unplanned until the module moves`)
+    if (CS.add((f.constraints ??= {}), "noFeed", CS.portKey(n.role, port.port))) log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} has its ${port.port} port sealed (goal ${g.id}); its input stays unplanned until the module moves`)
   }
 }
 
@@ -3076,26 +3091,32 @@ function checkStall(ctx: Ctx): void {
   const brain = ctx.faction.brain!
   // Research progress counts as progress (the plan is waiting on it).
   const units = ctx.force.research_progress + (ctx.force.current_research !== undefined ? 0 : 1)
-  // Planner work counts too. A chain plan can legitimately run past `stallTicks` (the 26-module g207 robot chain took
-  // >15 game-min in a benchmark): while it plans, nothing is placed and `brain.steps` does not move, so the old key read
-  // a working planner as a stall, reset the crew and fail-fasted the run on the second one.
-  let planWork = 0
-  for (const g of f.goals) {
-    if (g.status !== "planning" && g.status !== "building") continue
-    const entry = g.plan !== undefined ? RT.getPlannerEntry(g.plan) : undefined
-    planWork += entry?.job?.stats.work ?? 0
-  }
-  const key = brain.steps * 1000 + math.floor(units * 100) + math.floor(planWork)
+  // An adopted plan counts too (the long plan that held an overdue stall has produced something). Planner work alone
+  // does not: a replan loop works forever and places nothing (see `GLC.stallDecision` for the long-plan grace).
+  const key = brain.steps * 1000 + math.floor(units * 100) + (f.adoptions ?? 0) * 1e9
   if (key !== f.progressSteps) {
     f.progressSteps = key
     f.progressTick = ctx.tick
+    f.stallHold = undefined
     const last = brain.stalls[brain.stalls.length - 1]
     if (last !== undefined && last.recoveredTick === undefined && brain.done) last.recoveredTick = ctx.tick
     return
   }
   // Nothing left to do by design (final stage built, research goal done): idle, not stalled.
   if (f.idle) f.progressTick = ctx.tick
-  if (!brain.done || ctx.tick - f.progressTick < ctx.config.stallTicks) return
+  if (!brain.done) return
+  const running: string[] = []
+  for (const g of f.goals) {
+    if (g.status !== "planning" || g.plan === undefined) continue
+    const phase = RT.getPlannerEntry(g.plan)?.phase
+    if (phase === "scan" || phase === "plan") running.push(g.plan)
+  }
+  running.sort()
+  const wasHeld = f.stallHold !== undefined
+  const decision = GLC.stallDecision(ctx.tick - f.progressTick >= ctx.config.stallTicks, running, f.stallHold)
+  f.stallHold = decision.hold
+  if (decision.hold !== undefined && !wasHeld) log(`[rival-engineers] faction ${ctx.faction.name}: no progress for ${ctx.tick - f.progressTick} ticks; the stall waits for plan(s) ${decision.hold.join(", ")} to finish`)
+  if (!decision.fire) return
   const goals: string[] = []
   for (const g of f.goals) if (g.status === "planning" || g.status === "building") goals.push(`${g.id} ${g.kind} ${g.status} (placed ${g.placed})`)
   const reason = `factory: ${goals.join(", ") || "no active goal"}; waiting: ${f.waiting.join("; ") || brain.waiting.join("; ") || "-"}`
@@ -3103,6 +3124,7 @@ function checkStall(ctx: Ctx): void {
   log(`[rival-engineers] faction ${ctx.faction.name}: STALL at tick ${ctx.tick}: ${reason}`)
   recover(ctx)
   f.progressTick = ctx.tick
+  f.stallHold = undefined
 }
 
 /** Recovery: drop the crew's current work and every non-build job, and re-plan place jobs for leftover ghosts. */

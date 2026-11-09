@@ -19,6 +19,7 @@ import { dependentRoutes, findModule, findPort, LayoutState, portTile, pumpPoleL
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
+import { recordDiagnostic } from "../diagnostic-events"
 
 export interface PartConflict {
   kind: "route" | "module" | "pole"
@@ -156,23 +157,77 @@ export function plannedSpecKeys(layout: LayoutState): Record<string, boolean> {
   return out
 }
 
-/** B144: remove the faction's own ghosts on `specs`' tiles that no live layout part owns (a failed add list's retry). */
-export function sweepOrphanGhostsAt(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[]): number {
-  const planned = plannedSpecKeys(layout)
+/**
+ * Review fix (risk 8): what *any* live plan of the faction plans, not only the layout a caller holds. A plan job's
+ * layout is a copy of the base taken when it was planned; a goal adopted later (or a growth/repair that changed the
+ * faction layout directly) is missing from it, and its ghosts on this plan's tiles would read as orphans. The union of
+ * `layout`, the faction's persistent layout and every live plan entry's layout is what "planned" means.
+ */
+export function livePlannedKeys(faction: FactionState, layout: LayoutState): Record<string, boolean> {
+  const layouts: LayoutState[] = [layout]
+  const base = storage.factories?.[faction.name]?.layout
+  if (base !== undefined && layouts.indexOf(base) < 0) layouts.push(base)
+  const planner = storage.planner
+  if (planner !== undefined) {
+    for (const id of planner.order) {
+      const entry = planner.entries[id]
+      const l = entry?.job?.layout
+      if (entry === undefined || l === undefined || entry.faction !== faction.name || layouts.indexOf(l) >= 0) continue
+      layouts.push(l)
+    }
+  }
+  const out: Record<string, boolean> = {}
+  for (const l of layouts) for (const [k] of pairs(plannedSpecKeys(l))) out[k as string] = true
+  return out
+}
+
+/** The planned-key map, built on first use (most stamps meet no foreign ghost and never need it). */
+function lazyPlanned(faction: FactionState, layout: LayoutState): (this: void) => Record<string, boolean> {
+  let planned: Record<string, boolean> | undefined
+  return () => (planned ??= livePlannedKeys(faction, layout))
+}
+
+/** Own ghosts whose bounding box covers tile `k` (a multi-tile ghost centred on another tile included). */
+function ghostsOnTile(surface: LuaSurface, force: string, k: number): LuaEntity[] {
+  const x = keyX(k)
+  const y = keyY(k)
+  return findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "entity-ghost", force })
+}
+
+/**
+ * Review fix (the user: orphans must not be swept silently): an own ghost no live plan owns is removed **and reported**.
+ * The build cannot stamp over it (creating a ghost over another removes it), so it must go, but each one is a leak
+ * somewhere upstream: an abandoned part whose world piece was not taken with it. The alert names the ghost and where it
+ * was found, and a `planner` diagnostic (`orphan-ghost`) counts them for telemetry.
+ */
+function removeOrphanGhost(faction: FactionState, gh: LuaEntity, where: string): void {
+  const unit = gh.unit_number
+  const name = gh.ghost_name ?? gh.name
+  const x = gh.position.x
+  const y = gh.position.y
+  const job = unit !== undefined ? faction.ghostJobs[unit] : undefined
+  log(`[rival-engineers] ORPHAN GHOST faction ${faction.name}: ${name} at ${x},${y} (dir ${gh.direction}${job !== undefined ? `, job ${job}` : ", no job"}) on ${where}: no live plan owns it; removed. This is a leak: a removed plan part left its ghost behind.`)
+  recordDiagnostic(faction, { tick: game.tick, kind: "planner", decision: "orphan-ghost", reason: where, data: { name, x, y, job } })
+  destroyEntity(gh)
+  if (unit !== undefined) delete faction.ghostJobs[unit]
+}
+
+/** B144: remove (and report) the faction's own ghosts on `specs`' tiles that no live plan owns (a failed add's retry). */
+export function sweepOrphanGhostsAt(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[], where = "a build's tiles"): number {
+  const planned = lazyPlanned(faction, layout)
   const seen: Record<number, boolean> = {}
   let swept = 0
-  for (const e of specs) for (const k of specTiles(e)) {
-    const x = keyX(k)
-    const y = keyY(k)
-    for (const gh of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "entity-ghost", force: faction.force })) {
-      if (gh.unit_number === undefined || seen[gh.unit_number]) continue
-      if (math.floor(gh.position.x) !== x || math.floor(gh.position.y) !== y) continue
-      seen[gh.unit_number] = true
-      if (planned[ghostKey(gh)] === true) continue
-      const unit = gh.unit_number
-      destroyEntity(gh)
-      delete faction.ghostJobs[unit]
-      swept++
+  for (const e of specs) {
+    const want = specKey(e)
+    for (const k of specTiles(e)) {
+      for (const gh of ghostsOnTile(surface, faction.force, k)) {
+        if (gh.unit_number === undefined || seen[gh.unit_number]) continue
+        const gkey = ghostKey(gh)
+        if (gkey === want || planned()[gkey] === true) continue
+        seen[gh.unit_number] = true
+        removeOrphanGhost(faction, gh, where)
+        swept++
+      }
     }
   }
   return swept
@@ -206,37 +261,33 @@ export function overlappingSpecs(specs: EntitySpec[]): { a: EntitySpec; b: Entit
  * (CLAUDE.md), so a different ghost must be found first, not after a failed create.
  *
  * - two planned pieces on one tile (`overlappingSpecs`) block the later one;
- * - an own ghost no live layout part owns is swept (an orphan of an abandoned route);
- * - an own ghost the layout does plan (another goal's piece) blocks this spec: creating over it would delete it;
- * - a live own structure/foreign entity blocks this spec (a stale belt is picked up and retried instead).
+ * - an own ghost that a live plan owns (another goal's piece) blocks this spec: creating over it would delete it;
+ * - an own ghost no live plan owns is an orphan: removed and reported (`removeOrphanGhost`).
+ *
+ * Every ghost whose box covers a spec tile counts (review fix, risk 7: a multi-tile ghost centred on a neighbouring
+ * tile was skipped and then deleted by the create). Built entities are not checked here (`ghostBlockerKind` does).
  */
-export function preflightSpecs(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[]): { blocked: Record<string, { reason: string; at: Vec }>; swept: number } {
-  const planned = plannedSpecKeys(layout)
+export function preflightSpecs(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[], where = "a build's tiles"): { blocked: Record<string, { reason: string; at: Vec }>; swept: number } {
+  const planned = lazyPlanned(faction, layout)
   const blocked: Record<string, { reason: string; at: Vec }> = {}
   const overlaps = overlappingSpecs(specs)
   for (const o of overlaps) blocked[specKey(o.b)] = { reason: `overlap with ${o.a.name} at ${o.tile.x},${o.tile.y}`, at: o.tile }
   let swept = 0
-  const seen: Record<number, boolean> = {}
+  const gone: Record<number, boolean> = {}
   for (const e of specs) {
     const key = specKey(e)
     if (blocked[key] !== undefined) continue
     for (const k of specTiles(e)) {
-      const x = keyX(k)
-      const y = keyY(k)
-      const area = { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }
-      for (const gh of findEntities(surface, { area, type: "entity-ghost", force: faction.force })) {
-        if (gh.unit_number === undefined || seen[gh.unit_number]) continue
-        if (math.floor(gh.position.x) !== x || math.floor(gh.position.y) !== y) continue
-        seen[gh.unit_number] = true
+      for (const gh of ghostsOnTile(surface, faction.force, k)) {
+        if (gh.unit_number === undefined || gone[gh.unit_number]) continue
         const gkey = ghostKey(gh)
         if (gkey === key) continue
-        if (planned[gkey] === true) {
-          blocked[key] = { reason: `${gh.ghost_name} ghost is another planned piece at ${x},${y}`, at: { x, y } }
+        if (planned()[gkey] === true) {
+          blocked[key] = { reason: `${gh.ghost_name} ghost is another planned piece at ${keyX(k)},${keyY(k)}`, at: { x: keyX(k), y: keyY(k) } }
           break
         }
-        const unit = gh.unit_number
-        destroyEntity(gh)
-        delete faction.ghostJobs[unit]
+        gone[gh.unit_number] = true
+        removeOrphanGhost(faction, gh, where)
         swept++
       }
       if (blocked[key] !== undefined) break
@@ -248,32 +299,34 @@ export function preflightSpecs(surface: LuaSurface, faction: FactionState, layou
 export type GhostBlockerKind = "orphan" | "stale" | "planned" | "foreign" | "structure" | "none"
 
 /**
- * B144: what stands on a failed spec's tiles. `orphan` (an own ghost no layout part owns) and `stale` (an own belt
+ * B144: what stands on a failed spec's tiles. `orphan` (an own ghost no live plan owns) and `stale` (an own belt
  * piece the plan does not want there) can be removed locally and the spec retried. `planned` (another planned piece
  * already stands there: an overlap inside the plan's own add list), `foreign` (another force) and `structure` (an own
- * module or machine) cannot: the plan itself is wrong for this ground.
+ * module or machine) cannot: the plan itself is wrong for this ground. `plannedKeys` may be passed in (one lazily built
+ * map for many specs: review fix, risk 6); it defaults to every live plan's keys, built only if a blocker is found.
  */
-export function ghostBlockerKind(surface: LuaSurface, faction: FactionState, layout: LayoutState, e: EntitySpec): { kind: GhostBlockerKind; at: Vec; blocker?: string } {
-  const planned = plannedSpecKeys(layout)
+export function ghostBlockerKind(surface: LuaSurface, faction: FactionState, layout: LayoutState, e: EntitySpec, plannedKeys?: (this: void) => Record<string, boolean>): { kind: GhostBlockerKind; at: Vec; blocker?: string } {
+  const planned = plannedKeys ?? lazyPlanned(faction, layout)
   const want = specKey(e)
   for (const k of specTiles(e)) {
     const x = keyX(k)
     const y = keyY(k)
     const area = { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }
-    for (const gh of findEntities(surface, { area, type: "entity-ghost", force: faction.force })) {
-      if (math.floor(gh.position.x) !== x || math.floor(gh.position.y) !== y) continue
+    for (const gh of ghostsOnTile(surface, faction.force, k)) {
       const key = ghostKey(gh)
       if (key === want) continue
-      return planned[key] === true
+      return planned()[key] === true
         ? { kind: "planned", at: { x, y }, blocker: `${gh.ghost_name} ghost` }
         : { kind: "orphan", at: { x, y }, blocker: `${gh.ghost_name} ghost` }
     }
     const foreign = foreignEntitiesOn(surface, faction.force, [k])
     if (foreign.length > 0) return { kind: "foreign", at: { x, y }, blocker: `${foreign[0].name} of ${foreign[0].force.name}` }
     for (const b of findEntities(surface, { area, force: faction.force })) {
-      if (math.floor(b.position.x) !== x || math.floor(b.position.y) !== y) continue
       if (b.type === "entity-ghost" || b.type === "character" || b.type === "item-entity" || b.type === "item-request-proxy") continue
-      if (planned[`${b.name}@${x},${y}@${b.direction}@${b.type === "underground-belt" ? b.belt_to_ground_type : ""}`] === true) continue
+      // Keyed by the entity's own centre tile (a multi-tile machine covering this tile from a neighbour counts too).
+      const bx = math.floor(b.position.x)
+      const by = math.floor(b.position.y)
+      if (planned()[`${b.name}@${bx},${by}@${b.direction}@${b.type === "underground-belt" ? b.belt_to_ground_type : ""}`] === true) continue
       return { kind: ROUTE_TYPES.indexOf(b.type) >= 0 ? "stale" : "structure", at: { x, y }, blocker: b.name }
     }
   }
@@ -288,8 +341,10 @@ export function hardGhostFailure(surface: LuaSurface, faction: FactionState, lay
   const tiles: Vec[] = []
   const reasons: string[] = []
   let hard = false
+  // Review fix (risk 6): one planned-key map for every failed spec (it was rebuilt over the whole layout per spec).
+  const planned = lazyPlanned(faction, layout)
   for (const e of specs) {
-    const b = ghostBlockerKind(surface, faction, layout, e)
+    const b = ghostBlockerKind(surface, faction, layout, e, planned)
     if (b.kind === "orphan" || b.kind === "stale") continue
     // A route piece with no blocker the engine names is not a bad site: B142 reroutes those routes around the failing
     // tiles (g192: 2 route belts with no blocker rejected a 21-module plan and dropped its 45 routes).
@@ -569,7 +624,10 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   const failedSpecs: EntitySpec[] = []
   // B144: find blockers before creating anything. Creating a ghost over a different ghost deletes that ghost (an engine
   // fact), so creation must not be the first time we look.
-  const pre = layout !== undefined ? preflightSpecs(surface, faction, layout, add) : undefined
+  const pre = layout !== undefined ? preflightSpecs(surface, faction, layout, add, "an add list's tiles") : undefined
+  // Review fix (risk 6): one planned-key map for the whole add list, built only when a blocker needs it. Each spec
+  // without a ghost used to rebuild the keys of the whole layout.
+  const planned = layout !== undefined ? lazyPlanned(faction, layout) : undefined
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
     const key = specKey(e)
@@ -587,7 +645,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
       if (gh !== undefined && !ghostHasJob(faction, gh)) delete faction.ghostJobs[gh.unit_number!]
       if (gh !== undefined) break
       if (layout !== undefined) {
-        const blocker = ghostBlockerKind(surface, faction, layout, e)
+        const blocker = ghostBlockerKind(surface, faction, layout, e, planned)
         if (blocker.kind === "planned" || blocker.kind === "foreign" || blocker.kind === "structure") break
         if (blocker.kind === "stale") {
           // Own built belt pieces the plan does not want there: the crew picks them up first (B56). The retry stamps it.
@@ -595,7 +653,7 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
           break
         }
         if (blocker.kind === "orphan") {
-          if (sweepOrphanGhostsAt(surface, faction, layout, [e]) === 0) break
+          if (sweepOrphanGhostsAt(surface, faction, layout, [e], "an add list's tiles") === 0) break
           continue
         }
       }

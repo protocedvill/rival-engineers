@@ -134,6 +134,16 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       out[p.id] = (out[p.id] ?? 0) + used
       if (used > e.plannedRate) draw[key] = (draw[key] ?? 0) + used
     }
+    // Review fix (M7d.5 Layers14): a built provider with no belt edge at all is idle capacity, not absent. Since D84's
+    // layer split builds a raw provider one goal before the consumer route it was made for, a consumer goal that fails
+    // leaves it built and unconnected. Leaving it out of `spare` made every later design fork another provider for the
+    // same consumer (`parallelRole` skips built roles): 96 unconnected coal mines for one steel smelter.
+    for (const id of f.graph.nodeOrder) {
+      const p = f.graph.nodes[id]
+      if (out[id] !== undefined || p.lifecycle !== "built" || p.item === undefined) continue
+      if (p.kind !== "module" && p.kind !== "outpost") continue
+      out[id] = 0
+    }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
       if (p.item === undefined || !tappable(f, p.role)) continue
