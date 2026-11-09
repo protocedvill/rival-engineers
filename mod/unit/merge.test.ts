@@ -226,4 +226,22 @@ test("B122 (seed 11 g78, in game): a belt that merges into the trunk is a merge 
   eq(routeFeedsPort(s, feeder.id, { module: moduleId("consumer"), port: "in-coal" }), true)
 })
 
+test("B174 (m7-fresh4 seed 222, g94-g110): a trunk tile another route already joins is no merge goal", () => {
+  // Trunk south down x = 10; one route merges with a splitter at 10,15 (its belt beside it at 11,15), another
+  // side-loads at 10,20 from the east. Neither tile may take a second join: two splitters on 10,15 overlapped and the
+  // build was rejected before stamping, for 17 goals in a row.
+  const t = trunk(20)
+  const ms: Route = { ...trunk(1), id: routeId("r:ms"), conn: connectionId("coal>ms=>consumer.in-coal"), steps: [belt(11, 14, 2), { kind: "splitter", x: 10, y: 15, dir: 2, x2: 11, y2: 15 } as RouteStep], tiles: [tkey(11, 14), tkey(11, 15)], mergeSplitter: { x: 10, y: 15, dir: 2, x2: 11, y2: 15 } }
+  const sl: Route = { ...trunk(1), id: routeId("r:sl"), conn: connectionId("coal>sl=>consumer.in-coal"), steps: [belt(11, 20, 3)], tiles: [tkey(11, 20)], merge: { x: 10, y: 20, dir: 2, side: "left" } }
+  const s = layoutOf([t, ms, sl])
+  for (const r of [t, ms, sl]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  // Walled in on both sides except beside the two joined tiles.
+  for (let y = 10; y <= 29; y++) {
+    if (y !== 15 && y !== 20) s.occ[tkey(9, y)] = "m:wall" as never
+    if (s.routeOcc[tkey(11, y)] === undefined) s.occ[tkey(11, y)] = "m:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  for (const g of goals) eq(g.x === 10 && (g.y === 15 || g.y === 20), false, `goal at ${g.x},${g.y}`)
+})
+
 run("merge")

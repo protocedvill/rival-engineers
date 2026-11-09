@@ -21,7 +21,7 @@ import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, 
 import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
-import { tunnelSite } from "./tunnel"
+import { joinTiles, tunnelSite } from "./tunnel"
 import { proveSealFromGoal, SealOutcome } from "./route-seal"
 
 export interface RouteRequest {
@@ -361,12 +361,9 @@ function tapCandidates(state: LayoutState, terrain: TerrainView, policy: LayoutP
   if (route === undefined) return out
   let heading = -1
   if (route.tapOf === undefined && route.startDir !== undefined) heading = route.startDir
-  // Tiles already used by a splitter on this route.
-  const splitAt: Record<number, boolean> = {}
-  for (const id of state.routeOrder) {
-    const r = state.routes[id]
-    if (r.tapOf === routeId && r.steps[0]?.kind === "splitter") splitAt[tkey(r.steps[0].x, r.steps[0].y)] = true
-  }
+  // Tiles another route already joins: a tap's splitter, a side-load, a merge splitter (B174: a merge splitter's tile
+  // was offered to a tap).
+  const splitAt = joinTiles(state)
   let prevDir = -1
   for (let i = 0; i < route.steps.length; i++) {
     const st = route.steps[i]

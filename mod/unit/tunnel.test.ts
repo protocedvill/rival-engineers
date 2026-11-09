@@ -4,14 +4,14 @@
 import { beltTiers, tierByBelt } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
 import { asciiTerrain, tkey, TerrainView } from "../src/planner/grid"
-import { checkLayout, checkLayoutIndexes, commitModule, LayoutState, newLayout, PlacedModule } from "../src/planner/layout"
+import { checkLayout, checkLayoutIndexes, commitModule, commitRoute, LayoutState, newLayout, PlacedModule, Route } from "../src/planner/layout"
 import { preparePlanDelta } from "../src/planner/plan-delta"
 import { ConnectionRequest, newPlanJob, newRoutingJob, PlanRequest, runJob } from "../src/planner/plan"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
 import { tunnelRoute, tunnelSite } from "../src/planner/tunnel"
 import { IDENTITY } from "../src/modules/geometry"
 import { ModuleDef, Port, SOUTH, WEST } from "../src/modules/types"
-import { connectionId, moduleId } from "../src/shared/ids"
+import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -232,6 +232,44 @@ test("B172: a tap that tunnels under its own trunk keeps its splitter off the tu
   const under = state.routes["route:v"].steps.find((s) => s.x === sp.x && s.y === sp.y)
   eq(`${under?.kind}`, "belt", `the splitter at ${sp.x},${sp.y} stands on a belt of v`)
   noProblems(state, terrain, "tap tunnel")
+})
+
+/**
+ * B174 (m7-fresh4 seed 222): trunk v down x = 15; u (a second producer for v-dst) joins v with a merge splitter at
+ * (15, 12), its belt beside it at (16, 11..12). A tap of v must reach w-dst on the west through the only gap, (14, 12)
+ * then row 13: splitting there would put a second splitter on u's trunk tile.
+ */
+function joinArena(): string[] {
+  const rows: string[] = []
+  for (let y = 0; y < 20; y++) {
+    let row = ""
+    for (let x = 0; x < 20; x++) row += x >= 17 || (x === 14 && y !== 12 && y !== 13) || (x <= 13 && y !== 13) ? "X" : "."
+    rows.push(row)
+  }
+  return rows
+}
+
+test("B174: a tap never splits on a trunk tile another route's merge splitter replaced", () => {
+  const terrain = asciiTerrain(joinArena())
+  const state = newLayout()
+  place(state, source("v-src", SOUTH), 15, 0)
+  place(state, sink("v-dst", SOUTH), 15, 19)
+  place(state, source("u-src", SOUTH), 16, 10)
+  place(state, sink("w-dst", WEST), 10, 13)
+  const p: LayoutPolicy = { ...policy(), topology: "splitter-tap" }
+  eq(runJob(newRoutingJob(request([conn("v", "v-src", "v-dst")]), YELLOW, state), terrain, F, p).phase, "done", "v routed")
+  const ms = { x: 15, y: 12, dir: 2, x2: 16, y2: 12 }
+  const u: Route = {
+    id: routeId("route:u"), conn: connectionId("u"), item: "iron-plate", from: { module: moduleId("u-src"), port: "out" }, to: { module: moduleId("v-dst"), port: "in" },
+    steps: [{ kind: "belt", x: 16, y: 11, dir: 2 }, { kind: "splitter", ...ms }], tiles: [tkey(16, 11), tkey(16, 12)], spans: [],
+    belt: "transport-belt", underground: "underground-belt", splitter: "splitter", length: 1, undergrounds: 0, cost: 1, ripped: 0, mergeSplitter: ms, fixed: true,
+  }
+  commitRoute(state, u)
+  noProblems(state, terrain, "u merges into v")
+  const job = runJob(newRoutingJob(request([conn("w", "v-src", "w-dst")]), YELLOW, state), terrain, F, p)
+  const w = state.routes["route:w"]
+  ok(w === undefined || w.steps[0].x !== 15 || w.steps[0].y !== 12, `w splits at ${w?.steps[0].x},${w?.steps[0].y} (${job.phase})`)
+  if (job.phase === "done") noProblems(state, terrain, "w taps v")
 })
 
 run("tunnel")

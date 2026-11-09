@@ -37,7 +37,7 @@ const joinCache = new WeakMap<LayoutState, { revision: number; routes: number; t
 /** Step index by tile, per steps array (a converted route gets a new array, so the cache never goes stale). */
 const indexCache = new WeakMap<RouteStep[], Record<number, number>>()
 
-function joinTiles(state: LayoutState): Record<number, boolean> {
+export function joinTiles(state: LayoutState): Record<number, boolean> {
   // Every route change bumps the revision (commitRoute, ripRoute, tunnelRoute); the route count guards the rest.
   const rev = state.revision ?? 0
   const cached = joinCache.get(state)

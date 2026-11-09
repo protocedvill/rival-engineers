@@ -840,6 +840,37 @@ test("B172: a tap's tunnel under its own trunk leaves its splitter on a belt", (
   ok(tap !== undefined && tap.tapOf !== undefined, "the robot circuit feed is a tap")
 })
 
+/** B174: trunk tiles two routes join (two splitters, or a side-load into a splitter). */
+function doubleJoins(layout: LayoutState): string[] {
+  const joined: Record<number, string> = {}
+  const out: string[] = []
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const s0 = r.steps[0]
+    for (const j of [r.merge ?? r.mergeSplitter, r.tapOf !== undefined && s0?.kind === "splitter" ? s0 : undefined]) {
+      if (j === undefined) continue
+      const k = tkey(j.x, j.y)
+      if (joined[k] !== undefined && joined[k] !== id) out.push(`${id} and ${joined[k]} at ${j.x},${j.y}`)
+      joined[k] = id
+    }
+  }
+  return out
+}
+
+// B174 (m7-fresh4 seed 222, g94-g110): the shared coal mine n191's trunks were planned again with a merge splitter of
+// one feed and another feed's merge splitter on the same trunk tile (176, 122), from either side. Every build was
+// rejected before stamping ("overlap with splitter"), and 17 goals in a row planned the same overlap.
+test("B174: two routes never join a trunk on the same tile", () => {
+  const fx = load("m7d5-g110-two-joins")
+  const before: Record<string, boolean> = {}
+  if (fx.base !== undefined) for (const p of doubleJoins(fx.base)) before[p] = true
+  const job = newPlanJob(fx.request, tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0], fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const added = doubleJoins(job.layout).filter((p) => !before[p])
+  ok(added.length === 0, `double joins: ${added.join("; ")}`)
+})
+
 // B60 (m6-b60n-provider, seed 8646103 g19): after a route-infeasible shared coal provider is split per consumer,
 // each fresh provider must be placed where its one assigned consumer can actually be reached.
 replay("m6-b60-provider-single-route", { newSites: ["n51", "n52"], expect: "failed", failureIncludes: "no free coal patch in the region" })

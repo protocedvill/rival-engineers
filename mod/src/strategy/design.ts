@@ -452,7 +452,9 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
     const max = smelterMaxFurnaces(ctx.facts, recipe, ctx.furnace)
     // M7d.5 (user, 2026-11-07): from the first blue stage on, a furnace stack is always planned at its maximum feasible
     // size. The stage target still decides how many stacks exist; it no longer decides how tall each one is.
-    if (ctx.maxSmelters === true) out.push({ recipe, furnaces: max, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
+    // B175 (user, 2026-11-09): only a stack fed by ore (the size is the ore lane's); steel from plates is sized to need.
+    const fromOre = (ctx.facts.recipe(recipe)?.ingredients ?? []).some((i) => resourceFor(ctx, i.name) !== undefined)
+    if (ctx.maxSmelters === true && fromOre) out.push({ recipe, furnaces: max, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
     else for (let n = 4; n <= max; n += 4) out.push({ recipe, furnaces: n, furnace: ctx.furnace, fuel: ctx.fuel, buffer: ctx.buffer ?? "" })
   } else if (gen === "red-line") {
     for (let u = 1; u <= 12; u++) out.push({ recipe: ctx.facts.recipeForItem(item), units: u, machine: ctx.assembler })
@@ -1642,8 +1644,11 @@ export interface GoalSpec {
  * Production layers, raw first: each layer plans only its own providers, then waits for that goal to be built. Raw
  * resources and smelter metals are split by item: one plan for six coal mines plus two large ore mines was still a
  * multi-minute site search.
+ *
+ * B175 (user, 2026-11-09): the metals come before the oil field and its water. A pumpjack takes steel to craft, so on a
+ * map with no steel yet the raw-oil goal could never finish building, and every later goal waited on it.
  */
-export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "raw-oil", "raw-water", "metals-iron", "metals-copper", "metals-steel", "metals-other", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
+export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
 export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
 
 /** M7d.5 (user, 2026-11-07): the layer of a production provider; smaller layers keep each plan to a handful of modules. */

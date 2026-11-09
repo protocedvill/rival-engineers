@@ -8,6 +8,7 @@
 
 import { ccw, cw, DX, DY, manhattan, tkey } from "./grid"
 import { findModule, LayoutState, portRate, Route, routeDangles } from "./layout"
+import { joinTiles } from "./tunnel"
 
 /** One place a second route can join an existing route to the same consumer. */
 export interface MergeGoal {
@@ -67,12 +68,10 @@ export function mergeGoals(layout: LayoutState, to: { module: string; port: stri
   const near = (x: number, y: number): number => manhattan({ x, y }, { x: fx, y: fy })
   const sideLoad: { goal: MergeGoal; cost: number }[] = []
   const splitter: { goal: MergeGoal; cost: number }[] = []
-  // Tiles where a splitter tap replaced a route's belt: no merge there.
-  const splitAt: Record<number, boolean> = {}
-  for (const id of layout.routeOrder) {
-    const r = layout.routes[id]
-    if (r?.tapOf !== undefined && r.steps[0]?.kind === "splitter") splitAt[tkey(r.steps[0].x, r.steps[0].y)] = true
-  }
+  // Tiles another route already joins (a tap's splitter, a side-load, a merge splitter): no merge there. B174 (soak
+  // m7-fresh4 seed 222, g94-g110): only taps counted, so two merge splitters took one trunk tile from either side, the
+  // build was rejected before stamping, and every goal after it planned the same overlap again.
+  const splitAt = joinTiles(layout)
   // B122 (seed 11 g78, in game): routes that merge into another route (side-load or splitter), by the trunk tile they
   // join. Their belts carry items into that trunk, so a merge onto one of them lands wherever the trunk does.
   const feeders: Record<number, Route[]> = {}

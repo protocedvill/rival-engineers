@@ -1077,6 +1077,19 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
     if (expect === undefined || expect.x !== end.x || expect.y !== end.y) problems.push(`${id}: does not end at ${to.id}.${toPort.id} (${target.x},${target.y})`)
     else if (heading !== want) problems.push(`${id}: arrives at ${to.id}.${toPort.id} heading ${heading}, needs ${want}`)
   }
+  // B174: a trunk tile takes one join. Two splitters (taps or merges) on it overlap, and a side-load into a splitter
+  // has no belt to land on.
+  const joined: Record<number, string> = {}
+  for (const id of state.routeOrder) {
+    const r = state.routes[id]
+    const s0 = r.steps[0]
+    for (const j of [r.merge ?? r.mergeSplitter, r.tapOf !== undefined && s0?.kind === "splitter" ? s0 : undefined]) {
+      if (j === undefined) continue
+      const k = tkey(j.x, j.y)
+      if (joined[k] !== undefined && joined[k] !== id) problems.push(`${id}: joins the trunk at ${j.x},${j.y} where ${joined[k]} already joins`)
+      joined[k] = id
+    }
+  }
   return { problems }
 }
 

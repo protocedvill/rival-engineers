@@ -132,6 +132,18 @@ test("M7d.5: from the first blue stage on, a furnace stack is planned at its max
   eq(d.nodes.filter((n) => n.generator === "smelter-column").length, 2, "one iron and one copper stack")
 })
 
+test("B175 (user, 2026-11-09): the maximum stack size is for ore smelters only; steel is sized to its need", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true }
+  const base = { enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] }
+  const steelOf = (d: ReturnType<typeof design>): DesignNode => d.nodes.find((n) => n.generator === "smelter-column" && n.item === "steel-plate")!
+  const sized = design(ctx(base), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const maxed = design(ctx({ ...base, maxSmelters: true }), { item: "chemical-science-pack", perSecond: 10 / 60 })
+  eq(maxed.errors.length, 0, maxed.errors.join("; "))
+  eq(steelOf(maxed).params.furnaces, steelOf(sized).params.furnaces, "the steel stack keeps its needed size")
+  const iron = maxed.nodes.find((n) => n.generator === "smelter-column" && n.item === "iron-plate")!
+  eq(iron.params.furnaces, 24, "an ore stack is still a full 24-furnace stack")
+})
+
 test("D54: once electric drills are researched the steam block's coal comes from an electric mine", () => {
   const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 10 / 60 })
   eq(d.errors.length, 0, d.errors.join("; "))
@@ -1082,6 +1094,20 @@ test("M7d.5: construction robots and roboports stocked: the robot frame chain is
   eq(hubRow.def.entities.filter((e) => e.name === "roboport").length, 1, "one roboport in it")
   const portRow = hubbed.nodes.find((n) => n.role === stockRole("roboport"))!
   eq(portRow.params.roboport, undefined, "the roboport stock row has none")
+})
+
+test("B175 (user, 2026-11-09): the steel smelters are built before the pumpjack field (a pumpjack takes steel to craft)", () => {
+  // m7-fresh4 seeds 11, 3333, 44444: the raw-oil goal came before metals-steel; its pumpjacks could not be crafted on a
+  // map with no steel yet, the goal stayed "building", and every later production and growth goal waited on it.
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const prod = goalsFrom(diffDesign(d, newGraph(), () => undefined), {}, undefined, true).filter((g) => g.kind === "production")
+  const at = (pred: (this: void, n: DesignNode) => boolean): number => prod.findIndex((g) => g.nodes.some((n) => pred(n)))
+  const steel = at((n) => n.generator === "smelter-column" && n.item === "steel-plate")
+  const oil = at((n) => n.generator === "pumpjack-field")
+  ok(steel >= 0 && oil >= 0, `both layers planned (steel ${steel}, oil ${oil}: ${prod.map((g) => g.phase).join(",")})`)
+  ok(steel < oil, `steel before the pumpjacks (${prod.map((g) => g.phase).join(",")})`)
 })
 
 test("M7d.5: a large robot production goal is split into dependency layers", () => {
