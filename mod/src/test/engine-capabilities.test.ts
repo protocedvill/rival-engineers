@@ -1,6 +1,6 @@
 import { LuaEntity, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { PathfinderWaypoint } from "factorio:runtime"
-import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
+import { forgetPathRequest, getPathRequest, requestCharacterPath, spotInPocket } from "../character/pathing"
 import { tkey } from "../planner/grid"
 import { chunkKnown } from "../strategy/arms"
 import { onSectorScanned } from "../strategy/explore"
@@ -592,5 +592,56 @@ describe("ghosts", () => {
     assert(!ghostOn(0, "transport-belt", defines.direction.west, defines.direction.west), "a belt ghost on its live twin is refused")
     assert(!ghostOn(2, "transport-belt", defines.direction.north, defines.direction.west), "a belt ghost on a belt facing another way is refused")
     assert(ghostOn(4, "small-electric-pole", defines.direction.north, defines.direction.north), "a pole ghost on its live pole is accepted")
+  })
+})
+
+describe("pathfinder pockets", () => {
+  // m7-fresh4 seed 11: the crew's walk to the standing spot 447.0,55.0 found no path 23 times. The spot is in the
+  // one-tile corridor between two steam-engine columns, where a small pole stands every 5 tiles: a character fits
+  // beside a pole (0.6 tiles), and `can_place_entity` says every spot here is free. The pathfinder reaches the corridor
+  // up to the first pole and nothing past it, and `spotInPocket` (jobs/pockets.ts) must agree on each spot.
+  // The test asks one path at a time, as a crew member's walk does: two requests of one character on the same tick,
+  // one of them unreachable, both failed (another character's request that tick was found).
+  test("B176 finding: the pathfinder does not pass beside a pole in a steam block's corridor; spotInPocket agrees", () => {
+    const lab = createLab()
+    // Local x 0 = world 447 (the failing spot), y 0 = world 54.
+    for (const y of [0.5, 5.5]) {
+      for (const x of [-2.5, 1.5]) lab.surface.create_entity({ name: "steam-engine", position: at(lab, x, y), direction: defines.direction.north, force: "player" })
+      lab.surface.create_entity({ name: "small-electric-pole", position: at(lab, -0.5, y), force: "player" })
+    }
+    const character = spawnEngineer(lab, -0.5, -12)
+    const goals: [string, number, number, boolean][] = [
+      ["open ground", 6, -6, true],
+      ["corridor mouth", -0.5, -4, true],
+      ["corridor before the first pole", -0.5, -2.5, true],
+      ["the spot beside the pole", 0, 1, false],
+      ["corridor between the poles", -0.5, 3, false],
+      ["tile centre beside the pole", 0, 3, false],
+    ]
+    // Spots close to a machine on open ground (an assembler east of the block) are reached: no pocket.
+    lab.surface.create_entity({ name: "assembling-machine-1", position: at(lab, 9.5, -6.5), force: "player" })
+    goals.push(["0.3 from an assembler", 8, -6.5, true], ["0.25 above an engine, on open ground", 1.5, -2.1, true])
+    for (const [name, x, y] of goals) assert(lab.surface.can_place_entity({ name: "character", position: at(lab, x, y) }), `${name}: a character fits`)
+    let i = 0
+    let id: number | undefined
+    async(6000)
+    on_tick(() => {
+      if (id !== undefined) {
+        const req = getPathRequest(id)!
+        if (req.status === "pending") return
+        const [name, x, y, reach] = goals[i]
+        forgetPathRequest(id)
+        id = undefined
+        i++
+        assert((req.status === "found") === reach, `${name}: path ${req.status}, expected ${reach ? "found" : "failed"}`)
+        assert(spotInPocket(lab.surface, at(lab, x, y)) === !reach, `${name}: spotInPocket says ${!reach ? "open" : "pocket"}`)
+      }
+      if (i < goals.length) {
+        const [, x, y] = goals[i]
+        id = requestCharacterPath(character, at(lab, x, y), 0.3)
+        return
+      }
+      done()
+    })
   })
 })

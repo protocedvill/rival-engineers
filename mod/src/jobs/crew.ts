@@ -1,5 +1,6 @@
 import { BoundingBoxArray, LuaEntity, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
 import { cancel, cancelAll, enqueue, getAction } from "../character/controller"
+import { spotInPocket } from "../character/pathing"
 import { ActionRecord, ActionStatus } from "../character/types"
 import { Config, getConfig } from "../config"
 import {
@@ -1021,7 +1022,8 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
       reach,
       maxJobs: config.batchMaxJobs,
       accept,
-      isFree: (p) => surface.can_place_entity({ name: "character", position: p }),
+      // B176: and not in a pocket the pathfinder cannot enter (a steam block's corridor between two poles).
+      isFree: (p) => surface.can_place_entity({ name: "character", position: p }) && !spotInPocket(surface, p),
       extraAvoid: otherSpots(faction, member),
       maxSpots: config.batchMaxSpots,
       hop: config.batchSpotHop,
