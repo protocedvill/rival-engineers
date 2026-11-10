@@ -940,6 +940,9 @@ replay("m7-seed11-g104-slow", { expect: "done" })
 // and the row places. B146: both oil complexes' water lines then failed "no pipe path": each complex's in-water run
 // counted all its pipes (221 tiles), and the pipe search dropped every path with a pump, so no arrival kept the extent.
 replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "done" })
+// B177 (m7-fresh6 seed 222, g126/g127: 8 attempts "no path"): the split advanced-circuit block's copper input stayed two
+// columns inside its buffer head when the head moved the module east, so no route reached it from any placement.
+replay("m7d5-g126-copper-port", { regenerate: ["n146"], expect: "done" })
 // REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
 // line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
 for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })

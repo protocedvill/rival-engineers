@@ -6,7 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { buildMaterials, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -1108,6 +1108,39 @@ test("B175 (user, 2026-11-09): the steel smelters are built before the pumpjack 
   const oil = at((n) => n.generator === "pumpjack-field")
   ok(steel >= 0 && oil >= 0, `both layers planned (steel ${steel}, oil ${oil}: ${prod.map((g) => g.phase).join(",")})`)
   ok(steel < oil, `steel before the pumpjacks (${prod.map((g) => g.phase).join(",")})`)
+})
+
+test("B178 (user, 2026-11-10): providers of build materials the crew cannot hand-craft come before the oil field", () => {
+  // m7-fresh6 seeds 11, 3333, 44444: the crude line's pumps take engine units, the engine cell was in a layer after the
+  // oil goal, and that goal stayed "building" with "no source for engine-unit" until the soak stopped.
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const materials = buildMaterials(F, d.nodes, d.edges, ["pipe", "pipe-to-ground", "pump"])
+  ok(materials["engine-unit"] === true, "engine units (a pump's) are a build material")
+  ok(materials["steel-plate"] === true, "steel (a pumpjack's) is a build material")
+  ok(materials["iron-gear-wheel"] !== true, "gears are hand-crafted, no build material")
+  ok(materials["plastic-bar"] !== true, "nothing placed here takes plastic")
+  const prod = goalsFrom(diffDesign(d, newGraph(), () => undefined), {}, undefined, true, materials).filter((g) => g.kind === "production")
+  const at = (pred: (this: void, n: DesignNode) => boolean): number => prod.findIndex((g) => g.nodes.some((n) => pred(n)))
+  const engines = at((n) => n.generator === "engine-cell")
+  const oil = at((n) => n.generator === "pumpjack-field")
+  const circuits = at((n) => n.generator === "circuit-block" && n.item === "advanced-circuit")
+  ok(engines >= 0 && oil >= 0 && circuits >= 0, `all planned (engines ${engines}, oil ${oil}, circuits ${circuits}: ${prod.map((g) => g.phase).join(",")})`)
+  ok(engines < oil, `the engine cell before the pumpjacks (${prod.map((g) => g.phase).join(",")})`)
+  ok(circuits > oil, `the advanced-circuit block stays after the oil it needs (${prod.map((g) => g.phase).join(",")})`)
+})
+
+test("B178: a build-material provider fed by a later layer stays in its own layer", () => {
+  // Advanced circuits build roboports, but their plastic comes from oil: moving the block before the oil field would
+  // only plan it with no plastic.
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const prod = goalsFrom(diffDesign(d, newGraph(), () => undefined), {}, undefined, true, { "advanced-circuit": true, "engine-unit": true }).filter((g) => g.kind === "production")
+  const phaseOf = (gen: string, item?: string): string => prod.find((g) => g.nodes.some((n) => n.generator === gen && (item === undefined || n.item === item)))?.phase ?? "none"
+  eq(phaseOf("engine-cell"), "materials", "the engine cell moves")
+  eq(phaseOf("circuit-block", "advanced-circuit"), "circuits", "the advanced-circuit block does not")
 })
 
 test("M7d.5: a large robot production goal is split into dependency layers", () => {

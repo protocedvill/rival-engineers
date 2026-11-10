@@ -437,6 +437,23 @@ function machineSpeed(facts: ProtoFacts, machine: string): number {
   return need(facts.entity(machine)?.craftingSpeed, `${machine} is not a crafting machine`)
 }
 
+/**
+ * Moves every entity and port of a row module `d` columns east to make room for a head at its west end. B177 (soak
+ * m7-fresh6 seed 222, g126/g127): a belt-in port on the west edge (the split advanced-circuit block's copper input)
+ * moved with them and ended `d` tiles inside the footprint, where no route can reach it; its belt now runs on through
+ * the head columns to the edge.
+ */
+function shiftRowEast(L: Layout, ports: Port[], d: number): void {
+  for (const e of L.entities) e.x += d
+  for (const p of ports) {
+    const west = p.kind === "belt-in" && p.dir === EAST && p.pos.x < 1
+    p.pos = { x: p.pos.x + d, y: p.pos.y }
+    if (!west) continue
+    for (let x = 0; x < d; x++) L.beltAt(x + 0.5, p.pos.y, EAST)
+    p.pos = { x: 0.5, y: p.pos.y }
+  }
+}
+
 /** D51 / B14: columns a row module's buffer head adds at its west end. */
 const ROW_BUFFER_W = 2
 
@@ -448,8 +465,7 @@ const ROW_BUFFER_W = 2
  */
 function rowBufferHead(facts: ProtoFacts, L: Layout, ports: Port[], buffer: string | undefined): boolean {
   if (buffer === undefined || buffer === "" || facts.entity(L.inserter)?.electric !== true) return false
-  for (const e of L.entities) e.x += ROW_BUFFER_W
-  for (const p of ports) p.pos = { x: p.pos.x + ROW_BUFFER_W, y: p.pos.y }
+  shiftRowEast(L, ports, ROW_BUFFER_W)
   L.beltAt(0.5, 0.5, WEST)
   L.beltAt(1.5, 0.5, WEST)
   L.ins(1.5, 1.5, NORTH)
@@ -479,8 +495,7 @@ function rowRoboportHead(facts: ProtoFacts, L: Layout, ports: Port[], p: { buffe
   const robo = p.roboport !== undefined && p.roboport !== "" ? facts.entity(p.roboport) : undefined
   if (robo === undefined || robo.tileW !== 4 || robo.tileH !== 4) return false
   if (p.buffer === undefined || p.buffer === "" || facts.entity(L.inserter)?.electric !== true) return false
-  for (const e of L.entities) e.x += ROW_ROBOPORT_W
-  for (const q of ports) q.pos = { x: q.pos.x + ROW_ROBOPORT_W, y: q.pos.y }
+  shiftRowEast(L, ports, ROW_ROBOPORT_W)
   for (let x = 0; x < ROW_ROBOPORT_W; x++) L.beltAt(x + 0.5, 0.5, WEST)
   // Robots reach the roboport first (upstream on the belt); the chest gets them once the roboport holds no more.
   L.ins(4.5, 1.5, NORTH)

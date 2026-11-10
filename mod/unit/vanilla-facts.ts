@@ -42,6 +42,9 @@ const RECIPES: RecipeFacts[] = [
   r("steel-plate", 16, [["iron-plate", 5]], [["steel-plate", 1]], "smelting"),
   r("engine-unit", 10, [["steel-plate", 1], ["iron-gear-wheel", 1], ["pipe", 2]], [["engine-unit", 1]], "advanced-crafting"),
   r("advanced-circuit", 6, [["electronic-circuit", 2], ["plastic-bar", 2], ["copper-cable", 4]], [["advanced-circuit", 1]]),
+  // B178: the oil field's build materials (base/prototypes/recipe.lua, 2.0.77).
+  r("pumpjack", 5, [["steel-plate", 5], ["iron-gear-wheel", 10], ["electronic-circuit", 5], ["pipe", 10]], [["pumpjack", 1]]),
+  r("pump", 2, [["engine-unit", 1], ["steel-plate", 1], ["pipe", 1]], [["pump", 1]]),
   // M7d.5: robots (base/prototypes/recipe.lua, 2.0.77).
   r("flying-robot-frame", 20, [["electric-engine-unit", 1], ["battery", 2], ["steel-plate", 1], ["electronic-circuit", 3]], [["flying-robot-frame", 1]]),
   r("construction-robot", 0.5, [["flying-robot-frame", 1], ["electronic-circuit", 2]], [["construction-robot", 1]]),

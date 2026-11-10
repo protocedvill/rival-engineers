@@ -1647,8 +1647,13 @@ export interface GoalSpec {
  *
  * B175 (user, 2026-11-09): the metals come before the oil field and its water. A pumpjack takes steel to craft, so on a
  * map with no steel yet the raw-oil goal could never finish building, and every later goal waited on it.
+ *
+ * B178 (user, 2026-11-10: "general rule"): the same deadlock with engine units. A long crude pipeline takes pumps, a pump
+ * takes an engine unit, and the engine cell sat in a layer after the oil goal (m7-fresh6 seeds 11, 3333 and 44444). The
+ * `materials` layer, before the oil field, holds every provider of a build material (`buildMaterials`) whose own
+ * unbuilt inputs all come from earlier layers.
  */
-export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
+export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "materials", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
 export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
 
 /** M7d.5 (user, 2026-11-07): the layer of a production provider; smaller layers keep each plan to a handful of modules. */
@@ -1670,7 +1675,65 @@ export function productionLayer(n: DesignNode): ProductionLayer {
   return "other"
 }
 
-export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false): GoalSpec[] {
+/**
+ * B178: items the crew needs to build what `nodes` and `edges` place but cannot hand-craft (smelted, or made only in a
+ * machine: steel, engine units...). Every placed entity is expanded through its hand-craftable recipes (the facts'
+ * `handCategories`); an item with no recipe is a raw resource, gathered. A fluid edge may take any of `fluidParts` (pipes,
+ * pipe-to-ground, pumps on a long line).
+ */
+export function buildMaterials(facts: ProtoFacts, nodes: DesignNode[], edges: DesignEdge[], fluidParts: string[] = []): Record<string, boolean> {
+  const hand = facts.handCategories?.() ?? { crafting: true }
+  const out: Record<string, boolean> = {}
+  const seen: Record<string, boolean> = {}
+  const visit = (item: string): void => {
+    if (seen[item]) return
+    seen[item] = true
+    const name = facts.recipeForItem(item)
+    const r = name !== undefined ? facts.recipe(name) : undefined
+    if (r === undefined) return
+    if (!hand[r.category] || r.ingredients.some((i) => i.fluid === true)) {
+      out[item] = true
+      return
+    }
+    for (const i of r.ingredients) visit(i.name)
+  }
+  const place = (entity: string): void => visit(facts.itemToPlace(entity) ?? entity)
+  for (const n of nodes) for (const e of n.def.entities) place(e.name)
+  for (const e of edges) {
+    if (facts.isFluid?.(e.item) === true) for (const p of fluidParts) place(p)
+    else place(e.belt)
+  }
+  return out
+}
+
+/**
+ * B178: each missing node's production layer, with providers of a build material moved to `materials` when every
+ * unbuilt provider feeding them is in a layer before it (an engine cell fed by steel and iron smelters; not an
+ * advanced-circuit block, whose plastic comes from oil).
+ */
+function materialLayers(diff: DesignDiff, materials: Record<string, boolean>): Record<string, ProductionLayer> {
+  const layers: Record<string, ProductionLayer> = {}
+  const index: Record<string, number> = {}
+  for (let i = 0; i < PRODUCTION_LAYERS.length; i++) index[PRODUCTION_LAYERS[i]] = i
+  // Only production providers count: power and the mall are goals of their own, built before (power) or beside them.
+  for (const n of diff.missing) if (n.kind !== "labs" && nodeServes(n) !== "power" && nodeServes(n) !== "mall") layers[n.role] = productionLayer(n)
+  const cut = index["materials"]
+  let moved = true
+  while (moved) {
+    moved = false
+    for (const n of diff.missing) {
+      if (layers[n.role] === undefined || !materials[n.item] || index[layers[n.role]] <= cut) continue
+      let early = true
+      for (const e of diff.missingEdges) if (e.to === n.role && layers[e.from] !== undefined && index[layers[e.from]] >= cut) early = false
+      if (!early) continue
+      layers[n.role] = "materials"
+      moved = true
+    }
+  }
+  return layers
+}
+
+export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false, materials: Record<string, boolean> = {}): GoalSpec[] {
   const goals: GoalSpec[] = []
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
@@ -1688,6 +1751,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     }
     return gs
   }
+  const layers = materialLayers(diff, materials)
   for (const n of diff.missing) {
     const serves = nodeServes(n)
     const kind: GoalKind = n.kind === "labs" ? "labs" : serves === "power" ? "power" : serves === "mall" ? "mall" : "production"
@@ -1697,7 +1761,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     let late = false
     // Only goals that wait for their technologies (production, mall): labs and power never did.
     if (waitsOnTrigger !== undefined && (kind === "production" || kind === "mall")) for (const t of n.def.requiresTech) if (!researched[t] && waitsOnTrigger(t)) late = true
-    const gs = get(kind, n.cluster, late, kind === "production" ? productionLayer(n) : "other")
+    const gs = get(kind, n.cluster, late, kind === "production" ? (layers[n.role] ?? productionLayer(n)) : "other")
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)

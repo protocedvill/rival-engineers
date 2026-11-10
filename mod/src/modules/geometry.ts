@@ -85,6 +85,28 @@ export function beltLeaks(def: { footprint: { w: number; h: number }; entities: 
   return out
 }
 
+/**
+ * B177: belt and pipe ports that break the `Port` contract (types.ts): the port tile must be in the footprint and the
+ * tile a route attaches on (`pos - dir` for an input, `pos + dir` for an output) outside it. A port whose attach tile
+ * is inside the module can never be routed to; the planner only finds out as "no path" after every placement.
+ */
+export function portsOffEdge(def: { footprint: { w: number; h: number }; ports: Port[] }): string[] {
+  const out: string[] = []
+  const { w, h } = def.footprint
+  const inside = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < w && y < h
+  for (const p of def.ports) {
+    const input = p.kind === "belt-in" || p.kind === "pipe-in"
+    if (!input && p.kind !== "belt-out" && p.kind !== "pipe-out") continue
+    const v = dirVec(p.dir)
+    const s = input ? -1 : 1
+    const tx = math.floor(p.pos.x)
+    const ty = math.floor(p.pos.y)
+    if (!inside(tx, ty)) out.push(`port ${p.id} at ${p.pos.x},${p.pos.y} is outside the ${w}×${h} footprint`)
+    else if (inside(tx + s * v.x, ty + s * v.y)) out.push(`port ${p.id} at ${p.pos.x},${p.pos.y} dir ${p.dir} attaches inside the ${w}×${h} footprint`)
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Transforms. A transform is "mirror (x → W − x) first, then rotate `rot` quarter turns clockwise", applied in
 // the module's frame: the result is again a module with its top-left corner at (0, 0).

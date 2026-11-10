@@ -602,7 +602,11 @@ function designNow(ctx: Ctx): Design | undefined {
   // M7d.5 (user, 2026-11-07): once the design contains a cell, split a production goal by dependency layer, so no
   // plan carries the whole blue/robot chain (the 15-module g202 plan).
   const splitProduction = d.nodes.some((n) => n.generator === "engine-cell" || n.generator === "robot-cell")
-  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger, splitProduction)
+  // B178: build materials the crew cannot hand-craft; their providers come before the oil field (`materials` layer).
+  const fluidEdge = d.edges.find((e) => prototypeFacts.isFluid?.(e.item) === true)
+  const fluid = fluidEdge !== undefined ? OIL.fluidConnection(fluidEdge.item, ctx.entities.pole ?? "small-electric-pole") : undefined
+  const materials = splitProduction ? DS.buildMaterials(prototypeFacts, d.nodes, d.edges, fluid !== undefined ? [fluid.pipe, fluid.underground, fluid.pump] : []) : {}
+  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger, splitProduction, materials)
   for (const tech of [f.needUndergrounds, f.needSplitters]) {
     if (tech === undefined || researched[tech]) continue
     if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]
@@ -626,6 +630,7 @@ function planning(f: FactoryState): FactoryGoal | undefined {
   for (const g of f.goals) if (g.status === "planning") return g
   return undefined
 }
+
 
 function lastOf(f: FactoryState, kind: GoalKind): FactoryGoal | undefined {
   let out: FactoryGoal | undefined
@@ -2696,6 +2701,13 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       const t = storage.terrains?.[f.terrain]
       if (t === undefined || routes.length === 0) return false
       const tree = LO.dependentRoutes(f.layout, routes)
+      // B180: never reroute a route another goal is still placing; try again once it is built.
+      const placing = GH.placingOwners(f, ctx.tick, ctx.config.stallTicks, (id) => RT.getPlannerEntry(id)?.build?.parts)
+      const busy = tree.find((rid) => placing[rid] !== undefined)
+      if (busy !== undefined) {
+        say(`reroute waits for ${placing[busy]} to finish placing ${busy} (B180)`)
+        return true
+      }
       let all = RT.tiers()
       const maxUg = maxUndergroundNow(ctx)
       if (maxUg !== undefined) all = all.map((x) => ({ ...x, maxUnderground: math.min(x.maxUnderground, maxUg) }))
@@ -2864,6 +2876,13 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
     }
     // B52: a belt facing the wrong way is picked up first, then placed as planned (a ghost on the live one never revives).
     // B56: so are the faction's own stale belt pieces standing where a missing route piece goes.
+    // B180: pieces another goal is still placing are its own to place: re-placing them too raced it for the same tiles.
+    const placing = GH.placingOwners(f, ctx.tick, ctx.config.stallTicks, (id) => RT.getPlannerEntry(id)?.build?.parts)
+    const busy = [...check.missing, ...check.misdirected.map((w) => w.spec), ...check.stale.map((x) => x.spec), ...clogged.map((c) => c.spec)].find((x) => placing[x.owner] !== undefined)
+    if (busy !== undefined) {
+      say(`waits for ${placing[busy.owner]} to finish placing ${busy.owner} (B180)`)
+      return
+    }
     const clearJobs: IDS.JobId[] = []
     for (const w of check.misdirected) clearJobs.push(addClearJob(ctx.faction, w.entity, ctx.config.factoryBuildPriority))
     for (const s of check.stale) for (const e of s.entities) if (clearJobFor(ctx.faction, e) === undefined) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))

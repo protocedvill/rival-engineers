@@ -136,18 +136,29 @@ function ownGhostAny(surface: LuaSurface, force: string, e: EntitySpec): LuaEnti
   return findEntities(surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
 }
 
+/**
+ * The direction a key names: 0 for an entity that cannot face any way. B179 (m7-fresh6 seeds 11 and 44444): a rotated
+ * module's poles are specs facing east or south, but a pole ghost reads back facing north, so every pole ghost of such a
+ * module missed its own planned key. The next build stamping its tile reported it "ORPHAN GHOST", deleted it and placed
+ * the same pole again.
+ */
+function keyDir(name: string, dir: number | undefined): number {
+  return prototypes.entity[name]?.supports_direction === false ? 0 : (dir ?? 0)
+}
+
 /** Key of a planned entity: name, tile and direction (and underground end). */
 export function specKey(e: EntitySpec): string {
   // Tile coordinates, like `ghostKey`: an entity spec is centred on .5, a ghost reads back with the same centre but
   // `position.x` is a float; both keys must name the tile.
-  return `${e.name}@${math.floor(e.x)},${math.floor(e.y)}@${e.dir ?? 0}@${e.ioType ?? ""}`
+  return `${e.name}@${math.floor(e.x)},${math.floor(e.y)}@${keyDir(e.name, e.dir)}@${e.ioType ?? ""}`
 }
 
 /** The tile key part a ghost would have as a planned spec (its direction and underground end included). */
 function ghostKey(gh: LuaEntity): string {
   // `belt_to_ground_type` errors on any entity that is not an underground belt.
   const io = gh.ghost_name === "underground-belt" ? gh.belt_to_ground_type : undefined
-  return `${gh.ghost_name ?? gh.name}@${math.floor(gh.position.x)},${math.floor(gh.position.y)}@${gh.direction}@${io === "input" || io === "output" ? io : ""}`
+  const name = gh.ghost_name ?? gh.name
+  return `${name}@${math.floor(gh.position.x)},${math.floor(gh.position.y)}@${keyDir(name, gh.direction)}@${io === "input" || io === "output" ? io : ""}`
 }
 
 /** Every entity the live layout plans, keyed by `specKey`. */
@@ -326,7 +337,7 @@ export function ghostBlockerKind(surface: LuaSurface, faction: FactionState, lay
       // Keyed by the entity's own centre tile (a multi-tile machine covering this tile from a neighbour counts too).
       const bx = math.floor(b.position.x)
       const by = math.floor(b.position.y)
-      if (planned()[`${b.name}@${bx},${by}@${b.direction}@${b.type === "underground-belt" ? b.belt_to_ground_type : ""}`] === true) continue
+      if (planned()[`${b.name}@${bx},${by}@${keyDir(b.name, b.direction)}@${b.type === "underground-belt" ? b.belt_to_ground_type : ""}`] === true) continue
       return { kind: ROUTE_TYPES.indexOf(b.type) >= 0 ? "stale" : "structure", at: { x, y }, blocker: b.name }
     }
   }

@@ -1,4 +1,5 @@
-import { circuitBlock, engineCell, robotCell, smelterMaxFurnaces } from "../src/modules/generators"
+import { assemblerRow, circuitBlock, engineCell, robotCell, smelterMaxFurnaces } from "../src/modules/generators"
+import { portsOffEdge } from "../src/modules/geometry"
 import { rateOf } from "../src/modules/rates"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -17,6 +18,30 @@ test("advanced-circuit block contains its copper cable", () => {
   ok(rateOf(block.rates.inputs, "electronic-circuit") > 0, "electronic circuits are an input")
   ok(rateOf(block.rates.inputs, "plastic-bar") > 0, "plastic is an input")
   ok(rateOf(block.rates.outputs, "advanced-circuit") > 0, "advanced circuits leave the module")
+})
+
+test("B177 (m7-fresh6 seed 222, g126/g127): a buffered advanced-circuit block keeps its copper input on the edge", () => {
+  const block = circuitBlock(F, { recipe: "advanced-circuit", units: 1, buffer: "iron-chest" })
+  const copper = block.ports.find((p) => p.id === "in-copper-plate")
+  ok(copper !== undefined, "a copper input port")
+  eq(copper!.pos.x, 0.5, "on the west edge, not two columns in behind the buffer head")
+  const belts = block.entities.filter((e) => e.name === "transport-belt" && e.y === copper!.pos.y && e.x < 3)
+  eq(belts.length, 3, "the copper belt runs through the head columns to the port")
+  eq(portsOffEdge(block).join("; "), "", "every port attaches outside the footprint")
+})
+
+test("B177: every row module, with and without a head, attaches its belt ports outside its footprint", () => {
+  const heads: [string, { buffer?: string; roboport?: string }][] = [["none", {}], ["buffer", { buffer: "iron-chest" }], ["roboport", { buffer: "iron-chest", roboport: "roboport" }]]
+  for (const [head, h] of heads) {
+    const mods = [
+      circuitBlock(F, { recipe: "electronic-circuit", units: 1, ...h }),
+      circuitBlock(F, { recipe: "advanced-circuit", units: 1, ...h }),
+      engineCell(F, { count: 2, ...h }),
+      robotCell(F, { count: 2, ...h }),
+      assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, ...h }),
+    ]
+    for (const m of mods) eq(portsOffEdge(m).join("; "), "", `${m.id} (head ${head})`)
+  }
 })
 
 test("engine cell contains its gears and pipes", () => {

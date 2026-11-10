@@ -327,6 +327,28 @@ describe("faction conflicts", () => {
     assert(made !== undefined && made.direction === defines.direction.north, "the planned belt ghost stands")
   })
 
+  test("B179: a pole ghost of a rotated module is its own planned piece, not an orphan", () => {
+    // m7-fresh6 seed 44444 (g123/g124) and seed 11 (g83/g88): a rotated module's pole specs face east, the pole ghost reads
+    // back facing north, and the next stamp on its tile reported its own planned pole "ORPHAN GHOST" and replaced it.
+    const lab = createLab(64)
+    const a = faction(lab, "b179pole", 30, 0)
+    const s = lab.surface
+    const { layout } = smeltingLab(lab, a.force)
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const pole = { name: "small-electric-pole", x: ox + 25.5, y: oy + 9.5, dir: 4, owner: "n63" }
+    const first = applyDiff(s, a, [], [pole], {}, layout)
+    assert(first.failed.length === 0 && first.ghosts.length === 1, `first stamp: ${first.failed.join("; ")}`)
+    const ghost = first.ghosts[0]
+    const before = a.diagnosticEvents?.buckets.planner?.length ?? 0
+    const second = applyDiff(s, a, [], [pole], {}, layout)
+    assert(second.failed.length === 0, `second stamp: ${second.failed.join("; ")}`)
+    assert(ghost.valid, "the first ghost is kept")
+    assert((a.diagnosticEvents?.buckets.planner?.length ?? 0) === before, "no orphan-ghost alert")
+    const n = s.find_entities_filtered({ ghost_name: "small-electric-pole", position: { x: pole.x, y: pole.y }, force: a.force }).length
+    assert(n === 1, `one pole ghost (${n})`)
+  })
+
   test("review fix (risk 7): a multi-tile orphan ghost covering a spec tile is found, removed and reported", () => {
     const lab = createLab(64)
     const a = faction(lab, "orphan3x3", 30, 0)

@@ -87,4 +87,6 @@ export interface ProtoFacts {
   itemToPlace(entity: string): string | undefined
   /** M7c: whether a name is a fluid (piped). Absent: nothing is. */
   isFluid?(name: string): boolean
+  /** B178: the crafting categories a character can hand-craft. Absent: "crafting" only. */
+  handCategories?(): Record<string, boolean>
 }

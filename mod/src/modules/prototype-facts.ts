@@ -176,6 +176,12 @@ export const prototypeFacts: ProtoFacts = {
   isFluid(name: string): boolean {
     return prototypes.fluid[name] !== undefined
   },
+  handCategories(): Record<string, boolean> {
+    const out: Record<string, boolean> = {}
+    const cats = prototypes.entity["character"]?.crafting_categories
+    if (cats !== undefined) for (const [c] of pairs(cats)) out[c as string] = true
+    return out
+  },
   itemToPlace(entity: string): string | undefined {
     const items = prototypes.entity[entity]?.items_to_place_this
     return items !== undefined && items.length > 0 ? items[0].name : undefined
