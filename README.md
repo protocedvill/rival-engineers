@@ -88,7 +88,8 @@ coding agents start with [`AGENTS.md`](AGENTS.md).
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). Two exceptions: the curated modules in `data/modules/` are derived from community
-blueprints whose authors keep their rights (credited in [`data/modules/ATTRIBUTION.md`](data/modules/ATTRIBUTION.md)),
-and `ci/mods/` holds a vendored copy of [factorio-test](https://github.com/GlassBricks/FactorioTest) under its own
+MIT, see [`LICENSE`](LICENSE). Two exceptions. The three curated modules in `data/modules/` are adapted from
+community blueprints, whose authors keep their rights: an early-game mall by Pølse mølsen, a green science line by
+HellPet and a red science tile by Christoffer Ramqvist (originals linked in
+[`data/modules/ATTRIBUTION.md`](data/modules/ATTRIBUTION.md)). And `ci/mods/` holds a vendored copy of [factorio-test](https://github.com/GlassBricks/FactorioTest) under its own
 license.
