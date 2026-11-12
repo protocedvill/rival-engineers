@@ -1,5 +1,5 @@
 import { eq, run, test } from "./harness"
-import { FailedPlanFacts, idleProviderMoves, learnFromFailure, noFeedPorts, retryCannotHelp, SealEvidence, strongestReplan } from "../src/strategy/failure-rules"
+import { FailedPlanFacts, idleProviderMoves, learnFromFailure, noFeedPorts, retryCannotHelp, SealEvidence, strongestReplan, unreachableFuel } from "../src/strategy/failure-rules"
 import { EAST, ModuleDef, Port, WEST } from "../src/modules/types"
 import { IDENTITY } from "../src/modules/geometry"
 import { asciiTerrain } from "../src/planner/grid"
@@ -117,6 +117,18 @@ test("review fix (B57/B61 noFeed): only the named port, and only while the persi
   // A start-side seal naming in2 as the subject's consumer: another input of dst being sealed is no reason to mark in2.
   eq(keys([{ ...sealedRoute("in2", "start"), sealed: { side: "start", port: { module: moduleId("src"), port: "out" } } }]), "", "not the port of another sealed input")
   eq(noFeedPorts(state, terrain, [sealedRoute("in")], id, 0).length, 0, "no escape distance: no proof, no mark")
+})
+
+test("B191: a power goal's fuel route with no path after every plan names its steam role", () => {
+  const fuelEdge = { role: "coal>power", from: "coal>power", to: "power", toPort: "in-fuel", item: "coal" }
+  const water = { role: "water>power", from: "water>power", to: "power", toPort: "in-water", item: "water" }
+  const ore = { role: "coal>smelter", from: "coal>smelter", to: "smelter", toPort: "in", item: "coal" }
+  const isPower = (role: string): boolean => role === "power" || string.find(role, "^power#")[0] !== undefined
+  const failed = (key: string) => ({ key, failure: planFailure("other", "no path") })
+  eq(unreachableFuel(facts({ failures: [failed("coal>power")], edges: [fuelEdge, water, ore] }), "coal", isPower).join(","), "power")
+  eq(unreachableFuel(facts({ failures: [failed("water>power")], edges: [fuelEdge, water, ore] }), "coal", isPower).join(","), "", "water is not the fuel")
+  eq(unreachableFuel(facts({ failures: [failed("coal>smelter")], edges: [fuelEdge, water, ore] }), "coal", isPower).join(","), "", "coal to a non-power consumer is not power's fuel")
+  eq(unreachableFuel(facts({ failures: [failed("module:n1")], edges: [fuelEdge] }), "coal", isPower).join(","), "", "a placement failure is not a route failure")
 })
 
 run("failure-rules")

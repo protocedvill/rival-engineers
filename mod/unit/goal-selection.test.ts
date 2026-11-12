@@ -104,4 +104,11 @@ test("a planning goal freezes new starts", () => {
   eq(result.pending, 1)
 })
 
+test("B185: a power goal waiting for its stock rows is skipped; production may start", () => {
+  const out = selectGoals([spec("power", { waitsFor: ["stock:solar-panel"] }), spec("production")], state())
+  eq(out.decisions[0].action, "skip", "power waits")
+  eq(out.decisions[0].waiting, "power waits for its machine-made buildings: stock:solar-panel")
+  eq(out.decisions[1].action, "start", "the production goal building the rows starts")
+})
+
 run("goal-selection")

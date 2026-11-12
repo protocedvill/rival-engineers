@@ -817,6 +817,27 @@ export function pipeFailureNotes(s: PipeSearch, cb: PipeCallbacks): string {
 }
 
 /**
+ * B188 (seed 11 g135/g136): a tile search that ran out of states without a corridor explored every move from the start,
+ * so the start side is enclosed: a water pump's pocket (its own margin, a steam block's, the lake) left no move out,
+ * and the goal-side flood, open on its side, hit its cap with no proof, so the pump was never moved. Not a proof when a
+ * reached tile touches ground the plan does not know (`unknown`: the region's edge) or the search never left its
+ * coarse pass.
+ */
+export function proveStartEnclosed(s: PipeSearch, unknown: (this: void, x: number, y: number) => boolean): SealProof | undefined {
+  if (s.status !== "failed" || s.reason !== "search exhausted" || s.coarse !== undefined || s.corridor !== undefined || s.nx.length === 0) return undefined
+  const seen: Record<number, boolean> = {}
+  let tiles = 0
+  for (let i = 0; i < s.nx.length; i++) {
+    const k = tkey(s.nx[i], s.ny[i])
+    if (seen[k]) continue
+    seen[k] = true
+    tiles++
+    for (let d = 0; d < 4; d++) if (unknown(s.nx[i] + DX[d], s.ny[i] + DY[d])) return { side: "start", tiles, edge: true }
+  }
+  return { side: "start", tiles, edge: false }
+}
+
+/**
  * B156/B157: proves the failed search's goal sealed by flooding backwards from the goal over the router's **actual**
  * moves: a plain pipe with `pipeClear` (a pipe joins every neighbour, so another fluid beside it forbids it), a
  * pipe-to-ground pair, and a pump (pole spot included). The goal seeds pass the same arrival rule the search uses. A

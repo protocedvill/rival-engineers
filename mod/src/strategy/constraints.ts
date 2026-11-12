@@ -32,13 +32,17 @@ export const CONSTRAINT_SCOPE = {
   wideJoin: "port",
   /** D68: an item whose new producer could not be placed: new consumers tap a built producer with capacity. */
   fallback: "item",
+  /** B184: a steam-block role that found no shore: it is planned inland, fed by a water pump. */
+  inlandPower: "provider",
+  /** B185: a fuel no new steam-block supply could find: new power comes from solar fields. */
+  solarPower: "item",
 } as const
 
 export type ConstraintKind = keyof typeof CONSTRAINT_SCOPE
 export type ConstraintScope = (typeof CONSTRAINT_SCOPE)[ConstraintKind]
 
 /** Kinds in a fixed order (cache keys, iteration). */
-export const CONSTRAINT_KINDS: ConstraintKind[] = ["noTap", "providerShort", "providerSplit", "ownSite", "growFails", "cluster1Caps", "providerNoTap", "noMerge", "noFeed", "wideJoin", "fallback"]
+export const CONSTRAINT_KINDS: ConstraintKind[] = ["noTap", "providerShort", "providerSplit", "ownSite", "growFails", "cluster1Caps", "providerNoTap", "noMerge", "noFeed", "wideJoin", "fallback", "inlandPower", "solarPower"]
 
 /** Flag kinds hold `true`; counting kinds (`growFails`, `cluster1Caps`) hold a number. */
 export type ConstraintStore = { [K in ConstraintKind]?: Record<string, number | true> }

@@ -3,6 +3,7 @@ import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob, failJob } from "../jobs/board"
 import { sweepOrders } from "../jobs/robot-orders"
+import { orderDepotUpgrades } from "../strategy/provider-chests"
 import { bufferChests, registerBuffer } from "../modules/buffers"
 import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
@@ -419,6 +420,29 @@ describe("job board", () => {
       assert(listed.length === 1 && listed[0] === now, `the registry follows the new chest (${listed.length})`)
       const inv = now.get_inventory(defines.inventory.chest)!
       assert(inv.get_bar() === getConfig().moduleBufferSlots + 1, `slot limit kept (bar ${inv.get_bar()})`)
+      done()
+      return false
+    })
+  })
+
+  test("B203: robots upgrade the crew's depot chests in the network to storage chests: contents kept, still a depot", () => {
+    // User, in-session 2026-11-12: "for robots we need the depots to actually be storage chests".
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-depot"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    lab.surface.find_entities_filtered({ name: "storage-chest", force: faction.force })[0].insert({ name: "storage-chest", count: 1 })
+    const depot = stockpile(lab, faction, 6.5, -6.5, { "iron-gear-wheel": 50 })
+    // Outside the network: robots can't reach it, so it stays as it is.
+    const far = stockpile(lab, faction, 90.5, -90.5, { "iron-plate": 10 })
+    const pos = depot.position
+    async(3600)
+    on_tick(() => {
+      orderDepotUpgrades(faction, lab.surface, game.forces[faction.force], "storage-chest")
+      const now = lab.surface.find_entities_filtered({ position: pos, force: faction.force, type: ["container", "logistic-container"] })[0]
+      if (now === undefined || now.name !== "storage-chest" || faction.stockpiles.indexOf(now) < 0) return
+      assert(now.get_item_count("iron-gear-wheel") === 50, `contents kept (${now.get_item_count("iron-gear-wheel")})`)
+      assert(far.valid && far.name === "iron-chest" && !far.to_be_upgraded(), "the depot chest outside the network is left alone")
+      assert((faction.depotUpgrades ?? []).length === 0, "no order left waiting")
       done()
       return false
     })

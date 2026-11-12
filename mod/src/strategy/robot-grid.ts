@@ -55,6 +55,42 @@ export interface NextCellInput {
   constructionRadius: number
   /** The most roboports the network places. */
   max: number
+  /**
+   * B192: the roboport module's footprint and the half-size of its plan window around the cell point. A cell whose
+   * window has no spot clear of the base's modules (and their 1-tile margin) is skipped. Absent: every cell counts.
+   */
+  room?: { w: number; h: number; window: number }
+}
+
+/**
+ * B192 (`m7-b186` seed 222, min 327): whether a w×h footprint (either rotation) fits in the window around `q` clear of
+ * every module rectangle and its 1-tile margin. Two cells in a row fell on an iron smelter column; each spent a plan
+ * (four before the robots goal failed at once) to learn it. Terrain (water, trees) is the plan's to judge.
+ */
+export function cellHasRoom(q: { x: number; y: number }, room: { w: number; h: number; window: number }, modules: GridRect[]): boolean {
+  const x0 = math.floor(q.x - room.window)
+  const y0 = math.floor(q.y - room.window)
+  const x1 = math.floor(q.x + room.window)
+  const y1 = math.floor(q.y + room.window)
+  const near: GridRect[] = []
+  for (const m of modules) {
+    if (m.x - 1 < x1 && m.x + m.w + 1 > x0 && m.y - 1 < y1 && m.y + m.h + 1 > y0) near.push(m)
+  }
+  for (const [w, h] of [[room.w, room.h], [room.h, room.w]]) {
+    for (let y = y0; y + h <= y1; y++) {
+      for (let x = x0; x + w <= x1; x++) {
+        let clear = true
+        for (const m of near) {
+          if (x < m.x + m.w + 1 && x + w > m.x - 1 && y < m.y + m.h + 1 && y + h > m.y - 1) {
+            clear = false
+            break
+          }
+        }
+        if (clear) return true
+      }
+    }
+  }
+  return false
 }
 
 /** The next cell to place a roboport in, or undefined when the base is covered (or the network is full). */
@@ -89,6 +125,7 @@ export function nextCell(p: NextCellInput): GridCell | undefined {
       let value = 0
       for (const m of open) if (inside(n, m.x + m.w / 2, m.y + m.h / 2)) value += m.w * m.h
       if (value <= 0) continue
+      if (p.room !== undefined && !cellHasRoom(cellPoint(p.origin, p.spacing, n), p.room, p.modules)) continue
       const dist = math.abs(n.i) + math.abs(n.j)
       const better =
         best === undefined ||

@@ -337,6 +337,38 @@ describe("B17 material sources", () => {
     })
   })
 
+  test("B197: steel, which the crew can't hand-craft or smelt from ore, is taken from a built smelter module's furnaces", () => {
+    // `m7-b195` seed 3333: an oil refinery's craft waited for 3 steel the steel column made but never offered.
+    setConfigOverride("supplyModuleFurnaces", false)
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b197", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    game.forces[faction.force].technologies["steel-processing"].researched = true
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12), "steel-plate")
+    const made = stampModule(lab.surface, faction.force, def, m.origin)
+    let furnace: LuaEntity | undefined
+    for (const e of made) if (e !== undefined && e.type === "furnace") furnace ??= e
+    furnace!.get_inventory(defines.inventory.furnace_result)!.insert({ name: "steel-plate", count: 20 })
+    brain.nextThink = game.tick
+    addJob(faction.board, {
+      kind: "craft",
+      pos: depot.position,
+      materials: [{ item: "steel-plate", count: 8 }],
+      payload: { kind: "craft", recipe: "steel-chest", count: 1, item: "steel-chest", deliverTo: depot },
+    }, game.tick)
+    waitFor(1800, () => depot.get_item_count("steel-chest") >= 1, () => `a steel chest at the depot (takes ${describeTakes(faction)})`, () => {
+      assert(takesOf(faction, "module-furnace") === 8, `8 steel from the module's furnace (takes ${describeTakes(faction)})`)
+    })
+  })
+
   test("B142: stamping the same module ghosts twice reuses them", () => {
     // Seed 1212121 g109: a retried stamp created a second ghost on every tile, returned nil, and reported 1149 already
     // created ghosts as failures, so a good plan was abandoned.
@@ -558,19 +590,19 @@ describe("B17 material sources", () => {
 })
 
 /** A 4-furnace iron smelter column with a buffer head (D42), committed to the factory's layout as a built node. */
-function smelterModule(f: FactoryState, origin: MapPosition): { def: ModuleDef; m: PlacedModule } {
-  const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
+function smelterModule(f: FactoryState, origin: MapPosition, recipe = "iron-plate"): { def: ModuleDef; m: PlacedModule } {
+  const def = generatedModule("smelter-column", { recipe, furnaces: 4, buffer: "iron-chest" })
   const o = { x: math.floor(origin.x), y: math.floor(origin.y) }
   const m: PlacedModule = { id: moduleId("smelter"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(f.layout, m, prototypeFacts, 1)
   addNode(f.graph, {
     id: moduleId("smelter"),
-    role: "iron-plate#1",
+    role: `${recipe}#1`,
     kind: "module",
     module: def.id,
     generator: "smelter-column",
-    recipe: "iron-plate",
-    item: "iron-plate",
+    recipe,
+    item: recipe,
     capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
     planned: { inputs: [], outputs: [] },
     powerW: 0,

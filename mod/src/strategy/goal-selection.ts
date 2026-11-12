@@ -16,6 +16,8 @@ export interface GoalSelectionSpec {
    * waited ~6 game-hours on steel whose iron mine was gone, and the replacement mine waited for the blue line).
    */
   feedsBuilding?: boolean
+  /** B185: stock rows (roles) that must be built before this goal starts (a solar field's machine-made buildings). */
+  waitsFor?: string[]
 }
 
 export interface GoalSelectionState {
@@ -83,6 +85,10 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
   for (const { spec, index } of pending) {
     if (state.active[spec.kind] && !(spec.kind === "production" && spec.feedsBuilding === true)) {
       decisions.push({ index, action: "skip" })
+      continue
+    }
+    if (spec.waitsFor !== undefined && spec.waitsFor.length > 0) {
+      decisions.push({ index, action: "skip", waiting: `${spec.kind} waits for its machine-made buildings: ${spec.waitsFor.join(", ")}` })
       continue
     }
     const cluster = spec.cluster ?? 1

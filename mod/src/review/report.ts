@@ -9,7 +9,7 @@ import { playerState } from "./inspector"
 // writes a diagnostic bundle to script-output/rival-engineers/reports/<tick>-<slug>/ and saves the game as
 // `_autosave-re-report-<tick>-<slug>` (game.auto_save: single player saves locally, a multiplayer server saves on the
 // server, a headless --benchmark run ignores it). Files are written only on the reporting player's machine
-// in multiplayer (helpers.write_file for_player). Nothing here changes what the AI does. README "Reports" says how to read one.
+// in multiplayer (helpers.write_file for_player). Nothing here changes what the AI does. docs/DEVELOPMENT.md "Reports" says how to read one.
 
 export const REPORT_INPUT = "rival-engineers-report"
 const ROOT = "re_report"

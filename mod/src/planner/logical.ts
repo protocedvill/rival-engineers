@@ -332,6 +332,24 @@ export function edgeDraw(e: LogicalEdge): number {
   return math.max(e.plannedRate, e.measuredRate ?? 0)
 }
 
+/**
+ * B186: an edge probe counts what reaches the consumer's port tile, which every belt edge of the same item into that port
+ * shares (parallel providers merge into one belt). Each edge gets its planned share of the port's flow; before, each got
+ * the whole flow, and the sharing draw summed them (seed 3333: ten green lines read 12/s into labs that take 0.14/s).
+ */
+export function portShare(g: LogicalGraph, edge: LogicalEdge, rate: number): number {
+  let planned = 0
+  let n = 0
+  for (const id of g.edgeOrder) {
+    const o = g.edges[id]
+    if (o === undefined || o.kind !== "belt" || o.to !== edge.to || o.toPort !== edge.toPort || o.item !== edge.item) continue
+    planned += o.plannedRate
+    n++
+  }
+  if (n <= 1) return rate
+  return planned > 0 ? (rate * edge.plannedRate) / planned : rate / n
+}
+
 export function spareCapacity(g: LogicalGraph, id: string): number {
   const n = g.nodes[id]
   if (n === undefined || n.item === undefined) return 0

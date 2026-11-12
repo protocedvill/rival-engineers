@@ -12,8 +12,8 @@ import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-index"
 import { requiredResources } from "../world/spawn"
-import { buildCatalog, expandRecipe, handRecipe } from "./catalog"
-import { moduleAssemblers, moduleFurnaces, repairBuffers, supplyChests, tempCells } from "./factory-report"
+import { buildCatalog, depotChests, expandRecipe, handRecipe } from "./catalog"
+import { moduleAssemblers, moduleFurnaces, repairBuffers, stockRowBuilt, supplyChests, tempCells } from "./factory-report"
 import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
@@ -501,17 +501,16 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
 }
 
 /** A spot for the depot chest near the hub: buildable, not on resources, with room to walk around. */
-function findDepotSpot(ctx: Ctx): PlannedPart | undefined {
+function findDepotSpot(ctx: Ctx, chest: { entity: string; item: string }): PlannedPart | undefined {
   const hub = ctx.brain.hub ?? ctx.brain.base
   const cx = math.floor(hub.x)
   const cy = math.floor(hub.y)
-  const catalog = ctx.brain.catalog
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
   for (let r = 0; r <= DEPOT_SEARCH_RADIUS; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
         if (math.max(math.abs(dx), math.abs(dy)) !== r) continue
-        const part = partAt(catalog.chest, catalog.chestItem, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
+        const part = partAt(chest.entity, chest.item, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
         let ok = true
         for (let x = part.x1 - 2; x < part.x2 + 2 && ok; x++) {
           for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
@@ -696,6 +695,23 @@ function siteById(brain: BrainState, id: number | undefined): Site | undefined {
   return undefined
 }
 
+/** B183: inventory stacks the crew carries of items it deposits (not buildings, which it keeps for its jobs). */
+function carriedStacks(ctx: Ctx): number {
+  let stacks = 0
+  for (const id of ctx.faction.crew) {
+    const m = storage.crew[id]
+    if (m.dead || !m.character.valid) continue
+    const inv = m.character.get_main_inventory()
+    if (!inv) continue
+    for (const { name, count } of inv.get_contents()) {
+      const proto = prototypes.item[name]
+      if (proto === undefined || proto.place_result !== undefined) continue
+      stacks += math.ceil(count / proto.stack_size)
+    }
+  }
+  return stacks
+}
+
 function advanceGoals(ctx: Ctx): void {
   const brain = ctx.brain
   // Depot full: add another depot goal in front of the rest.
@@ -704,7 +720,9 @@ function advanceGoals(ctx: Ctx): void {
     for (const chest of ctx.faction.stockpiles) if (chest.valid) room += chest.get_inventory(defines.inventory.chest)!.count_empty_stacks()
     let depotPending = false
     for (const g of brain.goals) if (!g.done && g.kind === "site" && g.site === "depot") depotPending = true
-    if (room < 3 && !depotPending) {
+    // B183: room for what the crew carries back too (picked-up belts bring their ore): a depot with no room left
+    // for a full pocket deadlocked the crew (m7-nocap seed 222).
+    if (room < 3 + carriedStacks(ctx) && !depotPending) {
       let first = 0
       while (first < brain.goals.length && brain.goals[first].done) first++
       brain.goals.splice(first, 0, { kind: "site", site: "depot" })
@@ -756,10 +774,24 @@ function completeGoal(ctx: Ctx, goal: Goal): void {
   if (goal.kind === "items") ctx.brain.milestones[goal.label] ??= ctx.tick
 }
 
+/**
+ * B183: the depot's next chest: the best one (`depotChests`: passive provider, then most slots) whose materials the
+ * faction holds now, else the catalog's (cheapest) chest. m7-nocap seed 222: the depot was full, both pockets were full of ore, and its wooden chest needed wood that no
+ * one could gather with a full pocket, while a member carried 814 iron plates.
+ */
+function depotChest(ctx: Ctx): { entity: string; item: string } {
+  for (const c of depotChests(ctx.force)) {
+    let covered = true
+    for (const item in c.raw) if ((ctx.stock[item] ?? 0) < c.raw[item]) covered = false
+    if (covered) return c
+  }
+  return { entity: ctx.brain.catalog.chest, item: ctx.brain.catalog.chestItem }
+}
+
 function planSite(ctx: Ctx, goal: Extract<Goal, { kind: "site" }>): Site | undefined {
   if (goal.site === "depot") {
     if (ctx.brain.depotSearchAt !== undefined && ctx.tick < ctx.brain.depotSearchAt) return undefined
-    const spot = findDepotSpot(ctx)
+    const spot = findDepotSpot(ctx, depotChest(ctx))
     ctx.brain.depotSearchAt = spot ? undefined : ctx.tick + DEPOT_SEARCH_RETRY
     return spot ? createSite(ctx, "depot", [spot]) : undefined
   }
@@ -1045,6 +1077,18 @@ function registerSupplies(ctx: Ctx): void {
     if (product === undefined || product.type !== "item" || handRecipe(ctx.force, product.name) !== undefined) continue
     add(e, defines.inventory.crafter_output, "module-out", product.name)
   }
+  // B197 (`m7-b195` seed 3333, min 330): the same for a built smelter module's furnaces: a product the crew can neither
+  // hand-craft nor smelt from ore at a bootstrap site (steel, from plates). An oil refinery's craft waited for 3 steel
+  // ("no source for steel-plate") while the faction's steel column fed every plate to its engine row.
+  const catalog = ctx.brain.catalog
+  for (const e of moduleFurnaces(ctx.faction.name)) {
+    const result = e.get_inventory(defines.inventory.furnace_result)
+    if (result === undefined) continue
+    for (const it of result.get_contents()) {
+      if (handRecipe(ctx.force, it.name) !== undefined || catalog.oreOf[it.name] !== undefined || catalog.materialSmelts?.[it.name] !== undefined) continue
+      add(e, defines.inventory.furnace_result, "module-furnace", it.name)
+    }
+  }
   setSupplies(ctx.faction, points)
 }
 
@@ -1116,6 +1160,11 @@ function produce(ctx: Ctx, item: string, short: number): void {
   const before = short
   short = feedTempCells(ctx, item, short)
   if (short <= 0) return note(`temp cells cover ${before}`)
+  // 1c. B185 (user, 2026-11-11): a built stock row makes it; the crew waits for the row's buffer instead of hand-crafting.
+  if (stockRowBuilt(ctx.faction.name, item)) {
+    ctx.waiting.push(`${item}: made by its stock row`)
+    return note(`stock row makes ${short}`)
+  }
   // 2. Hand-craft. A locked recipe is only a fallback: Space Age's scrap-recycling also produces raw items such as
   // coal, but a coal patch the crew can mine is a better source than an unresearched recipe.
   let lockedRecipe: string | undefined

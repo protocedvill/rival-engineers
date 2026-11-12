@@ -169,6 +169,9 @@ export function exploreFor(ctx: ExploreCtx, g: FactoryGoal, ore: string): void {
   // An outpost is being built or scanned already: this failure waits for it like the others.
   if (ex.phase !== "retry") return
   ex.resource = ore
+  // B195 (`m7-b193` seed 3333): the goal kind too. A crude search that took over a power goal's coal search kept
+  // `kind: "power"`: only a power plan could end it, and the production goals it was for were never held for an outpost.
+  ex.kind = g.kind
   ex.phase = "outpost"
   ex.goal = undefined
   // D70: the search now wants something the factory can't run without: from here it counts as required.

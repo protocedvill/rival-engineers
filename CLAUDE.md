@@ -40,7 +40,7 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 
 ## Commands
 
-See `README.md` → Development. (Kept there so it stays next to the scripts it describes.)
+See `docs/DEVELOPMENT.md`. (Kept there so it stays next to the scripts it describes.)
 
 ## TSTL gotchas (learned the hard way)
 
@@ -165,6 +165,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   now also counts finished queue entries.
 - Revived small-pole ghosts (`ghost.revive`) connect their copper wires to poles in reach, like a player's build: the
   pole network planner only has to put poles within wire reach (T2 "power-up").
+- **Poles skip redundant copper wires**: a medium-pole assembler row's poles each have up to 5 others within wire reach
+  but only 2-3 wires, and a later pole still connects. Counting poles in reach overstates a pole's wires (planner/power.ts
+  `wireDegree` is an upper bound). A wire's length is limited by the *shorter* reach of its two poles (small 7.5,
+  medium 9). Pinned by the engine test "B206 finding".
 - Plans on top of a faction's base (`newPlanJob(..., base)`) copy the layout; existing modules are `fixed` and existing
   routes `Route.fixed` (never ripped). A finished plan's layout *becomes* the faction's (`strategy/factory.ts`).
 - Lua 5.3+ (T1) prints `43` and `43.0` differently: keys built from coordinates that went through arithmetic (module

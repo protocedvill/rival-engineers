@@ -134,6 +134,10 @@ interface RateCtx {
   engineSteamPerJ: number
   pumps: number
   pumpPerTick: number
+  panels: number
+  panelPerTick: number
+  accumulators: number
+  accumulatorJ: number
   electricDemand: number
   /** Inserter throughput into boilers (fuel). */
   boilerFeedCap: number
@@ -142,7 +146,7 @@ interface RateCtx {
 function newRateCtx(entities: ModuleEntity[], ports: Port[], facts: ProtoFacts, opts: RateOptions): RateCtx {
   const ctx: RateCtx = {
     entities, facts, opts, warnings: [], inPortItems: {}, outPortItems: {}, beltOutItems: {}, nodes: {}, fluidItems: {}, machineCounts: {}, upkeep: {},
-    boilers: 0, boilerPower: 0, engines: 0, enginePower: 0, engineSteamPerJ: 0, pumps: 0, pumpPerTick: 0, electricDemand: 0, boilerFeedCap: 0,
+    boilers: 0, boilerPower: 0, engines: 0, enginePower: 0, engineSteamPerJ: 0, pumps: 0, pumpPerTick: 0, panels: 0, panelPerTick: 0, accumulators: 0, accumulatorJ: 0, electricDemand: 0, boilerFeedCap: 0,
   }
   for (const p of ports) {
     if (p.item === undefined) continue
@@ -166,6 +170,12 @@ function addPlantPart(ctx: RateCtx, name: string, f: EntityFacts): boolean {
   } else if (f.type === "offshore-pump") {
     ctx.pumps++
     ctx.pumpPerTick = f.pumpingPerTick ?? 0
+  } else if (f.type === "solar-panel") {
+    ctx.panels++
+    ctx.panelPerTick = f.productionPerTick ?? 0
+  } else if (f.type === "accumulator") {
+    ctx.accumulators++
+    ctx.accumulatorJ = f.bufferJ ?? 0
   } else return false
   addTo(ctx.machineCounts, name, 1)
   return true
@@ -229,7 +239,8 @@ function addNodes(ctx: RateCtx): void {
       ctx.warnings.push(`unknown entity ${e.name}`)
       continue
     }
-    if (f.electric && f.energyPerTick) ctx.electricDemand += f.energyPerTick * 60
+    // B185: an accumulator's charge rate is not a demand (it stores the field's surplus), nor a panel's anything.
+    if (f.electric && f.energyPerTick && f.type !== "accumulator" && f.type !== "solar-panel") ctx.electricDemand += f.energyPerTick * 60
     if (CRAFTER_TYPES[f.type] || f.type === "mining-drill" || f.type === "lab") addTo(ctx.machineCounts, e.name, 1)
     if (addPlantPart(ctx, e.name, f)) continue
     let node: Node | undefined
@@ -347,11 +358,41 @@ function netRates(ctx: RateCtx, order: number[]): { inputs: Record<string, numbe
   return { inputs, outputs, activity, ideal }
 }
 
+/**
+ * B185: Nauvis's day as fractions of `NAUVIS_TICKS_PER_DAY` (engine defaults, `LuaSurface.dusk/evening/morning/dawn`):
+ * full light from dawn to dusk, fading to dark by evening, dark until morning, brightening until dawn.
+ */
+const NAUVIS_DAY = { dusk: 0.25, evening: 0.45, morning: 0.55, dawn: 0.75 }
+const NAUVIS_TICKS_PER_DAY = 25000
+
+/**
+ * B185: the electricity (W) solar panels of `peakW` together sustain all day, with `storedJ` of accumulators. Unlimited
+ * storage: the daily average (0.7 of peak on Nauvis). Each watt of that load needs this many joules stored through the
+ * night: the light falls below the load's share of peak for part of each ramp and is out between them (100 J per W on
+ * Nauvis, so a 5 MJ accumulator carries 50 kW: 0.84 per 60 kW panel).
+ */
+export function solarSustained(peakW: number, storedJ: number): number {
+  const d = NAUVIS_DAY
+  const day = NAUVIS_TICKS_PER_DAY / 60
+  const fade = (d.evening - d.dusk) * day
+  const dark = (d.morning - d.evening) * day
+  const rise = (d.dawn - d.morning) * day
+  const average = 1 - (d.dawn - d.dusk) + 0.5 * (d.evening - d.dusk) + 0.5 * (d.dawn - d.morning)
+  const nightJPerW = 0.5 * average * (fade + rise) + dark
+  return Math.min(peakW * average, storedJ / nightJPerW)
+}
+
 /** Step 6: a steam plant's electricity (and its coal), an offshore pump's water, and the module's electric demand. */
 function plantRates(ctx: RateCtx, inputs: Record<string, number>, outputs: Record<string, number>): void {
   if (ctx.boilers > 0 || ctx.engines > 0) {
     let power = Math.min(ctx.boilers * ctx.boilerPower, ctx.engines * ctx.enginePower) // J/tick
-    if (ctx.engineSteamPerJ > 0) power = Math.min(power, (ctx.pumps * ctx.pumpPerTick) / ctx.engineSteamPerJ)
+    // B184: a steam block without a pump of its own takes its water through a pipe port, as much as it boils.
+    const piped = ctx.pumps === 0 && ctx.inPortItems["water"] === true
+    if (ctx.engineSteamPerJ > 0 && !piped) power = Math.min(power, (ctx.pumps * ctx.pumpPerTick) / ctx.engineSteamPerJ)
+    if (piped && power > 0) {
+      inputs["water"] = power * 60 * ctx.engineSteamPerJ
+      ctx.fluidItems["water"] = true
+    }
     if (power > 0) {
       outputs["electricity"] = power * 60
       const coal = (power * 60) / Math.max(1, ctx.facts.fuelValue(ctx.fuelItem ?? "coal"))
@@ -361,6 +402,11 @@ function plantRates(ctx: RateCtx, inputs: Record<string, number>, outputs: Recor
       }
     }
     if (ctx.fuelItem === undefined && ctx.boilers > 0) ctx.upkeep["boiler"] = ctx.boilers
+  }
+  // B185: solar panels and accumulators: the power they sustain day and night (`solarSustained`).
+  if (ctx.panels > 0) {
+    const sustained = solarSustained(ctx.panels * ctx.panelPerTick * 60, ctx.accumulators * ctx.accumulatorJ)
+    if (sustained > 0) outputs["electricity"] = (outputs["electricity"] ?? 0) + sustained
   }
   // M7b: offshore pumps that feed a water port (not boilers) put their water out.
   if (ctx.pumps > 0 && ctx.boilers === 0 && ctx.outPortItems["water"]) {

@@ -426,6 +426,43 @@ describe("M5a power and growth", () => {
     destroyFaction("d71b")
   })
 
+  test("B207: an evicted pole on a new pole's tile of another kind is cleared before the ghosts", () => {
+    // b205-222: a medium pole replaced a small one on its tile. Make-before-break (D71 b) waited for the medium pole,
+    // whose ghost over the live small pole could never be revived, and the crew could not pick the small pole up under
+    // the ghost: 10 rounds, then the goal gave up its location. The adoption now passes such a pole as `clear`.
+    const lab = createLab(16)
+    const f = createFaction("b207", { position: at(lab, 0, 0), crew: 0 })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    const old = s.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })!
+    const probe = s.create_entity({ name: "entity-ghost", inner_name: "medium-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })
+    if (probe !== undefined) {
+      const [revived] = probe.revive()
+      assert(revived === undefined, "engine: a medium-pole ghost over a live small pole can't be revived")
+      if (probe.valid) probe.destroy()
+    }
+    const layout = newLayout()
+    layout.poles = [{ id: poleId("medium"), name: "medium-electric-pole", x, y, line: poleLineId("poles:b207:0") }]
+    layout.poleLines = [{ id: poleLineId("poles:b207:0"), from: "power", to: moduleId("consumer"), poles: [poleId("medium")] }]
+    const parts = { modules: [], routes: [], poles: [poleId("medium")] }
+    const entry = { id: "b207", surface: s.name, force: f.force, faction: f.name, terrain: "", phase: "done", request: {}, belt: "transport-belt", job: { layout }, startTick: 0, scanTicks: 0, planTicks: 0 } as never as PlannerEntry
+    const b = startBuild(entry, { parts, clear: [old], priority: 90 })
+    assert(b.phase === "clear" && clearJobFor(f, old) !== undefined, `the small pole is picked up first (${b.phase})`)
+    assert(s.find_entities_filtered({ ghost_name: "medium-electric-pole", force: f.force }).length === 0, "no ghost over it yet")
+    old.destroy()
+    for (const id of b.clearJobs) {
+      claim(f.board, [id], 1, game.tick)
+      complete(f.board, id, 1, game.tick)
+    }
+    stepBuild(entry)
+    const ghosts = s.find_entities_filtered({ ghost_name: "medium-electric-pole", force: f.force })
+    assert(ghosts.length === 1, `then the medium pole is ghosted (${ghosts.length}, phase ${b.phase})`)
+    const [placed] = ghosts[0].revive()
+    assert(placed !== undefined, "and its ghost can be placed")
+    destroyFaction("b207")
+  })
+
   test("B46: poles another plan evicted leave a building goal's own plan: its ghost stamp no longer creates them", () => {
     const lab = createLab(16)
     const force = labForce()

@@ -1,4 +1,4 @@
-import { LuaForce, LuaSurface } from "factorio:runtime"
+import { LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
@@ -12,6 +12,8 @@ import * as OIL from "./oil"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
 import * as CS from "./constraints"
+import type { Patch } from "../world/resources"
+import * as PC from "./power-choice"
 
 // M6 stage helpers (split out of factory.ts, whose main chunk hit Lua's 200-local limit): stage targets, lab sizing per
 // stage, the design's curated fallbacks, shared fuel and a second steam block, and the science-throughput sampling that
@@ -268,6 +270,63 @@ export function powerCaps(f: FactoryState | undefined): { role: string; capacity
   }
   return out.length > 0 ? out : undefined
 }
+
+/**
+ * B185: in solar mode every built steam block (`power`, `power#2`... up to the first that is not a built steam block)
+ * keeps its capacity; the rest of the power is solar. Undefined without a built `power` steam block.
+ */
+export function builtSteamCaps(f: FactoryState | undefined): { role: string; capacity: number }[] | undefined {
+  if (f === undefined) return undefined
+  const out: { role: string; capacity: number }[] = []
+  for (let i = 1; ; i++) {
+    const role = i === 1 ? "power" : `power#${i}`
+    const n = nodeByRole(f.graph, role)
+    if (n === undefined || n.lifecycle !== "built" || n.generator !== "steam-block") break
+    out.push({ role, capacity: rateIn(n.capacity.outputs, "electricity") })
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * B191 (`m7-b186` seed 3333, min ~300): in solar mode a built steam block counts only for what its built fuel supply
+ * can burn: the planned rate of its fuel edges from built providers that are not retiring and whose ore is not running
+ * out, at the fuel's energy (2.0 boilers turn all of it into steam). At its full built capacity the design kept asking
+ * for coal the home patches no longer had, and placed the replacement mine thousands of tiles out (a 5760-tile plan
+ * region, "no path" for its belt home, 8 failed plans).
+ */
+export function fuelledSteamCaps(f: FactoryState | undefined, fuel: string): { role: string; capacity: number }[] | undefined {
+  const built = builtSteamCaps(f)
+  if (f === undefined || built === undefined) return built
+  const fuelJ = prototypeFacts.fuelValue(fuel)
+  if (fuelJ <= 0) return built
+  const retiring = retiringRoles(f)
+  const out: { role: string; capacity: number }[] = []
+  for (const b of built) {
+    const n = nodeByRole(f.graph, b.role)!
+    let supply = 0
+    for (const id of f.graph.edgeOrder) {
+      const e = f.graph.edges[id]
+      if (e === undefined || e.to !== n.id || e.item !== fuel || e.from === undefined) continue
+      const from = f.graph.nodes[e.from]
+      if (from === undefined || from.lifecycle !== "built" || retiring?.[from.role] === true || oreRunsOut(f, from.role)) continue
+      supply += e.plannedRate
+    }
+    out.push({ role: b.role, capacity: math.min(b.capacity, supply * fuelJ) })
+  }
+  return out
+}
+
+/** B185: power must come from solar fields (`PC.noCoal`). */
+export function noCoal(f: FactoryState | undefined, patches: Patch[]): boolean {
+  return PC.noCoal(f?.constraints, patches)
+}
+
+/** B185: tiles to the nearest free coal patch (`PC.coalDistance`). */
+export function coalDistance(f: FactoryState | undefined, patches: Patch[], from: MapPosition, fuel: string): number {
+  return PC.coalDistance(f?.layout.modules ?? [], patches, from, fuel)
+}
+
+export const patchCount = PC.patchCount
 
 /** Actual output capacity of built provider roles, for the B60 provider-group split. */
 export function providerCaps(f: FactoryState | undefined): Record<string, number> {

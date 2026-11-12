@@ -2,7 +2,7 @@ import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { Rate } from "../modules/types"
 import { findModule, findPort, LayoutState, portOutside, portTile } from "../planner/layout"
-import { LogicalEdge, LogicalGraph, LogicalNode, rateIn, StateShares } from "../planner/logical"
+import { LogicalEdge, LogicalGraph, LogicalNode, portShare, rateIn, StateShares } from "../planner/logical"
 import { findEntities } from "../work"
 
 // Measurement (SPEC §5.8, D26): measured rates and machine states per Factory Graph node, measured flow per belt edge.
@@ -573,6 +573,8 @@ export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number):
   p.next = tick + p.every
   for (const i of [1, 2]) {
     for (const item of p.to.get_transport_line(i).get_detailed_contents()) {
+      // B186: only the edge's item. A lab array's port belt carries every pack, so red packs counted as green.
+      if (item.stack.name !== edge.item) continue
       const id = item.unique_id
       if (p.first === undefined) p.initial[id] = true
       else if (!p.initial[id] && !p.seen[id]) {
@@ -590,7 +592,7 @@ export function probeTick(meter: MeterState, graph: LogicalGraph, tick: number):
   if (p.from !== undefined && p.from.valid && backedUp(p.from, p.laneFrom)) p.fullFrom++
   if (tick < p.end) return
   const span = p.last - p.first
-  edge.measuredRate = span > 0 ? (p.arrivals * 60) / span : 0
+  edge.measuredRate = portShare(graph, edge, span > 0 ? (p.arrivals * 60) / span : 0)
   edge.measuredTick = tick
   edge.measuredFull = { from: p.fullFrom / p.samples, to: p.fullTo / p.samples }
   edge.capacityRate = p.capacity

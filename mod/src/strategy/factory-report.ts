@@ -159,6 +159,17 @@ export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEn
  * M7c.8: the assemblers of built factory modules (the crew may take a product the economy has no other source for from
  * their output slots; `bootstrap.ts` registers them).
  */
+/**
+ * B185 (user, 2026-11-11: "this is an automation game"): whether a built stock row (`stock:<item>`) makes `item`. The
+ * crew then takes it from the row's buffer and never hand-crafts it.
+ */
+export function stockRowBuilt(factionName: string, item: string): boolean {
+  const f = getFactory(factionName)
+  if (f === undefined) return false
+  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") return true
+  return false
+}
+
 export function moduleAssemblers(factionName: string, buildingOnly = false): LuaEntity[] {
   const out: LuaEntity[] = []
   const f = getFactory(factionName)

@@ -77,6 +77,8 @@ export interface PlacementSearch {
   target?: Vec
   /** M7c.8: site targets whose windows found no room (a built-out lake shore); the ring search skips their windows. */
   deadSites?: Vec[]
+  /** B187: the radius ladder of a module without a site (`wideRadii`), computed once. */
+  radii?: number[]
   /** D57 (mines): the ranked free-ore patches, the next one to try, the one being searched, and those found full. */
   patches?: SitePatch[]
   patchIdx?: number
@@ -390,9 +392,28 @@ function inDeadSite(s: PlacementSearch, policy: LayoutPolicy, p: Vec): boolean {
 function radii(s: PlacementSearch, policy: LayoutPolicy): number[] {
   // D57: a mine searches one window over the patch it is trying.
   if (s.patch !== undefined) return [s.patch.r]
+  if (s.req.def.site === undefined) return s.radii ??= wideRadii(policy.searchRadii, s.req.center, s.req.region)
   if (s.req.def.site !== "resource-patch") return policy.searchRadii
   const last = policy.searchRadii[policy.searchRadii.length - 1] ?? 0
   return last >= OUTPOST_FAR_RADIUS ? policy.searchRadii : [...policy.searchRadii, OUTPOST_FAR_RADIUS]
+}
+
+/**
+ * B187 (seed 44444 g212): a module without a site searches past the policy's radii, doubling, until a window covers the
+ * plan region. A goal's retries widen its region (×1.5 an attempt), but the placement stopped at the last policy radius
+ * (96): once the base filled that disc an 85-tile engine cell found no position on any attempt. A wider window is only
+ * scanned when every smaller one had no feasible position, so plans that fit near the centre cost the same.
+ */
+export function wideRadii(base: number[], center: Vec, region: Rect): number[] {
+  const reach = math.max(center.x - region.x, region.x + region.w - center.x, center.y - region.y, region.y + region.h - center.y)
+  const out = [...base]
+  let last = out[out.length - 1] ?? 0
+  if (last <= 0) return out
+  while (last < reach) {
+    last = math.min(last * 2, math.ceil(reach))
+    out.push(last)
+  }
+  return out
 }
 
 function maxDim(s: PlacementSearch): number {
@@ -835,7 +856,8 @@ function egressStep(s: PlacementSearch, state: LayoutState, budget: number): num
 /** M7c.8: whether a pipe port's connection comes from farther than the largest search radius from the target. */
 function remotePipe(s: PlacementSearch, policy: LayoutPolicy): boolean {
   const rs = radii(s, policy)
-  const far = rs[rs.length - 1] ?? 0
+  // B187: measured against the policy's radii, not the wider ones a module without room falls back to.
+  const far = rs[(s.req.def.site === undefined ? math.min(rs.length, policy.searchRadii.length) : rs.length) - 1] ?? 0
   const t = s.target
   if (t === undefined) return false
   for (const td of s.tdefs) {
@@ -1409,9 +1431,10 @@ function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, p
     s.ci = 0
     return
   }
-  if (s.best !== undefined && s.radiusIdx + 1 < radii(s, policy).length && remotePipe(s, policy)) {
+  if (s.best !== undefined && s.radiusIdx + 1 < math.min(radii(s, policy).length, policy.searchRadii.length) && remotePipe(s, policy)) {
     // M7c.8: a pipe port fed from beyond every search radius (a remote oil field) looks at every radius: the nearest
-    // room is often deep in a built block, and `pipePort` prefers the base edge facing the source.
+    // room is often deep in a built block, and `pipePort` prefers the base edge facing the source. Only the policy's
+    // radii: B187's wider ones are for a module with no room at all.
     s.radiusIdx++
     startWindow(s, state, policy)
   } else if (s.best !== undefined) {

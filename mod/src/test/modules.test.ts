@@ -152,6 +152,45 @@ function labTest(entry: CatalogEntry): void {
   })
 }
 
+test("B185: a solar field's panels and accumulators are all on its power port's network and carry a load at noon", () => {
+  const lab = createLab(40)
+  const def = generatedModule("solar-field", { units: 2 })
+  const origin = { x: lab.origin.x - 20, y: lab.origin.y - 10 }
+  const placed = stampModule(lab.surface, labForce(), def, origin)
+  const port = def.ports.find((p) => p.kind === "power")!
+  const portPole = lab.surface.find_entities_filtered({ type: "electric-pole", position: worldPos(origin, port.pos) })[0]
+  assert(portPole !== undefined, "a pole on the power port")
+  let panels = 0
+  for (let i = 0; i < def.entities.length; i++) {
+    const e = placed[i]
+    assert(e !== undefined && e.valid, `${def.entities[i].name} placed`)
+    if (e!.type !== "solar-panel" && e!.type !== "accumulator") continue
+    if (e!.type === "solar-panel") panels++
+    assert(e!.electric_network_id === portPole.electric_network_id, `${e!.name} at ${e!.position.x},${e!.position.y} is on the port's network`)
+  }
+  assert(panels === 12, `12 panels: ${panels}`)
+  // Noon with no load: everything the panels make charges the accumulators (they take up to 300 kW each, more than the
+  // panels give), so their stored energy grows at the panels' peak.
+  const surface = lab.surface
+  const wasFrozen = surface.freeze_daytime
+  const wasTime = surface.daytime
+  surface.daytime = 0
+  surface.freeze_daytime = true
+  const peakPerTick = (prototypeFacts.entity("solar-panel")?.productionPerTick ?? 0) * panels
+  const stored = (): number => {
+    let j = 0
+    for (let i = 0; i < def.entities.length; i++) if (placed[i]!.type === "accumulator") j += placed[i]!.energy
+    return j
+  }
+  const before = stored()
+  after_ticks(120, () => {
+    const gained = stored() - before
+    surface.daytime = wasTime
+    surface.freeze_daytime = wasFrozen
+    assert(gained >= 0.9 * 120 * peakPerTick, `the accumulators charge at the panels' peak at noon: ${gained} J in 120 ticks, peak ${peakPerTick} J/tick`)
+  })
+})
+
 test("M7d.5: the game's facts find a fluid's recipe, so the design makes sulfuric acid in a chemistry row", () => {
   // Soak m7d5-robots6: recipeForItem searched products by item only, so the design had "no module makes sulfuric-acid",
   // the battery plant stood without acid, and no robot was ever made. T1 facts hid it (they look recipes up by name).

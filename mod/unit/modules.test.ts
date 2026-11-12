@@ -253,34 +253,35 @@ test("M7d.5 (user request in-session 2026-11-04): a roboport head puts the row's
 
 // --- Layout invariants -------------------------------------------------------------------------------------
 
-function allGenerated(): ModuleDef[] {
+/** B205: `pole` sets every generator's pole (medium once researched). */
+function allGenerated(pole?: string): ModuleDef[] {
   return [
-    roboportCell(F, { chests: 2 }),
-    assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storage: 2 }),
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
-    smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" }),
-    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest" }),
-    miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2 }),
-    miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1 }),
-    miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill" }),
-    steamBlock(F, { boilers: 1 }),
-    steamBlock(F, { boilers: 4 }),
-    assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }),
-    assemblerRow(F, { recipe: "transport-belt", count: 6 }),
-    assemblerRow(F, { recipe: "pipe", count: 2 }),
-    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" }),
-    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest" }),
-    circuitBlock(F, { units: 2, buffer: "iron-chest" }),
-    radarCell(F, {}),
-    redLine(F, { units: 3 }),
-    circuitBlock(F, { units: 2 }),
-    labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
-    labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"] }),
-    chestCell(F, { recipe: "iron-gear-wheel" }),
-    chestCell(F, { recipe: "transport-belt" }),
-    chestCell(F, { recipe: "automation-science-pack" }),
+    roboportCell(F, { chests: 2, pole }),
+    assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storage: 2, pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, pole }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 24, pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter", pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest", pole }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest", pole }),
+    miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2, pole }),
+    miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1, pole }),
+    miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill", pole }),
+    steamBlock(F, { boilers: 1, pole }),
+    steamBlock(F, { boilers: 4, pole }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, pole }),
+    assemblerRow(F, { recipe: "transport-belt", count: 6, pole }),
+    assemblerRow(F, { recipe: "pipe", count: 2, pole }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest", pole }),
+    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest", pole }),
+    circuitBlock(F, { units: 2, buffer: "iron-chest", pole }),
+    radarCell(F, { pole }),
+    redLine(F, { units: 3, pole }),
+    circuitBlock(F, { units: 2, pole }),
+    labArray(F, { labs: 6, packs: ["automation-science-pack"], pole }),
+    labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"], pole }),
+    chestCell(F, { recipe: "iron-gear-wheel", pole }),
+    chestCell(F, { recipe: "transport-belt", pole }),
+    chestCell(F, { recipe: "automation-science-pack", pole }),
   ]
 }
 
@@ -320,6 +321,17 @@ test("every generated module: no overlaps, inside its footprint, all powered on 
       }
     }
     ok(powerPort === pc.networks > 0, `${def.id} power port iff it has poles`)
+  }
+})
+
+test("B205 (user, 2026-11-12): with medium poles every generated module is still powered on one network, no overlaps", () => {
+  for (const def of allGenerated("medium-electric-pole")) {
+    occupancy(def.entities, F)
+    const pc = powerCheck(def.entities, F)
+    eq(pc.unpowered.length, 0, `${def.id} unpowered ${pc.unpowered.join(" ")}`)
+    ok(pc.networks <= 1, `${def.id} has ${pc.networks} pole networks`)
+    ok(def.entities.some((e) => e.name === "medium-electric-pole") === pc.networks > 0, `${def.id}: its poles are medium poles`)
+    ok(!def.entities.some((e) => e.name === "small-electric-pole"), `${def.id}: no small pole left`)
   }
 })
 

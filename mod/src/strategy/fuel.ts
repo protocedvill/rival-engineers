@@ -3,6 +3,7 @@ import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { abandonParts } from "../planner/conflicts"
 import { findModule } from "../planner/layout"
+import { dropOrphans } from "../planner/orphans"
 import type { LayoutState } from "../planner/layout"
 import type { Rect } from "../planner/grid"
 import * as LG from "../planner/logical"
@@ -297,6 +298,7 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
   // with it (the design plans its role again), or later goals connect to its missing port.
   const drop: LogicalNode[] = [n]
   const consumers: string[] = []
+  const droppedRoles: string[] = []
   for (const eid of [...f.graph.edgeOrder]) {
     const e = f.graph.edges[eid]
     if (e.kind !== "belt") continue
@@ -305,9 +307,18 @@ export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string
     if (e.from === n.id) lost = true
     if (!lost) continue
     LG.removeEdge(f.graph, eid)
+    droppedRoles.push(e.role)
     if (e.to !== undefined && consumers.indexOf(e.to) < 0) consumers.push(e.to)
     const from = e.from !== undefined ? f.graph.nodes[e.from] : undefined
     if (from !== undefined && drop.indexOf(from) < 0 && findModule(f.layout, from.id) === undefined) drop.push(from)
+  }
+  // B202: a dropped alias takes all its edges, and their surviving routes go with what taps them (planner/orphans.ts).
+  const orphans = dropOrphans(f.graph, f.layout, drop.map((d) => d.id), droppedRoles, gone)
+  for (const c of orphans.consumers) if (consumers.indexOf(c) < 0) consumers.push(c)
+  if (orphans.routes.length > 0) {
+    const o = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [], routes: orphans.routes, poles: [] }, ctx.config.factoryBuildPriority)
+    for (const id of o.clearJobs) r.clearJobs.push(id)
+    for (const rid of orphans.routes) r.routes.push(rid)
   }
   for (const d of drop) {
     LG.removeNode(f.graph, d.id)

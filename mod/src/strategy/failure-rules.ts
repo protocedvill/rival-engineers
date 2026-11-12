@@ -27,7 +27,7 @@ export interface FailedPlanFacts {
   /** The plan's failures by key (a connection role, `module:<id>`, `power:<owner>`). */
   failures: { key: string; failure: PlanFailure }[]
   /** The goal's connections and modules. */
-  edges: { role: string; from: string; to: string; toPort: string }[]
+  edges: { role: string; from: string; to: string; toPort: string; item?: string }[]
   nodes: { id: string; role: string; item?: string }[]
   /** Whether provider `role` already has a node in the faction's graph, and whether it is built. */
   provider: (this: void, role: string) => "built" | "planned" | undefined
@@ -113,6 +113,23 @@ export function idleProviderMoves(f: FailedPlanFacts): string[] {
     for (const e of f.edges) {
       if (e.role !== key || !idle(f, e.from) || f.provider(e.to) !== "built" || out.indexOf(e.from) >= 0) continue
       out.push(e.from)
+    }
+  }
+  out.sort()
+  return out
+}
+
+/**
+ * B191 (`m7-b186` seed 3333, min ~300): after a power goal spent its plans, the steam roles whose fuel route (`item`
+ * `fuel`) found no path. The fuel's nearest free patch was thousands of tiles out (a 5760-tile plan region): no belt
+ * reaches it, so new power comes from solar fields until the exploration finds another patch (as B185's no-patch).
+ */
+export function unreachableFuel(f: FailedPlanFacts, fuel: string, isPower: (this: void, role: string) => boolean): string[] {
+  const out: string[] = []
+  for (const { key } of f.failures) {
+    for (const e of f.edges) {
+      if (e.role !== key || e.item !== fuel || !isPower(e.to) || out.indexOf(e.to) >= 0) continue
+      out.push(e.to)
     }
   }
   out.sort()

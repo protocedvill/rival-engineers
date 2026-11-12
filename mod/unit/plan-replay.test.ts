@@ -125,6 +125,8 @@ interface ReplayOptions {
   failureIncludes?: string
   /** Text forbidden in a failed replay's certificate. */
   failureExcludes?: string
+  /** B188: a failed route of this connection must carry a start-side seal proof (what relocates a built provider). */
+  sealedStart?: string
   /** Requests that represent route-reassignment providers and must use an independent mine site. */
   newSites?: string[]
   /** Modules regenerated from their params with today's generators (the capture holds the generator's old output). */
@@ -136,6 +138,29 @@ function dumpModules(layout: LayoutState): void {
   for (const m of layout.modules) {
     const ports = m.def.ports.filter((p) => p.kind !== "power").map((p) => `${p.id}@${m.origin.x + p.pos.x},${m.origin.y + p.pos.y}`)
     print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h}${m.minePlan !== undefined ? ` mine plan ${m.minePlan.claim.length} tiles` : ""}${m.oreUnits !== undefined ? ` strip, ${m.oreUnits} units on ore` : ""} ports ${ports.join(" ")}`)
+  }
+}
+
+/**
+ * REPLAY_MAP="x1,y1,x2,y2": the plan's layout over its terrain, row by row (`#` blocked ground, `r` a port reservation,
+ * `m` a mine claim, `=` a route, a module's tile its id's 4th character, `x` another claim, `,` ore).
+ */
+function printMap(layout: LayoutState, view: TerrainView, area: string): void {
+  const [x1, y1, x2, y2] = string.match(area, "(-?%d+),(-?%d+),(-?%d+),(-?%d+)")
+  for (let y = tonumber(y1)!; y <= tonumber(y2)!; y++) {
+    let row = ""
+    for (let x = tonumber(x1)!; x <= tonumber(x2)!; x++) {
+      const k = tkey(x, y)
+      const o = layout.occ[k]
+      let c = view.ore(x, y) !== undefined ? "," : "."
+      if (view.block(x, y) !== FREE) c = "#"
+      if (layout.mine?.[k] !== undefined) c = "m"
+      if (layout.reserved[k] !== undefined) c = "r"
+      if (o !== undefined) c = string.sub(o, 1, 1) === "m" ? string.sub(o, 4, 4) : "x"
+      if (layout.routeOcc[k] !== undefined) c = "="
+      row += c
+    }
+    print(`    ${y} ${row}`)
   }
 }
 
@@ -213,12 +238,18 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
     if (os.getenv("REPLAY_DUMP") !== undefined) for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h} rot ${m.transform.rot}${m.transform.mirror ? " mirror" : ""}`)
+    const map = os.getenv("REPLAY_MAP")
+    if (map !== undefined) printMap(job.layout, terrain, map)
     planTrace.searches = undefined
     const expected = opts.expect === "any" ? job.phase : opts.expect ?? "done"
     finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === expected)
     ok(job.phase === expected, `plan ${expected} (${job.phase}: ${why.join("; ")})`)
     if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
     if (opts.failureExcludes !== undefined) ok(string.find(why.join("; "), opts.failureExcludes, 1, true)[0] === undefined, `failure excludes ${opts.failureExcludes}: ${why.join("; ")}`)
+    if (opts.sealedStart !== undefined) {
+      const proof = (job.evidence ?? []).find((e) => e.kind === "route" && e.subject === opts.sealedStart && e.sealed?.side === "start" && e.sealed.edge !== true)
+      ok(proof !== undefined, `${opts.sealedStart}: a start-side seal proof`)
+    }
     // M7c.8: the game discards a finished plan whose claims name a missing owner (plan-delta); so does a replay.
     // Problems the captured base already had are not the plan's (r333968-second-power: overlapping soft and mine claims).
     if (job.phase === "done") {
@@ -275,6 +306,19 @@ replay("m7-seed11-g160-crude")
 // was placed with its water port beside a built crude route: a pipe on the outside tile would join the crude line and
 // mix fluids. Placement now rejects a pipe port whose outside tile has another fluid's route beside it.
 replay("m7d5-g198-water")
+// B188 (m7-solar seed 11, goal g136): the sulfur module's water pump stood in a pocket (its own margin, a steam block's,
+// the lake); the pipe search explored the pocket and failed, the goal-side flood hit its cap, so no proof moved the
+// pump and the goal failed 8 plans. The exhausted search is the proof now (the game relocates the pump).
+replay("m7s-seed11-g136", { expect: "failed", sealedStart: "water>sulfur>chemical-science-pack>labs=>sulfur>chemical-science-pack>labs.in-water" })
+// B187 (m7-solar seed 44444, goal g212 attempt 3): the third lab cluster's 85-tile engine cell had no position within
+// 96 tiles of the centre on any attempt, though the region grew to 504 tiles. Now it is placed in the wider ring; its
+// steel feed then fails from the shared provider's sealed taps, which the game answers with providerNoTap (B61).
+replay("m7s-seed44444-g212a3", { expect: "failed", failureExcludes: "no feasible position" })
+// B190 (m7-b186 seed 44444, goal g65): the plastic row's second crude provider joins the first field's line (B149) at
+// the spot nearest its start, which sat on a segment already at the pump-free extent: 400,000 expansions, then fail.
+// Joins now prefer a segment with room. (The capture predates exporting the coal mine's ground 340 tiles out, so its
+// coal route reads unknown terrain at the mine and fails here, not in the game.)
+replay("m7s-seed44444-g65", { expect: "failed", failureExcludes: "no pipe path" })
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
@@ -943,6 +987,10 @@ replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "done" })
 // B177 (m7-fresh6 seed 222, g126/g127: 8 attempts "no path"): the split advanced-circuit block's copper input stayed two
 // columns inside its buffer head when the head moved the module east, so no route reached it from any placement.
 replay("m7d5-g126-copper-port", { regenerate: ["n146"], expect: "done" })
+// B208 (b204b-44444 g238, 3 attempts "no room for a pole beside the pump at 571,-29"): the pump sat in a one-tile corridor
+// between two modules; the nearest free tiles were 3 away, inside its medium pole's supply area but outside the 2 tiles
+// every pole was searched within.
+replay("m7-b208-g238-pump-pole", { expect: "done" })
 // REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
 // line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
 for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })

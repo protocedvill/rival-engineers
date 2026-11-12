@@ -1,4 +1,4 @@
-import { labArray, miningOutpost, radarCell, steamBlock } from "../src/modules/generators"
+import { assemblerRow, labArray, miningOutpost, radarCell, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { moduleId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { ModuleDef } from "../src/modules/types"
@@ -70,6 +70,68 @@ test("a line of small poles joins a lab array 40 tiles from the steam block; eac
   eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
   eq(layout.poleLines?.length, 1, "one line")
   eq(layout.poleLines![0].to, "labs", "joined the labs")
+})
+
+test("B206: a medium-pole module whose every pole has 5 others in reach still gets a line (the count is an upper bound)", () => {
+  // seed 222 (min ~250): "every pole has all wire connections in use" on each new medium-pole module. In-game these
+  // poles have 2-3 wires (engine test "B206 finding").
+  const row = assemblerRow(F, { recipe: "iron-gear-wheel", count: 8, pole: "medium-electric-pole" })
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "row", row, 50, 4)
+  const view = terrain(90, 40)
+  const job = polesNow(layout, view, F, POLICY, "poles:", "medium-electric-pole")
+  const why: string[] = []
+  for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
+  eq(job.phase, "done", `done (${why.join("; ")})`)
+  eq(unpoweredModules(layout, F).join(","), "", `everything powered (${why.join("; ")}; ${(layout.poles ?? []).length} line poles)`)
+  eq(poleProblems(layout, view).length, 0, poleProblems(layout, view).join("; "))
+})
+
+/** B210: every module pole of the layout as built, on `net` by module id, with `wires` copper wires each. */
+function builtPoles(layout: LayoutState, net: Record<string, number>, wires: Record<string, number>): Record<number, { net: number; wires: number }> {
+  const out: Record<number, { net: number; wires: number }> = {}
+  for (const m of layout.modules) {
+    for (const e of m.def.entities) {
+      if (F.entity(e.name)?.type !== "electric-pole") continue
+      out[tkey(math.floor(m.origin.x + e.x), math.floor(m.origin.y + e.y))] = { net: net[m.id], wires: wires[m.id] }
+    }
+  }
+  return out
+}
+
+test("B210: a built module whose poles the game left off the network gets a line, though its poles are in reach", () => {
+  // m7-b208 seed 222: a steel column's poles stood 5 tiles from the grid's poles, each of those with 5 wires already:
+  // the game made no wire, the column stood unpowered for 6 game-hours, and every plan counted it powered by reach.
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, steam.footprint.w + 4, 2)
+  eq(unpoweredModules(layout, F).join(","), "", "by reach the labs are on the network")
+  const job = newPoleJob("poles:", "small-electric-pole", F)
+  job.built = builtPoles(layout, { steam: 1, labs: 2 }, { steam: 4, labs: 0 })
+  const view = terrain(80, 40)
+  while (!stepPoles(job, layout, view, F, POLICY, 1000)) {
+    // budgeted steps
+  }
+  const why: string[] = []
+  for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
+  eq(job.phase, "done", `done (${why.join("; ")})`)
+  eq(why.length, 0, why.join("; "))
+  ok(job.connected.indexOf(moduleId("labs")) >= 0, "the labs joined")
+  ok((layout.poles ?? []).length >= 1, `a line pole bridges them (${(layout.poles ?? []).length})`)
+})
+
+test("B210: a built pole with five wires is no source and no target", () => {
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, steam.footprint.w + 4, 2)
+  const job = newPoleJob("poles:", "small-electric-pole", F)
+  job.built = builtPoles(layout, { steam: 1, labs: 2 }, { steam: 5, labs: 0 })
+  while (!stepPoles(job, layout, terrain(80, 40), F, POLICY, 1000)) {
+    // budgeted steps
+  }
+  eq(job.failures[moduleId("labs")], "every pole has all wire connections in use", "the labs cannot join a full network")
+  eq((layout.poles ?? []).length, 0, "no line from a full pole")
 })
 
 test("M7c.8: each pump pole of a fluid route needs its own path to the network, not just one pump of the line", () => {

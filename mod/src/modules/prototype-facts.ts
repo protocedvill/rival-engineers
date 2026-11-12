@@ -67,6 +67,8 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
     f.constructionRadius = p.construction_radius
   }
   if (t === "offshore-pump") f.pumpingPerTick = tryCall(() => p.get_pumping_speed())
+  if (t === "solar-panel") f.productionPerTick = tryCall(() => p.get_max_energy_production())
+  if (t === "accumulator") f.bufferJ = p.electric_energy_source_prototype?.buffer_capacity
   // M7b: fluid boxes, north-facing (`positions[0]` is the north orientation's connection tile offset).
   const boxes = p.fluidbox_prototypes
   if (boxes !== undefined && boxes.length > 0) {

@@ -1,4 +1,4 @@
-import { LuaForce, LuaSurface } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { moduleId, connectionId, routeId } from "../shared/ids"
 import type { ModuleId } from "../shared/ids"
@@ -47,7 +47,9 @@ function fastReconciler(): void {
 
 /** A faction whose bootstrap brain never thinks (the test drives the reconciler), with a factory state. */
 function testFaction(lab: Lab, dx: number, dy: number): { faction: FactionState; f: FactoryState } {
-  const faction = createFaction(`rec-${++factionSeq}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
+  // Unique per test and reload: `before_each` destroys the last test's factions, and their forces merge away only at the
+  // end of the tick, so a re-used name got the dying force ("Unknown force: rival-rec-1", T2 shard order).
+  const faction = createFaction(`rec-${++factionSeq}-${game.tick}`, { position: at(lab, dx, dy), crew: 1, starterItems: {} })
   const brain = startBootstrap(faction, at(lab, dx, dy))
   brain.nextThink = math.huge
   const f = startFactory(faction)
@@ -213,7 +215,6 @@ describe("M5b reconciler", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     fastReconciler()
-    factionSeq = 0
   })
 
   test("a deliberately starved module: gears ← smelter ← unpowered outpost is starved, root cause the outpost", () => {
@@ -586,6 +587,45 @@ describe("M5b reconciler", () => {
       assert(ok, `a repair goal (gears ${g.nodes.gears.status}, cause ${g.nodes.gears.cause?.why})`)
       const ghosts = s.find_entities_filtered({ ghost_name: "small-electric-pole", position: gone })
       assert(ghosts.length === 1, `the module's pole is ghosted again (${ghosts.length})`)
+      assert(s.find_entities_filtered({ area, type: "entity-ghost" }).length === 1, "nothing else of the module")
+      done()
+    })
+  })
+
+  test("B201: a belt gone from inside the consumer module is re-placed through the edge's repair (not its machines)", () => {
+    // m7-b199 seed 3333: an abandoned growth had picked up the mall smelter's tail; the route stood whole, every repair
+    // found "nothing missing" and research stopped for 90 game-min.
+    const c = chainLab()
+    power(c.lab.surface, c.faction.force, c.mine)
+    power(c.lab.surface, c.faction.force, c.gears)
+    power(c.lab.surface, c.faction.force, c.smelt)
+    const s = c.lab.surface
+    const route = c.f.layout.routes["route:ore"]
+    const last = route.steps[route.steps.length - 1]
+    const m = c.smelt
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    // The module's belt nearest the route's end: the first piece the ore crosses inside the smelter.
+    let cut: LuaEntity | undefined
+    let best = math.huge
+    for (const b of s.find_entities_filtered({ area, type: "transport-belt" })) {
+      const d = (b.position.x - last.x - 0.5) ** 2 + (b.position.y - last.y - 0.5) ** 2
+      if (d < best) {
+        best = d
+        cut = b
+      }
+    }
+    assert(cut !== undefined, "a smelter belt to cut")
+    const gone = cut!.position
+    cut!.destroy()
+    let goal: FactoryGoal | undefined
+    async(60 * 60 * 15)
+    reconcileUntil(c.faction, c.f, 60 * 60 * 14, () => fuelFurnaces(c), () => {
+      goal = c.f.goals.filter((x) => x.kind === "repair")[0]
+      return goal !== undefined && goal.growBuild?.phase !== "clear"
+    }, (ok) => {
+      log(`[b201] ${describe_(c.f.graph, c.f)}\n  remedies ${serpent.line(c.f.reconciler?.log)}`)
+      assert(ok, `a repair goal (smelt ${c.f.graph.nodes.smelt.status}, cause ${c.f.graph.nodes.smelt.cause?.why})`)
+      assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: gone }).length === 1, "the smelter's belt is ghosted again")
       assert(s.find_entities_filtered({ area, type: "entity-ghost" }).length === 1, "nothing else of the module")
       done()
     })

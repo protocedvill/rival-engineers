@@ -22,8 +22,8 @@ import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles,
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
-import { FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, Vec } from "./grid"
-import { isPoleTag, LayoutState } from "./layout"
+import { FOREIGN, FREE, inflate, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, Vec } from "./grid"
+import { findModule, isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
@@ -771,6 +771,9 @@ function runLength(cells: string[]): string {
  * request's region as character rows) to script-output/<file> as a Lua chunk, so a failed in-game plan can be replayed
  * as a T1 test (mod/unit/fixtures, see plan-replay.test.ts). Regions wider than `maxSide` tiles are skipped.
  */
+/** Tiles of ground exported around a connection's built end outside the plan region (a router window's reach). */
+const EXPORT_SOURCE_MARGIN = 32
+
 export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400): boolean {
   const t = storage.terrains?.[entry.terrain]
   const r = entry.request.region
@@ -778,15 +781,33 @@ export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400
     log(`[rival-engineers] plan input ${file} not exported: ${t === undefined ? "no terrain" : `region ${r.w}x${r.h} over ${maxSide}`}`)
     return false
   }
+  // The routers' windows reach the built modules a connection starts or ends at, which can lie outside the region (a
+  // coal mine 340 tiles out on seed 44444 g65): export the ground around them too, or the replay reads it as unknown
+  // and fails a route the game routed.
+  let area: Rect = { x: r.x, y: r.y, w: r.w, h: r.h }
+  const baseLayout = entry.baseFaction !== undefined ? storage.factories?.[entry.baseFaction]?.layout : undefined
+  if (baseLayout !== undefined) {
+    for (const c of entry.request.connections) {
+      for (const ref of [c.from, c.to]) {
+        const m = ref !== undefined ? findModule(baseLayout, ref.module) : undefined
+        if (m === undefined) continue
+        const pad = inflate(m.rect, EXPORT_SOURCE_MARGIN)
+        const x1 = math.min(area.x, pad.x)
+        const y1 = math.min(area.y, pad.y)
+        const next = { x: x1, y: y1, w: math.max(area.x + area.w, pad.x + pad.w) - x1, h: math.max(area.y + area.h, pad.y + pad.h) - y1 }
+        if (next.w <= maxSide && next.h <= maxSide) area = next
+      }
+    }
+  }
   const view = factionView(entry, terrainView(t))
   const blockChars = [".", "T", "R", "#", "X", "~", "C", "?"]
   const oreChars: Record<string, string> = { "iron-ore": "i", "copper-ore": "c", coal: "k", stone: "s" }
   const blocks: string[] = []
   const ores: string[] = []
-  for (let y = r.y; y < r.y + r.h; y++) {
+  for (let y = area.y; y < area.y + area.h; y++) {
     const b: string[] = []
     const o: string[] = []
-    for (let x = r.x; x < r.x + r.w; x++) {
+    for (let x = area.x; x < area.x + area.w; x++) {
       b.push(blockChars[view.block(x, y)] ?? "?")
       const ore = view.ore(x, y)
       o.push(ore === undefined ? "." : (oreChars[ore] ?? "o"))
@@ -804,7 +825,7 @@ export function exportPlanInput(entry: PlannerEntry, file: string, maxSide = 400
     tiers: all,
     base: entry.baseFaction !== undefined ? storage.factories?.[entry.baseFaction]?.layout : undefined,
     policy: entryPolicy(entry),
-    origin: { x: r.x, y: r.y },
+    origin: { x: area.x, y: area.y },
     // M7c.8: rows are run-length encoded (`<count><char>`): a remote oil field's plan spans ~2,500 tiles a side.
     rle: true,
     blocks,

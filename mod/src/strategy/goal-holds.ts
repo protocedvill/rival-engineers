@@ -24,10 +24,11 @@ export function nodeGoalStalled(f: FactoryState, tick: number, stallTicks: numbe
 }
 
 /** M7c: whether `spec` feeds an input of a module still being built that no edge of the graph feeds now. */
-export function feedsBuilding(f: FactoryState, spec: GoalSpec): boolean {
+export function feedsBuilding(f: FactoryState, spec: GoalSpec, stalled = false): boolean {
   for (const e of spec.edges) {
     const to = LG.nodeByRole(f.graph, e.to)
-    if (to === undefined || to.lifecycle !== "building") continue
+    // B198: with a production goal stalled, an unfed input of a built module counts too (see `feedsBuildingAll`).
+    if (to === undefined || !(to.lifecycle === "building" || (stalled && to.lifecycle === "built"))) continue
     let fed = false
     for (const id of f.graph.edgeOrder) {
       const ge = f.graph.edges[id]
@@ -36,6 +37,29 @@ export function feedsBuilding(f: FactoryState, spec: GoalSpec): boolean {
     if (!fed) return true
   }
   return false
+}
+
+/**
+ * B198 (`m7-b197` seed 3333, min 330): `feedsBuilding` for every spec. While a production goal is stalled, a goal that
+ * restores an input nothing feeds on a built module may start too, and so may the goals upstream of one that may (a
+ * chain is split into layer goals: the mine's goal has no edge of its own). The steel column's iron supplier was torn
+ * down (B51); its replacement chain waited for the oil complex, whose refinery craft waited for that steel.
+ */
+export function feedsBuildingAll(f: FactoryState, specs: GoalSpec[], stalled: boolean): boolean[] {
+  const out = specs.map((s) => s.kind === "production" && feedsBuilding(f, s, stalled))
+  for (let changed = true; changed; ) {
+    changed = false
+    for (let i = 0; i < specs.length; i++) {
+      if (out[i] || specs[i].kind !== "production") continue
+      const roles: Record<string, boolean> = {}
+      for (const n of specs[i].nodes) roles[n.role] = true
+      for (let j = 0; j < specs.length && !out[i]; j++) {
+        if (out[j] && specs[j].edges.some((e) => roles[e.from] === true)) out[i] = true
+      }
+      if (out[i]) changed = true
+    }
+  }
+  return out
 }
 
 /**
@@ -51,6 +75,34 @@ export function placingOwners(f: FactoryState, tick: number, stallTicks: number,
     for (const e of g.growBuild?.add ?? []) out[e.owner] ??= g.id
     const parts = g.plan !== undefined ? planParts(g.plan) : undefined
     for (const id of [...(parts?.routes ?? []), ...(parts?.modules ?? [])]) out[id] ??= g.id
+  }
+  return out
+}
+
+/**
+ * B185 (user, 2026-11-11: solar buildings are made by machines): the stock rows (`stock:<item>`) a power goal's solar
+ * fields wait for. A row waits while it is in the graph unbuilt or in another goal still to build; a stock the design
+ * does not plan (its recipe not enabled yet) is waited for as `research:<item>` (B196, `locked`). `itemOf` maps an
+ * entity to the item placing it.
+ */
+export function stockWaits(f: FactoryState, specs: GoalSpec[], spec: GoalSpec, itemOf: (this: void, entity: string) => string, locked?: (this: void, item: string) => boolean): string[] {
+  const out: string[] = []
+  for (const n of spec.nodes) {
+    if (n.generator !== "solar-field") continue
+    for (const e of n.def.entities) {
+      const item = itemOf(e.name)
+      // B196 (`m7-b193` seed 11, min 197): a building whose recipe is still locked has no stock row to wait for; the
+      // goal started and its crew stalled placing solar panels nothing could make. It waits for the research instead.
+      if (locked?.(item) === true) {
+        if (out.indexOf(`research:${item}`) < 0) out.push(`research:${item}`)
+        continue
+      }
+      const role = `stock:${item}`
+      if (out.indexOf(role) >= 0) continue
+      const built = LG.nodeByRole(f.graph, role)
+      const planned = specs.some((s) => s !== spec && s.nodes.some((m) => m.role === role))
+      if ((built !== undefined && built.lifecycle !== "built") || (built === undefined && planned)) out.push(role)
+    }
   }
   return out
 }

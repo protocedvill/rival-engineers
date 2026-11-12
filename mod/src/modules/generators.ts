@@ -336,6 +336,11 @@ export interface SteamParams extends CommonParams {
   boiler?: string
   engine?: string
   pipe?: string
+  /**
+   * B184 (user, 2026-11-11): "pump" (default) has its own offshore pump and needs a shore; "pipe" has a water pipe port
+   * there instead (`in-water`), stands anywhere and takes its water from a water-pump module.
+   */
+  water?: "pump" | "pipe"
 }
 
 /**
@@ -354,7 +359,9 @@ export function steamBlock(facts: ProtoFacts, p: SteamParams): ModuleDef {
   const B = p.boilers
   const W = 2 + 4 * B
   const H = 14
-  L.add(pump, 0.5, 11.5, WEST)
+  const inland = p.water === "pipe"
+  if (inland) L.add(pipe, 0.5, 11.5)
+  else L.add(pump, 0.5, 11.5, WEST)
   for (let i = 0; i < B; i++) {
     const x0 = 1 + 4 * i
     const g = x0 + 3
@@ -374,25 +381,28 @@ export function steamBlock(facts: ProtoFacts, p: SteamParams): ModuleDef {
   const bf = facts.entity(boiler)
   const steamPerBoiler = ef?.fluidPerTick && ef.maxPowerPerTick ? ((bf?.energyPerTick ?? 0) * ef.fluidPerTick) / ef.maxPowerPerTick : 1
   const maxBoilers = Math.floor((pf?.pumpingPerTick ?? 20) / Math.max(1e-9, steamPerBoiler) + 1e-9)
+  const ports: Port[] = [
+    { id: "in-fuel", kind: "belt-in", pos: { x: W - 0.5, y: 13.5 }, dir: WEST, item: fuel },
+    { id: "power", kind: "power", pos: { x: 4.5, y: 7.5 }, dir: NORTH },
+  ]
+  // The water pipe on the pump's tile feeds the first boiler's west connection, as the pump's output did.
+  if (inland) ports.push({ id: "in-water", kind: "pipe-in", pos: { x: 0.5, y: 11.5 }, dir: EAST, item: "water" })
   const draft: ModuleDraft = {
-    id: `steam-block/${B}/${L.inserter}`,
+    id: `steam-block/${B}/${L.inserter}${inland ? "/pipe" : ""}`,
     source: "generated",
     generator: "steam-block",
     provenance: "generator steam-block (Rival Engineers)",
-    description: `offshore pump, ${B} boilers, ${2 * B} steam engines`,
+    description: inland ? `water pipe, ${B} boilers, ${2 * B} steam engines` : `offshore pump, ${B} boilers, ${2 * B} steam engines`,
     footprint: { w: W, h: H },
     entities: L.entities,
-    ports: [
-      { id: "in-fuel", kind: "belt-in", pos: { x: W - 0.5, y: 13.5 }, dir: WEST, item: fuel },
-      { id: "power", kind: "power", pos: { x: 4.5, y: 7.5 }, dir: NORTH },
-    ],
+    ports,
     rotatable: true,
     mirrorable: true,
-    site: "shore",
+    site: inland ? undefined : "shore",
     // The pump faces west: it needs water on the 2×3 tiles west of it (checked in-game by the validation lab).
     // M7c.8 (seed 11): the pump's column holds nothing else, so it may stand in water where the coast curves.
-    anchor: { water: [{ x: -2, y: 10, w: 2, h: 3 }], wet: [{ x: 0, y: 0, w: 1, h: 11 }, { x: 0, y: 12, w: 1, h: 2 }] },
-    params: { boilers: B, fuel, inserter: L.inserter },
+    anchor: inland ? undefined : { water: [{ x: -2, y: 10, w: 2, h: 3 }], wet: [{ x: 0, y: 0, w: 1, h: 11 }, { x: 0, y: 12, w: 1, h: 2 }] },
+    params: inland ? { boilers: B, fuel, inserter: L.inserter, water: "pipe" } : { boilers: B, fuel, inserter: L.inserter },
     expand: {
       unit: { footprint: { w: 4, h: H }, entities: sliceUnit(L.entities, "x", 1, 5) },
       axis: "x",
@@ -1809,6 +1819,65 @@ export function waterPump(facts: ProtoFacts, p: WaterPumpParams): ModuleDef {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Solar field (B185)
+
+export interface SolarFieldParams extends CommonParams {
+  /** Units of `SOLAR_UNIT_W` × `SOLAR_UNIT_H` tiles, each 6 panels and 5 accumulators. */
+  units: number
+  panel?: string
+  accumulator?: string
+}
+
+/** B185: a solar field unit's width: a column of panels, a pole column and a column of accumulators. */
+const SOLAR_UNIT_W = 6
+/** B185: a unit's height: six 3×3 panels. */
+const SOLAR_UNIT_H = 18
+/** B185 (proposed): most units one solar field grows to (a bigger need gets another field). */
+export const SOLAR_MAX_UNITS = 40
+
+/**
+ * B185 (user, 2026-11-11): solar panels and accumulators, no fuel and no shore. Each unit is a column of six panels
+ * (x 0-2), a column of medium poles (x 3, every 7 tiles: each covers the panels and accumulators beside it and reaches
+ * the next unit's) and five accumulators (x 4-5): 0.83 accumulators per panel carries the panels' daily average through
+ * the night (`solarSustained`). The power port is the first pole. Grows by units along x.
+ * B194 (user, 2026-11-12: "medium poles are fine"): medium poles, not small ones, so machines can make all of a field
+ * (the small pole needs wood, from trees only).
+ */
+export function solarField(facts: ProtoFacts, p: SolarFieldParams): ModuleDef {
+  const panel = p.panel ?? "solar-panel"
+  const accumulator = p.accumulator ?? "accumulator"
+  const L = new Layout(p.belt ?? "transport-belt", p.inserter ?? "inserter", p.pole ?? "medium-electric-pole")
+  if (p.units < 1) error("solar-field: units must be ≥ 1")
+  for (let u = 0; u < p.units; u++) {
+    const x0 = u * SOLAR_UNIT_W
+    for (let k = 0; k < 6; k++) L.add(panel, x0 + 1.5, 3 * k + 1.5)
+    for (const y of [2.5, 9.5, 16.5]) L.poleAt(x0 + 3.5, y)
+    for (let k = 0; k < 5; k++) L.add(accumulator, x0 + 5, 2 * k + 1)
+  }
+  const W = SOLAR_UNIT_W * p.units
+  const draft: ModuleDraft = {
+    id: `solar-field/${p.units}/${panel}/${accumulator}`,
+    source: "generated",
+    generator: "solar-field",
+    provenance: "generator solar-field (Rival Engineers)",
+    description: `${6 * p.units} ${panel}s, ${5 * p.units} ${accumulator}s`,
+    footprint: { w: W, h: SOLAR_UNIT_H },
+    entities: L.entities,
+    ports: [{ id: "power", kind: "power", pos: { x: 3.5, y: 2.5 }, dir: NORTH }],
+    rotatable: true,
+    mirrorable: true,
+    params: { units: p.units, panel, accumulator },
+    expand: {
+      unit: { footprint: { w: SOLAR_UNIT_W, h: SOLAR_UNIT_H }, entities: sliceUnit(L.entities, "x", 0, SOLAR_UNIT_W) },
+      axis: "x",
+      insertAt: W,
+      maxUnits: Math.max(0, SOLAR_MAX_UNITS - p.units),
+    },
+  }
+  return finalizeModule(draft, facts)
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Pumpjack field (M7b)
 
 export interface PumpjackFieldParams extends CommonParams {
@@ -1972,7 +2041,7 @@ export function decodeWells(s: string): { x: number; y: number; perSecond: numbe
 /** Tiles of room around a pumpjack field's pumpjacks for its pipes and poles (agent guess). */
 const PUMPJACK_FIELD_MARGIN = 2
 
-export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "engine-cell" | "robot-cell" | "lab-array" | "chest-cell" | "radar" | "roboport" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row"
+export type GeneratorName = "smelter-column" | "mining-outpost" | "steam-block" | "assembler-row" | "red-line" | "circuit-block" | "engine-cell" | "robot-cell" | "lab-array" | "chest-cell" | "radar" | "roboport" | "fluid-chain" | "water-pump" | "pumpjack-field" | "oil-complex" | "chem-row" | "solar-field"
 
 /** Runs a generator by name with loosely typed params (remote interface, data-driven callers). */
 export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<string, unknown>): ModuleDef {
@@ -1994,7 +2063,8 @@ export function generate(facts: ProtoFacts, name: GeneratorName, params: Record<
   if (name === "pumpjack-field") return pumpjackField(facts, P)
   if (name === "oil-complex") return oilComplex(facts, P)
   if (name === "chem-row") return chemRow(facts, P)
+  if (name === "solar-field") return solarField(facts, P)
   return error(`unknown generator ${name}`)
 }
 
-export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "engine-cell", "robot-cell", "lab-array", "chest-cell", "radar", "roboport", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row"]
+export const GENERATORS: GeneratorName[] = ["smelter-column", "mining-outpost", "steam-block", "assembler-row", "red-line", "circuit-block", "engine-cell", "robot-cell", "lab-array", "chest-cell", "radar", "roboport", "fluid-chain", "water-pump", "pumpjack-field", "oil-complex", "chem-row", "solar-field"]

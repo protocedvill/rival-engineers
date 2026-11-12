@@ -1,12 +1,12 @@
 import { generate, GeneratorName } from "../src/modules/generators"
-import { ModuleDef } from "../src/modules/types"
+import { ModuleDef, Port } from "../src/modules/types"
 import { rateOf } from "../src/modules/rates"
 import { moduleId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { buildMaterials, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { BUILD_STOCK_MIN, buildMaterials, buildStock, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, powerStock, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -271,6 +271,116 @@ test("B66: steam blocks that cannot grow keep their capacity and the excess goes
   ok(two.edges.some((e) => e.to === "power#3" && e.item === "coal"), "the third block gets coal")
 })
 
+test("B200: a capped steam block is not asked for the excess the next block carries (steam mode)", () => {
+  const d = design(ctx({ enabled: ELECTRIC, powerCaps: [{ role: "power", capacity: 1e5 }] }), { item: RED, perSecond: 1 })
+  const main = byRole(d.nodes, "power")!
+  const second = byRole(d.nodes, "power#2")!
+  ok(main.need <= 1e5 + 1e-6, `power stays at its real capacity: ${main.need}`)
+  let pooled = 0
+  for (const n of d.nodes) if (n.kind === "power") pooled += n.need
+  ok(math.abs(pooled - (1e5 + second.need)) < 1, `the pool asks for the load once: ${pooled}`)
+})
+
+test("B184 (user, 2026-11-11): a steam block that found no shore is planned inland, its water from a water pump", () => {
+  const caps = [{ role: "power", capacity: 1e5 }]
+  const d = design(ctx({ enabled: ELECTRIC, powerCaps: caps, inlandPower: { "power#2": true } }), { item: RED, perSecond: 1 })
+  const inland = byRole(d.nodes, "power#2")!
+  eq(inland.params.water, "pipe", "power#2 is the inland variant")
+  eq(inland.def.site, undefined, "it needs no shore")
+  ok(inland.capacity > 0, "it makes power without a pump of its own")
+  const water = d.edges.find((e) => e.to === "power#2" && e.item === "water")
+  ok(water !== undefined && water.rate > 0, `a water edge feeds it: ${d.edges.map((e) => `${e.from}->${e.to}:${e.item}`).join(",")}`)
+  eq(byRole(d.nodes, water!.from)?.generator, "water-pump", "from a water pump")
+  ok(d.edges.some((e) => e.to === "power#2" && e.item === "coal"), "it still gets coal")
+  eq(byRole(d.nodes, "power")?.params.water, undefined, "the shore block is unchanged")
+})
+
+test("B184: the inland steam block's water input matches its steam", () => {
+  const shore = generate(F, "steam-block", { boilers: 2 })
+  const inland = generate(F, "steam-block", { boilers: 2, water: "pipe" })
+  near(rateOf(inland.rates.outputs, "electricity"), rateOf(shore.rates.outputs, "electricity"), 1e-6, "the same power")
+  ok(rateOf(inland.rates.inputs, "water") > 0, "it takes water")
+  eq(inland.ports.find((p) => p.id === "in-water")?.kind, "pipe-in", "through a pipe port")
+  eq(inland.entities.some((e) => e.name === "offshore-pump"), false, "no offshore pump")
+})
+
+test("B185: a solar field unit sustains its panels' daily average, carried through the night by its accumulators", () => {
+  const one = generate(F, "solar-field", { units: 1 })
+  // 6 panels × 60 kW × 0.7 = 252 kW by day on average; 5 × 5 MJ carry 5 × 50 kW = 250 kW through a Nauvis night.
+  near(rateOf(one.rates.outputs, "electricity"), 250000, 1, "the accumulators bound it")
+  eq(rateOf(one.rates.inputs, "electricity"), 0, "the accumulators' charging is no demand")
+  eq(one.site, undefined, "no site")
+  const two = generate(F, "solar-field", { units: 2 })
+  near(rateOf(two.rates.outputs, "electricity"), 500000, 1, "units add up")
+  ok(one.requiresTech.indexOf("solar-energy") >= 0 && one.requiresTech.indexOf("electric-energy-accumulators") >= 0, `needs both techs: ${one.requiresTech.join(",")}`)
+})
+
+/** B194: solar fields machines can make: their recipes, plus the battery chain (advanced oil, crude) and 3-input rows. */
+const OIL_CHAIN: Partial<DesignContext> = {
+  enabled: { ...ELECTRIC, "solar-panel": true, accumulator: true, "medium-electric-pole": true, "iron-stick": true, "steel-plate": true, "plastic-bar": true, sulfur: true, "basic-oil-processing": true, "advanced-oil-processing": true, "sulfuric-acid": true, battery: true },
+  resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"],
+  rowInputs: 3,
+}
+
+test("B185 (user, 2026-11-11): in solar mode built steam blocks keep their capacity and the rest of the power is solar", () => {
+  const caps = [{ role: "power", capacity: 1e5 }]
+  const d = design(ctx({ ...OIL_CHAIN, powerCaps: caps, solarPower: true }), { item: RED, perSecond: 1 })
+  const steam = byRole(d.nodes, "power")!
+  ok(steam.need <= 1e5 + 1e-6, `the built block is not asked to grow: ${steam.need}`)
+  const solar = d.nodes.filter((n) => n.generator === "solar-field")
+  ok(solar.length >= 1, `a solar field: ${d.nodes.map((n) => `${n.role}:${n.generator}`).join(",")}`)
+  eq(solar[0].role, "power#2", "as the next power role")
+  eq(d.nodes.some((n) => n.role !== "power" && n.generator === "steam-block"), false, "no new steam block")
+  eq(d.edges.some((e) => solar.some((n) => n.role === e.to)), false, "nothing feeds a solar field")
+  let total = 0
+  for (const n of d.nodes) if (n.kind === "power") total += math.min(n.need, n.capacity)
+  ok(total + 1 >= d.electricW, `the power roles carry the demand: ${total} of ${d.electricW}`)
+  ok(d.techs.indexOf("solar-energy") >= 0, "solar research comes with it")
+})
+
+/** Electric mining and every solar-field building's recipe. */
+const SOLAR = { ...ELECTRIC, "solar-panel": true, accumulator: true, "medium-electric-pole": true, "iron-stick": true }
+
+test("B185 (user, 2026-11-11) / B194: the factory makes and stocks every solar-field building machines can make", () => {
+  const all = (): boolean => true
+  // B194: accumulators only with a battery chain (oil); medium poles (user, 2026-11-12), not wooden small ones.
+  eq(powerStock(ctx({ ...OIL_CHAIN, solarPower: true }), all).map((s) => s.item).join(","), "accumulator,medium-electric-pole,solar-panel", "panels, accumulators and poles")
+  eq(powerStock(ctx({ ...OIL_CHAIN, solarPower: true }), (r) => r !== "accumulator").map((s) => s.item).join(","), "medium-electric-pole,solar-panel", "each once its recipe is enabled")
+  eq(powerStock(ctx({ solarPower: true, rowInputs: 3 }), all).map((s) => s.item).join(","), "medium-electric-pole,solar-panel", "no batteries without oil: no accumulator row")
+})
+
+test("B194: forced solar that machines can't build yet (no battery chain) stays steam, at the steam-mode caps", () => {
+  const d = design(ctx({ enabled: SOLAR, powerCaps: [{ role: "power", capacity: 1e4 }], steamCaps: [{ role: "power", capacity: 1e5 }], solarPower: true }), { item: RED, perSecond: 1 })
+  eq(d.nodes.some((n) => n.generator === "solar-field"), false, `no solar field: ${d.nodes.map((n) => `${n.role}:${n.generator}`).join(",")}`)
+  eq(d.nodes.some((n) => string.sub(n.role, 1, 6) === "stock:"), false, "no stock rows")
+  eq(byRole(d.nodes, "power#2")?.generator, "steam-block", "a steam block for the rest")
+  const extra = byRole(d.nodes, "power#2")!.need
+  ok(math.abs(extra - (d.electricW - 1e5)) < 1, `power#2 takes the rest past the steam-mode cap: ${extra} of ${d.electricW}`)
+})
+
+test("B185 (user, 2026-11-11): a design with a solar field adds machine-made stock rows for its buildings", () => {
+  const d = design(ctx({ ...OIL_CHAIN, powerCaps: [{ role: "power", capacity: 1e5 }], solarPower: true }), { item: RED, perSecond: 1 })
+  const rows = d.nodes.filter((n) => string.sub(n.role, 1, 6) === "stock:").map((n) => n.role)
+  rows.sort()
+  eq(rows.join(","), "stock:accumulator,stock:medium-electric-pole,stock:solar-panel", "one stock row per building of a field")
+  const plain = design(ctx({ ...OIL_CHAIN }), { item: RED, perSecond: 1 })
+  eq(plain.nodes.some((n) => string.sub(n.role, 1, 6) === "stock:"), false, "no solar field, no stock rows")
+})
+
+test("B185 (user, 2026-11-11): new power is solar only when it builds faster than a coal mine and a belt back", () => {
+  const caps = [{ role: "power", capacity: 1e5 }]
+  const gen = (c: Partial<DesignContext>): string => {
+    const d = design(ctx({ ...OIL_CHAIN, powerCaps: caps, ...c }), { item: RED, perSecond: 1 })
+    return byRole(d.nodes, "power#2")?.generator ?? "none"
+  }
+  eq(gen({ coalDistance: 30 }), "steam-block", "a coal patch 30 tiles away: steam")
+  eq(gen({ coalDistance: 5000 }), "solar-field", "the nearest free coal 5000 tiles away: solar")
+  eq(gen({ coalDistance: math.huge }), "solar-field", "no free coal known: solar")
+  eq(gen({}), "steam-block", "not compared without a coal distance")
+  const locked = design(ctx({ enabled: ELECTRIC, powerCaps: caps, coalDistance: 5000 }), { item: RED, perSecond: 1 })
+  eq(byRole(locked.nodes, "power#2")?.generator, "steam-block", "solar recipes not enabled: steam")
+})
+
 test("D65: a module's power demand scales with its utilization, like its inputs", () => {
   const d = design(ctx({ enabled: ELECTRIC }), { item: RED, perSecond: 1 })
   let checked = 0
@@ -476,6 +586,38 @@ test("a module that cannot grow big enough splits the target into clusters", () 
   const d = design(ctx(), { item: RED, perSecond: 5 })
   eq(d.clusters, 3, "three clusters")
   for (const n of d.nodes) if (n.generator === "red-line") ok(n.capacity + 1e-9 >= n.need, `${n.role} covers its share`)
+})
+
+test("B189: a node shared by cluster walks has one edge per role, at the summed rate", () => {
+  // The robot chain's circuit row serves the stock rows of every walk (6 repeated edges before the fix).
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true, "flying-robot-frame": true, "construction-robot": true, roboport: true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const stock = robotStock((t) => t === "construction-robotics", (r) => enabled[r as keyof typeof enabled] === true)
+  {
+    const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60, stock })
+    const seen: Record<string, boolean> = {}
+    const dups: string[] = []
+    for (const e of d.edges) {
+      if (seen[e.role]) dups.push(e.role)
+      seen[e.role] = true
+    }
+    eq(dups.length, 0, `no repeated edge: ${dups.slice(0, 2).join(", ")}`)
+  }
+})
+
+test("B189: mergeSharedEdges adds the copies' rates and keeps a copy's faster belt", () => {
+  const base = { item: "iron-plate", from: "a", fromPort: "out", to: "b", toPort: "in", belt: "transport-belt" }
+  const edges: DesignEdge[] = [
+    { ...base, role: "a=>b.in", rate: 1, headroomRate: 2, decision: { action: "none" } },
+    { ...base, role: "c=>b.in", rate: 3, headroomRate: 6, decision: { action: "none" } },
+    { ...base, role: "a=>b.in", rate: 2, headroomRate: 4, belt: "fast-transport-belt", decision: { action: "upgrade-tier", belt: "fast-transport-belt", usable: 30 } },
+  ]
+  mergeSharedEdges(edges)
+  eq(edges.length, 2, "one edge per role")
+  eq(edges[0].rate, 3, "rates add")
+  eq(edges[0].headroomRate, 6, "headroom rates add")
+  eq(edges[0].belt, "fast-transport-belt", "the upgraded copy's belt")
+  eq(edges[1].role, "c=>b.in", "order kept")
 })
 
 test("splitter-tap topology: one producer per item, sized for every consumer", () => {
@@ -1143,6 +1285,24 @@ test("B178: a build-material provider fed by a later layer stays in its own laye
   eq(phaseOf("circuit-block", "advanced-circuit"), "circuits", "the advanced-circuit block does not")
 })
 
+test("B209: a connection between two built modules is planned before every new production layer", () => {
+  // m7-b208 seed 44444: the oil complex was rebuilt (output sealed) and the water routes to the built sulfur and acid
+  // rows went with it. Their edges-only goal came last, behind a 12-module stock goal that planned ~33 game-minutes
+  // per attempt and kept failing: no acid, no batteries, no construction robots for 80+ game-minutes.
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60 })
+  const full = diffDesign(d, newGraph(), () => undefined)
+  const lost = full.missingEdges.find((e) => d.nodes.some((n) => n.role === e.from && n.item === "water"))
+  ok(lost !== undefined, "a water edge")
+  const built: Record<string, boolean> = { [lost!.from]: true, [lost!.to]: true }
+  const diff = { ...full, missing: full.missing.filter((n) => !built[n.role]) }
+  const prod = goalsFrom(diff, {}, undefined, true).filter((g) => g.kind === "production")
+  ok(prod.length > 2, `several layers (${prod.map((g) => g.phase).join(",")})`)
+  eq(prod[0].nodes.length, 0, "the first production goal places no module")
+  ok(prod[0].edges.some((e) => e.role === lost!.role), `the lost connection is in it (${prod.map((g) => g.phase).join(",")})`)
+})
+
 test("M7d.5: a large robot production goal is split into dependency layers", () => {
   const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true, "flying-robot-frame": true, "construction-robot": true, roboport: true }
   const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
@@ -1227,6 +1387,19 @@ test("M7d.5: an oil family reuses its built complex instead of forking per desig
   eq(complexes[0].capacity, 10, "the built capacity is kept")
 })
 
+test("B193: lubricant with a built complex that has no lubricant plant goes to a parallel complex, not the built role", () => {
+  // `m7-b186` seed 11, min 269: the new complex was named `oil-complex` (the walk had no node of that role yet), so the
+  // diff bound it to the built 1/0 complex and its lubricant edge asked a port that complex does not have (12 plans).
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "plastic-bar": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "electric-engine-unit": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 3, packs: ["electric-engine-unit"], providerCaps: { "oil-complex": 10 } })
+  const d = design(c, { item: "electric-engine-unit", perSecond: 0.1 })
+  eq(d.errors.length, 0, d.errors.join("; "))
+  const lube = d.edges.filter((e) => e.item === "lubricant")
+  ok(lube.length > 0, "the engines take lubricant")
+  for (const e of lube) eq(e.from, "oil-complex~2", `${e.role}: from the parallel complex`)
+  eq(d.nodes.filter((n) => n.generator === "oil-complex").map((n) => n.role).join(","), "oil-complex~2", "one new complex, not the built role")
+})
+
 test("review fix: consumers kept by a parallel oil complex (oil-complex~2) are not planned again", () => {
   const base = {
     enabled: { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true, battery: true, "electric-engine-unit": true },
@@ -1284,6 +1457,52 @@ test("review fix (Layers14): a built provider with no belt edge is offered as sp
   eq(s.spare.coal?.["coal*>smelter"], 2, "the idle built mine's planned output is spare")
   eq(s.spare.coal?.["coal*>other"], undefined, "a provider not built yet is not")
   eq(s.spare.electricity, undefined, "power is not a tap")
+})
+
+test("B205 (user, 2026-11-12): once medium poles are researched every new module but the solar field uses them", () => {
+  const d = design(ctx({ pole: "medium-electric-pole" }), { item: RED, perSecond: 1 })
+  ok(d.nodes.length > 0, "a design")
+  for (const n of d.nodes) {
+    if (n.generator === "solar-field") continue
+    const small = n.def.entities.some((e) => e.name === "small-electric-pole")
+    eq(small, false, `${n.role} (${n.generator}) has no small pole`)
+  }
+  const plain = design(ctx({}), { item: RED, perSecond: 1 })
+  ok(plain.nodes.some((n) => n.def.entities.some((e) => e.name === "small-electric-pole")), "before the research: the generators' default")
+})
+
+/** A stand-in mall for T1: a gear row whose chest-out ports name what a mall makes. */
+function fakeMall(products: string[]): ModuleDef {
+  const def = generate(F, "assembler-row", { recipe: "iron-gear-wheel", count: 2 }) as ModuleDef
+  return { ...def, ports: [...def.ports, ...products.map((item) => ({ id: `out-${item}`, kind: "chest-out", pos: { x: 0.5, y: 0.5 }, dir: 0, item }) as Port)] }
+}
+
+test("B205 (user, 2026-11-12): with the mall, buildings the design places in numbers get machine-made stock rows", () => {
+  const mall = fakeMall(["transport-belt", "inserter", "assembling-machine-1", "electric-mining-drill", "pipe"])
+  const c = ctx({
+    enabled: { ...ELECTRIC, pipe: true, "stone-furnace": true, lab: true, "electronic-circuit": true, "copper-cable": true, inserter: true, "assembling-machine-1": true, boiler: true, "steam-engine": true },
+    rowInputs: 3,
+    make: (gen, params) => (gen === "curated" ? mall : (generate(F, gen as GeneratorName, params) as ModuleDef)),
+  })
+  const target = { item: RED, perSecond: 1, mall: { id: "fake-mall", utilization: 0.25 } }
+  // Before robots are coming nothing builds from the stock: no generated rows.
+  eq(design(c, target).nodes.some((n) => string.sub(n.role, 1, 6) === "stock:"), false, "no robots yet, no generated stock")
+  c.builtGenerators = { "stock:construction-robot": "robot-cell" }
+  const d = design(c, target)
+  const rows = d.nodes.filter((n) => string.sub(n.role, 1, 6) === "stock:").map((n) => n.role)
+  rows.sort()
+  ok(rows.indexOf("stock:stone-furnace") >= 0, `the furnaces of its smelter columns: ${rows.join(",")}`)
+  for (const item of ["transport-belt", "inserter", "assembling-machine-1", "electric-mining-drill", "pipe"]) ok(rows.indexOf(`stock:${item}`) < 0, `not ${item}: the mall makes it`)
+  // Without the mall, or for buildings the design places fewer than BUILD_STOCK_MIN times, no generated rows.
+  const plain = design(c, { item: RED, perSecond: 1 })
+  eq(plain.nodes.some((n) => string.sub(n.role, 1, 6) === "stock:"), false, "no mall, no generated stock")
+  const first = design(c, { ...target, stock: [{ item: "stone-furnace", perSecond: 0.01 }] })
+  for (const st of buildStock(c, first, target, { "stone-furnace": true })) {
+    let placed = 0
+    for (const n of first.nodes) for (const e of n.def.entities) if ((F.itemToPlace(e.name) ?? e.name) === st.item) placed++
+    ok(placed >= BUILD_STOCK_MIN, `${st.item}: placed ${placed} times`)
+    ok(st.item !== "stone-furnace", "a building already stocked is not stocked twice")
+  }
 })
 
 run("design")

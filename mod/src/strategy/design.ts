@@ -19,7 +19,7 @@
 
 import { ProtoFacts, RecipeFacts } from "../modules/facts"
 import { encodeWells } from "../modules/generators"
-import { GeneratorName, smelterMaxFurnaces } from "../modules/generators"
+import { GeneratorName, SOLAR_MAX_UNITS, smelterMaxFurnaces } from "../modules/generators"
 import { ModuleDef, Rate } from "../modules/types"
 import { availableTiers, BeltTier, decideOverflow, OverflowDecision } from "../planner/capacity"
 import { edgeByRole, LogicalGraph, nodeByRole, NodeKind, rateIn } from "../planner/logical"
@@ -28,6 +28,7 @@ import { LayoutPolicy } from "../planner/policy"
 import { familyOfRole as roleFamily, nodeServes, rolePower, stampNodeFacts } from "./node-facts"
 import type { Serves } from "./node-facts"
 import { solveNow, SolveResult } from "./solver"
+import { addEntities, buildSeconds, BuildEstimate } from "./power-choice"
 
 /** A module kind: a generator, or "curated" (params.id names the curated module). */
 export type ModuleKind = GeneratorName | "curated"
@@ -35,6 +36,8 @@ export type ModuleKind = GeneratorName | "curated"
 export type MakeModule = (this: void, generator: ModuleKind, params: Record<string, unknown>) => ModuleDef
 
 export interface DesignContext {
+  /** B205 (user, 2026-11-12): the pole new modules use once it is researched (medium); unset: each generator's default. */
+  pole?: string
   facts: ProtoFacts
   /** Module factory (runtime: the memoised library; T1: the generators with a facts table). */
   make: MakeModule
@@ -160,6 +163,24 @@ export interface DesignContext {
    * stage's) can't grow far enough, so the other clusters make the rest. Absent: equal shares.
    */
   cluster1Max?: number
+  /**
+   * B184 (user, 2026-11-11): steam-block roles that found no shore: planned as inland blocks (`water: "pipe"`) fed by a
+   * water-pump module, which needs only a small shore anywhere in reach of a pipe.
+   */
+  inlandPower?: Record<string, boolean>
+  /**
+   * B185 (user, 2026-11-11; trigger proposed): the steam blocks' fuel can't be found. Built steam blocks keep their
+   * capacity (`powerCaps` lists them all) and the rest of the power comes from solar fields.
+   */
+  solarPower?: boolean
+  /** B194: `powerCaps` as in steam mode, for a forced-solar design whose solar fields can't be built yet. */
+  steamCaps?: { role: string; capacity: number }[]
+  /**
+   * B185 (user, 2026-11-11): tiles from the base to the nearest known coal patch no mine uses (`math.huge`: none). A new
+   * power role is a solar field when that builds faster than a steam block with a mine there and a belt back
+   * (`solarFaster`). Absent: never compared (steam unless `solarPower`).
+   */
+  coalDistance?: number
   /** B57/B61: consumer ports proved sealed while their module waits to relocate; plan no provider for them. */
   noFeed?: Record<string, boolean>
   /**
@@ -203,6 +224,97 @@ export function robotStock(researched: (this: void, tech: string) => boolean, en
   const out: { item: string; perSecond: number }[] = []
   if (enabled("construction-robot")) out.push({ item: "construction-robot", perSecond: ROBOT_STOCK / STOCK_FILL_SECONDS })
   if (enabled("roboport")) out.push({ item: "roboport", perSecond: ROBOPORT_STOCK / STOCK_FILL_SECONDS })
+  return out
+}
+
+/** B205 (agent, proposed): of each building the generated stock makes (`buildStock`), how many the factory keeps. */
+export const BUILD_STOCK = 10
+/** B205 (agent, proposed): a building gets a stock row once the design's modules place at least this many. */
+export const BUILD_STOCK_MIN = 10
+
+/**
+ * B205 (user, in-session 2026-11-12: "try and get the rest higher up so we can have bots actually building"; D79's
+ * generated mall): once the mall is in the design, every building the design's modules place at least
+ * `BUILD_STOCK_MIN` times that neither the mall nor another stock row makes gets a stock row of its own (labs, stone
+ * furnaces, steam engines and boilers, medium poles...), while its recipe is enabled and machines can make its chain.
+ * Its buffer head is a passive provider once researched, so robots build from it. `have`: items already stocked.
+ * Only once the faction has robots coming (a built robot-cell or roboport module): before that nothing builds from the
+ * stock, and its rows (each with feeder rows, at a few hundredths a second) joined the robot chain's cluster, which then
+ * took ~40 game min to plan and failed (b205-222, min 300-420: still no robots).
+ */
+export function buildStock(ctx: DesignContext, d: Design, target: DesignTarget, have: Record<string, boolean>): { item: string; perSecond: number }[] {
+  if (target.mall === undefined) return []
+  let robots = false
+  for (const [, gen] of pairs(ctx.builtGenerators ?? {})) if (gen === "robot-cell" || gen === "roboport") robots = true
+  if (!robots) return []
+  const made: Record<string, boolean> = { ...have }
+  const [ok, mall] = pcall(ctx.make, "curated", { id: target.mall.id })
+  if (ok) for (const p of (mall as ModuleDef).ports) if (p.kind === "chest-out" && p.item !== undefined) made[p.item] = true
+  const count: Record<string, number> = {}
+  const items: string[] = []
+  for (const n of d.nodes) {
+    for (const e of n.def.entities) {
+      const item = ctx.facts.itemToPlace(e.name) ?? e.name
+      if (count[item] === undefined) items.push(item)
+      count[item] = (count[item] ?? 0) + 1
+    }
+  }
+  items.sort()
+  const out: { item: string; perSecond: number }[] = []
+  for (const item of items) {
+    if (made[item] || count[item] < BUILD_STOCK_MIN) continue
+    const recipe = ctx.facts.recipeForItem(item)
+    if (recipe === undefined || ctx.enabled[recipe] !== true) continue
+    if (!chainProducible(ctx, item, 0, ctx.rowInputs ?? 2)) continue
+    out.push({ item, perSecond: BUILD_STOCK / STOCK_FILL_SECONDS })
+  }
+  return out
+}
+
+/** B185 (agent, proposed): of each solar-field building, how many the factory keeps stocked. */
+export const POWER_STOCK = 25
+
+/**
+ * B194 (`m7-b193` seed 3333, min ~170): whether machines can make a solar-field building down to raw resources. A stock
+ * row for one they can't make failed the whole design ("no module makes wood": the field had small poles then; it has
+ * medium poles since the user's 2026-11-12 decision).
+ */
+function machineMade(ctx: DesignContext, entity: string): boolean {
+  return chainProducible(ctx, ctx.facts.itemToPlace(entity) ?? entity, 0, ctx.rowInputs ?? 2)
+}
+
+/**
+ * B194: whether machines can make every solar-field building (the design researches what is missing). Forced solar
+ * (`solarPower`) waited forever on an accumulator stock row the design could not plan (its batteries need advanced oil
+ * processing); while this is false, new power stays steam and the coal search goes on.
+ */
+export function solarBuildable(ctx: DesignContext): boolean {
+  const [ok, made] = pcall(ctx.make, "solar-field", { units: 1 })
+  if (!ok) return false
+  for (const e of (made as ModuleDef).entities) if (!machineMade(ctx, e.name)) return false
+  return true
+}
+
+/**
+ * B185 (user, 2026-11-11: "all stuff for the solar fields should also be crafted automatically"): once a design has a
+ * solar field, every building of one (panels, accumulators, poles) is made by machines and stocked like robots: an assembler row
+ * with a buffer head, its inputs from the design. Each only while its recipe is enabled.
+ */
+export function powerStock(ctx: DesignContext, enabled: (this: void, recipe: string) => boolean): { item: string; perSecond: number }[] {
+  const [ok, made] = pcall(ctx.make, "solar-field", { units: 1 })
+  if (!ok) return []
+  const out: { item: string; perSecond: number }[] = []
+  const seen: Record<string, boolean> = {}
+  for (const e of (made as ModuleDef).entities) {
+    const item = ctx.facts.itemToPlace(e.name) ?? e.name
+    if (seen[item]) continue
+    seen[item] = true
+    const recipe = ctx.facts.recipeForItem(item)
+    if (recipe === undefined || !enabled(recipe)) continue
+    if (!machineMade(ctx, e.name)) continue
+    out.push({ item, perSecond: POWER_STOCK / STOCK_FILL_SECONDS })
+  }
+  out.sort((a, b) => (a.item < b.item ? -1 : 1))
   return out
 }
 
@@ -273,6 +385,8 @@ export interface Design {
 }
 
 const EPS = 1e-9
+/** B185 (proposed): most solar fields one design adds (each up to `SOLAR_MAX_UNITS` units). */
+const MAX_SOLAR_FIELDS = 8
 
 // ---------------------------------------------------------------------------------------------------------
 // Module rules (generators first)
@@ -320,20 +434,23 @@ export function producerFor(ctx: DesignContext, item: string): ModuleKind | unde
  * serve only items no curated module covers (engines, advanced circuits, blue packs). The first M7 soak (`m7x-11`)
  * replaced the green line with a generated inserter row whose circuit route could not be placed.
  */
-function chainProducible(ctx: DesignContext, item: string, depth: number): boolean {
+function chainProducible(ctx: DesignContext, item: string, depth: number, rowInputs = 2): boolean {
   if (depth > 8) return false
   if (resourceFor(ctx, item) !== undefined) return true
   const cell = CELLS[item]
   if (cell !== undefined) {
-    for (const ing of cell.inputs) if (!chainProducible(ctx, ing, depth + 1)) return false
+    for (const ing of cell.inputs) if (!chainProducible(ctx, ing, depth + 1, rowInputs)) return false
     return true
   }
-  const gen = generatorRule({ ...ctx, rowInputs: 2 }, item)
+  const gen = generatorRule({ ...ctx, rowInputs }, item)
   if (gen === undefined) return false
+  // B194: a pumped fluid (water) has no recipe, the pump needs nothing; the oil complex (only once advanced oil
+  // processing is enabled) takes crude oil and water, and its products' recipes are not named after them.
+  if (gen === "water-pump" || gen === "oil-complex") return true
   const rn = ctx.facts.recipeForItem(item)
   const r = rn !== undefined ? ctx.facts.recipe(rn) : undefined
   if (r === undefined) return false
-  for (const ing of r.ingredients) if (!chainProducible(ctx, ing.name, depth + 1)) return false
+  for (const ing of r.ingredients) if (!chainProducible(ctx, ing.name, depth + 1, rowInputs)) return false
   return true
 }
 
@@ -500,13 +617,17 @@ function sizes(ctx: DesignContext, gen: GeneratorName, item: string): Record<str
     out.push({})
   } else if (gen === "steam-block") {
     for (let b = 1; b <= 10; b++) out.push({ boilers: b, fuel: ctx.fuel, boiler: ctx.boiler, engine: ctx.engine })
+  } else if (gen === "solar-field") {
+    for (let u = 1; u <= SOLAR_MAX_UNITS; u++) out.push({ units: u })
   }
+  // B205 (user, 2026-11-12): medium poles everywhere once researched (a solar field has them anyway).
+  if (ctx.pole !== undefined && gen !== "solar-field") for (const p of out) p.pole = ctx.pole
   return out
 }
 
 function kindOf(gen: ModuleKind): NodeKind {
   if (gen === "mining-outpost") return "outpost"
-  if (gen === "steam-block") return "power"
+  if (gen === "steam-block" || gen === "solar-field") return "power"
   if (gen === "lab-array") return "labs"
   return "module"
 }
@@ -532,7 +653,7 @@ interface Sized {
 }
 
 /** The smallest size of `gen` whose output of `item` covers `need`. */
-function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: number): Sized | undefined {
+function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: number, extra?: Record<string, unknown>): Sized | undefined {
   if (gen === "curated") {
     const id = ctx.curated?.[item]
     if (id === undefined) return undefined
@@ -544,7 +665,8 @@ function sizeModule(ctx: DesignContext, gen: ModuleKind, item: string, need: num
     return { params: { id }, def: d, capacity, short: capacity + EPS < need }
   }
   let last: Sized | undefined
-  for (const params of sizes(ctx, gen, item)) {
+  for (const base of sizes(ctx, gen, item)) {
+    const params = extra !== undefined ? { ...base, ...extra } : base
     const [ok, def] = pcall(ctx.make, gen, params)
     if (!ok) break
     const d = def as ModuleDef
@@ -645,6 +767,18 @@ interface Walk {
   errors: string[]
   /** A module could not be sized big enough. */
   short: boolean
+  /**
+   * B199: built capacity (`providerCaps`) already given to consumers, per role, shared by every cluster's walk. Each
+   * cluster walks its share of the target and its consumers may tap the same built provider: counted per walk, the merged
+   * design asked a short provider for twice its capacity and planned no parallel provider (seed 11, min 222).
+   */
+  builtUsed: Record<string, number>
+}
+
+/** B199: what is left of a built provider's capacity after the walks so far. */
+function builtLeft(w: Walk, role: string): number | undefined {
+  const cap = w.ctx.providerCaps?.[role]
+  return cap === undefined ? undefined : math.max(0, cap - (w.builtUsed[role] ?? 0))
 }
 
 /**
@@ -678,7 +812,7 @@ function splitDemand(consumers: Demand[], capacity: number): { keep: Demand[]; r
  * also a consumer's suffix (`power#2`, `labs#2`), so `coal>power#2` was both the second coal provider of `power` and the
  * coal supply of `power#2`, and the design merged the two into one node.
  */
-function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
+function parallelRole(w: Walk, role: string, avoidBuilt = false, spent = false): string {
   // TSTL wraps `string.match`'s returns in a 0-based TS array; [0] is the first capture (empty when no match).
   const m = string.match(role ?? "", "^(.*)~%d+$")
   const base = m[0] !== undefined ? m[0] : (role ?? "provider")
@@ -688,6 +822,8 @@ function parallelRole(w: Walk, role: string, avoidBuilt = false): string {
     // A built provider may not have been emitted into this design yet (or its exact feed may have just been denied).
     // Its role is still occupied: reusing it makes diffDesign bind the replacement to the old graph node.
     let used = candidate === role || (avoidBuilt && w.ctx.providerCaps?.[candidate] !== undefined)
+    // B199: a built provider another cluster's walk already used up.
+    if (spent && (builtLeft(w, candidate) ?? 1) <= EPS) used = true
     for (const node of w.nodes) if (node.role === candidate) used = true
     if (!used) return candidate
     n++
@@ -746,7 +882,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     roles.sort()
     const joins: Record<string, boolean> = { ...(mergePorts ?? {}) }
     for (const r of roles) {
-      const cap = ctx.providerCaps![r]
+      const cap = builtLeft(w, r)!
       const feeds = ctx.providerFeeds[r]
       if (r === role || roleFamily(r) !== family || cap <= EPS || feeds === undefined || ctx.retiring?.[r] === true) continue
       if (w.nodes.some((n) => n.role === r)) continue
@@ -778,13 +914,18 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
       if (consumers.length === 0 || rate <= EPS) return
     }
   }
-  const capacity = fixedCapacity ?? ctx.providerCaps?.[role]
+  const capacity = fixedCapacity ?? builtLeft(w, role)
   // B60: a built provider that cannot grow keeps its existing consumers at its real capacity. The residual gets a
   // distinct parallel role, rather than one oversized node that can never be satisfied.
-  if (fixedCapacity === undefined && capacity !== undefined && capacity > EPS && ctx.providerShort?.[role] === true && rate > capacity + EPS) {
+  // B199: another cluster's walk may have used all of it; then everything goes to the parallel role, merging into the
+  // belts the provider feeds.
+  const builtCap = ctx.providerCaps?.[role] ?? 0
+  if (fixedCapacity === undefined && capacity !== undefined && builtCap > EPS && ctx.providerShort?.[role] === true && rate > capacity + EPS) {
     const split = splitDemand(consumers, capacity)
     const mergePorts: Record<string, boolean> = {}
     for (const c of split.keep) mergePorts[`${c.to}.${c.toPort}`] = true
+    const feeds = ctx.providerFeeds?.[role]
+    if (feeds !== undefined) for (const c of split.rest) if (feeds[`${c.to}.${c.toPort}`] === true) mergePorts[`${c.to}.${c.toPort}`] = true
     // B71: the residual of a straddled port that takes no merge is dropped; that consumer gets what this provider makes.
     // B80: a consumer moved whole whose port takes no merge stays whole on this provider too (its belt still feeds it,
     // and no second belt can get in: vps-b79-r1459426).
@@ -798,8 +939,8 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
       }
       split.rest = rest
     }
-    addProducer(w, item, capacity, split.keep, shared, role, capacity)
-    if (split.rest.length > 0) addProducer(w, item, rate - capacity, split.rest, shared, parallelRole(w, role), undefined, mergePorts)
+    if (split.keep.length > 0) addProducer(w, item, capacity, split.keep, shared, role, capacity)
+    if (split.rest.length > 0) addProducer(w, item, rate - capacity, split.rest, shared, parallelRole(w, role, false, true), undefined, mergePorts)
     return
   }
   const s = sizeModule(ctx, gen, item, rate)
@@ -808,6 +949,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
     return
   }
   if (s.short) w.short = true
+  if (ctx.providerCaps?.[role] !== undefined) w.builtUsed[role] = (w.builtUsed[role] ?? 0) + rate
   const util = (fixedCapacity ?? s.capacity) > EPS ? math.min(1, rate / (fixedCapacity ?? s.capacity)) : 1
   const node: DesignNode = {
     role,
@@ -1064,8 +1206,10 @@ function expandOilComplex(w: Walk): void {
     addOilComplex(w, r, fresh, cap)
     return
   }
-  // No single built role covers it: one new complex for the whole residual.
-  addOilComplex(w, w.nodes.some((n) => n.role === role) ? parallelRole(w, role, true) : role, fresh)
+  // No single built role covers it: one new complex for the whole residual. B193: a built complex holds the base role
+  // even when this walk has not emitted it (it lacked a lubricant plant): reusing the role bound the new complex to it.
+  const taken = w.nodes.some((n) => n.role === role) || ctx.providerCaps?.[role] !== undefined
+  addOilComplex(w, taken ? parallelRole(w, role, true) : role, fresh)
 }
 
 /** Whether `role` is a member of an oil family: the base complex or a cluster/parallel one (`#2`, `~2`). */
@@ -1180,9 +1324,9 @@ export function clusterFraction(ctx: DesignContext, c: number, n: number): numbe
   return c === 1 ? cap : (1 - cap) / (n - 1)
 }
 
-function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number): Walk {
+function designCluster(ctx: DesignContext, target: DesignTarget, order: string[], cluster: number, clusters: number, builtUsed: Record<string, number>): Walk {
   const suffix = clusterSuffix(cluster, clusters)
-  const w: Walk = { ctx, cluster, suffix, nodes: [], edges: [], demands: [], errors: [], short: false }
+  const w: Walk = { ctx, cluster, suffix, nodes: [], edges: [], demands: [], errors: [], short: false, builtUsed }
   const items = targetItems(target)
   const frac = clusterFraction(ctx, cluster, clusters)
   // Labs consume one of each pack per research unit: sized for the fastest pack rate at the configured unit time.
@@ -1192,7 +1336,7 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
   const labs = math.max(2, 2 * math.ceil((rate * ctx.researchUnitTime) / speed / 2 - EPS))
   let packs = [...ctx.packs]
   for (const t of items) if (packs.indexOf(t.item) < 0) packs = [t.item]
-  const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime }
+  const labParams = { labs, packs, lab: ctx.lab, unitTime: ctx.researchUnitTime, pole: ctx.pole }
   const labDef = ctx.make("lab-array", labParams)
   const labRole = `labs${suffix}`
   const labNode: DesignNode = { role: labRole, kind: "labs", generator: "lab-array", params: labParams, def: labDef, item: "research-unit", need: rate, capacity: rate, inputs: [], powerW: powerOf(labDef.rates.inputs), cluster }
@@ -1249,7 +1393,7 @@ function designCluster(ctx: DesignContext, target: DesignTarget, order: string[]
  * Growth by expansion units and forking a new module are still decided by `diffDesign`; this pass only removes the
  * stale sizing that kept those decisions from being made at all.
  */
-function supplyPass(all: DesignNode[], allEdges: DesignEdge[]): void {
+function supplyPass(ctx: DesignContext, all: DesignNode[], allEdges: DesignEdge[]): void {
   const nodes: SupplyNode[] = []
   const edges: SupplyEdge[] = []
   for (const n of all) {
@@ -1264,7 +1408,11 @@ function supplyPass(all: DesignNode[], allEdges: DesignEdge[]): void {
   const req = requiredRates(nodes, edges)
   for (const n of all) {
     if (n.kind === "sink") continue
-    const want = req[n.role] ?? 0
+    let want = req[n.role] ?? 0
+    // B199: a built provider that cannot grow stays at its real capacity (B60); what its consumers lack beyond it was
+    // dropped on purpose (B71: a port that takes no merge). Raised, it only became a grow spec nothing could meet.
+    const cap = ctx.providerCaps?.[n.role]
+    if (cap !== undefined && ctx.providerShort?.[n.role] === true) want = math.min(want, math.max(n.need, cap))
     if (want <= n.need + EPS) continue
     n.need = want
     n.inputs = inputPorts(n.def, n.capacity > EPS ? math.min(1, want / n.capacity) : 1)
@@ -1294,14 +1442,16 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
       expandItem(w, ctx.fuel)
       return 0
     }
-    const s = sizeModule(ctx, "steam-block", "electricity", estimate)
+    // B185: in solar mode the built steam block stays at its capacity (and its fuel); solar fields make the rest.
+    const capped = ctx.solarPower === true && ctx.powerCaps !== undefined ? math.min(estimate, ctx.powerCaps[0].capacity) : estimate
+    const s = sizeModule(ctx, "steam-block", "electricity", capped, steamExtra(ctx, `power${w.suffix}`))
     if (s === undefined) {
       w.errors.push("steam-block: no valid size")
       return estimate
     }
     if (s.short && report !== undefined) report.short = true
     else if (s.short) w.short = true
-    const util = s.capacity > EPS ? math.min(1, estimate / s.capacity) : 1
+    const util = s.capacity > EPS ? math.min(1, capped / s.capacity) : 1
     const steam: DesignNode = {
       role: `power${w.suffix}`,
       kind: "power",
@@ -1316,8 +1466,7 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
       cluster: w.cluster,
     }
     w.nodes.push(steam)
-    if (electricDrillsNow(ctx)) for (const p of steam.inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: steam.role, toPort: p.port })
-    expandItem(w, ctx.fuel)
+    steamDemands(ctx, w, steam.role, steam.inputs)
     let total = extraW
     for (const n of w.nodes) if (n.kind !== "power") total += n.powerW
     steam.need = total
@@ -1334,18 +1483,87 @@ function designPower(ctx: DesignContext, w: Walk, extraW = 0, report?: { short: 
  */
 function extraSteam(ctx: DesignContext, w: Walk, electric: number, caps: { role: string; capacity: number }[]): void {
   let rest = electric - caps[0].capacity
+  // B185: a built steam block is not asked to grow past what it makes (its fuel is what is missing).
+  // B200 (`m7-b199` seed 3333, min 117-194): in steam mode too. The capped block kept the whole need while the next
+  // block carried the excess as well; the diff pools power (M7d.5), so 22.3 MW were asked of 18 MW built and the capped
+  // block was grown forever (3 failed expansions, no other goal).
+  for (const n of w.nodes) if (n.role === caps[0].role) n.need = math.min(n.need, caps[0].capacity)
   for (let i = 1; rest > EPS; i++) {
     const cap = caps[i]
     const take = cap !== undefined ? math.min(rest, cap.capacity) : rest
+    if (cap === undefined && (ctx.solarPower === true || solarFaster(ctx, w, `power#${i + 1}`, take))) {
+      addSolar(ctx, w, i + 1, take)
+      return
+    }
     addSteam(ctx, w, cap?.role ?? `power#${i + 1}`, take, cap?.capacity)
     rest -= take
     if (cap === undefined) return
   }
 }
 
+/**
+ * B185: solar fields for `need` W, from role `power#first` on: each as big as needed up to `SOLAR_MAX_UNITS`, the rest
+ * in the next. Nothing to feed: no fuel, no water.
+ */
+function addSolar(ctx: DesignContext, w: Walk, first: number, need: number): void {
+  let rest = need
+  for (let i = first; rest > EPS && i < first + MAX_SOLAR_FIELDS; i++) {
+    const s = sizeModule(ctx, "solar-field", "electricity", rest)
+    if (s === undefined || s.capacity <= EPS) {
+      w.errors.push(`power#${i} solar-field: no valid size`)
+      return
+    }
+    const take = math.min(rest, s.capacity)
+    const role = `power#${i}`
+    w.nodes.push({ role, kind: "power", generator: "solar-field", params: s.params, def: s.def, item: "electricity", need: take, capacity: s.capacity, inputs: [], powerW: s.capacity, cluster: w.cluster })
+    rest -= take
+  }
+}
+
+/**
+ * B185 (user, 2026-11-11): whether solar fields for `need` W build faster than a steam block with its own coal mine on
+ * the nearest free coal patch (`coalDistance`) and a belt and pole line back. Solar only counts when every one of its
+ * buildings has an enabled recipe; materials come at the plate rate of the design's smelter columns.
+ */
+function solarFaster(ctx: DesignContext, w: Walk, role: string, need: number): boolean {
+  if (ctx.coalDistance === undefined) return false
+  const solar = sizeModule(ctx, "solar-field", "electricity", need)
+  if (solar === undefined || solar.capacity <= EPS) return false
+  for (const e of solar.def.entities) {
+    const recipe = ctx.facts.recipeForItem(ctx.facts.itemToPlace(e.name) ?? e.name)
+    if (recipe === undefined || ctx.enabled[recipe] !== true) return false
+  }
+  if (!solarBuildable(ctx)) return false
+  if (ctx.coalDistance === math.huge) return true
+  const steam = sizeModule(ctx, "steam-block", "electricity", need, steamExtra(ctx, role))
+  if (steam === undefined) return true
+  let plates = 0
+  for (const n of w.nodes) if (n.generator === "smelter-column") plates += n.capacity
+  const fields = need / solar.capacity
+  const sun: BuildEstimate = { entities: [], walkTiles: 0 }
+  for (const e of solar.def.entities) addEntities(sun.entities, e.name, fields)
+  const coal: BuildEstimate = { entities: [], walkTiles: 2 * ctx.coalDistance }
+  let pole: string | undefined
+  for (const e of steam.def.entities) {
+    addEntities(coal.entities, e.name, 1)
+    if (pole === undefined && ctx.facts.entity(e.name)?.wireReach !== undefined) pole = e.name
+  }
+  const drill = ctx.facts.entity(ctx.electricDrill)
+  let ore: string | undefined
+  for (const r of ctx.resources) if (ctx.facts.resourceProduct(r) === ctx.fuel) ore = r
+  const time = ore !== undefined ? ctx.facts.resourceMiningTime(ore) : undefined
+  const fuelJ = ctx.facts.fuelValue(ctx.fuel)
+  if (drill?.miningSpeed !== undefined && time !== undefined && fuelJ > 0) addEntities(coal.entities, ctx.electricDrill, math.ceil(need / fuelJ / (drill.miningSpeed / time)))
+  const belt = ctx.tiers[0]?.belt
+  if (belt !== undefined) addEntities(coal.entities, belt, ctx.coalDistance)
+  const reach = pole !== undefined ? ctx.facts.entity(pole)?.wireReach ?? 0 : 0
+  if (pole !== undefined && reach > 0) addEntities(coal.entities, pole, math.ceil(ctx.coalDistance / reach))
+  return buildSeconds(ctx.facts, sun, plates) < buildSeconds(ctx.facts, coal, plates)
+}
+
 /** One steam block after the first, with its own fuel supply; `fixedCapacity` for a built block that can't grow. */
 function addSteam(ctx: DesignContext, w: Walk, role: string, extraW: number, fixedCapacity?: number): void {
-  const s = sizeModule(ctx, "steam-block", "electricity", extraW)
+  const s = sizeModule(ctx, "steam-block", "electricity", extraW, steamExtra(ctx, role))
   if (s === undefined) {
     w.errors.push(`${role} steam-block: no valid size`)
     return
@@ -1353,8 +1571,30 @@ function addSteam(ctx: DesignContext, w: Walk, role: string, extraW: number, fix
   const util = s.capacity > EPS ? math.min(1, extraW / s.capacity) : 1
   const capacity = fixedCapacity ?? s.capacity
   w.nodes.push({ role, kind: "power", generator: "steam-block", params: s.params, def: s.def, item: "electricity", need: extraW, capacity, inputs: inputPorts(s.def, util), powerW: capacity, cluster: w.cluster })
-  if (electricDrillsNow(ctx)) for (const p of inputPorts(s.def, util)) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+  steamDemands(ctx, w, role, inputPorts(s.def, util))
+}
+
+/** B184: the inland variant's params for a steam-block role that found no shore. */
+function steamExtra(ctx: DesignContext, role: string): Record<string, unknown> | undefined {
+  return ctx.inlandPower?.[role] === true ? { water: "pipe" } : undefined
+}
+
+/**
+ * A steam block's input demands: its fuel once electric drills mine it (before that the crew feeds it), and an inland
+ * block's water (B184) always.
+ */
+function steamDemands(ctx: DesignContext, w: Walk, role: string, inputs: DesignPort[]): void {
+  const drills = electricDrillsNow(ctx)
+  let water: string | undefined
+  for (const p of inputs) {
+    if (p.rate <= EPS) continue
+    const fluid = ctx.facts.isFluid?.(p.item) === true
+    if (!fluid && !drills) continue
+    w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
+    if (fluid) water = p.item
+  }
   expandItem(w, ctx.fuel)
+  if (water !== undefined) expandItem(w, water)
 }
 
 export function checkEdges(ctx: DesignContext, w: Walk, overflow: Record<string, string>, sharedPower = false, splitRates: Record<string, number> = {}, prevRates: Record<string, number> = {}): number {
@@ -1435,8 +1675,60 @@ export function mergeShared(nodes: DesignNode[]): void {
   }
 }
 
+/**
+ * B189 (`m7-solar` seed 222, g191/g195/g197): the edges of a node designed once per cluster walk come out once per walk
+ * too, under one role. `mergeShared` merged the nodes but the copies stayed: goal g191 asked the planner for 16
+ * connections, 12 of them repeats, and each repeat of a crude line found the first copy's pipe on its port's outside
+ * tile ("no pipe path", sealed start 0 tiles) on every attempt. Merge them like the nodes: the rates add up, and a
+ * copy's overflow decision (a faster belt) is kept.
+ */
+export function mergeSharedEdges(edges: DesignEdge[]): void {
+  const first: Record<string, DesignEdge> = {}
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]
+    const f = first[e.role]
+    if (f === undefined) {
+      first[e.role] = e
+      continue
+    }
+    f.rate += e.rate
+    f.headroomRate += e.headroomRate
+    if (f.decision.action === "none" && e.decision.action !== "none") {
+      f.decision = e.decision
+      f.belt = e.belt
+    }
+    if (e.merge === true) f.merge = true
+    edges.splice(i, 1)
+    i--
+  }
+}
+
 /** Solves and designs the factory for a stage target. */
 export function design(ctx: DesignContext, target: DesignTarget): Design {
+  // B194: forced solar whose buildings machines can't make yet (no batteries without crude oil) stays steam for now.
+  if (ctx.solarPower === true && !solarBuildable(ctx)) {
+    const steam = { ...ctx, solarPower: false }
+    steam.powerCaps = ctx.steamCaps
+    ctx = steam
+  }
+  const d = designOnce(ctx, target)
+  const have: Record<string, boolean> = {}
+  for (const st of target.stock ?? []) have[st.item] = true
+  const extra: { item: string; perSecond: number }[] = []
+  // B185 (user, 2026-11-11): a design with a solar field stocks its buildings, made by machines.
+  if (d.nodes.some((n) => n.generator === "solar-field")) {
+    for (const st of powerStock(ctx, (r) => ctx.enabled[r] === true)) {
+      if (have[st.item]) continue
+      have[st.item] = true
+      extra.push(st)
+    }
+  }
+  // B205: and every building its modules place in numbers (the generated stock); once more with those rows.
+  for (const st of buildStock(ctx, d, target, have)) extra.push(st)
+  return extra.length > 0 ? designOnce(ctx, { ...target, stock: [...(target.stock ?? []), ...extra] }) : d
+}
+
+function designOnce(ctx: DesignContext, target: DesignTarget): Design {
   const solveJob = solveNow(
     {
       // M7d.5: stock items are roots of the item order too (not lab packs: `targetItems` sizes the labs).
@@ -1463,11 +1755,13 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     let split = clusters
     const splitRates: Record<string, number> = {}
     let short = false
-    for (let c = 1; c <= clusters; c++) walks.push(designCluster(ctx, target, order, c, clusters))
+    const builtUsed: Record<string, number> = {}
+    for (let c = 1; c <= clusters; c++) walks.push(designCluster(ctx, target, order, c, clusters, builtUsed))
     // One steam block (in cluster 1) for every cluster: the other clusters mine their own fuel (their electric coal
     // drills add demand), then cluster 1's power is sized for the whole factory.
     // If even the largest steam block can't, every cluster gets its own (power#c).
     const snap = walks.map((w) => ({ nodes: [...w.nodes], edges: [...w.edges], demands: [...w.demands] }))
+    const usedSnap = { ...builtUsed }
     let others = 0
     for (let c = 2; c <= clusters; c++) {
       const w = walks[c - 1]
@@ -1486,6 +1780,7 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
         w.edges = snap[i].edges
         w.demands = snap[i].demands
       })
+      for (const [r] of pairs(builtUsed)) builtUsed[r as string] = usedSnap[r as string]
       for (const w of walks) electric += designPower(ctx, w)
     }
     for (const w of walks) {
@@ -1507,7 +1802,8 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     for (const x of w.errors) errors.push(x)
   }
   mergeShared(nodes)
-  supplyPass(nodes, edges)
+  mergeSharedEdges(edges)
+  supplyPass(ctx, nodes, edges)
   for (const n of nodes) stampNodeFacts(n)
   const techs: string[] = []
   for (const n of nodes) for (const t of n.def.requiresTech) if (!ctx.researched[t] && techs.indexOf(t) < 0) techs.push(t)
@@ -1652,8 +1948,12 @@ export interface GoalSpec {
  * takes an engine unit, and the engine cell sat in a layer after the oil goal (m7-fresh6 seeds 11, 3333 and 44444). The
  * `materials` layer, before the oil field, holds every provider of a build material (`buildMaterials`) whose own
  * unbuilt inputs all come from earlier layers.
+ *
+ * B209 (m7-b208 seed 44444): `restore` comes first and holds only connections between two built modules. It places no
+ * module and feeds machines that already stand. Last in the order, the water routes a rebuilt oil complex took with it
+ * waited 80+ game-minutes behind a 12-module stock goal that kept failing, and the robot chain stood without acid.
  */
-export const PRODUCTION_LAYERS = ["raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "materials", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
+export const PRODUCTION_LAYERS = ["restore", "raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "materials", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
 export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
 
 /** M7d.5 (user, 2026-11-07): the layer of a production provider; smaller layers keep each plan to a handful of modules. */
@@ -1767,8 +2067,8 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
   }
   // A missing edge whose endpoints are both built already still needs a route; create its production goal before the
-  // order is fixed (it would otherwise fall outside every goal).
-  for (const e of diff.missingEdges) if (goalOf[e.from] === undefined && goalOf[e.to] === undefined) get("production")
+  // order is fixed (it would otherwise fall outside every goal). B209: in the `restore` layer, first.
+  for (const e of diff.missingEdges) if (goalOf[e.from] === undefined && goalOf[e.to] === undefined) get("production", 1, false, "restore")
   // Build order: power, then each cluster's labs and production layers in turn (cluster 1 first), the mall after
   // cluster 1. An edge belongs to the later endpoint's goal in this order: a consumer's input route is planned with
   // the consumer, and a provider feeding a built consumer is planned with the provider.
@@ -1799,7 +2099,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
       const bi = b.key !== undefined ? (orderIndex[b.key] ?? -1) : -1
       gs = bi > ai ? b : a
     }
-    gs ??= get("production")
+    gs ??= get("production", 1, false, "restore")
     gs.edges.push(e)
   }
   for (const k of order) if (byKind[k] !== undefined) goals.push(byKind[k])

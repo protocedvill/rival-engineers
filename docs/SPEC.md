@@ -974,6 +974,39 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
   user in-session 2026-11-04: "roboport can be the new hub"), so no separate hub is built; a faction whose hub already
   exists keeps it. The roboport takes robots until its slots are full, with no cap at `factory-network-robots` (user
   in-session 2026-11-04: "there is no need for a cap").
+- **P54, power past the shore and coal (approved in-session 2026-11-11, triggers proposed):** the user asked in-session
+  (2026-11-11) for both solar power and steam blocks "placed anywhere" that "take water from a water producer module",
+  with "all stuff for the solar fields ... crafted automatically". A steam block that finds no shore is replanned as an
+  inland block fed by the water-pump module (B184). New power comes from solar fields only when they build faster than a
+  steam block with a coal mine and a belt back from the nearest free coal patch, or when no coal can be found (user
+  in-session 2026-11-11: "I don't want always to use solar panels"); their panels, accumulators and poles have
+  machine-made stock rows, and power goals wait for those rows (B185). Proposed: the triggers (first `no-site` /
+  `no-patch`), the build-time estimate (`strategy/power-choice.ts`) and the numbers in the M7 report table, and that
+  built steam blocks are capped at their built size while no coal is found. B191 adds a trigger: a power goal whose
+  fuel route found no path after every plan counts as "no coal can be found" (approved by the user in-session
+  2026-11-11); in that mode a built steam block counts only for what its built fuel supply can burn (proposed).
+  B194: solar fields use medium poles, made and stocked by machines like the panels and accumulators (the small pole
+  needs wood, from trees only; approved by the user in-session 2026-11-12: "medium poles are fine"); forced solar whose
+  buildings machines can't make yet (accumulators before a battery chain: advanced oil and crude) plans steam until
+  they can (proposed).
+- **P55, the depot's chests (approved in-session 2026-11-11, changed 2026-11-12):** the user asked in-session (2026-11-11) for iron chests
+  whenever the faction has the materials and passive provider chests once researched (B183). On 2026-11-12 the user
+  asked in-session for storage chests instead ("for robots we need the depots to actually be storage chests", B203):
+  new depot chests are storage chests once researched, and built ones inside the robot network are upgraded in place. Proposed: the depot grows
+  when it has fewer than 3 free stacks plus what the crew carries to deposit.
+- **P56, no cluster-1 cap (approved in-session 2026-11-11):** B182 removed the cluster-1 cap as a user-directed
+  experiment; B60 parallel providers cover a module that can't grow. The user confirmed in-session (2026-11-11) that the
+  cap stays off.
+- **P57, medium poles and the generated stock (user requests in-session 2026-11-12):** the user approved medium poles
+  "everywhere once researched": once the `late-pole` of `factory-entities` (default medium-electric-pole) is enabled,
+  every new module (generator param `pole`), pole line and solar field uses it; built modules keep their small poles.
+  The user also asked to "get the rest higher up so we can have bots actually building" (an audit of two late soak
+  bases found 93-95% of entities, 87-90% of materials, made by the mall). Proposed (B205, part of D79's generated
+  mall): once the mall is in the design, every building its modules place at least `BUILD_STOCK_MIN` (10) times that
+  neither the mall nor another stock row makes, and that machines can make, gets a stock row (`BUILD_STOCK` = 10 of
+  it). Its buffer head is a passive provider once researched, so robots build from it. Only once a robot-cell or
+  roboport module is in the factory: before robots come nothing builds from the stock, and its rows slowed the robot
+  chain's own planning (B205 amendment).
 
 ## 12. References
 

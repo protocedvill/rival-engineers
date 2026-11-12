@@ -746,7 +746,7 @@ def main():
     parser.add_argument("--snapshots", type=int, metavar="MIN",
                         help="save the game every MIN game-minutes (runs a headless server instead of --benchmark)")
     parser.add_argument("--helper-lua", metavar="LUA",
-                        help="append this Lua to the generated helper mod's control.lua (debug probes; see README)")
+                        help="append this Lua to the generated helper mod's control.lua (debug probes; see docs/DEVELOPMENT.md)")
     parser.add_argument("--save-at", metavar="MILESTONES",
                         help="save the game once every faction reaches each of these comma-separated milestones (e.g. "
                              "stage-3: red and green done in m7.toml) and file it in out/saves/<config>/seed-N/")
@@ -776,7 +776,7 @@ def main():
                 resume[(cfg["run"]["name"], seed)] = str(z)
                 print(f"resume {cfg['run']['name']} {note}", flush=True)
     if not FACTORIO.exists():
-        sys.exit(f"headless Factorio not found at {FACTORIO} (see README → Development)")
+        sys.exit(f"headless Factorio not found at {FACTORIO} (see docs/DEVELOPMENT.md)")
     if not args.no_build:
         subprocess.run(["npm", "run", "build"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
     tasks = [(cfg, seed) for cfg in cfgs for seed in cfg["run"]["seeds"]]

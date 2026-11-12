@@ -595,6 +595,44 @@ describe("ghosts", () => {
   })
 })
 
+describe("pole wires", () => {
+  // B206 finding: revived poles skip redundant copper wires, so counting the poles within wire reach overstates a pole's
+  // wires (planner/power.ts `wireDegree`), and a later pole still connects to a module whose poles "look" full.
+  test("B206 finding: a medium-pole module's poles take fewer wires than poles in reach; a new pole still connects", () => {
+    const lab = createLab(48)
+    const def = generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 8, pole: "medium-electric-pole" })
+    const origin = at(lab, -20, -10)
+    const poles: LuaEntity[] = []
+    for (const e of def.entities) {
+      if (e.name !== "medium-electric-pole") continue
+      const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: e.name, position: { x: origin.x + e.x, y: origin.y + e.y }, force: "player" })!
+      const [, built] = g.revive()
+      poles.push(built!)
+    }
+    const counts: string[] = []
+    let max = 0
+    let geo = 0
+    for (const p of poles) {
+      const n = p.get_wire_connector(defines.wire_connector_id.pole_copper, true)!.connection_count
+      counts.push(tostring(n))
+      max = math.max(max, n)
+      let near = 0
+      for (const q of poles) if (q !== p && (q.position.x - p.position.x) ** 2 + (q.position.y - p.position.y) ** 2 <= 81) near++
+      geo = math.max(geo, near)
+    }
+    log(`[pole-probe] ${poles.length} poles, copper wires ${counts.join(",")}, max ${max}, most poles within reach ${geo}`)
+    // A new pole 8 tiles left of the first pole.
+    const first = poles[0]
+    const extra = lab.surface.create_entity({ name: "entity-ghost", inner_name: "medium-electric-pole", position: { x: first.position.x - 8, y: first.position.y }, force: "player" })!
+    const [, x] = extra.revive()
+    const xn = x!.get_wire_connector(defines.wire_connector_id.pole_copper, true)!.connection_count
+    log(`[pole-probe] new pole wires ${xn}, same network ${tostring(x!.electric_network_id === first.electric_network_id)}`)
+    assert(geo >= 5, `some pole has 5 others within reach (${geo})`)
+    assert(max < geo, `fewer wires than poles in reach (${max} < ${geo})`)
+    assert(xn >= 1 && x!.electric_network_id === first.electric_network_id, "the new pole joins the module's network")
+  })
+})
+
 describe("pathfinder pockets", () => {
   // m7-fresh4 seed 11: the crew's walk to the standing spot 447.0,55.0 found no path 23 times. The spot is in the
   // one-tile corridor between two steam-engine columns, where a small pole stands every 5 tiles: a character fits

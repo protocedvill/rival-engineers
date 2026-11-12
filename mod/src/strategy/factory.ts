@@ -258,7 +258,7 @@ declare global {
   }
 }
 
-const designCache: Record<string, { key: string; design: Design }> = {}
+const designCache: Record<string, { key: string; design: Design; dctx?: DesignContext; target?: unknown }> = {}
 
 const UPKEEP_INTERVAL = 300
 /**
@@ -277,9 +277,19 @@ const BUILD_ROUND_TICKS = 1800
 // ---------------------------------------------------------------------------------------------------------
 // Setup
 
-function parsePairs(value: string): Record<string, string> {
+/**
+ * The `factory-entities` pairs. With `force`: B205 (user, in-session 2026-11-12: "use medium poles everywhere once
+ * researched"): once the `late-pole` (default medium-electric-pole) recipe is enabled it is the `pole` of new modules
+ * and pole lines, and `researched-pole` names it (machines make it; the small pole needs wood from trees).
+ */
+function parsePairs(value: string, force?: LuaForce): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of string.gmatch(value, "([^=,;%s]+)%s*=%s*([^,;%s]+)")) out[k] = v
+  const late = out["late-pole"] ?? "medium-electric-pole"
+  if (force !== undefined && late !== "" && force.recipes[prototypeFacts.recipeForItem(late) ?? late]?.enabled === true) {
+    out.pole = late
+    out["researched-pole"] = late
+  }
   return out
 }
 
@@ -377,7 +387,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     force: factionForce(faction),
     surface: factionSurface(faction),
     tick: game.tick,
-    entities: parsePairs(config.factoryEntities),
+    entities: parsePairs(config.factoryEntities, factionForce(faction)),
     waiting: [],
   }
   updateGoals(ctx)
@@ -391,11 +401,12 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
   EX.robotsStep(ctx, {
     busy: hooks.busy,
     start: (role, anchor, window, chests) => {
-      const params = { roboport: ctx.entities.roboport ?? "roboport", chests }
+      const params = { roboport: ctx.entities.roboport ?? "roboport", chests, pole: ctx.entities["researched-pole"] }
       const def = makeModule("roboport", params)
       const node: DesignNode = { role, kind: "sink", generator: "roboport", params, def, item: params.roboport, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
       startGoal(ctx, { kind: "robots", nodes: [node], edges: [], techs: [] }, undefined, { x: anchor.x, y: anchor.y, window })
     },
+    footprint: () => makeModule("roboport", { roboport: ctx.entities.roboport ?? "roboport", chests: 0 }).footprint,
   })
   EX.exploreStep(ctx, hooks)
   advanceGoals(ctx, d)
@@ -483,6 +494,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     lab: e.lab ?? "lab",
     boiler: e.boiler ?? "boiler",
     engine: e.engine ?? "steam-engine",
+    pole: e["researched-pole"],
     packs,
     researchUnitTime: ST.labUnitTime(ctx.config, stage),
     tiers: RT.tiers(),
@@ -499,9 +511,14 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     oilLube,
     builtGenerators: ST.builtGenerators(getFactory(ctx.faction.name)),
     providerFeeds: ST.providerFeeds(getFactory(ctx.faction.name)),
-    powerCaps: ST.powerCaps(getFactory(ctx.faction.name)),
+    // B185: in solar mode every built steam block keeps its capacity; the rest of the power is solar.
+    powerCaps: ST.noCoal(getFactory(ctx.faction.name), brain.patches) ? ST.fuelledSteamCaps(getFactory(ctx.faction.name), brain.catalog.fuel) ?? ST.powerCaps(getFactory(ctx.faction.name)) : ST.powerCaps(getFactory(ctx.faction.name)),
+    solarPower: ST.noCoal(getFactory(ctx.faction.name), brain.patches),
+    steamCaps: ST.powerCaps(getFactory(ctx.faction.name)),
+    coalDistance: ST.coalDistance(getFactory(ctx.faction.name), brain.patches, brain.hub ?? brain.base, brain.catalog.fuel),
     cluster1Max: ST.cluster1Max(getFactory(ctx.faction.name)),
     noFeed: CS.flags(getFactory(ctx.faction.name)?.constraints, "noFeed"),
+    inlandPower: CS.flags(getFactory(ctx.faction.name)?.constraints, "inlandPower"),
     maxSmelters: stage >= 0 && ST.firstLateStage(ctx.config) >= 0 && stage >= ST.firstLateStage(ctx.config),
   }
 }
@@ -535,7 +552,7 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const role of CS.keys(c, "providerShort")) short += `${role}:${string.format("%.6g", caps[role] ?? 0)};`
   let retiring = ""
   for (const [role] of pairs(f.retiring ?? {})) retiring += `${role as string};`
-  const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "noFeed", "ownSite"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
+  const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "noFeed", "ownSite", "inlandPower", "solarPower"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
   const key = `${flagKey}|${blocked}|${short}|${retiring}|${ST.designSignals(f)}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
   const cached = designCache[ctx.faction.name]
   if (cached !== undefined && cached.key === key) return cached.design
@@ -544,6 +561,7 @@ function designNow(ctx: Ctx): Design | undefined {
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
   const dctx = designContext(ctx, stageIndex)
   // M7d.5 (D77): construction robots and roboports are stocked once their technology is researched.
+  // B185: a design with a solar field adds the stock rows of its buildings itself (`DS.design`).
   const stock = DS.robotStock((t) => ctx.force.technologies[t]?.researched === true, (r) => ctx.force.recipes[r]?.enabled === true)
   const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock })
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
@@ -614,7 +632,7 @@ function designNow(ctx: Ctx): Design | undefined {
     f.design.techs = d.techs
   }
   ;(d as Design & { goals?: GoalSpec[] }).goals = goals
-  designCache[ctx.faction.name] = { key, design: d }
+  designCache[ctx.faction.name] = { key, design: d, dctx, target: { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock } }
   return d
 }
 
@@ -675,15 +693,17 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
     completed[kind] = built(f, kind)
   }
   const activeGrowth = activeGoal(f, "grow")
+  const feeds = GH.feedsBuildingAll(f, specs, f.goals.some((g) => g.kind === "production" && GH.goalStalled(game.tick, getConfig().stallTicks, g)))
   return {
     version: 1,
     faction,
     stage: f.stage,
-    specs: specs.map((spec) => ({
+    specs: specs.map((spec, i) => ({
       kind: spec.kind,
       cluster: spec.cluster,
       techs: spec.techs,
-      feedsBuilding: spec.kind === "production" ? GH.feedsBuilding(f, spec) : undefined,
+      feedsBuilding: spec.kind === "production" ? feeds[i] : undefined,
+      waitsFor: spec.kind === "power" ? GH.stockWaits(f, specs, spec, (e) => prototypeFacts.itemToPlace(e) ?? e, (item) => (prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(item) ?? item) ?? "") !== "" && researched[prototypeFacts.unlockedBy(prototypeFacts.recipeForItem(item) ?? item)!] !== true) : undefined,
       growth: spec.growth === undefined ? undefined : {
         role: spec.growth.role,
         have: spec.growth.have,
@@ -721,6 +741,20 @@ export function factoryGoalSelectionSnapshot(name: string): FactoryGoalSelection
 export function factoryDesignDebug(name: string, filter = ""): unknown {
   const design = designCache[name]?.design as (Design & { goals?: GoalSpec[] }) | undefined
   if (design === undefined) return undefined
+  // B198: `dump:<file>` writes the last design's context (its data; T1 supplies facts and generators) and target, with
+  // the curated modules it may make, for `mod/unit/design-replay.test.ts`.
+  const dumpTo = string.match(filter, "^dump:(.+)$")[0]
+  if (dumpTo !== undefined) {
+    const entry = designCache[name]!
+    const data: Record<string, unknown> = {}
+    for (const [k, v] of pairs(entry.dctx ?? {})) if (k !== "facts" && k !== "make") data[k as string] = v
+    const curated: Record<string, unknown> = {}
+    for (const [, id] of pairs(entry.dctx?.curated ?? {})) curated[id as string] = entry.dctx!.make("curated", { id })
+    const mallId = (entry.target as { mall?: { id: string } } | undefined)?.mall?.id
+    if (mallId !== undefined) curated[mallId] = entry.dctx!.make("curated", { id: mallId })
+    helpers.write_file(dumpTo, serpent.dump({ ctx: data, target: entry.target, curated }))
+    return { written: dumpTo }
+  }
   const has = (r: string): boolean => filter === "" || string.find(r, filter, 1, true)[0] !== undefined
   return {
     edges: design.edges.filter((e) => has(e.role)).map((e) => ({ role: e.role, item: e.item, from: e.from, to: e.to, toPort: e.toPort, rate: e.rate })),
@@ -969,13 +1003,8 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
         log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} stays at its current capacity; planning a parallel provider`)
       }
     }
-    // A cluster-1 module that can't grow caps cluster 1's share (the other clusters make the rest).
-    const grown = f.graph.nodes[gr.node]
-    if (fails >= ST.GROW_MAX_FAILS && grown !== undefined && NF.nodeServes(grown) !== "power" && NF.nodeHomeCluster(grown) === 1 && !NF.nodeParallel(grown) && gr.need > 0) {
-      const cap = math.max(0.05, math.min(1, gr.have / gr.need)) * (f.design?.cluster1Share ?? 1)
-      CS.setValue(c, "cluster1Caps", gr.role, cap)
-      log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} can't grow: production cluster 1 takes at most ${string.format("%.3f", cap)} of the target`)
-    }
+    // B182 (user, 2026-11-11: the cap stays off): no cluster-1 cap any more. The B60 parallel provider above makes the residual of a module
+    // that can't grow; capping the whole cluster shrank every cluster-1 module and compounded (seed 11: 0.092 -> 0.012).
     log(`[rival-engineers] faction ${ctx.faction.name}: ${gr.role} cannot grow by ${gr.units} units (failure ${fails}): ${plan.reason}`)
     return false
   }
@@ -1047,11 +1076,14 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
     for (let x = x1; x < x1 + w; x++) for (let y = y1; y < y1 + h; y++) taken[tkey(x, y)] = true
   }
   for (const e of evictSites(ctx.faction, ctx.surface, taken, `goal ${g.id} (grow ${gr.role})`)) clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
-  // D71 (b): old poles are picked up once the growth's new poles stand (make before break).
+  // D71 (b): old poles are picked up once the growth's new poles stand (make before break). B207: one where a new pole
+  // of another kind stands is picked up first: its replacement can't be placed over it.
   const breakAfter: LuaEntity[] = []
+  const newPoles: Record<string, boolean> = {}
+  for (const e of plan.add) if (prototypes.entity[e.name]?.type === "electric-pole") newPoles[`${e.x},${e.y}`] = true
   for (const e of plan.remove) {
     const found = findEntities(ctx.surface, { name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })[0]
-    if (found !== undefined && found.type === "electric-pole") breakAfter.push(found)
+    if (found !== undefined && found.type === "electric-pole" && !newPoles[`${e.x},${e.y}`]) breakAfter.push(found)
     else if (found !== undefined) clearJobs.push(addClearJob(ctx.faction, found, ctx.config.factoryBuildPriority))
     // B37: an evicted pole line may still be a ghost.
     else for (const gh of findEntities(ctx.surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
@@ -1309,7 +1341,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     if (m.def.generator !== "pumpjack-field") continue
     const n = g.nodes.find((x) => x.id === m.id)!
     const resource = (n.params.resource as string | undefined) ?? "crude-oil"
-    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", params), takenWells, [...moduleRects, ...fieldBoxes], claimed)
+    const field = OIL.fieldModule(ctx.surface, region, EX.chunkKnownFor(ctx, g), center, resource, n.need, (n.params.pumpjack as string | undefined) ?? "pumpjack", (params) => makeModule("pumpjack-field", { ...params, pole: n.params.pole }), takenWells, [...moduleRects, ...fieldBoxes], claimed)
     if (field === undefined) {
       transitionGoal(g, "failed")
       g.deferred = true
@@ -1327,6 +1359,11 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
     EX.knowRect(f, { x: field.at.x, y: field.at.y, w: field.def.footprint.w, h: field.def.footprint.h })
   }
   const request: PlanRequest = { modules, connections, center, region, poles: ctx.entities.pole ?? "small-electric-pole" }
+  // B210: the pole step joins built poles as the game wired them (network, copper wires), not by reach.
+  request.builtPoles = {}
+  for (const p of findEntities(ctx.surface, { force: ctx.faction.force, type: "electric-pole" })) {
+    request.builtPoles[tkey(math.floor(p.position.x), math.floor(p.position.y))] = { net: p.electric_network_id ?? 0, wires: p.get_wire_connector(defines.wire_connector_id.pole_copper, false)?.connection_count ?? 0 }
+  }
   // B63: a consumer whose input port boxed a plan in gets a wider window for this whole plan (see wideJoin).
   for (const e of g.edges) if (CS.has(f.constraints, "wideJoin", CS.portKey(e.to, e.toPort))) request.windowScale = 3
   // D57 (c): patches earlier plans' mines found no room on.
@@ -1463,7 +1500,7 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     }
     const failureFacts: FR.FailedPlanFacts = {
       failures,
-      edges: g.edges.map((e) => ({ role: e.role, from: e.from, to: e.to, toPort: e.toPort })),
+      edges: g.edges.map((e) => ({ role: e.role, from: e.from, to: e.to, toPort: e.toPort, item: e.item })),
       nodes: g.nodes.map((n) => ({ id: n.id, role: n.role, item: n.item })),
       provider: (role) => {
         const n = nodeByRoleIn(f, role)
@@ -1511,8 +1548,9 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       RT.exportGraph(entry, `${name}.graph.json`)
       // Region radius 384 plans (a far mine or a late cluster) are 768 tiles across: export those up to 800 tiles a side
       // too, or a failure there leaves nothing to replay (B85 and 1376111 needed capture runs). M7c: 3,000, so a plan
-      // reaching a remote oil field (~900 tiles from the hub on seed 11) is captured with the base.
-      RT.exportPlanInput(entry, `${name}.input.lua`, 3000)
+      // reaching a remote oil field (~900 tiles from the hub on seed 11) is captured with the base. 5,000: seed 222's crude
+      // fields lay ~2,100 tiles out (region 1355×4525), and its sealed field starts left nothing to replay.
+      RT.exportPlanInput(entry, `${name}.input.lua`, 5000)
     }
     RT.removePlan(entry.id)
     // B57/B61: a sealed consumer port is authoritative even while relocation waits. Mark it now, so the next design
@@ -1554,6 +1592,24 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     // plans on the search-radius ladder (seed 1376111 died one attempt short of its first exploration), it keeps the
     // goal (`deferred`, attempts intact) instead of replacing it with a freshly minted id, and it pauses its kind (or
     // the ore search) so one exhausted site cannot become a run of failures on new goals.
+    // B184 (user, 2026-11-11): a steam block that found no shore is planned inland, fed by a water pump (which needs only
+    // a small shore anywhere a pipe reaches). Replan at once; a pump that finds no shore either pauses as before.
+    if (contest === undefined) {
+      let inland = false
+      for (const x of failures) {
+        const id = string.match(x.key, "^module:(.*)$")[0]
+        const n = id !== undefined ? g.nodes.find((m) => m.id === id) : undefined
+        if (x.failure.kind !== "no-site" || n === undefined || n.generator !== "steam-block" || n.params?.water === "pipe") continue
+        if (CS.add((f.constraints ??= {}), "inlandPower", n.role)) inland = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} found no shore (goal ${g.id}): planned as an inland steam block fed by a water pump (B184)`)
+      }
+      if (inland) {
+        transitionGoal(g, "failed")
+        g.deferred = true
+        g.reason = `replan with an inland steam block: ${g.reason}`
+        return
+      }
+    }
     const gone = contest === undefined && g.site === undefined ? EX.exhausted(failures.map((x) => x.failure)) : undefined
     if (gone !== undefined) {
       transitionGoal(g, "failed")
@@ -1569,6 +1625,15 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
         return
       }
       g.reason = `exploring for ${gone.what}: ${g.reason}`
+      // B185 (user, 2026-11-11; trigger proposed): no known patch for a steam block's fuel supply: new power comes from
+      // solar fields (built steam blocks keep their capacity) until the exploration finds more patches of it.
+      for (const x of failures) {
+        const id = string.match(x.key, "^module:(.*)$")[0]
+        const n = id !== undefined ? g.nodes.find((m) => m.id === id) : undefined
+        if (n === undefined || !NF.rolePower(n.role) || n.generator === "steam-block" || (x.failure.kind !== "no-patch" && x.failure.kind !== "no-position")) continue
+        if (!CS.has(f.constraints, "solarPower", gone.what)) log(`[rival-engineers] faction ${ctx.faction.name}: no ${gone.what} for ${n.role} (goal ${g.id}): new power comes from solar fields (B185)`)
+        CS.setValue((f.constraints ??= {}), "solarPower", gone.what, ST.patchCount(ctx.faction.brain!.patches, gone.what))
+      }
       EX.exploreFor(ctx, g, gone.what)
       return
     }
@@ -1576,7 +1641,8 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
     // arms) fails the same way on every attempt: the region radius doesn't bound the pole search. It fails at once, so
     // the exploration tries the next arm instead of spending 4 plans per arm (8 failed plans in a row stopped the soak).
     const fixedSite = g.site !== undefined || g.kind === "power" || g.nodes.some((n) => n.generator === "mining-outpost" || n.generator === "pumpjack-field" || n.generator === "water-pump" || n.generator === "steam-block")
-    const cannotHelp = FR.retryCannotHelp(fixedSite, failures)
+    // B192: a roboport goal plans in its grid cell's fixed window (CELL_WINDOW): a wider radius searches the same tiles.
+    const cannotHelp = FR.retryCannotHelp(fixedSite, failures) || (g.kind === "robots" && failures.length > 0 && !failures.some((x) => x.failure.kind !== "no-position"))
     if (g.attempts >= MAX_PLAN_ATTEMPTS || cannotHelp) {
       if (cannotHelp) FU.markUnreachableMinePatches(ctx, g.id, entry.job!.layout, g.nodes.map((n) => n.id), entry.job!.sitePatches)
       // An idle provider an earlier layer goal built for a route that never came is moved, so the design plans it again
@@ -1587,6 +1653,12 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
         FU.relocate(ctx, n, `idle provider ${role}`, `has no route to its built consumer after ${g.attempts} plans (goal ${g.id})`)
       }
       transitionGoal(g, "failed")
+      // B191 (trigger user-approved in-session, 2026-11-11): a steam block's fuel route found no path after every plan: solar, as B185's no-patch.
+      const fuel = ctx.faction.brain!.catalog.fuel
+      for (const role of FR.unreachableFuel(failureFacts, fuel, NF.rolePower)) {
+        if (!CS.has(f.constraints, "solarPower", fuel)) log(`[rival-engineers] faction ${ctx.faction.name}: no path for ${fuel} to ${role} after ${g.attempts} plans (goal ${g.id}): new power comes from solar fields (B191)`)
+        CS.setValue((f.constraints ??= {}), "solarPower", fuel, ST.patchCount(ctx.faction.brain!.patches, fuel))
+      }
       // B53 (user, 2026-10-20): no site in the region (e.g. no shore for a steam block) stays true for a while: goals of
       // this kind wait `factory-site-retry-minutes` instead of planning again at once, forever.
       if (failures.some((x) => x.failure.kind === "no-site") && ctx.config.factorySiteRetryMinutes > 0) {
@@ -1810,10 +1882,15 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
   // B37: pole lines the plan's modules and routes took are picked up (ghosts cancelled at once); the plan's pole step
   // joined what they powered again. A pole the new lines place at the same spot stays.
   const relaid: Record<string, boolean> = {}
-  for (const p of layout.poles ?? []) relaid[`${p.name}@${p.x},${p.y}`] = true
+  for (const p of layout.poles ?? []) {
+    relaid[`${p.name}@${p.x},${p.y}`] = true
+    relaid[`${p.x},${p.y}`] = true
+  }
   const queued: Record<number, boolean> = {}
   for (const e of evicted) if (e.valid && e.unit_number !== undefined) queued[e.unit_number] = true
   // D71 (b): built evicted poles are picked up once the plan's new poles stand (make before break, `RT.startBuild`).
+  // B207: but one on the tile of a new pole of another kind (a medium pole replacing a small one) is cleared before
+  // the ghosts: its replacement can't stand while it does (b205-222: 10 rounds, then the goal gave up its location).
   const breakAfter: LuaEntity[] = []
   for (const p of layout.evictedPoles ?? []) {
     if (relaid[`${p.name}@${p.x},${p.y}`]) continue
@@ -1821,7 +1898,8 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     const built = findEntities(ctx.surface, { name: p.name, position: at, force: ctx.faction.force, limit: 1 })[0]
     if (built !== undefined && !queued[built.unit_number!]) {
       queued[built.unit_number!] = true
-      breakAfter.push(built)
+      if (relaid[`${p.x},${p.y}`]) evicted.push(built)
+      else breakAfter.push(built)
     }
     for (const gh of findEntities(ctx.surface, { ghost_name: p.name, position: at, force: ctx.faction.force, limit: 1 })) destroyEntity(gh)
   }
@@ -2383,8 +2461,20 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
     }
     for (const e of RT.strayUnder(ctx.surface, faction.force, planned, gh)) {
       if (faction.stockpiles.indexOf(e) >= 0 || isSitePart(faction.brain, e) || clearJobFor(faction, e) !== undefined) continue
-      addClearJob(faction, e, b!.priority)
-      log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: picking up ${e.name} at ${e.position.x},${e.position.y} under a leftover ${gh.ghost_name} ghost (not in the layout)`)
+      const k = `${e.position.x},${e.position.y}`
+      g.clearing ??= {}
+      const old = g.clearing[k]
+      const job = addClearJob(faction, e, b!.priority)
+      g.clearing[k] = job
+      log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: picking up ${e.name} at ${k} under a leftover ${gh.ghost_name} ghost (not in the layout)`)
+      // B207 (b205-222, min 300: a medium-pole ghost over the small pole it replaces, 10 rounds): picked up once
+      // already and still there: the ghost covers it (the crew refuse to mine a selected ghost). Lift the ghost until
+      // the pickup ends, as for a tree (M7c.9).
+      if (old !== undefined && gh.valid) {
+        const l = LIFT.liftGhost(gh, job)
+        ;(g.lifted ??= []).push(l)
+        log(`[rival-engineers] faction ${faction.name}: goal ${g.id}: lifted the ${l.name} ghost at ${l.position.x},${l.position.y} until what it covers is picked up`)
+      }
     }
   }
   for (const gh of left) {
@@ -2479,7 +2569,7 @@ export function onFactoryMeterTick(): void {
 
 /** For tests: one measurement + reconcile pass (and the goal updates remedies need) outside the brain's cadence. */
 export function reconcileNow(faction: FactionState, f: FactoryState, config: Config = getConfig()): void {
-  const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities), waiting: [] }
+  const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities, factionForce(faction)), waiting: [] }
   updateGoals(ctx)
   f.meter ??= MS.newMeter()
   f.meter.lastSample = -math.huge
@@ -2489,7 +2579,7 @@ export function reconcileNow(faction: FactionState, f: FactoryState, config: Con
 
 /** For tests (B98): one `startGrow` outside the reconciler. */
 export function growNow(faction: FactionState, f: FactoryState, growth: NonNullable<GoalSpec["growth"]>): boolean | "wait" {
-  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities), waiting: [] }
+  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities, factionForce(faction)), waiting: [] }
   const r = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth })
   f.waiting = ctx.waiting
   return r
@@ -2819,6 +2909,22 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       const own = checkBuild(ctx.surface, ctx.faction.force, f.layout, built, (s) => prototypes.entity[s.name]?.type === "electric-pole", ctx.faction)
       for (const s of own.missing) check.missing.push(s)
       for (const s of own.orphans) check.orphans.push(s)
+    } else if (e.kind === "belt") {
+      // B201 (`m7-b199` seed 3333, min 104-194): the belts inside the edge's two modules carry its items too. An abandoned
+      // growth (B20/B138) had already picked up the mall smelter's tail; the route stood whole to the moved port, the
+      // reconciler found "nothing missing" for 90 game-min and research stopped. Missing belt pieces of either module are
+      // re-placed like route pieces; never its machines (D49).
+      const ends: BuildParts = { modules: [], routes: [], poles: [] }
+      const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
+      for (const node of [e.from, e.to]) {
+        const id = node === undefined ? undefined : (LG.connectModule(f.graph, node, inLayout) ?? node)
+        if (id !== undefined && inLayout(id) && f.graph.nodes[id]?.lifecycle === "built" && ends.modules.indexOf(id) < 0) ends.modules.push(id)
+      }
+      const belts = checkBuild(ctx.surface, ctx.faction.force, f.layout, ends, (sp) => {
+        const t = prototypes.entity[sp.name]?.type
+        return t === "transport-belt" || t === "underground-belt" || t === "splitter"
+      }, ctx.faction)
+      for (const sp of belts.missing) check.missing.push(sp)
     }
     if (check.missing.length === 0 && check.misdirected.length === 0 && check.stale.length === 0 && check.intruders.length === 0) {
       // B83: every entity stands, but the edge's routes do not bring items to the consumer's port in the layout (a
@@ -3012,7 +3118,7 @@ function tempFactories(ctx: Ctx): void {
     const recipe = prototypeFacts.recipeForItem(w.item)
     if (recipe === undefined || !ctx.force.recipes[recipe]?.enabled) continue
     for (let k = (f.temp.built[w.item] ?? 0) + 1; k <= w.count; k++) {
-      const params = { recipe, machine, chest }
+      const params = { recipe, machine, chest, pole: ctx.entities["researched-pole"] }
       const def = makeModule("chest-cell", params)
       const cap = LG.rateIn(def.rates.outputs, w.item)
       const inputs = def.rates.inputs.filter((r) => r.item !== "electricity").map((r) => ({ item: r.item, rate: r.perSecond, port: `in-${r.item}` }))
@@ -3031,7 +3137,7 @@ function tempFactories(ctx: Ctx): void {
 /** D56 / D62: starts a radar goal (the base radar, or an outpost at `site`); returns its id. */
 function startRadar(ctx: Ctx, role: string, site?: FactoryGoal["site"]): string {
   const radar = ctx.entities.radar ?? "radar"
-  const params = { radar }
+  const params = { radar, pole: ctx.entities["researched-pole"] }
   const def = makeModule("radar", params)
   const node: DesignNode = { role, kind: "sink", generator: "radar", params, def, item: radar, need: 0, capacity: 0, inputs: [], powerW: LG.rateIn(def.rates.inputs, "electricity"), cluster: 1 }
   startGoal(ctx, { kind: "radar", nodes: [node], edges: [], techs: [] }, site)

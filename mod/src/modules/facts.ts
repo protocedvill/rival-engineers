@@ -61,6 +61,10 @@ export interface EntityFacts {
   fluidPerTick?: number
   /** Offshore pumps: fluid per tick. */
   pumpingPerTick?: number
+  /** B185: solar panels: peak output in J/tick (full daylight). */
+  productionPerTick?: number
+  /** B185: accumulators: stored energy in J. */
+  bufferJ?: number
   /** M7b: fluid boxes (north-facing), in prototype order. */
   fluidBoxes?: FluidBoxFacts[]
   /** Pipe-to-ground: the farthest an exit may be from its entrance. */

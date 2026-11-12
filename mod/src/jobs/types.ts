@@ -56,6 +56,8 @@ export interface FactionState {
   crew: number[]
   /** Chests the crew takes materials from. Only the faction's own. */
   stockpiles: LuaEntity[]
+  /** B203: depot chests ordered upgraded to storage chests: the new chest at each position becomes a stockpile. */
+  depotUpgrades?: { x: number; y: number }[]
   board: Board<JobPayload>
   /** Ghost unit_number → place job id, so a ghost is planned once. */
   ghostJobs: Record<number, JobId>

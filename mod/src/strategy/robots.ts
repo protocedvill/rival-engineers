@@ -30,6 +30,8 @@ export interface RobotsHooks {
   busy: (this: void) => string | undefined
   /** Starts a roboport goal: graph role, the point it goes near, the region's half-size, storage chests beside it. */
   start: (this: void, role: string, anchor: Vec, window: number, chests: number) => void
+  /** A grid roboport module's footprint (no chests), for the B192 room check. */
+  footprint: (this: void) => { w: number; h: number }
 }
 
 /** The context the network's upkeep needs (the factory's). */
@@ -144,12 +146,6 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     const c = RG.parseCellRole(n.role)
     if (c !== undefined && !failed[RG.cellKey(c)]) cells.push(c)
   }
-  // The hub already gives the network a working radius. Optional grid cells in a dense base can have no site; stop
-  // spending plans on them after a couple of failures instead of tripping the soak fail-fast.
-  if (cells.length > 0 && failedCells >= MAX_GRID_FAILURES) {
-    ctx.waiting.push(`robots: network grid paused after ${failedCells} cells with no site`)
-    return
-  }
   // The hub in the construction-robot stock row: cell 0,0 once the row is built; the design plans it (no hub goal).
   const hub = hubNode(ctx)
   if (hub !== undefined && hub.row) {
@@ -160,6 +156,14 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     cells.push({ i: 0, j: 0 })
   } else if (hub === undefined && robotHub(ctx, f.graph) !== undefined) {
     ctx.waiting.push(`robots: wait for the design to plan the hub in the stock:${robotName(ctx)} row`)
+    return
+  }
+  // The hub already gives the network a working radius. Optional grid cells in a dense base can have no site; stop
+  // spending plans on them after a couple of failures instead of tripping the soak fail-fast.
+  // B192 (`m7-b186` seed 222, min 327): after the hub row's cell joins `cells`; checked before it, a network of just
+  // the row's hub never paused and two blocked cells in a row (8 plans) stopped the soak.
+  if (cells.length > 0 && failedCells >= MAX_GRID_FAILURES) {
+    ctx.waiting.push(`robots: network grid paused after ${failedCells} cells with no site`)
     return
   }
   // The network waits for its roboports to be made (the stock row, design.ts `robotStock`).
@@ -191,6 +195,7 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     spacing: ctx.config.factoryRoboportSpacing,
     constructionRadius: prototypeFacts.entity(roboport)?.constructionRadius ?? 0,
     max: ctx.config.factoryRoboportsMax,
+    room: cells.length > 0 ? { ...hooks.footprint(), window: CELL_WINDOW } : undefined,
   })
   if (next === undefined) return
   const hubCell = cells.length === 0

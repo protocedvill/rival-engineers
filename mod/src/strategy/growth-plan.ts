@@ -56,8 +56,8 @@ const EPS = 1e-6
  * Every node's required output once its consumers' demand is propagated up its inputs.
  *
  * Starts from the edges' requested rates and walks consumers-first, raising a provider's requirement where the node it
- * feeds needs more of that item. Mutates each edge's `rate` to the required flow (callers pass a scratch array) and
- * assumes one provider per (node, item); parallel providers are different consumers, which the design already does.
+ * feeds needs more of that item. Mutates each edge's `rate` to the required flow (callers pass a scratch array). Several
+ * providers of one item into a node share its requirement in proportion to their edges.
  */
 export function requiredRates(nodes: SupplyNode[], edges: SupplyEdge[]): Record<string, number> {
   const rate: Record<string, number> = {}
@@ -84,11 +84,16 @@ export function requiredRates(nodes: SupplyNode[], edges: SupplyEdge[]): Record<
     if (n === undefined || out <= EPS) continue
     const list = incoming[role]
     if (list === undefined) continue
+    // B199: parallel providers (B60) feed one input together. Raise them only by what they carry short in total,
+    // in proportion to their edges: each raised to the whole input asked a short provider for the consumer's full need.
+    const fed: Record<string, number> = {}
+    for (const e of list) fed[e.item] = (fed[e.item] ?? 0) + e.rate
     for (const e of list) {
       let per = 0
       for (const inp of n.inputs) if (inp.item === e.item) per += inp.perOutput
       if (per <= EPS) continue
-      const want = out * per
+      const total = fed[e.item]
+      const want = total > EPS ? (out * per * e.rate) / total : out * per
       if (want <= e.rate + EPS) continue
       rate[e.from] = (rate[e.from] ?? 0) + (want - e.rate)
       e.rate = want

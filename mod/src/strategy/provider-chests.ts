@@ -4,10 +4,13 @@
 // building materials straight from them, as in a player's base. New modules get them in their design; built ones are
 // upgraded in place through Factorio's upgrade orders, which the robots carry out (like a player's upgrade planner),
 // and the crew brings the chests to the hub's storage. The layout follows once a chest is upgraded.
+// B203 (user, in-session 2026-11-12: "for robots we need the depots to actually be storage chests"): the crew's depot
+// chests in the network are upgraded to storage chests the same way, so robots build from what the crew stores.
 
-import { LuaEntity } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { keyTaken } from "../jobs/keys"
 import { hasNetwork } from "../jobs/robot-orders"
+import { addStockpile } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { transformPoint } from "../modules/geometry"
@@ -68,8 +71,9 @@ function renameChest(m: PlacedModule, x: number, y: number, from: string, to: st
  * waiting.
  */
 export function upgradeOutputChests(ctx: ExploreCtx & { faction: FactionState }, priority: number): number {
+  const depots = upgradeDepots(ctx, priority)
   const provider = providerChest(ctx)
-  if (provider === undefined || !hasNetwork(ctx.faction, ctx.surface.name)) return 0
+  if (provider === undefined || !hasNetwork(ctx.faction, ctx.surface.name)) return depots
   const f = ctx.f
   let waiting = 0
   for (const n of LG.nodesOf(f.graph)) {
@@ -91,17 +95,57 @@ export function upgradeOutputChests(ctx: ExploreCtx & { faction: FactionState },
       waiting++
     }
   }
-  if (waiting > 0) stockProviders(ctx, provider, waiting, priority)
+  if (waiting > 0) stockHub(ctx, provider, waiting, priority)
+  return waiting + depots
+}
+
+/** B203: the depot upgrade pass once the storage chest is researched (`orderDepotUpgrades`), with the chests it needs. */
+function upgradeDepots(ctx: ExploreCtx & { faction: FactionState }, priority: number): number {
+  if (!ctx.config.factoryRobots) return 0
+  const store = ctx.entities["storage-chest"] ?? "storage-chest"
+  if (ctx.force.recipes[prototypeFacts.recipeForItem(store) ?? store]?.enabled !== true) return 0
+  const waiting = orderDepotUpgrades(ctx.faction, ctx.surface, ctx.force, store)
+  if (waiting > 0) stockHub(ctx, store, waiting, priority)
   return waiting
 }
 
-/** The crew brings `count` provider chests to the hub's first storage chest, for the robots' upgrades. */
-function stockProviders(ctx: ExploreCtx & { faction: FactionState }, provider: string, count: number, priority: number): void {
+/**
+ * B203: orders the faction's depot chests inside a logistic network upgraded to `store`, and registers each finished
+ * one as a stockpile. Robots keep a chest's contents when they upgrade it. Returns the orders waiting.
+ */
+export function orderDepotUpgrades(faction: FactionState, surface: LuaSurface, force: LuaForce, store: string): number {
+  const pending = (faction.depotUpgrades ??= [])
+  for (let i = pending.length - 1; i >= 0; i--) {
+    const chest = findEntities(surface, { type: CHEST_TYPES, force, position: pending[i], limit: 1 })[0]
+    if (chest !== undefined && chest.valid && chest.to_be_upgraded()) continue
+    // Upgraded, or gone (mined, cancelled): either way the order is over.
+    if (chest !== undefined && chest.valid && chest.name === store && faction.stockpiles.indexOf(chest) < 0) {
+      addStockpile(faction, chest)
+      log(`[rival-engineers] faction ${faction.name}: B203 depot chest at (${chest.position.x}, ${chest.position.y}) is a ${store} now`)
+    }
+    pending.splice(i, 1)
+  }
+  let waiting = 0
+  for (const chest of faction.stockpiles) {
+    if (!chest.valid || chest.name === store || chest.surface.name !== surface.name) continue
+    if (force.find_logistic_network_by_position(chest.position, surface) === undefined) continue
+    if (!chest.to_be_upgraded()) {
+      chest.order_upgrade({ target: store, force })
+      if (!chest.to_be_upgraded()) continue
+      pending.push({ x: chest.position.x, y: chest.position.y })
+    }
+    waiting++
+  }
+  return waiting
+}
+
+/** The crew brings `count` chests of `item` to the hub's first storage chest, for the robots' upgrades. */
+function stockHub(ctx: ExploreCtx & { faction: FactionState }, item: string, count: number, priority: number): void {
   const store = hubRoboport(ctx)?.chests[0]
   if (store === undefined || !store.valid) return
-  const want = count - store.get_item_count(provider)
-  const key = `provider-chests:${store.unit_number}`
+  const want = count - store.get_item_count(item)
+  const key = `upgrade-chests:${item}:${store.unit_number}`
   if (want <= 0 || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) return
-  const n = math.min(want, prototypes.item[provider]?.stack_size ?? 50)
-  addKeyed(ctx, key, { kind: "fuel", pos: store.position, materials: [{ item: provider, count: n }], priority, payload: { kind: "fuel", item: provider, count: n, target: store, partial: true } })
+  const n = math.min(want, prototypes.item[item]?.stack_size ?? 50)
+  addKeyed(ctx, key, { kind: "fuel", pos: store.position, materials: [{ item, count: n }], priority, payload: { kind: "fuel", item, count: n, target: store, partial: true } })
 }

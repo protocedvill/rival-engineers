@@ -1,4 +1,4 @@
-import { cellKey, cellPoint, cellRole, nextCell, parseCellRole } from "../src/strategy/robot-grid"
+import { cellHasRoom, cellKey, cellPoint, cellRole, nextCell, parseCellRole } from "../src/strategy/robot-grid"
 import { eq, ok, run, test } from "./harness"
 
 const O = { x: 10, y: 20 }
@@ -38,6 +38,20 @@ test("M7d.5: equal coverage goes to the cell nearest the hub, then the lowest i,
   eq(cellKey(nextCell(input)!), "-1,0", "lowest i")
   ok(nextCell({ ...input, cells: [{ i: 0, j: 0 }, { i: -1, j: 0 }] }) !== undefined, "the east one next")
   eq(cellKey(nextCell({ ...input, cells: [{ i: 0, j: 0 }, { i: -1, j: 0 }] })!), "1,0")
+})
+
+test("B192: a cell whose window has no room for the roboport among the modules is skipped", () => {
+  const room = { w: 5, h: 4, window: 8 }
+  // Window around (46, 20): x 38..54, y 12..28. A module covering it (and the hub's coverage, so it is not "open").
+  const blocker: [number, number, number, number] = [36, 10, 20, 20]
+  eq(cellHasRoom({ x: 46, y: 20 }, room, base([blocker])), false, "covered window")
+  eq(cellHasRoom({ x: 46, y: 20 }, room, base([[36, 10, 20, 13]])), true, "rows 24..28 are clear past the margin row 23: 4 rows fit")
+  eq(cellHasRoom({ x: 46, y: 20 }, room, base([[36, 10, 20, 14]])), false, "3 clear rows: neither rotation fits")
+  eq(cellHasRoom({ x: 46, y: 20 }, room, []), true, "empty")
+  const near = base([[0, 0, 20, 20], [80, 10, 30, 30], [10, 100, 10, 10], blocker])
+  const input = { modules: near, cells: [{ i: 0, j: 0 }], failed: {}, origin: O, spacing: 36, constructionRadius: 55, max: 10 }
+  eq(cellKey(nextCell(input)!), "1,0", "without the check: the blocked cell")
+  eq(cellKey(nextCell({ ...input, room })!), "0,1", "with it: the next best cell")
 })
 
 run("robot-grid")

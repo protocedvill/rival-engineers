@@ -100,6 +100,8 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "mining iron 4x2 electric", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2 } },
   { name: "mining coal 3x2 burner", generator: "mining-outpost", params: { resource: "coal", rows: 3, sides: 2, drill: "burner-mining-drill" } },
   { name: "steam 2 boilers", generator: "steam-block", params: { boilers: 2 } },
+  // B184: the inland variant takes its water by pipe (an infinity pipe in the lab).
+  { name: "steam 2 boilers inland", generator: "steam-block", params: { boilers: 2, water: "pipe" } },
   { name: "assembler-row gear 4", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4 } },
   // D51 / B14: buffer heads (validation bars them).
   { name: "assembler-row gear 4 buffer", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" } },
@@ -108,6 +110,9 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "assembler-row belt 2", generator: "assembler-row", params: { recipe: "transport-belt", count: 2 } },
   { name: "red-line 2", generator: "red-line", params: { units: 2 }, slow: true },
   { name: "circuit-block 1", generator: "circuit-block", params: { units: 1 } },
+  // B205 (user, 2026-11-12): medium poles once researched.
+  { name: "circuit-block 1 medium poles", generator: "circuit-block", params: { units: 1, pole: "medium-electric-pole" } },
+  { name: "mining iron 4x2 medium poles", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2, pole: "medium-electric-pole" } },
   { name: "lab-array 4", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack"] }, slow: true },
   { name: "curated red-tile-ramqvist", curated: "red-tile-ramqvist", slow: true },
   { name: "curated green-line-hellpet", curated: "green-line-hellpet", slow: true },

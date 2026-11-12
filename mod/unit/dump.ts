@@ -1,4 +1,4 @@
-// T1 plan dumps (README → Development, "Debugging a failing soak seed"): a replayed plan's decisions as JSON plus a
+// T1 plan dumps (docs/DEVELOPMENT.md, "Debugging a failing soak seed"): a replayed plan's decisions as JSON plus a
 // short text summary, from the planner's decision trace (src/planner/trace.ts). Plain Lua only (io, os).
 
 import { newRouteLength, PlanJob } from "../src/planner/plan"

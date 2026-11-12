@@ -9,7 +9,7 @@ import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
 import { claimPoleTile, releaseLaneReservation, reserveFreeTile } from "./claims"
-import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey, UNKNOWN, Vec } from "./grid"
 import { mergeGoals } from "./merge"
 import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
@@ -17,9 +17,9 @@ import { commitRoute, dependentRoutes, fillSoftUnits, findModule, findPort, Layo
 import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
 import { commitPlacement, expansionCandidate, placedPatch, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
-import { newPoleJob, PoleJob, stepPoles } from "./power"
+import { BuiltPole, newPoleJob, PoleJob, stepPoles } from "./power"
 import { minTileCost, newSearch, proveBeltSeal, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
-import { newPipeSearch, pipeFailureNotes, provePipeSeal, stepPipeSearch } from "./pipe-router"
+import { newPipeSearch, pipeFailureNotes, provePipeSeal, proveStartEnclosed, stepPipeSearch } from "./pipe-router"
 import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
 import type { RouteFailure } from "./route-failure"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
@@ -81,6 +81,8 @@ export interface PlanRequest {
   splitters?: boolean
   /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
   poles?: string
+  /** B210: the faction's built poles by tile key, with their electric network and copper wires (`PoleJob.built`). */
+  builtPoles?: Record<number, BuiltPole>
   /**
    * D36 / B2: after routing, route the same placement again with what an unresearched technology would allow, and
    * report how much shorter it is (the strategy researches it first when the saving is big enough).
@@ -581,14 +583,15 @@ function pumpLineTiles(x: number, y: number, dir: number): Record<number, boolea
 }
 
 /** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
-function pipeCallbacks(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, pj: PipeJob): PipeCallbacks {
+function pipeCallbacks(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, pj: PipeJob): PipeCallbacks {
   const f = connection(job, pj.conn).fluid!
   const routeTerrain = pipeTerrain(terrain, f)
+  const reach = pumpPoleReach(facts, f.pole)
   return {
     cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
     under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y, "pipe") && pipeSpanAt(job.layout, x, y, axis) === undefined,
     fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
-    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }, pumpLineTiles(x, y, dir)) !== undefined,
+    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }, pumpLineTiles(x, y, dir), reach) !== undefined,
   }
 }
 
@@ -700,6 +703,16 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
   const fed = feedingLines(job, toRef, f.name, id)
   if (fed.length > 0) {
     let best: { x: number; y: number; dir: number; run: number; line: string; d: number } | undefined
+    // B190 (seed 44444 g65): the nearest spot sat on a segment already at the pump-free extent (312/312), so every
+    // arrival there was refused and the search spent its whole budget. A spot whose segment has room comes first.
+    const extent = f.extent - PIPE_EXTENT_MARGIN
+    const better = (run: number, dist: number): boolean => {
+      if (best === undefined) return true
+      const room = run < extent
+      const bestRoom = best.run < extent
+      if (room !== bestRoom) return room
+      return dist < best.d
+    }
     for (const rid of fed) {
       const route = job.layout.routes[rid]
       const tiles: Record<number, boolean> = {}
@@ -718,7 +731,7 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
           for (let e = 0; e < 4 && clear; e++) if (e !== opposite4(d) && fluids[tkey(x + DX[e], y + DY[e])]) clear = false
           if (!clear) continue
           const dist = math.abs(x - start.x) + math.abs(y - start.y)
-          if (best === undefined || dist < best.d) best = { x, y, dir: opposite4(d), run: seg[i], line: rid, d: dist }
+          if (better(seg[i], dist)) best = { x, y, dir: opposite4(d), run: seg[i], line: rid, d: dist }
         }
       }
     }
@@ -862,7 +875,7 @@ function opposite4(d: number): number {
 function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   const pj = job.pipe!
   const s = pj.search
-  const used = stepPipeSearch(s, pipeCallbacks(job, terrain, policy, pj), budget)
+  const used = stepPipeSearch(s, pipeCallbacks(job, terrain, facts, policy, pj), budget)
   job.stats.routeWork += used
   job.stats.expansions += used
   if (planTrace.searches !== undefined) {
@@ -873,7 +886,7 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   const c = connection(job, pj.conn)
   const f = c.fluid!
   if (s.status === "failed") {
-    const cb = pipeCallbacks(job, terrain, policy, pj)
+    const cb = pipeCallbacks(job, terrain, facts, policy, pj)
     // B156: prove the seal first. It is bounded (`sealCheck` states) and decisive: a sealed port is not helped by a
     // bigger search budget, and the proof is what re-placement/relocation consumes.
     if (s.sealed === undefined && (policy.router.sealCheck ?? 0) > 0) {
@@ -883,6 +896,12 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
         if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: seal ${seal.proof.side} ${seal.proof.tiles} tiles (${seal.visited} states)`)
       } else if (planTrace.searches !== undefined) {
         planTrace.searches(`pipe ${pj.conn}: seal flood ${seal.inconclusive ? "hit its cap" : "reached the start side"} (${seal.visited} states)`)
+      }
+      // B188: the goal side is open, but the search itself explored everything the start can reach.
+      if (s.sealed === undefined) {
+        const enclosed = proveStartEnclosed(s, (x, y) => terrain.block(x, y) === UNKNOWN)
+        if (enclosed !== undefined && !enclosed.edge) s.sealed = enclosed
+        if (enclosed !== undefined && planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: start side ${enclosed.edge ? "reached unknown ground" : "enclosed"} (${enclosed.tiles} tiles)`)
       }
     }
     // B157 phase 2: only a reachable-but-expensive goal gets the one budget retry; a sealed one goes to the remedies.
@@ -897,14 +916,14 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   }
   job.pipe = undefined
   if (s.status === "failed") {
-    const cb = pipeCallbacks(job, terrain, policy, pj)
+    const cb = pipeCallbacks(job, terrain, facts, policy, pj)
     const failure = pipeEvidence(job, pj.conn, s)
     if (failure.sealed !== undefined && !failure.sealed.edge && tryReplace(job, c, facts, policy, failure.sealed)) return used
     const st = s.p.start
     const routeTerrain = pipeTerrain(terrain, f)
     const k = tkey(st.x, st.y)
     const g = s.p.goal
-    fail(job, c.id, `no pipe path (${failure.reason}, ${failure.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${failure.sealed !== undefined ? `, sealed ${failure.sealed.side} ${failure.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
+    fail(job, c.id, `no pipe path (${failure.reason}, ${failure.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"} route ${job.layout.routeOcc[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${failure.sealed !== undefined ? `, sealed ${failure.sealed.side} ${failure.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
     return used
   }
   const r = s.result!
@@ -924,7 +943,7 @@ function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy:
   for (let i = 0; i < r.steps.length; i++) {
     const st = r.steps[i]
     if (st.kind !== "pump") continue
-    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st, routeTiles)
+    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st, routeTiles, pumpPoleReach(facts, f.pole))
     if (spot === undefined) {
       fail(job, c.id, `no room for a pole beside the pump at ${st.x},${st.y}`)
       return used
@@ -954,7 +973,16 @@ function poleSpotFree(
   return tileCost(layout, terrain, policy, req, false, x, y) >= 0
 }
 
-/** A free tile beside a pump for its pole, within the pole's supply area. */
+/**
+ * B208: how many tiles from a pump its pole may stand: the pole's supply area (2 for a small pole, 3 for a medium one).
+ * It was 2 for every pole; with medium poles (B205) a pump in a one-tile corridor between two modules, free tiles 3 away,
+ * failed its plan 3 times (`b204b-44444` g238).
+ */
+export function pumpPoleReach(facts: ProtoFacts, pole: string | undefined): number {
+  return math.max(1, math.floor(facts.entity(pole ?? "small-electric-pole")?.supplyDistance ?? 2.5))
+}
+
+/** A free tile beside a pump for its pole, within the pole's supply area (`reach` tiles). */
 export function pumpPoleSpot(
   layout: LayoutState,
   terrain: TerrainView,
@@ -962,6 +990,7 @@ export function pumpPoleSpot(
   req: RouteRequest,
   st: PipeStep,
   forbid?: Record<number, boolean>,
+  reach = 2,
 ): Vec | undefined {
   // The router asks this for every pump candidate, and the old pattern's two sides plus the two diagonal-ahead tiles
   // are free in almost every case: check them first so the common path never pays for the full square. A small
@@ -975,7 +1004,6 @@ export function pumpPoleSpot(
       if (poleSpotFree(layout, terrain, policy, req, x, y, forbid)) return { x, y }
     }
   }
-  const reach = 2
   let best: Vec | undefined
   let bestD = 99
   for (let dx = -reach; dx <= reach; dx++) {
@@ -2243,7 +2271,10 @@ export function logisticsFirst(results: CompareResult[], minUnderground: number,
 
 /** The pole network phase: joins every consumer module to a generator module. Unreachable modules are failures. */
 function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
-  job.poleJob ??= newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
+  if (job.poleJob === undefined) {
+    job.poleJob = newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
+    job.poleJob.built = job.request.builtPoles
+  }
   const before = job.poleJob.work
   if (stepPoles(job.poleJob, job.layout, terrain, facts, policy, budget)) {
     let failed = false
