@@ -10,6 +10,7 @@ import { isTempRole } from "./stage"
 import { findEntities } from "../work"
 import { isBufferAt, registerBuffer } from "../modules/buffers"
 import type { FactoryState } from "./factory"
+import * as CS from "./constraints"
 
 // Read-only views of a faction's factory (split out of factory.ts, whose main chunk hit Lua's 200-local limit): the
 // D38 temporary cells and the mall's chests as supply sources for the bootstrap economy, and the telemetry / graph
@@ -77,20 +78,29 @@ export function tempCells(factionName: string, item?: string): TempCell[] {
 // takes from directly when a job needs their items.
 
 /** Built chest-out port chests of the factory's sink modules (mall, temporary cells), in node order. */
-export function supplyChests(factionName: string): { entity: LuaEntity; temp: boolean }[] {
-  const out: { entity: LuaEntity; temp: boolean }[] = []
+export function supplyChests(factionName: string): { entity: LuaEntity; temp: boolean; stock: boolean }[] {
+  const out: { entity: LuaEntity; temp: boolean; stock: boolean }[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph, "sink")) {
-    if (n.lifecycle !== "built") continue
+    // M7d.5: a stock row's (roboports, robots) buffer chest is supply that is taken from in any amount (one roboport
+    // is all a goal may need), so it registers here, before the buffers. It counts once the chest is in the world, not
+    // when its node is built: the robot row's roboport head is in the same goal as the roboport row, so the goal
+    // waited for its own roboport (soak m7d5-robots5: 2 roboports in the chest, the ghost unfilled for 86 game-min
+    // until 5 had piled up).
+    const stock = string.sub(n.role, 1, 6) === "stock:"
+    if (n.lifecycle !== "built" && !stock) continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
-    for (const p of m.def.ports) {
-      if (p.kind !== "chest-out") continue
-      const chest = findEntities(surface, { type: "container", force: faction.force, position: { x: m.origin.x + p.pos.x, y: m.origin.y + p.pos.y }, limit: 1 })[0]
-      if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role) })
+    const at: { x: number; y: number }[] = []
+    for (const p of m.def.ports) if (p.kind === "chest-out") at.push(p.pos)
+    if (stock) for (const e of m.def.entities) if (e.buffer === true) at.push(e)
+    for (const pos of at) {
+      // M7d.5: output chests may be passive providers.
+      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: { x: m.origin.x + pos.x, y: m.origin.y + pos.y }, limit: 1 })[0]
+      if (chest !== undefined) out.push({ entity: chest, temp: isTempRole(n.role), stock })
     }
   }
   return out
@@ -114,7 +124,7 @@ export function repairBuffers(factionName: string): void {
       if (!e.buffer) continue
       const pos = { x: m.origin.x + e.x, y: m.origin.y + e.y }
       if (isBufferAt(surface.name, pos)) continue
-      const chest = findEntities(surface, { type: "container", force: faction.force, position: pos, limit: 1 })[0]
+      const chest = findEntities(surface, { type: ["container", "logistic-container"], force: faction.force, position: pos, limit: 1 })[0]
       if (chest !== undefined) registerBuffer(surface, faction.force, chest)
     }
   }
@@ -124,14 +134,16 @@ export function repairBuffers(factionName: string): void {
  * B36 (proposed, `supply-module-furnaces`, default off): the furnaces of built smelter modules, whose result slots
  * fill up when their output belt backs up. Taking from them may starve the module's belt.
  */
-export function moduleFurnaces(factionName: string): LuaEntity[] {
+export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEntity[] {
   const out: LuaEntity[] = []
   const f = getFactory(factionName)
   if (f === undefined) return out
   const faction = storage.factions[factionName]
   const surface = game.surfaces[faction.surface]
   for (const n of nodesOf(f.graph)) {
-    if (n.lifecycle !== "built") continue
+    // B134: a module inside a plan still being built can already run (the blue line's steel smelter). Its output must
+    // be a supply point, or the same plan's pumpjack craft waits for steel that the smelter has made.
+    if (buildingOnly ? n.lifecycle !== "building" : n.lifecycle !== "built" && n.lifecycle !== "building") continue
     const m = findModule(f.layout, n.id)
     if (m === undefined) continue
     let any = false
@@ -139,6 +151,41 @@ export function moduleFurnaces(factionName: string): LuaEntity[] {
     if (!any) continue
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     for (const e of findEntities(surface, { type: "furnace", force: faction.force, area })) out.push(e)
+  }
+  return out
+}
+
+/**
+ * M7c.8: the assemblers of built factory modules (the crew may take a product the economy has no other source for from
+ * their output slots; `bootstrap.ts` registers them).
+ */
+/**
+ * B185 (user, 2026-11-11: "this is an automation game"): whether a built stock row (`stock:<item>`) makes `item`. The
+ * crew then takes it from the row's buffer and never hand-crafts it.
+ */
+export function stockRowBuilt(factionName: string, item: string): boolean {
+  const f = getFactory(factionName)
+  if (f === undefined) return false
+  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") return true
+  return false
+}
+
+export function moduleAssemblers(factionName: string, buildingOnly = false): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const f = getFactory(factionName)
+  if (f === undefined) return out
+  const faction = storage.factions[factionName]
+  const surface = game.surfaces[faction.surface]
+  for (const n of nodesOf(f.graph)) {
+    // B134: same as moduleFurnaces: a building module's output can already be the only source of a needed item.
+    if (buildingOnly ? n.lifecycle !== "building" : n.lifecycle !== "built" && n.lifecycle !== "building") continue
+    const m = findModule(f.layout, n.id)
+    if (m === undefined) continue
+    let any = false
+    for (const e of m.def.entities) if (prototypes.entity[e.name]?.type === "assembling-machine") any = true
+    if (!any) continue
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    for (const e of findEntities(surface, { type: "assembling-machine", force: faction.force, area })) out.push(e)
   }
   return out
 }
@@ -167,7 +214,7 @@ export function factoryReport(name: string) {
     // over-subscription bug hid for 270 game-min; a non-zero list is the first thing to read in a slow seed.
     supply: supplyReport(f),
     idle: f.idle,
-    growFails: f.growFails,
+    growFails: CS.values(f.constraints, "growFails"),
   }
 }
 

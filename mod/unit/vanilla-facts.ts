@@ -28,6 +28,10 @@ const RECIPES: RecipeFacts[] = [
   r("stone-furnace", 0.5, [["stone", 5]], [["stone-furnace", 1]]),
   r("small-electric-pole", 0.5, [["wood", 1], ["copper-cable", 2]], [["small-electric-pole", 2]]),
   r("pipe", 0.5, [["iron-plate", 1]], [["pipe", 1]]),
+  r("iron-stick", 0.5, [["iron-plate", 1]], [["iron-stick", 2]]),
+  r("medium-electric-pole", 0.5, [["iron-stick", 4], ["steel-plate", 2], ["copper-plate", 2]], [["medium-electric-pole", 1]]),
+  r("solar-panel", 10, [["steel-plate", 5], ["electronic-circuit", 15], ["copper-plate", 15]], [["solar-panel", 1]]),
+  r("accumulator", 10, [["iron-plate", 2], ["battery", 5]], [["accumulator", 1]]),
   r("offshore-pump", 0.5, [["electronic-circuit", 2], ["pipe", 1], ["iron-gear-wheel", 1]], [["offshore-pump", 1]]),
   r("boiler", 0.5, [["stone-furnace", 1], ["pipe", 4]], [["boiler", 1]]),
   r("steam-engine", 0.5, [["iron-gear-wheel", 8], ["pipe", 5], ["iron-plate", 10]], [["steam-engine", 1]]),
@@ -38,6 +42,55 @@ const RECIPES: RecipeFacts[] = [
   r("fast-transport-belt", 0.5, [["iron-gear-wheel", 5], ["transport-belt", 1]], [["fast-transport-belt", 1]]),
   r("express-transport-belt", 0.5, [["iron-gear-wheel", 10], ["fast-transport-belt", 1]], [["express-transport-belt", 1]]),
   r("burner-inserter", 0.5, [["iron-plate", 1], ["iron-gear-wheel", 1]], [["burner-inserter", 1]]),
+  // M7c: the blue chain.
+  r("steel-plate", 16, [["iron-plate", 5]], [["steel-plate", 1]], "smelting"),
+  r("engine-unit", 10, [["steel-plate", 1], ["iron-gear-wheel", 1], ["pipe", 2]], [["engine-unit", 1]], "advanced-crafting"),
+  r("advanced-circuit", 6, [["electronic-circuit", 2], ["plastic-bar", 2], ["copper-cable", 4]], [["advanced-circuit", 1]]),
+  // B178: the oil field's build materials (base/prototypes/recipe.lua, 2.0.77).
+  r("pumpjack", 5, [["steel-plate", 5], ["iron-gear-wheel", 10], ["electronic-circuit", 5], ["pipe", 10]], [["pumpjack", 1]]),
+  r("pump", 2, [["engine-unit", 1], ["steel-plate", 1], ["pipe", 1]], [["pump", 1]]),
+  // M7d.5: robots (base/prototypes/recipe.lua, 2.0.77).
+  r("flying-robot-frame", 20, [["electric-engine-unit", 1], ["battery", 2], ["steel-plate", 1], ["electronic-circuit", 3]], [["flying-robot-frame", 1]]),
+  r("construction-robot", 0.5, [["flying-robot-frame", 1], ["electronic-circuit", 2]], [["construction-robot", 1]]),
+  r("roboport", 5, [["steel-plate", 45], ["iron-gear-wheel", 45], ["advanced-circuit", 45]], [["roboport", 1]]),
+  r("steel-chest", 0.5, [["steel-plate", 8]], [["steel-chest", 1]]),
+  r("storage-chest", 0.5, [["steel-chest", 1], ["electronic-circuit", 3]], [["storage-chest", 1]]),
+  r("passive-provider-chest", 0.5, [["steel-chest", 1], ["electronic-circuit", 3], ["advanced-circuit", 1]], [["passive-provider-chest", 1]]),
+  r("chemical-science-pack", 24, [["engine-unit", 2], ["advanced-circuit", 3], ["sulfur", 1]], [["chemical-science-pack", 2]]),
+  r("assembling-machine-2", 0.5, [["steel-plate", 2], ["electronic-circuit", 3], ["iron-gear-wheel", 5], ["assembling-machine-1", 1]], [["assembling-machine-2", 1]]),
+  // M7b: the oil chain (fluids flagged; `box` = the recipe's fluidbox_index).
+  { name: "basic-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "crude-oil", amount: 100, fluid: true, box: 2 }], products: [{ name: "petroleum-gas", amount: 45, fluid: true, box: 3 }] },
+  { name: "plastic-bar", energy: 1, category: "chemistry", ingredients: [{ name: "coal", amount: 1 }, { name: "petroleum-gas", amount: 20, fluid: true }], products: [{ name: "plastic-bar", amount: 2 }] },
+  { name: "sulfur", energy: 1, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "petroleum-gas", amount: 30, fluid: true }], products: [{ name: "sulfur", amount: 2 }] },
+  // M7d: advanced oil processing, cracking and lubricant (2.0 recipes; no fluidbox_index: boxes in ingredient order).
+  { name: "advanced-oil-processing", energy: 5, category: "oil-processing", ingredients: [{ name: "water", amount: 50, fluid: true }, { name: "crude-oil", amount: 100, fluid: true }], products: [{ name: "heavy-oil", amount: 25, fluid: true }, { name: "light-oil", amount: 45, fluid: true }, { name: "petroleum-gas", amount: 55, fluid: true }] },
+  { name: "heavy-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "heavy-oil", amount: 40, fluid: true }], products: [{ name: "light-oil", amount: 30, fluid: true }] },
+  { name: "light-oil-cracking", energy: 2, category: "chemistry", ingredients: [{ name: "water", amount: 30, fluid: true }, { name: "light-oil", amount: 30, fluid: true }], products: [{ name: "petroleum-gas", amount: 20, fluid: true }] },
+  { name: "sulfuric-acid", energy: 1, category: "chemistry", ingredients: [{ name: "sulfur", amount: 5 }, { name: "iron-plate", amount: 1 }, { name: "water", amount: 100, fluid: true }], products: [{ name: "sulfuric-acid", amount: 50, fluid: true }] },
+  { name: "battery", energy: 4, category: "chemistry", ingredients: [{ name: "sulfuric-acid", amount: 20, fluid: true }, { name: "iron-plate", amount: 1 }, { name: "copper-plate", amount: 1 }], products: [{ name: "battery", amount: 1 }] },
+  { name: "electric-engine-unit", energy: 10, category: "crafting-with-fluid", ingredients: [{ name: "engine-unit", amount: 1 }, { name: "electronic-circuit", amount: 2 }, { name: "lubricant", amount: 15, fluid: true }], products: [{ name: "electric-engine-unit", amount: 1 }] },
+  { name: "lubricant", energy: 1, category: "chemistry", ingredients: [{ name: "heavy-oil", amount: 10, fluid: true }], products: [{ name: "lubricant", amount: 10, fluid: true }] },
+]
+
+/** M7d.3: assembling machines 2/3 (2.0): one input box on the north side, one output box on the south. */
+const ASSEMBLER_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: 0, y: -1, dir: 0 }] },
+  { production: "output", connections: [{ x: 0, y: 1, dir: 2 }] },
+]
+
+/** Fluid boxes of a north-facing refinery and chemical plant (entities.lua): offsets from the centre, direction index. */
+const REFINERY_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: -1, y: 2, dir: 2 }] },
+  { production: "input", connections: [{ x: 1, y: 2, dir: 2 }] },
+  { production: "output", connections: [{ x: -2, y: -2, dir: 0 }] },
+  { production: "output", connections: [{ x: 0, y: -2, dir: 0 }] },
+  { production: "output", connections: [{ x: 2, y: -2, dir: 0 }] },
+]
+const CHEMICAL_BOXES: EntityFacts["fluidBoxes"] = [
+  { production: "input", connections: [{ x: -1, y: -1, dir: 0 }] },
+  { production: "input", connections: [{ x: 1, y: -1, dir: 0 }] },
+  { production: "output", connections: [{ x: -1, y: 1, dir: 2 }] },
+  { production: "output", connections: [{ x: 1, y: 1, dir: 2 }] },
 ]
 
 function e(f: EntityFacts): EntityFacts {
@@ -51,7 +104,9 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "burner-mining-drill", type: "mining-drill", tileW: 2, tileH: 2, miningSpeed: 0.25, miningRadius: 0.99, dropVector: { x: -0.5, y: -1.3 }, energyPerTick: 2500, burner: true }),
   e({ name: "lab", type: "lab", tileW: 3, tileH: 3, researchSpeed: 1, energyPerTick: 1000, electric: true }),
   e({ name: "radar", type: "radar", tileW: 3, tileH: 3, energyPerTick: 5000, electric: true }),
+  e({ name: "roboport", type: "roboport", tileW: 4, tileH: 4, energyPerTick: 50000 / 60, electric: true, logisticRadius: 25, constructionRadius: 55 }),
   e({ name: "small-electric-pole", type: "electric-pole", tileW: 1, tileH: 1, supplyDistance: 2.5, wireReach: 7.5 }),
+  e({ name: "medium-electric-pole", type: "electric-pole", tileW: 1, tileH: 1, supplyDistance: 3.5, wireReach: 9 }),
   e({ name: "inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.014, pickupVector: { x: 0, y: -1 }, dropVectorIns: { x: 0, y: 1.2 }, energyPerTick: 245, electric: true }),
   e({ name: "long-handed-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.02, pickupVector: { x: 0, y: -2 }, dropVectorIns: { x: 0, y: 2.2 }, energyPerTick: 335, electric: true }),
   e({ name: "burner-inserter", type: "inserter", tileW: 1, tileH: 1, rotationSpeed: 0.013, pickupVector: { x: 0, y: -1 }, dropVectorIns: { x: 0, y: 1.2 }, energyPerTick: 2400, burner: true }),
@@ -65,10 +120,21 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "express-underground-belt", type: "underground-belt", tileW: 1, tileH: 1, beltSpeed: 0.09375, maxUnderground: 9 }),
   e({ name: "express-splitter", type: "splitter", tileW: 2, tileH: 1, beltSpeed: 0.09375 }),
   e({ name: "iron-chest", type: "container", tileW: 1, tileH: 1 }),
+  e({ name: "storage-chest", type: "logistic-container", tileW: 1, tileH: 1 }),
+  e({ name: "passive-provider-chest", type: "logistic-container", tileW: 1, tileH: 1 }),
   e({ name: "pipe", type: "pipe", tileW: 1, tileH: 1 }),
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
   e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
+  e({ name: "assembling-machine-2", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.75, craftingCategories: ["advanced-crafting", "basic-crafting", "crafting", "crafting-with-fluid"], energyPerTick: 2500, electric: true, fluidBoxes: ASSEMBLER_BOXES }),
+  e({ name: "oil-refinery", type: "assembling-machine", tileW: 5, tileH: 5, craftingSpeed: 1, craftingCategories: ["oil-processing"], energyPerTick: 7000, electric: true, fluidBoxes: REFINERY_BOXES }),
+  e({ name: "chemical-plant", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 1, craftingCategories: ["chemistry"], energyPerTick: 3500, electric: true, fluidBoxes: CHEMICAL_BOXES }),
+  e({ name: "pipe-to-ground", type: "pipe-to-ground", tileW: 1, tileH: 1, maxPipeUnderground: 10 }),
+  e({ name: "solar-panel", type: "solar-panel", tileW: 3, tileH: 3, productionPerTick: 1000, electric: true }),
+  e({ name: "accumulator", type: "accumulator", tileW: 2, tileH: 2, bufferJ: 5e6, energyPerTick: 5000, electric: true }),
+  e({ name: "pump", type: "pump", tileW: 1, tileH: 2, energyPerTick: 500, electric: true }),
+  // Output box positions {{1,-1},{1,-1},{-1,1},{-1,1}} by direction; north: (1, -1) pointing north.
+  e({ name: "pumpjack", type: "mining-drill", tileW: 3, tileH: 3, miningSpeed: 1, energyPerTick: 1500, electric: true, fluidBoxes: [{ production: "output", connections: [{ x: 1, y: -1, dir: 0, positions: [{ x: 1, y: -1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: -1, y: 1 }] }] }] }),
 ]
 
 const RESOURCES: Record<string, { time: number; product: string }> = {
@@ -76,6 +142,7 @@ const RESOURCES: Record<string, { time: number; product: string }> = {
   "copper-ore": { time: 1, product: "copper-ore" },
   coal: { time: 1, product: "coal" },
   stone: { time: 1, product: "stone" },
+  "crude-oil": { time: 1, product: "crude-oil" },
 }
 
 const UNLOCKS: Record<string, string> = {
@@ -85,10 +152,13 @@ const UNLOCKS: Record<string, string> = {
   "logistic-science-pack": "logistic-science-pack",
   lab: "automation-science-pack",
   "offshore-pump": "steam-power",
+  "solar-panel": "solar-energy",
+  accumulator: "electric-energy-accumulators",
   boiler: "steam-power",
   "steam-engine": "steam-power",
   pipe: "steam-power",
   "small-electric-pole": "electronics",
+  "medium-electric-pole": "electric-energy-distribution-1",
   "electric-mining-drill": "electronics",
   "fast-transport-belt": "logistics-2",
   "express-transport-belt": "logistics-3",
@@ -112,4 +182,5 @@ export const vanillaFacts: ProtoFacts = {
     return undefined
   },
   itemToPlace: (entity) => entity,
+  isFluid: (name) => ["crude-oil", "water", "petroleum-gas", "steam", "heavy-oil", "light-oil", "lubricant", "sulfuric-acid"].indexOf(name) >= 0,
 }

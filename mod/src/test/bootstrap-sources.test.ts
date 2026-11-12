@@ -3,6 +3,7 @@ import { clearConfigOverrides, setConfigOverride } from "../config"
 import { moduleId } from "../shared/ids"
 import { addStockpile, createFaction, destroyFaction } from "../jobs/faction"
 import { addJob } from "../jobs/board"
+import { supplyStock } from "../jobs/supply"
 import { startBootstrap } from "../strategy/bootstrap"
 import { Site, SitePart } from "../strategy/types"
 import { FactionState } from "../jobs/types"
@@ -14,6 +15,7 @@ import { commitModule, PlacedModule } from "../planner/layout"
 import { addNode } from "../planner/logical"
 import { stampParts } from "../planner/runtime"
 import { FactoryState, startFactory } from "../strategy/factory"
+import { moduleFurnaces } from "../strategy/factory-report"
 import { ModuleDef } from "../modules/types"
 
 // B17 (SPEC §5.5 collect-first): material sourcing must take from bootstrap furnaces (and buffers) before it
@@ -335,6 +337,160 @@ describe("B17 material sources", () => {
     })
   })
 
+  test("B197: steel, which the crew can't hand-craft or smelt from ore, is taken from a built smelter module's furnaces", () => {
+    // `m7-b195` seed 3333: an oil refinery's craft waited for 3 steel the steel column made but never offered.
+    setConfigOverride("supplyModuleFurnaces", false)
+    const lab = createLab(32)
+    orePatch(lab, at(lab, -10, 8))
+    const faction = createFaction("b197", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
+    game.forces[faction.force].technologies["steel-processing"].researched = true
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12), "steel-plate")
+    const made = stampModule(lab.surface, faction.force, def, m.origin)
+    let furnace: LuaEntity | undefined
+    for (const e of made) if (e !== undefined && e.type === "furnace") furnace ??= e
+    furnace!.get_inventory(defines.inventory.furnace_result)!.insert({ name: "steel-plate", count: 20 })
+    brain.nextThink = game.tick
+    addJob(faction.board, {
+      kind: "craft",
+      pos: depot.position,
+      materials: [{ item: "steel-plate", count: 8 }],
+      payload: { kind: "craft", recipe: "steel-chest", count: 1, item: "steel-chest", deliverTo: depot },
+    }, game.tick)
+    waitFor(1800, () => depot.get_item_count("steel-chest") >= 1, () => `a steel chest at the depot (takes ${describeTakes(faction)})`, () => {
+      assert(takesOf(faction, "module-furnace") === 8, `8 steel from the module's furnace (takes ${describeTakes(faction)})`)
+    })
+  })
+
+  test("B142: stamping the same module ghosts twice reuses them", () => {
+    // Seed 1212121 g109: a retried stamp created a second ghost on every tile, returned nil, and reported 1149 already
+    // created ghosts as failures, so a good plan was abandoned.
+    const lab = createLab(24)
+    const faction = createFaction(`b142-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+    const origin = { x: math.floor(lab.origin.x), y: math.floor(lab.origin.y) }
+    const a = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    const b = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    assert(a.length === def.entities.length, `${a.length} ghosts`)
+    let same = 0
+    for (let i = 0; i < a.length; i++) if (a[i] !== undefined && b[i] === a[i]) same++
+    assert(same === def.entities.length, `reused ${same}/${def.entities.length} ghosts`)
+  })
+
+  test("B142: a ghost of the same entity facing another way is not reused", () => {
+    // Review of B142: reusing any ghost of the name at the tile would adopt an orphan belt ghost (B144) pointing the wrong
+    // way, and the plan would build a belt that carries nothing to its port.
+    const lab = createLab(24)
+    const faction = createFaction(`b142d-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4 })
+    const origin = { x: math.floor(lab.origin.x), y: math.floor(lab.origin.y) }
+    const a = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    let k = -1
+    for (let i = 0; i < def.entities.length; i++) if (k < 0 && def.entities[i].name === "transport-belt" && a[i] !== undefined) k = i
+    assert(k >= 0, "the module has a belt ghost")
+    const want = def.entities[k].dir ?? defines.direction.north
+    const turned = want === defines.direction.north ? defines.direction.east : defines.direction.north
+    a[k]!.direction = turned
+    assert(a[k]!.direction === turned, "the belt ghost turned")
+    const b = stampModule(lab.surface, faction.force, def, origin, { ghost: true })
+    assert(b[k] === undefined || (b[k]!.valid && b[k]!.direction === want), `the turned ghost was reused (${b[k]?.direction})`)
+  })
+
+  test("B134: a module still being built is a supply point for its furnace output", () => {
+    // Seed 11, minute 330: the blue line's steel smelter stood and ran, but its module was still "building", so its
+    // plates were not a supply point. The same plan's pumpjack craft waited 44 game-min for 5 steel plates.
+    const lab = createLab(32)
+    const faction = createFaction(`b134-${++testSeq}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const { def, m } = smelterModule(f, at(lab, 6, -12))
+    stampModule(lab.surface, faction.force, def, m.origin)
+    const node = f.graph.nodes[moduleId("smelter")]!
+    node.lifecycle = "building"
+    node.builtTick = undefined
+    assert(moduleFurnaces(faction.name, true).length > 0, "a building module's furnaces are supply points even with the setting off")
+  })
+
+  test("M7c.8: a product the crew can't hand-craft (engine units) is taken from a module's assembler output, below the minimum take", () => {
+    // Seed 11 minute 657-743: g108's four crude-line pumps waited 85 game-min for engine units while the faction's engine
+    // assemblers stood full (244 made), and each output slot held fewer than the minimum take.
+    const lab = createLab(32)
+    const faction = createFaction("m7c8-engines", { position: at(lab, 0, 0), crew: 2, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    depot.insert({ name: "steel-plate", count: 2 })
+    depot.insert({ name: "pipe", count: 2 })
+    addStockpile(faction, depot)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    game.forces[faction.force].recipes["pump"].enabled = true
+    const f = startFactory(faction)
+    const def = generatedModule("assembler-row", { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" })
+    const o = { x: math.floor(at(lab, 6, -12).x), y: math.floor(at(lab, 6, -12).y) }
+    const m: PlacedModule = { id: moduleId("engines"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+    commitModule(f.layout, m, prototypeFacts, 1)
+    addNode(f.graph, { id: moduleId("engines"), role: "engine-unit#1", kind: "module", module: def.id, generator: "assembler-row", recipe: "engine-unit", item: "engine-unit", capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown", createdTick: game.tick, builtTick: game.tick })
+    let machine: LuaEntity | undefined
+    for (const e of stampModule(lab.surface, faction.force, def, m.origin)) if (e !== undefined && e.type === "assembling-machine") machine ??= e
+    assert(machine !== undefined, "the engine assembler stands")
+    machine!.get_inventory(defines.inventory.crafter_output)!.insert({ name: "engine-unit", count: 3 })
+    brain.nextThink = game.tick
+    addJob(faction.board, {
+      kind: "craft",
+      pos: depot.position,
+      materials: [{ item: "engine-unit", count: 2 }, { item: "steel-plate", count: 2 }, { item: "pipe", count: 2 }],
+      payload: { kind: "craft", recipe: "pump", count: 2, item: "pump", deliverTo: depot },
+    }, game.tick)
+    waitFor(3600, () => depot.get_item_count("pump") >= 2, () => `two pumps at the depot (takes ${describeTakes(faction)})`, () => {
+      assert(takesOf(faction, "module-out") === 2, `the engines came out of the assembler (takes ${describeTakes(faction)})`)
+      assert(machine!.get_item_count("engine-unit") === 1, "one engine is left")
+    })
+  })
+
+  test("M7d.5: a stock row's chest supplies one roboport before its node is built (stock-out, below the minimum take)", () => {
+    // Soak m7d5-robots5 (seed 11, minute 1080): the robot row's roboport ghost waited 86 game-min while the roboport
+    // stock row's chest (same goal, so its node was not built) held 2, below the minimum take.
+    const lab = createLab(32)
+    const faction = createFaction("m7d5-stock", { position: at(lab, 0, 0), crew: 2, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    const target = chest(lab, at(lab, -4, 0), faction.force)
+    brain.goals = []
+    brain.sites = []
+    brain.rescanAt = undefined
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    const def = generatedModule("assembler-row", { recipe: "roboport", count: 2, machine: "assembling-machine-2", buffer: "iron-chest" })
+    const o = { x: math.floor(at(lab, 6, -12).x), y: math.floor(at(lab, 6, -12).y) }
+    const m: PlacedModule = { id: moduleId("roboports"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+    commitModule(f.layout, m, prototypeFacts, 1)
+    addNode(f.graph, { id: moduleId("roboports"), role: "stock:roboport", kind: "sink", module: def.id, generator: "assembler-row", recipe: "roboport", item: "roboport", capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "building", status: "unknown", createdTick: game.tick })
+    stampModule(lab.surface, faction.force, def, m.origin)
+    const out = bufferOf(lab, def, m, faction.force)
+    out.get_inventory(defines.inventory.chest)!.set_bar() // the stamp limits a buffer's slots before it has a product
+    const put = out.insert({ name: "roboport", count: 2 })
+    assert(put === 2, `two roboports in the stock row's ${out.name} at ${out.position.x},${out.position.y} (inserted ${put}, bar ${out.get_inventory(defines.inventory.chest)?.get_bar()})`)
+    brain.nextThink = game.tick
+    addJob(faction.board, { kind: "fuel", pos: target.position, materials: [{ item: "roboport", count: 1 }], payload: { kind: "fuel", item: "roboport", count: 1, target, partial: true } }, game.tick)
+    waitFor(3600, () => target.get_item_count("roboport") >= 1, () => `a roboport at the target (takes ${describeTakes(faction)}; supplies ${serpent.line(supplyStock(faction, 5))})`, () => {
+      assert(takesOf(faction, "stock-out") >= 1, `taken from the stock row's chest (takes ${describeTakes(faction)})`)
+    })
+  })
+
   test("a busy crew takes the furnace's plates for a new craft at its next plan, without preempting", () => {
     const lab = createLab(48)
     const faction = createFaction("b17-b", { position: at(lab, 0, 0), crew: 3, starterItems: {} })
@@ -434,19 +590,19 @@ describe("B17 material sources", () => {
 })
 
 /** A 4-furnace iron smelter column with a buffer head (D42), committed to the factory's layout as a built node. */
-function smelterModule(f: FactoryState, origin: MapPosition): { def: ModuleDef; m: PlacedModule } {
-  const def = generatedModule("smelter-column", { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" })
+function smelterModule(f: FactoryState, origin: MapPosition, recipe = "iron-plate"): { def: ModuleDef; m: PlacedModule } {
+  const def = generatedModule("smelter-column", { recipe, furnaces: 4, buffer: "iron-chest" })
   const o = { x: math.floor(origin.x), y: math.floor(origin.y) }
   const m: PlacedModule = { id: moduleId("smelter"), canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
   commitModule(f.layout, m, prototypeFacts, 1)
   addNode(f.graph, {
     id: moduleId("smelter"),
-    role: "iron-plate#1",
+    role: `${recipe}#1`,
     kind: "module",
     module: def.id,
     generator: "smelter-column",
-    recipe: "iron-plate",
-    item: "iron-plate",
+    recipe,
+    item: recipe,
     capacity: { inputs: def.rates.inputs, outputs: def.rates.outputs },
     planned: { inputs: [], outputs: [] },
     powerW: 0,

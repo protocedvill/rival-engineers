@@ -37,9 +37,16 @@ export type JobPayload =
   /** Created and claimed by a crew member for itself: take its batch's missing materials from stockpiles and supply points (B32). */
   | { kind: "haul"; forMember: number }
   /** Remove `target`: the faction's own buildings are picked up, trees and rocks are mined. */
-  | { kind: "clear"; target: LuaEntity }
+  | { kind: "clear"; target: LuaEntity; robotOrdered?: boolean }
 
 export interface FactionState {
+  /** B111: standing spots the crew could not walk to, avoided until the tick (`jobs/bad-spots.ts`). */
+  badSpots?: Record<string, number>
+  /**
+   * M7d.5: clear jobs whose target carries a deconstruction order (robots in range take it down, like a player's
+   * deconstruction planner). An order whose job ends without the target gone is cancelled (`jobs/robot-orders.ts`).
+   */
+  deconOrders?: { job: JobId; target: LuaEntity }[]
   name: string
   /** The surface the faction lives on (name). */
   surface: string
@@ -49,6 +56,8 @@ export interface FactionState {
   crew: number[]
   /** Chests the crew takes materials from. Only the faction's own. */
   stockpiles: LuaEntity[]
+  /** B203: depot chests ordered upgraded to storage chests: the new chest at each position becomes a stockpile. */
+  depotUpgrades?: { x: number; y: number }[]
   board: Board<JobPayload>
   /** Ghost unit_number → place job id, so a ghost is planned once. */
   ghostJobs: Record<number, JobId>
@@ -70,7 +79,12 @@ export interface FactionState {
    * B102: entities to ghost once the listed clear jobs are over (a kept route's belt where a dropped splitter stands:
    * no ghost can go over the live splitter). `jobs/crew.ts` `placePendingGhosts` serves them.
    */
-  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number }[]
+  pendingGhosts?: { name: string; x: number; y: number; dir: number; ioType?: "input" | "output"; after: JobId[]; priority?: number; owner?: string }[]
+  /**
+   * B144: tiles where a plan could not stamp a ghost and a retry cannot clear it (terrain, a foreign entity, a module,
+   * or an overlap in the plan's own add list). The next plan for the role avoids them until `until`.
+   */
+  buildBad?: { role: string; x: number; y: number; until: number; reason: string }[]
 }
 
 export interface CrewStats {
@@ -108,6 +122,8 @@ export interface CrewStats {
 export interface CrewAction {
   action: number
   job?: number
+  /** B111: the standing spot this walk goes to (absent for other actions). */
+  spot?: { x: number; y: number }
   /** A take from a stockpile reserves this until it finishes (`from`: the source's unit number, B32). */
   reserve?: ItemCount & { from?: number }
   /** B36: the source kind of a take (telemetry). */
@@ -125,6 +141,10 @@ export interface CrewMember {
   actions: CrewAction[]
   /** Where the member is heading to stand for its batch, if anywhere. */
   spot?: Pos
+  /** M7c.8: after a plan found nothing, the next plan waits until this tick unless the board changes (`idleBoard`). */
+  idleUntil?: number
+  /** M7c.8: the board's change count when that plan found nothing. */
+  idleBoard?: number
   dead: boolean
   stats: CrewStats
   /** M6: walk failures in a row (no path, or a stuck/unreachable re-path loop); the member is boxed in at TRAPPED_NO_PATHS. */

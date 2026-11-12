@@ -25,7 +25,9 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 - Prefer configurable settings over constants (SPEC §5.7).
 - When a plan, placement or route misbehaves, read its dump (`REPLAY_DUMP=1` / the failure dump in
   `out/replay-dumps/`) before running variants; sweep variants with `npm run replay:sweep`, not one replay at a time.
-  Rerun T1 with `--no-build -t <test>` after a build instead of recompiling for every run.
+  Rerun T1 with `--no-build -t <test>` after a build instead of recompiling for every run. T1 builds `mod/build-unit`;
+  T2, soaks and the game load `mod/build`, and `--no-build` never rebuilds either (run `npm run build` after `mod/src`
+  changes).
 - **Escalate magic numbers to the user.** Every tuning number you introduce (thresholds, distances, counts, timeouts,
   weights, margins...) is listed in the milestone report's "Magic numbers for the user" table: name, where it lives,
   current value, why that value, and whether it is already a setting. The user decides which become settings and their
@@ -38,7 +40,7 @@ the milestones, and §9 is the operating model (stacked PRs, `proto/*` branches,
 
 ## Commands
 
-See `README.md` → Development. (Kept there so it stays next to the scripts it describes.)
+See `docs/DEVELOPMENT.md`. (Kept there so it stays next to the scripts it describes.)
 
 ## TSTL gotchas (learned the hard way)
 
@@ -84,7 +86,7 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   Stop walking and mining explicitly when an action ends.
 - `can_reach_entity` uses the **short mining reach** (≈ `resource_reach_distance` 2.7 + the box) for trees and
   rocks, not `reach_distance` (10). Walks toward a tree/rock must aim inside that (`walk.ts` `pathRadiusFor`).
-- **Script-creating an entity on top of a ghost removes the ghost.** In tests, place obstacles before ghosts.
+- **Script-creating an entity on top of a ghost removes the ghost.** In tests, place obstacles before ghosts. **A ghost created over another ghost also removes the existing one**, even though `can_place_entity` returns true; check for a different own ghost on the tile before creating a ghost (B144, `conflicts.ts` `preflightSpecs`).
   A character's death and corpse do not remove ghosts.
 - `character.can_place_entity` ignores ghosts, so filling a ghost uses the normal player check followed by
   `ghost.revive{raise_revive=true}` (keeps the ghost's settings; raises `script_raised_revive`, not `_built`).
@@ -132,6 +134,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
 - `LuaProfiler` output in a log line needs a localised string: `log(["", "text ", profiler])`.
 - **Inserter direction is the side it picks up from** (2.0): an inserter facing north takes from the tile north of
   it and drops south. Yellow inserters move about one item per full turn (0.84/s), a bit more from belts.
+- **A module port's outside tile must lie outside the module's footprint** (B113, B161). A belt-in on the module's
+  last row facing inward has its outside tile one row further out; if that row is still inside the footprint, no
+  route can ever start there and every plan fails `no path`. Add every new generator to the `port-edges` T1 sample
+  list: it checks all rotations, not only the one a plan happened to use.
 - **An inserter won't put ore into a burner furnace that has no fuel.** Furnaces early on a thin fuel lane hoard coal
   and the last ones start late: at exactly the declared coal rate a column takes 15–23 game-min to reach its rate
   (D33 validation waits for steady state; a real build should prime its fuel lane).
@@ -159,6 +165,10 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   now also counts finished queue entries.
 - Revived small-pole ghosts (`ghost.revive`) connect their copper wires to poles in reach, like a player's build: the
   pole network planner only has to put poles within wire reach (T2 "power-up").
+- **Poles skip redundant copper wires**: a medium-pole assembler row's poles each have up to 5 others within wire reach
+  but only 2-3 wires, and a later pole still connects. Counting poles in reach overstates a pole's wires (planner/power.ts
+  `wireDegree` is an upper bound). A wire's length is limited by the *shorter* reach of its two poles (small 7.5,
+  medium 9). Pinned by the engine test "B206 finding".
 - Plans on top of a faction's base (`newPlanJob(..., base)`) copy the layout; existing modules are `fixed` and existing
   routes `Route.fixed` (never ripped). A finished plan's layout *becomes* the faction's (`strategy/factory.ts`).
 - Lua 5.3+ (T1) prints `43` and `43.0` differently: keys built from coordinates that went through arithmetic (module
@@ -211,6 +221,18 @@ See `README.md` → Development. (Kept there so it stays next to the scripts it 
   reached ring 4); the chunk is only marked requested for charting, never charted or generated (D62 (a) uses the event). `force.chart` on such a force only requests too. (A forum post quotes a
   developer: charting is skipped for forces without players.) Pinned by two engine-capabilities tests ("D62 finding").
   A script-created `electric-energy-interface` makes no power until `power_production` and `electric_buffer_size` are set.
+- **Construction robots work for a force with no players** (unlike radars, D62): a script-created force's roboport
+  network builds ghosts from a storage chest and removes trees marked for deconstruction, and a player-less character's
+  personal roboport (modular armour grid) builds from its main inventory. Pinned by two engine-capabilities tests ("M7d").
+- **A 2.0 fluid segment longer than the pipeline extent carries nothing** (utility constant `default_pipeline_extent`,
+  320 tiles; a fluid box may override it). Pipe-to-ground pairs count their whole span. A pump starts a new segment
+  (~1040-1140/s through 2200 tiles with a pump every 220); within the extent a line carries ~1000-1170/s. Pinned by the
+  engine-capabilities test "M7b finding". Measure fluids with a pushing source (an offshore pump): an `infinity-pipe`
+  sets its whole segment's contents and fakes any flow; read amounts with `get_fluid_contents()` (TSTL shifts
+  `fluidbox[1]`). An offshore pump's output is on the side opposite its facing (`west` → connects east).
+- **Diagonal cliffs have turned collision boxes**: `bounding_box` carries `orientation` (0.125 turns for a corner piece)
+  and its corners are the *unturned* rectangle about the box centre. Turned, it reached ~1 tile further: a belt could not
+  be placed on a tile the corners missed (B123). Tile coverage goes through `grid.ts` `boxTiles`.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).

@@ -1,10 +1,11 @@
 import { BoundingBox, LuaEntity, LuaEntityPrototype, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { createController, destroyController } from "../character/controller"
 import type { JobId } from "../shared/ids"
-import { getConfig } from "../config"
-import { addJob, newBoard, Rect } from "./board"
+import { getConfig, Config } from "../config"
+import { addJob, getJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { findEntities } from "../work"
+import { hasNetwork, orderRemoval } from "./robot-orders"
 
 // Factions (SPEC §2 D4, §5.7): each AI faction is its own LuaForce with its own crew, stockpiles and Job
 // Board. Nothing here is shared between factions, so they cannot take each other's jobs or materials.
@@ -45,11 +46,23 @@ function makeNeutral(force: LuaForce): void {
   }
 }
 
+/**
+ * Benchmark only (parity-breaking, never in acceptance runs): the crew's force hand-crafts `benchmarkCraftingMultiplier`
+ * times as fast (the engine's force-wide manual-crafting modifier, so it covers every character of the force including
+ * one spawned later). Movement is handled by the walker's path teleport (`character/walk.ts`): a running-speed modifier
+ * big enough for a benchmark makes the waypoint stepper skip waypoints and turn back.
+ */
+export function applyBenchmarkModifiers(force: LuaForce, config: Config): void {
+  const craft = math.max(0, config.benchmarkCraftingMultiplier - 1)
+  if (force.manual_crafting_speed_modifier !== craft) force.manual_crafting_speed_modifier = craft
+}
+
 export function createFaction(name: string, options: CreateFactionOptions = {}): FactionState {
   assert(storage.factions[name] === undefined, `faction ${name} exists`)
   const forceName = FORCE_PREFIX + name
   const force = game.forces[forceName] ?? game.create_force(forceName)
   makeNeutral(force)
+  applyBenchmarkModifiers(force, getConfig())
   const faction: FactionState = {
     name,
     surface: options.surface ?? game.surfaces[1].name,
@@ -159,7 +172,14 @@ export function planGhosts(faction: FactionState, options: PlanGhostsOptions = {
  */
 export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: PlanGhostsOptions & { deps?: JobId[] } = {}): JobId | undefined {
   const key = ghost.unit_number!
-  if (faction.ghostJobs[key] !== undefined) return undefined
+  const old = faction.ghostJobs[key]
+  if (old !== undefined) {
+    // B152: a finished/failed job's mapping can outlive the job (pruneBoard removes the job, and some callers do not
+    // clear the mapping). Keeping it made every later attempt return undefined: the ghost could never be built.
+    const prev = getJob(faction.board, old)
+    if (prev !== undefined && prev.status !== "failed" && prev.status !== "done") return undefined
+    delete faction.ghostJobs[key]
+  }
   const proto = ghost.ghost_prototype as LuaEntityPrototype
   const toPlace = proto.items_to_place_this?.[0]
   if (!toPlace) return undefined
@@ -202,6 +222,8 @@ export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: Pl
 /** Adds a clear job: the crew mines a tree or rock (or picks up one of the faction's own entities). */
 export function addClearJob(faction: FactionState, target: LuaEntity, priority?: number): JobId {
   const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, payload: { kind: "clear", target } }, game.tick)
+  // M7d.5: with a roboport network, a removal is a deconstruction order like a player's: robots in range take it.
+  if (hasNetwork(faction, target.surface.name)) orderRemoval(faction, job.id, job.payload as Extract<JobPayload, { kind: "clear" }>)
   return job.id
 }
 

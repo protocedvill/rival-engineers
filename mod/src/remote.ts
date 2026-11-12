@@ -7,7 +7,9 @@ import { clearConfigOverrides, Config, ConfigKey, getConfig, setConfigOverride }
 import { addCrew, addStockpile, createFaction, CreateFactionOptions, destroyFaction, getFaction, planGhosts, PlanGhostsOptions, spawnCrew } from "./jobs/faction"
 import { brainReport, startBootstrap } from "./strategy/bootstrap"
 import { computeResearchGoal } from "./strategy/research"
-import { factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
+import { factoryCheckDebug, factoryClaimDebug, factoryDesignDebug, factoryEdgeDebug, factoryRouteDebug, factoryGoalSelectionSnapshot, getFactory, startFactory } from "./strategy/factory"
+import { factoryPowerDebug } from "./strategy/power-debug"
+import { factoryGhostDebug } from "./strategy/ghost-debug"
 import { exportFactoryGraph, factoryReport } from "./strategy/factory-report"
 import { claimView, entryPolicy, exportGraph, getPlannerEntry, startPlan, StartPlanOptions, tiers } from "./planner/runtime"
 import { tkey } from "./planner/grid"
@@ -17,6 +19,7 @@ import { getTerrain, terrainView } from "./planner/terrain"
 import { dumpEntities, writeTelemetry } from "./telemetry"
 import { factionDiagnostics } from "./diagnostics"
 import { writeStateDump } from "./determinism"
+import { boardSummary } from "./jobs/board-summary"
 
 // Remote interface used by the test harness and tools (SPEC §5.7). Harness code drives the mod only
 // through this and settings.
@@ -80,8 +83,34 @@ export function registerRemoteInterface(): void {
       }
       return out
     },
+    /** Each faction's milestones (name -> tick); the soak harness saves the game when one is reached (`--save-at`). */
+    milestones: () => {
+      const out: Record<string, Record<string, number>> = {}
+      for (const n of storage.factionOrder) out[n] = { ...(mustFaction(n).brain?.milestones ?? {}) }
+      return out
+    },
+    /** Debug probe: the board's active jobs grouped by key prefix, kind, item and target; claimed / waiting / ready. */
+    board_summary: (name?: string) => {
+      const out: Record<string, ReturnType<typeof boardSummary>> = {}
+      for (const n of name !== undefined ? [name] : storage.factionOrder) out[n] = boardSummary(mustFaction(n), game.tick)
+      return out
+    },
     /** Cross-layer goal → planner → build → Job Board links plus stable blocker codes and invariant violations. */
     diagnostics: (name: string) => factionDiagnostics(name),
+    /** Debug probe: the latest design's edges and nodes whose role contains `filter`, and its goals. */
+    design_debug: (name: string, filter?: string) => factoryDesignDebug(name, filter),
+    /** Debug probe (M7c.8): the live graph's belt and fluid edges matching `filter`, with their measured flow. */
+    edge_debug: (name: string, filter?: string) => factoryEdgeDebug(name, filter),
+    /** Debug probe (M7c.8): layout routes on tile (x, y) or carrying `item`, with their ends and port tiles. */
+    route_debug: (name: string, x?: number, y?: number, item?: string) => factoryRouteDebug(name, x, y, item),
+    /** Debug probe (B156): layout claims on/around a tile and the modules covering it (`occupied`/`reserved` causes). */
+    claim_debug: (name: string, x: number, y: number, radius?: number) => factoryClaimDebug(name, x, y, radius),
+    /** Debug (M7c.8): the build check of the belt edges whose role contains `filter` (what a repair would find). */
+    check_debug: (name: string, filter: string) => factoryCheckDebug(name, filter),
+    /** B67/M7d.5: the layout's pole graph beside its built world for modules whose id contains `filter`. */
+    power_debug: (name: string, filter?: string) => factoryPowerDebug(name, filter ?? ""),
+    /** B158/B159: every ghost with its plan key and place job; `planned=no` is an orphan, `job=none` unbuilt. */
+    ghost_debug: (name: string) => factoryGhostDebug(name),
     /** Plain-data input to the next-goal policy; capture a live failure and replay it in a T1 test. */
     goal_selection_snapshot: (name: string) => factoryGoalSelectionSnapshot(name),
     /** T4 determinism: the canonical state (sorted storage, the factions' entities) to script-output/`file`. */

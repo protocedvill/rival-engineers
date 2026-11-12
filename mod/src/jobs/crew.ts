@@ -1,11 +1,13 @@
-import { BoundingBoxArray, LuaEntity, LuaInventory } from "factorio:runtime"
+import { BoundingBoxArray, LuaEntity, LuaInventory, LuaSurface, MapPosition } from "factorio:runtime"
 import { cancel, cancelAll, enqueue, getAction } from "../character/controller"
+import { spotInPocket } from "../character/pathing"
 import { ActionRecord, ActionStatus } from "../character/types"
 import { Config, getConfig } from "../config"
 import {
   claim,
   complete,
-  countReady,
+  completeOpen,
+  anyReady,
   depsDone,
   distance,
   failJob,
@@ -14,7 +16,7 @@ import {
   ItemCount,
   Job,
   missingMaterials,
-  planBatch,
+  planTour,
   planTrip,
   Pos,
   prefetchJobs,
@@ -24,6 +26,7 @@ import {
   releaseAllOf,
   selectJob,
   addJob,
+  Board,
 } from "./board"
 import { addPlaceJob, clearJobFor, factionSurface } from "./faction"
 import { Holding, reserveAt, takeable, unreserveAt } from "./supply"
@@ -36,7 +39,10 @@ declare global {
   }
 }
 import { CrewMember, FactionState, JobPayload } from "./types"
-import { countWork, findEntities } from "../work"
+import { badSpotRects, recordBadSpot } from "./bad-spots"
+import { orderRemoval, sweepOrders } from "./robot-orders"
+import { countEntities, countWork, findEntities } from "../work"
+import { tkey } from "../planner/grid"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
@@ -51,6 +57,18 @@ type CrewJob = Job<JobPayload>
 
 /** Unpenalised releases of one job before a blocked placement counts as a failed attempt after all. */
 const MAX_DEFERRALS = 40
+/**
+ * M7c.8 (seed 11, minute 645): an idle member planned every tick, and each plan reads every supply point's inventory
+ * (`availableItems`: 1.85 ms/tick with an empty board, 2 members). After a plan finds nothing, it plans again after
+ * this many ticks, or at once when the board changes (a job added, claimed, released, done or failed).
+ */
+const IDLE_REPLAN_TICKS = 60
+
+/** Changes whenever a job is added or changes hands (what an idle member's next plan could see differently). */
+function boardChanges(board: Board<unknown>): number {
+  const c = board.counters
+  return c.added + c.claims + c.releases + c.completions + c.failures
+}
 
 /** Jobs a crew member creates and claims for itself (never selected from the board). */
 function isSelfJob(job: CrewJob): boolean {
@@ -110,10 +128,23 @@ function preemptForUrgent(faction: FactionState, config: Config, tick: number): 
     busy.push(m)
   }
   if (busy.length === 0) return
+  // Only a job above some busy member's own claimed batch can preempt it (`mayPreemptFor`): none such, no scan.
+  let floor = math.huge
+  for (const m of busy) {
+    const anchor = board.jobs[m.claims[0] ?? -1]
+    if (anchor !== undefined && anchor.status === "claimed" && anchor.claimedBy === m.id) floor = math.min(floor, anchor.priority)
+  }
+  if (floor === math.huge) return
   let jobs: CrewJob[] | undefined
   for (const id of board.active) {
     const job = board.jobs[id]
-    if (!canPreempt(job) || !isReady(board, job, tick) || !isUrgent(faction, job, config)) continue
+    if (job.priority <= floor || !canPreempt(job) || !isReady(board, job, tick)) continue
+    // `isUrgent` reads the target's burner (game API calls) for every ready refuel every tick; it is only asked for a job
+    // some busy member may still drop its batch for. A member reset below plans again and sees every job of this tick's
+    // list as already seen (`notePlanSeen`), so filtering on the members as they are now changes nothing.
+    let eligible = false
+    for (const m of busy) if (!eligible && mayPreemptFor(board, m, job)) eligible = true
+    if (!eligible || !isUrgent(faction, job, config)) continue
     jobs ??= []
     jobs.push(job)
   }
@@ -138,12 +169,34 @@ function preemptForUrgent(faction: FactionState, config: Config, tick: number): 
   }
 }
 
-/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
-function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
-  const board = faction.board
+/** The cheap part of `canPreemptMember`: `member`'s batch is its own and below `job` (B17), and `job` is new to it (B30). */
+function mayPreemptFor(board: FactionState["board"], member: CrewMember, job: CrewJob): boolean {
   const anchor = board.jobs[member.claims[0] ?? -1]
   if (anchor === undefined || anchor.status !== "claimed" || anchor.claimedBy !== member.id) return false
-  if (!isPreemptable(anchor, job) || (member.planSeen ?? []).indexOf(job.id) >= 0) return false
+  return isPreemptable(anchor, job) && !seenSet(member)[job.id]
+}
+
+/**
+ * `member.planSeen` as a set, rebuilt when the list is replaced (`notePlanSeen`). Every tick `preemptForUrgent` asks it
+ * for each ready refuel; with ~800 of those and a list as long, `indexOf` cost ~1M comparisons a tick (seed 11, 30 min).
+ * A derived cache only (not in `storage`): after a load it is rebuilt from the list.
+ */
+const seenSets: Record<number, { list: number[]; set: Record<number, boolean> }> = {}
+
+function seenSet(member: CrewMember): Record<number, boolean> {
+  const list = member.planSeen
+  if (list === undefined) return {}
+  const c = seenSets[member.id]
+  if (c !== undefined && c.list === list) return c.set
+  const set: Record<number, boolean> = {}
+  for (const id of list) set[id] = true
+  seenSets[member.id] = { list, set }
+  return set
+}
+
+/** Whether busy member `member` may drop its batch for `job` (B17 priority, B30 novelty and materials, B31 room). */
+function canPreemptMember(faction: FactionState, member: CrewMember, job: CrewJob, config: Config): boolean {
+  if (!mayPreemptFor(faction.board, member, job)) return false
   const inv = member.character.get_main_inventory()
   if (!inv || inv.count_empty_stacks() < 1) return false
   if (!hasMaterials(job, availableItems(faction, heldItems(member.character), config))) return false
@@ -206,17 +259,22 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       if (member.claims.length > 0) {
         // Every action finished but a claim is left (should not happen): give it back.
         for (const jobId of [...member.claims]) {
-          release(faction.board, jobId, member.id, tick, { reason: "no-actions", penalize: false, maxAttempts: config.jobMaxAttempts, retryTicks: 0 })
+          // M7c.8: a self-job (haul, deposit) belongs to this member: nobody else may claim it, so it ends here.
+          const job = faction.board.jobs[jobId]
+          if (job !== undefined && isSelfJob(job) && job.status === "claimed") failJob(faction.board, jobId, "no-actions", tick, member.id)
+          else release(faction.board, jobId, member.id, tick, { reason: "no-actions", penalize: false, maxAttempts: config.jobMaxAttempts, retryTicks: 0 })
         }
         member.claims = []
       }
       member.spot = undefined
-      if (!faction.paused) planNext(faction, member, config, tick)
+      const waiting = member.idleUntil !== undefined && tick < member.idleUntil && member.idleBoard === boardChanges(faction.board)
+      if (!faction.paused && !waiting) planNext(faction, member, config, tick)
     }
   }
   if (!faction.paused) preemptForUrgent(faction, config, tick)
-  // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist.
-  const ready = countReady(faction.board, tick)
+  // Idle accounting (M2 acceptance): a member is idle on a tick when it holds no claim while ready jobs exist. Whether
+  // any job is ready is looked up only for a member without a claim (it scanned every active job every tick).
+  let ready: boolean | undefined
   for (const id of faction.crew) {
     const member = storage.crew[id]
     if (member.dead) continue
@@ -229,7 +287,10 @@ function stepFaction(faction: FactionState, config: Config, tick: number): void 
       const kind = job ? job.payload.kind : "walk"
       stats.byKind ??= {}
       stats.byKind[kind] = (stats.byKind[kind] ?? 0) + 1
-    } else if (ready > 0) stats.idleTicks++
+    } else {
+      ready ??= anyReady(faction.board, tick)
+      if (ready) stats.idleTicks++
+    }
   }
 }
 
@@ -267,7 +328,9 @@ function hasMoreActionsFor(member: CrewMember, jobId: number): boolean {
 
 function pollActions(faction: FactionState, member: CrewMember, config: Config, tick: number): void {
   const board = faction.board
-  while (member.actions.length > 0) {
+  // M7c.8: a member found boxed in is unboxed after this action's job is handled (see below).
+  let trapped = false
+  while (member.actions.length > 0 && !trapped) {
     const ca = member.actions[0]
     const action = getAction(ca.action)
     const status: ActionStatus = action?.status ?? "failed"
@@ -289,12 +352,22 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     } else if (status === "succeeded" && ca.job === undefined) {
       member.noPaths = 0
     }
+    // M7c.8 (seed 11, `fresh-11`: 2077 haul/deposit jobs open for 400 game-min): the unbox used to run here, before the
+    // action's job was handled, and an unbox with nothing to clear keeps the actions. A haul whose last take was the
+    // failed walk lost it with its claim still held; the "no-actions" release then put a self-job back on the board,
+    // where nobody may claim it. Idle members scanned all of them every tick (crew 1 -> 21 ms/tick).
     if ((member.noPaths ?? 0) >= TRAPPED_NO_PATHS) {
       member.noPaths = 0
-      unbox(faction, member, tick)
-      return
+      trapped = true
     }
-    if (ca.job === undefined) continue // the walk to the standing spot
+    if (ca.job === undefined) {
+      // The walk to the standing spot. B111: no way there: the next plans pick another spot.
+      if (ca.spot !== undefined && status !== "succeeded" && (reason === "no-path" || reason === "unreachable")) {
+        recordBadSpot((faction.badSpots ??= {}), ca.spot, tick)
+        log(string.format("[rival-engineers] crew %d: no way to the spot %.1f,%.1f (%s): avoided for a while (B111)", member.id, ca.spot.x, ca.spot.y, reason))
+      }
+      continue
+    }
     const job = board.jobs[ca.job]
     if (job.status !== "claimed" || job.claimedBy !== member.id) continue
     if (isLenientJob(job)) {
@@ -318,6 +391,7 @@ function pollActions(faction: FactionState, member: CrewMember, config: Config, 
     member.actions = rest
     jobFailed(faction, member, job, action, status, config, tick)
   }
+  if (trapped) unbox(faction, member, tick)
 }
 
 /** Walk failures in a row after which a member counts as boxed in (M6, seed 222): no-path walks, and stuck/unreachable loops (B22: a member that re-paths forever in place is just as stuck). */
@@ -329,9 +403,12 @@ const UNBOX_TREE_RADIUS = 3
 /** B22: most trees or rocks one escape mines before it gets back to work (the walk re-checks the rest). */
 const UNBOX_TREES_PER_ESCAPE = 16
 /** Entities a boxed-in member may pick up (and leave a ghost for), smallest first. */
-const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "transport-belt", "underground-belt", "splitter"]
+const UNBOX_TYPES = ["inserter", "electric-pole", "pipe", "pipe-to-ground", "container", "logistic-container", "transport-belt", "underground-belt", "splitter"]
 /** B22: own structures big enough to trap a member (walls, machines); picked up like the small ones, last. */
-const UNBOX_BIG_TYPES = ["wall", "furnace", "boiler", "lab", "mining-drill", "burner-generator", "steam-engine", "assembling-machine", "storage-tank", "radar"]
+// M7c.8: a steam engine's type is "generator" ("steam-engine" is its name); an offshore pump last (it feeds every boiler).
+const UNBOX_BIG_TYPES = ["wall", "furnace", "lab", "mining-drill", "burner-generator", "generator", "assembling-machine", "storage-tank", "radar", "boiler", "offshore-pump"]
+/** M7c.8: ticks before an escape pick-up's ghost goes in (agent guess: 30 s, enough to walk out of a pocket). */
+const UNBOX_GHOST_DELAY = 1800
 /** B22: after an escape attempt that found nothing the member could clear, wait this long before trying again. */
 const UNBOX_RETRY_TICKS = 600
 
@@ -378,6 +455,71 @@ function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
   return trees
 }
 
+/** M7c.8: most tiles the pocket search floods; a bigger open area is not a pocket (agent guess: a 30 × 30 enclosure). */
+const POCKET_MAX_TILES = 900
+const DX4 = [0, 1, 0, -1]
+const DY4 = [-1, 0, 1, 0]
+
+/** M7c.8: whether a character fits at tile (x, y)'s centre (the engine's own check: tiles, entities, cliffs). */
+function walkableTile(surface: LuaSurface, x: number, y: number): boolean {
+  countWork("entityScans")
+  return surface.can_place_entity({ name: "character", position: { x: x + 0.5, y: y + 0.5 } })
+}
+
+/**
+ * M7c.8: a member walled into a pocket (the tiles it can walk to, flooded up to `POCKET_MAX_TILES`): the own entity on
+ * the pocket's edge to pick up — small types first, then the one whose far side is outside the pocket, then the
+ * nearest — and the pocket tile beside it to stand on. Undefined when the flood is not closed (not a pocket) or no own
+ * entity borders it.
+ */
+function pocketEscape(faction: FactionState, member: CrewMember): { entity: LuaEntity; stand: MapPosition } | undefined {
+  const surface = factionSurface(faction)
+  const p = member.character.position
+  const sx = math.floor(p.x)
+  const sy = math.floor(p.y)
+  const seen: Record<number, boolean> = { [tkey(sx, sy)]: true }
+  const queue: [number, number][] = [[sx, sy]]
+  const edge: [number, number, number, number][] = []
+  for (let i = 0; i < queue.length; i++) {
+    if (queue.length > POCKET_MAX_TILES) {
+      log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${sx},${sy}: no pocket (more than ${POCKET_MAX_TILES} tiles to walk)`)
+      return undefined
+    }
+    const [x, y] = queue[i]
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX4[d]
+      const ny = y + DY4[d]
+      const k = tkey(nx, ny)
+      if (seen[k]) continue
+      if (walkableTile(surface, nx, ny)) {
+        seen[k] = true
+        queue.push([nx, ny])
+      } else edge.push([nx, ny, x, y])
+    }
+  }
+  let best: { entity: LuaEntity; stand: MapPosition; rank: number } | undefined
+  for (const [bx, by, fx, fy] of edge) {
+    for (const e of findEntities(surface, { force: faction.force, area: [[bx + 0.1, by + 0.1], [bx + 0.9, by + 0.9]] })) {
+      let slot = UNBOX_TYPES.indexOf(e.type)
+      if (slot < 0) slot = UNBOX_BIG_TYPES.indexOf(e.type) >= 0 ? UNBOX_TYPES.length + UNBOX_BIG_TYPES.indexOf(e.type) : -1
+      if (slot < 0) continue
+      const ox = bx + (bx - fx)
+      const oy = by + (by - fy)
+      const opens = !seen[tkey(ox, oy)] && walkableTile(surface, ox, oy)
+      const rank = slot * 1000 + (opens ? 0 : 500) + math.abs(fx - sx) + math.abs(fy - sy)
+      if (best === undefined || rank < best.rank) best = { entity: e, stand: { x: fx + 0.5, y: fy + 0.5 }, rank }
+    }
+  }
+  if (best === undefined) {
+    const types: Record<string, boolean> = {}
+    for (const [bx, by] of edge) for (const e of findEntities(surface, { area: [[bx + 0.1, by + 0.1], [bx + 0.9, by + 0.9]] })) types[`${e.type}/${e.force.name}`] = true
+    const names: string[] = []
+    for (const [t] of pairs(types)) names.push(t as string)
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} at ${sx},${sy}: a pocket of ${queue.length} tiles, nothing of its own to pick up on its edge (${names.join(", ")})`)
+  }
+  return best === undefined ? undefined : { entity: best.entity, stand: best.stand }
+}
+
 /**
  * M6/B22: like a player walled in by their own build, a boxed-in member clears a way out — picks up an own entity
  * around it, or mines the trees and rocks it reaches — then walks on; its dropped jobs go back to the board, so it
@@ -386,8 +528,18 @@ function escapePlan(faction: FactionState, member: CrewMember): EscapeTarget[] {
  */
 function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   if (!member.character.valid) return
-  const plan = escapePlan(faction, member)
+  let plan = escapePlan(faction, member)
   const p = member.character.position
+  // M7c.8 (fresh seed 11): walled into a pocket wider than its reach (water on three sides, the factory's own modules on
+  // the fourth, every blocker 5+ tiles away): it walks to the pocket's edge and picks up an own entity there.
+  let stand: MapPosition | undefined
+  if (plan.length === 0) {
+    const pocket = pocketEscape(faction, member)
+    if (pocket !== undefined) {
+      plan = [{ entity: pocket.entity, act: "pickUp", rank: 0 }]
+      stand = pocket.stand
+    }
+  }
   if (plan.length === 0) {
     if (tick < (member.unboxRetryAt ?? 0)) return
     member.unboxRetryAt = tick + UNBOX_RETRY_TICKS
@@ -396,6 +548,10 @@ function unbox(faction: FactionState, member: CrewMember, tick: number): void {
   }
   resetMember(faction, member, tick)
   member.stats.unboxed = (member.stats.unboxed ?? 0) + 1
+  if (stand !== undefined) {
+    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: stand, radius: 0.4 }) })
+    log(`[rival-engineers] faction ${faction.name}: member ${member.id} is walled into a pocket at ${math.floor(p.x)},${math.floor(p.y)}: walks to ${stand.x},${stand.y} at its edge`)
+  }
   if (plan.length > 1 || (plan.length === 1 && plan[0].act === "mine")) {
     for (const t of plan) {
       member.actions.push({ action: enqueue(member.controller, { kind: "mine", target: t.entity }) })
@@ -436,6 +592,12 @@ export function placeUnboxGhosts(tick: number): void {
     const faction = storage.factions[g.faction]
     if (faction === undefined) continue
     const surface = factionSurface(faction)
+    // M7c.8: not before the member had time to walk out through the gap: re-placed at once, the member that picked it up
+    // (still beside it) took the place job and walled itself in again (fresh seed 11, steam engines, four rounds).
+    if (tick - g.tick < UNBOX_GHOST_DELAY) {
+      keep.push(g)
+      continue
+    }
     const pos = g.params.position as { x: number; y: number }
     const still = findEntities(surface, { name: g.params.inner_name as string, position: pos, force: faction.force, limit: 1 })[0]
     if (still !== undefined) {
@@ -454,6 +616,7 @@ export function placePendingGhosts(): void {
     const faction = storage.factions[name]
     const list = faction.pendingGhosts
     if (list === undefined || list.length === 0) continue
+    const f = storage.factories?.[name]
     const left: typeof list = []
     for (const p of list) {
       let waiting = false
@@ -463,6 +626,15 @@ export function placePendingGhosts(): void {
       }
       if (waiting) {
         left.push(p)
+        continue
+      }
+      // B158: a piece held for a kept route must not come back if that route was dropped or rerouted away from the
+      // tile in the meantime; it would be an unplanned ghost with a job.
+      if (p.owner !== undefined && f !== undefined && f.layout.routes[p.owner as never] === undefined) {
+        // B158: the kept route was dropped; a piece held for it must not come back as an unplanned ghost. (Do not require
+        // the tile in `route.tiles`: while the splitter is cleared, the head tile is owned by the tap, not the trunk —
+        // the B102 splitter-hole case.)
+        log(`[rival-engineers] faction ${faction.name}: dropping the pending ${p.name} at ${p.x},${p.y}: ${p.owner} is gone`)
         continue
       }
       const params: Record<string, unknown> = { name: "entity-ghost", inner_name: p.name, position: { x: p.x, y: p.y }, direction: p.dir, force: faction.force }
@@ -485,8 +657,10 @@ function finishJob(faction: FactionState, member: CrewMember, job: CrewJob, acti
   countWork("jobsProcessed")
   removeClaim(member, job.id)
   if (job.kind !== "haul") member.stats.jobsDone++
-  // A finished craft is a plan step for the strategy layer's stall detection.
-  if (faction.brain && job.payload.kind === "craft") faction.brain.steps++
+  // A finished craft is a plan step for the strategy layer's stall detection. M7c.9: so is a finished clear (route-900
+  // seed 11, minute 910–941: a build's clear phase took 30 game-min over 21 trees along 2000 tiles of routes; the stall
+  // check saw no step, and its recovery failed the open clear jobs, so the ghosts went down over the trees and a belt).
+  if (faction.brain && (job.payload.kind === "craft" || job.payload.kind === "clear")) faction.brain.steps++
 }
 
 /**
@@ -542,7 +716,20 @@ function jobFailed(
   }
   const payload = job.payload
   if (payload.kind === "place" && !payload.ghost.valid) {
+    // M7d.5: a construction robot built it while this member was on its way.
+    const built = builtInstead(faction, payload)
+    if (built !== undefined) {
+      payload.built = built
+      delete faction.ghostJobs[payload.ghostKey]
+      complete(board, job.id, member.id, tick)
+      return
+    }
     failJob(board, job.id, "ghost-removed", tick, member.id)
+    return
+  }
+  // M7d.5: the robots took a clear job's target down while this member was on its way.
+  if (payload.kind === "clear" && payload.robotOrdered === true && !payload.target.valid) {
+    complete(board, job.id, member.id, tick)
     return
   }
   // B66 (5387208): Factorio accepts a ghost on top of the same live entity, and that ghost can never be revived. The
@@ -558,6 +745,16 @@ function jobFailed(
       return
     }
   }
+  // M7c (seed 11, agent design, proposed): a mining drill with no ore left in its mining area can never be placed by a
+  // character (a script placement check still says it fits). Its ore was mined out after the plan; drop the ghost so the
+  // goal finishes with the drills that stand, instead of retrying until it gives up its location (B20) and tears down
+  // the whole module.
+  if (payload.kind === "place" && action?.reason === "cannot-place" && payload.ghost.ghost_type === "mining-drill" && !oreUnder(payload.ghost)) {
+    delete faction.ghostJobs[payload.ghostKey]
+    payload.ghost.destroy()
+    failJob(board, job.id, "no-ore-left", tick, member.id)
+    return
+  }
   // A character standing on the spot is temporary: retry soon, without spending an attempt.
   const blocked = payload.kind === "place" && action?.reason === "cannot-place" && charactersIn(faction, job.footprint)
   const penalize = !blocked || (job.deferrals ?? 0) >= MAX_DEFERRALS
@@ -568,6 +765,14 @@ function jobFailed(
     retryTicks: config.jobRetryTicks,
     delay: config.jobBlockedRetryTicks,
   })
+}
+
+/** Whether any resource lies in a drill ghost's mining area. */
+function oreUnder(ghost: LuaEntity): boolean {
+  const r = prototypes.entity[ghost.ghost_name].mining_drill_radius ?? 1
+  const p = ghost.position
+  const area = { left_top: { x: p.x - r, y: p.y - r }, right_bottom: { x: p.x + r, y: p.y + r } }
+  return countEntities(ghost.surface, { area, type: "resource", limit: 1 }) > 0
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -634,16 +839,76 @@ function fuelTarget(faction: FactionState, job: CrewJob): LuaEntity | undefined 
   return built?.valid ? built : undefined
 }
 
+/**
+ * M7d.5: the entity standing where a place job's (now gone) ghost was: what a construction robot built from it. One that
+ * is marked for deconstruction is an old entity on its way out, not the build.
+ */
+function builtInstead(faction: FactionState, p: Extract<JobPayload, { kind: "place" }>): LuaEntity | undefined {
+  const e = findEntities(factionSurface(faction), { name: p.entity, position: p.position, force: faction.force, limit: 1 })[0]
+  return e !== undefined && e.valid && !e.to_be_deconstructed() ? e : undefined
+}
+
+/**
+ * M7d.5: place and clear jobs the faction's construction robots can do now, which the crew leaves to them for
+ * `factory-robot-first-seconds` after the job was made: the ghost is in a network's construction range, the network
+ * has a free robot and its storage holds the item; or the clear job's target is in range (it is then marked for
+ * deconstruction, once). After that the crew builds it like any other (the fallback when the
+ * robots never come). Undefined when no network has a free robot.
+ */
+function robotWork(faction: FactionState, tick: number, config: Config): ((this: void, job: CrewJob) => boolean) | undefined {
+  const window = config.factoryRobotFirstSeconds * 60
+  if (window <= 0) return undefined
+  const surface = factionSurface(faction)
+  const networks = game.forces[faction.force]?.logistic_networks[surface.name] ?? []
+  const free = networks.filter((n) => n.valid && n.available_construction_robots > 0)
+  if (free.length === 0) return undefined
+  return (job) => {
+    const p = job.payload
+    if (tick - job.createdTick >= window) return false
+    if (p.kind === "clear") {
+      // Trees, rocks and the faction's own entities: the robots take them down (marked for deconstruction once).
+      if (!p.target.valid) return false
+      if (p.robotOrdered) return true
+      for (const n of free) {
+        for (const cell of n.cells) if (cell.valid && cell.is_in_construction_range(p.target.position)) return orderRemoval(faction, job.id, p)
+      }
+      return false
+    }
+    if (p.kind !== "place" || !p.ghost.valid) return false
+    for (const n of free) {
+      if (n.get_item_count(p.item) <= 0) continue
+      for (const cell of n.cells) if (cell.valid && cell.is_in_construction_range(p.position)) return true
+    }
+    return false
+  }
+}
+
 /** Fails ready jobs whose targets are gone, so nobody claims them. */
 function dropDeadJobs(faction: FactionState, tick: number): void {
   const board = faction.board
+  sweepOrders(faction)
   for (const id of [...board.active]) {
     const job = board.jobs[id]
     if (job.status !== "open") continue
     const payload = job.payload
     let gone: string | undefined
-    if (payload.kind === "place" && !payload.ghost.valid) gone = "ghost-removed"
-    else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
+    // M7c.8: an open self-job can never be claimed again (saves from before the pollActions fix hold thousands).
+    if (isSelfJob(job)) gone = "orphan-self-job"
+    else if (payload.kind === "place" && !payload.ghost.valid) {
+      // M7d.5: a construction robot built it (the ghost became the entity): the job is done, its fuel jobs go on.
+      const built = builtInstead(faction, payload)
+      if (built !== undefined) {
+        payload.built = built
+        delete faction.ghostJobs[payload.ghostKey]
+        completeOpen(board, id, tick, "robot-built")
+        continue
+      }
+      gone = "ghost-removed"
+    } else if (payload.kind === "clear" && payload.robotOrdered === true && !payload.target.valid) {
+      // M7d.5: the robots took it down.
+      completeOpen(board, id, tick, "robot-removed")
+      continue
+    } else if ((payload.kind === "gather" || payload.kind === "clear") && !payload.target.valid) gone = "target-invalid"
     else if (payload.kind === "gather" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "craft" && payload.deliverTo && !payload.deliverTo.valid) gone = "target-invalid"
     else if (payload.kind === "transfer" && (!payload.from.valid || !payload.to.valid)) gone = "target-invalid"
@@ -660,6 +925,8 @@ function otherSpots(faction: FactionState, member: CrewMember): Rect[] {
     const p = other.spot ?? other.character.position
     rects.push({ x1: p.x - 0.6, y1: p.y - 0.6, x2: p.x + 0.6, y2: p.y + 0.6 })
   }
+  // B111: spots no walk could reach lately.
+  for (const r of badSpotRects(faction.badSpots, game.tick)) rects.push(r)
   return rects
 }
 
@@ -690,12 +957,14 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
   member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick)) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick, coveredItems(board, held, tick))) return
   const rejected: Record<number, string> = {}
+  const robots = robotWork(faction, tick, config)
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
     if (!hasMaterials(job, avail)) { rejected[job.id] = "materials"; return false }
     if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) { rejected[job.id] = "fuel-target"; return false }
+    if (robots !== undefined && robots(job)) { rejected[job.id] = "robots"; return false }
     return true
   }
   let anchor = forced !== undefined && isReady(board, forced, tick) && accept(forced) ? forced : selectJob(board, pos, tick, accept)
@@ -708,6 +977,8 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
       else if (!isReady(board, job, tick)) waiting++
     }
     recordCrewPlan(faction, member, tick, "idle", rejected, { forced: forced?.id, active: board.active.length, claimed, waiting })
+    member.idleUntil = tick + IDLE_REPLAN_TICKS
+    member.idleBoard = boardChanges(board)
     return
   }
   member.stats.plans++
@@ -728,6 +999,8 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
 
   let jobs: CrewJob[] = [anchor]
   let spot: Pos | undefined
+  // Further standing spots of a tour (their jobs follow the first spot's in `jobs`).
+  const legSpots: { jobs: number[]; spot?: Pos }[] = []
   if (anchor.kind === "place" || anchor.kind === "fuel") {
     // Stand where every job of the batch is in reach. Plan from the stockpile when the member must fetch
     // materials first, since that is where it will walk from.
@@ -736,16 +1009,33 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
     if (missing.length > 0) from = nearestSource(faction, pos, missing[0].item, config)?.position ?? pos
     const reach = (anchor.kind === "place" ? character.build_distance : character.reach_distance) - 1.5
     const surface = character.surface
-    const batch = planBatch(board, anchor, from, tick, {
+    // User request (in-session, 2026-11-03): the batch walks on to more standing spots (`planTour`), taking no more
+    // than this member's share of the ready jobs of its kind beyond the first spot, and no more than the inventory holds.
+    let ready = 0
+    for (const id of board.active) {
+      const j = board.jobs[id]
+      if (j.kind === anchor.kind && j.status === "open" && isReady(board, j, tick)) ready++
+    }
+    let alive = 0
+    for (const id of faction.crew) if (!storage.crew[id].dead) alive++
+    const legs = planTour(board, anchor, from, tick, {
       reach,
       maxJobs: config.batchMaxJobs,
       accept,
-      isFree: (p) => surface.can_place_entity({ name: "character", position: p }),
+      // B176: and not in a pocket the pathfinder cannot enter (a steam block's corridor between two poles).
+      isFree: (p) => surface.can_place_entity({ name: "character", position: p }) && !spotInPocket(surface, p),
       extraAvoid: otherSpots(faction, member),
+      maxSpots: config.batchMaxSpots,
+      hop: config.batchSpotHop,
+      maxTotal: math.max(0, math.ceil(ready / math.max(1, alive)) - config.batchMaxJobs),
+      slots: character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill,
+      slotsFor: stacksFor,
+      held,
     })
     jobs = []
-    for (const id of batch.jobs) jobs.push(board.jobs[id])
-    spot = batch.spot
+    for (const leg of legs) for (const id of leg.jobs) jobs.push(board.jobs[id])
+    spot = legs[0].spot
+    for (let i = 1; i < legs.length; i++) legSpots.push(legs[i])
   } else if (isTripJob(faction, anchor)) {
     // B3: chain nearby clears and wood gathers into one trip instead of a depot round trip per job.
     const inv = character.get_main_inventory()!
@@ -785,7 +1075,9 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   if (anchor.kind === "place" && missing.length > 0) {
     const source = nearestSource(faction, pos, missing[0].item, config)
     const to = spot ?? anchor.pos
-    if (source !== undefined) {
+    // A near source is no long round trip, and prefetched items are kept from the other members (M2 two-crew build:
+    // a 24-job batch plus prefetch carried the whole bill; the other member idled 40% on "materials").
+    if (source !== undefined && distance(source.position, to) >= config.prefetchMinDistance) {
       const slots = character.get_main_inventory()!.count_empty_stacks() * config.tripInventoryFill
       const extra = prefetchJobs(board, jobs, to, distance(source.position, to), tick, held, slots, stacksFor, accept)
       if (extra.length > 0) missing = missingMaterials([...jobs, ...extra, ...crafts], held)
@@ -797,10 +1089,22 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   for (const c of crafts) startCraft(member, c)
   if (spot && distance(pos, spot) > 0.5) {
     member.spot = spot
-    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }) })
+    member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: spot, radius: 0.4 }), spot })
   }
   if (jobs.length > 1 && isTripJob(faction, jobs[0])) enqueueTrip(faction, member, jobs)
-  else for (const job of jobs) enqueueWork(faction, member, job)
+  else {
+    // A tour: the first spot's jobs, then for each further spot a walk there and its jobs (those still in `jobs`
+    // after the materials fit).
+    const inLeg: Record<number, boolean> = {}
+    for (const leg of legSpots) for (const id of leg.jobs) inLeg[id] = true
+    for (const job of jobs) if (!inLeg[job.id]) enqueueWork(faction, member, job)
+    for (const leg of legSpots) {
+      const kept = jobs.filter((j) => leg.jobs.indexOf(j.id) >= 0)
+      if (kept.length === 0) continue
+      if (leg.spot !== undefined) member.actions.push({ action: enqueue(member.controller, { kind: "walk", goal: leg.spot, radius: 0.4 }), spot: leg.spot })
+      for (const job of kept) enqueueWork(faction, member, job)
+    }
+  }
   for (const c of crafts) finishCraft(member, c)
 }
 
@@ -885,6 +1189,21 @@ function enqueueTrip(faction: FactionState, member: CrewMember, jobs: CrewJob[])
   member.stats.trips = (member.stats.trips ?? 0) + 1
 }
 
+/**
+ * B117: items the member keeps between jobs: every material of an open, ready job that its pocket alone covers. A member
+ * carrying poles to an outpost 600 tiles out walked home to deposit them before each pole job, then took them back.
+ * Materials split across pockets (13 and 10 wood for a craft of 14, B116) are still deposited, so they pool.
+ */
+function coveredItems(board: FactionState["board"], held: Record<string, number>, tick: number): Record<string, boolean> {
+  const keep: Record<string, boolean> = {}
+  for (const id of board.active) {
+    const job = board.jobs[id]
+    if (job.materials.length === 0 || isSelfJob(job) || !isReady(board, job, tick) || !hasMaterials(job, held)) continue
+    for (const m of job.materials) keep[m.item] = true
+  }
+  return keep
+}
+
 /** Item types a crew member keeps on itself instead of depositing (its own weapons and armour). */
 const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true }
 
@@ -892,11 +1211,11 @@ const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true
  * Puts what the member carries into the faction's stockpiles (whatever fits). Returns whether it queued
  * anything. Creates a deposit job the member claims for itself, like a haul.
  */
-function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number): boolean {
+function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number, keep: Record<string, boolean>): boolean {
   const piles = validStockpiles(faction)
   if (piles.length === 0) return false
   const names: string[] = []
-  for (const item in held) if (held[item] > 0 && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
+  for (const item in held) if (held[item] > 0 && !keep[item] && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
   if (names.length === 0) return false
   names.sort()
   const board = faction.board

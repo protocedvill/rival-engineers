@@ -21,12 +21,26 @@ export interface Config {
   debugReachMultiplier: number
   /** Debug/soak only: after the normal research goal, repeat a hidden infinite technology to keep labs consuming packs. */
   debugInfiniteResearch: boolean
+  /**
+   * Benchmark only (parity-breaking, never in acceptance runs): crew members teleport along their path up to this many
+   * tiles per tick instead of walking (0 = normal walking). A huge `character_running_speed_modifier` cannot be used:
+   * the walker advances a waypoint only within 0.3 tiles, so a body moving more than that per tick skips waypoints.
+   */
+  benchmarkWalkTiles: number
+  /** Benchmark only: force-wide hand-crafting speed multiplier (1 = player parity, 20 = 21× faster). */
+  benchmarkCraftingMultiplier: number
   /** Attempts before a failing job is marked failed (Job Board). */
   jobMaxAttempts: number
   /** Back-off before a released job may be claimed again; doubles with each failed attempt. */
   jobRetryTicks: number
   /** Most jobs one crew member claims as one locality batch. */
   batchMaxJobs: number
+  /** Most standing spots one place / fuel batch walks to in a row (1 = one spot, the M2 batch). */
+  batchMaxSpots: number
+  /** A batch's next standing spot serves the nearest ready job within this many tiles of the last spot. */
+  batchSpotHop: number
+  /** D66 prefetch (materials for ready jobs beyond the batch) only when the source is at least this many tiles away. */
+  prefetchMinDistance: number
   /** Ticks a job waits after a transient failure (e.g. a character standing in the way). */
   jobBlockedRetryTicks: number
   /** Hand speed: ticks a crew member takes to place one entity once in reach (SPEC §5.7). */
@@ -37,6 +51,10 @@ export interface Config {
   researchSciencePacks: string
   /** Items, entities or fluids the research goal may not need (trigger technologies), comma-separated. */
   researchExcludedTriggers: string
+  /** D74 / P47: leave combat-only technologies out of the research goal (kept when a kept technology needs them). */
+  researchSkipCombat: boolean
+  /** M7c: most ingredients an assembler row takes (2 in v1). */
+  factoryRowInputs: number
   /** Create `factionCount` factions on a new map (never while factorio-test is running). */
   autoSpawn: boolean
   spawnMode: string
@@ -173,6 +191,8 @@ export interface Config {
   moduleBuffer: string
   /** D42 / B5: usable slots of a buffer chest (the rest are barred). */
   moduleBufferSlots: number
+  /** D51 / M7c.8: the products whose assembler rows get a buffer depot (comma-separated items). */
+  moduleBufferRows: string
   /** D38: temporary chest-fed assembler cells per product (item=count, empty = none). */
   bootstrapFactories: string
   /** D38: seconds of a temporary factory's output the economy waits for before hand-crafting the rest. */
@@ -189,13 +209,15 @@ export interface Config {
   factorySustainMinutes: number
   /** M6: from this stage on (1-based, 0 = never), new fuel consumers share one fuel producer per cluster (splitter taps). */
   factorySharedProviders: number
+  /** M7 (C, proposed): items/s below which a top-up into a belt still feeding its consumer gets no provider (0 = always). */
+  factoryMinTopUp: number
   /** B19: research splitters before production when sharing providers saves at least this many modules (0 = never). */
   logisticsShareMinModules: number
   /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */
   buildStuckRounds: number
   /** P36 (a): a steam block's fuel producer with less than this many minutes of ore left is replaced (0 = never). */
   factoryPowerFuelMinutes: number
-  /** D67: any other factory mine with less than this many minutes of ore left starts its handover (0 = never). */
+  /** D67: any other factory mine with less than this many minutes of ore left starts retiring (D76; 0 = never). */
   factoryMineLeadMinutes: number
   factorySiteRetryMinutes: number
   /** B54: Job Board priority of electric-pole place jobs in factory builds (above every other job: power first). */
@@ -204,6 +226,16 @@ export interface Config {
   factoryFuelFallback: boolean
   /** D56: place one radar at the base once power is built (for realism; plans never depend on it). */
   factoryRadar: boolean
+  /** M7d.5: after construction robotics, place a roboport network over the base (hub with storage chests first). */
+  factoryRobots: boolean
+  /** M7d.5: the most roboports one faction's network places (proposed). */
+  factoryRoboportsMax: number
+  /** M7d.5: tiles between neighbouring roboports on the network's grid (proposed; logistic areas must touch). */
+  factoryRoboportSpacing: number
+  /** M7d.5: construction robots the crew keeps in the network (put into the hub roboport; proposed). */
+  factoryNetworkRobots: number
+  /** M7d.5: seconds the crew leaves a new place job to the robots when they can do it now (0 = never; proposed). */
+  factoryRobotFirstSeconds: number
   /** B31: a refuel preempts a busy member's batch only when its running target has less than this many seconds of fuel (0 = never). */
   preemptFuelSeconds: number
   /** B32: supply points (furnace outputs, chests, buffers, the mall) farther than this from the hub are not taken from (0 = any distance). */

@@ -22,7 +22,13 @@ export interface SupplyPoint {
 }
 
 /** B36: source kinds for telemetry. `depot`: a stockpile. */
-export type SupplyKind = "depot" | "chest-out" | "temp-out" | "buffer" | "furnace" | "chest-site" | "pair" | "module-furnace"
+/**
+ * `module-out` (M7c.8): a production module's assembler output, registered only for products the crew has no other
+ * source for; it counts at any amount (its slot holds a few at most, often fewer than `minTake`). `stock-out` (M7d.5): a
+ * stock row's chest (roboports, robots), also at any amount (seed 11: the hub's roboport place job could not take the
+ * one roboport made so far, "below minimum 5", and hand-crafted one from 90 plastic).
+ */
+export type SupplyKind = "depot" | "chest-out" | "temp-out" | "buffer" | "furnace" | "chest-site" | "pair" | "module-furnace" | "module-out" | "stock-out"
 
 
 /** What one source holds of one item, after what it keeps back. `depot`: a stockpile (no minimum take). */
@@ -90,7 +96,7 @@ export function takeable(faction: FactionState, minTake: number): Holding[] {
   for (const h of cachedHoldings(faction)) {
     if (!h.entity.valid) continue
     const amount = h.amount - reservedAt(faction, h.entity, h.item)
-    if (amount <= 0 || (!h.depot && amount < minTake)) continue
+    if (amount <= 0 || (!h.depot && h.kind !== "module-out" && h.kind !== "stock-out" && amount < minTake)) continue
     out.push({ entity: h.entity, item: h.item, amount, depot: h.depot, kind: h.kind })
   }
   return out
@@ -103,7 +109,7 @@ export function supplyStock(faction: FactionState, minTake: number): Record<stri
     if (!p.entity.valid) continue
     const list: Holding[] = []
     addInventory(list, p.entity, p.inventory, p.kind, p.item, p.keep)
-    for (const h of list) if (h.amount >= minTake) out[h.item] = (out[h.item] ?? 0) + h.amount
+    for (const h of list) if (h.amount >= minTake || h.kind === "module-out" || h.kind === "stock-out") out[h.item] = (out[h.item] ?? 0) + h.amount
   }
   return out
 }

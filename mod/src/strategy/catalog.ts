@@ -117,6 +117,39 @@ function cheapestPlaceable(force: LuaForce, type: string, ok: (this: void, name:
   return best
 }
 
+/**
+ * B183: every chest the depot may use, best first, with the raw materials one craft takes. Candidates are hand-craftable
+ * containers with an enabled recipe and at least 8 slots, and storage and passive provider chests (the depot then
+ * serves robots). Order: storage chests first (B203, user in-session 2026-11-12: robots build from them and store
+ * what they pick up), then passive providers (user, in-session 2026-11-11), then the most slots (an iron chest over a
+ * wooden one), then the cheapest. The bootstrap takes the first one its stock covers: a depot that only knew the
+ * wooden chest deadlocked when the faction had plates but no wood.
+ */
+export function depotChests(force: LuaForce): { entity: string; item: string; raw: Record<string, number> }[] {
+  const out: { entity: string; item: string; raw: Record<string, number>; cost: number; slots: number; rank: number }[] = []
+  const names: string[] = []
+  for (const [name] of pairs(prototypes.get_entity_filtered([{ filter: "type", type: ["container", "logistic-container"] }]))) names.push(name as string)
+  names.sort()
+  for (const name of names) {
+    const proto = prototypes.entity[name]
+    const mode = proto.type === "logistic-container" ? proto.logistic_mode : undefined
+    if (mode !== undefined && mode !== "storage" && mode !== "passive-provider") continue
+    const slots = proto.get_inventory_size(defines.inventory.chest) ?? 0
+    if (slots < 8) continue
+    const item = proto.items_to_place_this?.[0]?.name
+    if (!item) continue
+    const hr = handRecipe(force, item)
+    if (!hr || !hr.enabled) continue
+    const e = expandRecipe(force, hr.recipe, 1)
+    if (e.locked.length > 0) continue
+    out.push({ entity: name, item, raw: e.raw, cost: rawCost(force, hr.recipe), slots, rank: mode === "storage" ? 0 : mode !== undefined ? 1 : 2 })
+  }
+  out.sort((a, b) =>
+    a.rank !== b.rank ? a.rank - b.rank : a.slots !== b.slots ? b.slots - a.slots : a.cost !== b.cost ? a.cost - b.cost : a.entity < b.entity ? -1 : 1,
+  )
+  return out
+}
+
 function burnerOnly(this: void, name: string): boolean {
   const proto = prototypes.entity[name]
   return proto.burner_prototype !== undefined
@@ -134,6 +167,7 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
   let fuel: string | undefined
   const smelts: Record<string, string> = {}
   const oreOf: Record<string, string> = {}
+  const materialSmelts: Record<string, string> = {}
   const furnaceCats = prototypes.entity[furnace!.entity].crafting_categories ?? {}
   // The fuel: the first resource (configured ones first, then any, by name) whose product burns.
   const allResources: string[] = []
@@ -161,7 +195,11 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
       const plate = r.products[0].name
       // Skip recipes that turn the resource into a building material (stone → brick): only smelt what the
       // bootstrap's recipes actually consume as plates is the brain's business; take the first match.
-      if (prototypes.item[plate]?.place_as_tile_result !== undefined) continue
+      if (prototypes.item[plate]?.place_as_tile_result !== undefined) {
+        // M7c.8: still a source when something needs it (an oil refinery's bricks), by a smelt site added then.
+        materialSmelts[plate] ??= res
+        continue
+      }
       smelts[item] = plate
       oreOf[plate] = item
       break
@@ -178,5 +216,6 @@ export function buildCatalog(force: LuaForce, resources: string[]): Catalog {
     fuel: fuel!,
     smelts,
     oreOf,
+    materialSmelts,
   }
 }

@@ -172,6 +172,7 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
   const feeders: Feeder[] = []
   const sinks: LuaEntity[] = []
   const chests: LuaEntity[] = []
+  const drains: { item: string; pipe: LuaEntity }[] = []
   const belt = (def.params?.belt as string | undefined) ?? "transport-belt"
   const feedFactor = opts.feedFactor ?? 1.0
   for (const port of def.ports) {
@@ -187,6 +188,31 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
       else {
         const rate = rateOf(def.rates.inputs, port.item!)
         feeders.push({ item: port.item!, inserted: 0, perTick: rate / 60, credit: 0, lines: [b.get_transport_line(1), b.get_transport_line(2)], next: 0 })
+      }
+    } else if (port.kind === "pipe-in") {
+      // M7b: a fluid input comes from an infinity pipe on the port's outside tile (fluids are not rate-limited here:
+      // only the outputs are judged).
+      const local = portOutsideTile(port)
+      taken[`${local.x},${local.y}`] = true
+      const src = surface.create_entity({ name: "infinity-pipe", position: worldPos(origin, local), force })
+      if (src === undefined) problems.push(`no room for the fluid source of ${port.id}`)
+      else src.set_infinity_pipe_filter({ name: port.item!, percentage: 1, mode: "at-least" })
+    } else if (port.kind === "pipe-out") {
+      // M7d: a fluid output runs through a pump (its own fluid segment) into a pipe drained every tick and counted. The
+      // pump has its own pole and energy interface beside it.
+      const v = port.dir === 0 ? { x: 0, y: -1 } : port.dir === 4 ? { x: 1, y: 0 } : port.dir === 8 ? { x: 0, y: 1 } : { x: -1, y: 0 }
+      const side = { x: -v.y, y: v.x }
+      const at = (k: number, s: number): MapPosition => worldPos(origin, { x: port.pos.x + k * v.x + s * side.x, y: port.pos.y + k * v.y + s * side.y })
+      for (let k = 1; k <= 3; k++) taken[`${port.pos.x + k * v.x},${port.pos.y + k * v.y}`] = true
+      const pump = surface.create_entity({ name: "pump", position: at(1.5, 0), direction: port.dir, force })
+      const drain = surface.create_entity({ name: "pipe", position: at(3, 0), force })
+      surface.create_entity({ name: "small-electric-pole", position: at(1, 1), force })
+      const eei = surface.create_entity({ name: "electric-energy-interface", position: at(1.5, 2.5), force })
+      if (pump === undefined || drain === undefined || eei === undefined) problems.push(`no room for the fluid sink of ${port.id}`)
+      else {
+        eei.electric_buffer_size = 1e7
+        eei.power_production = 1e6
+        drains.push({ item: port.item!, pipe: drain })
       }
     } else if (port.kind === "chest-out") {
       const c = surface.find_entities_filtered({ position: worldPos(origin, port.pos), type: "container" })[0]
@@ -296,14 +322,19 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         return v
       })
     } else for (const [item] of pairs(declared)) keys.push((rates) => rates[item] ?? 0)
+    // A low-rate module (0.15/s) makes 8 or 10 items per 60 s window, so consecutive 3-window groups differ by one item
+    // (~8%) and a flat 3% tolerance can never pass: the two slowest lab tests always ran to the 60-minute cap. The
+    // tolerance floor is the sampling noise of `expected` discrete items (0.5/sqrt(n)); for high rates it stays at 3%.
+    const noiseTol = (expected: number): number => math.max(tolerance, 0.5 / math.sqrt(math.max(1, expected)))
     for (const key of keys) {
       const last = groupMean(key, n - windowsNeeded)
       const prev = groupMean(key, n - 2 * windowsNeeded)
-      if (last <= 0 || math.abs(last - prev) > tolerance * last) return false
+      const expected = last * (windowTicks / 60)
+      if (last <= 0 || math.abs(last - prev) > noiseTol(expected) * last) return false
     }
     for (const f of feeders) {
       const scheduled = f.perTick * feedFactor * 60
-      if (groupMean((rates) => rates[`feed:${f.item}`] ?? 0, n - windowsNeeded) < (1 - tolerance) * scheduled) return false
+      if (groupMean((rates) => rates[`feed:${f.item}`] ?? 0, n - windowsNeeded) < (1 - noiseTol(scheduled * (windowTicks / 60))) * scheduled) return false
     }
     return true
   }
@@ -337,6 +368,11 @@ export function runModuleLab(def: ModuleDef, opts: LabOptions, onDone: (this: vo
         for (const [item, n] of pairs(c)) add(item, n)
         line.clear()
       }
+    }
+    for (const d of drains) {
+      if (!d.pipe.valid) continue
+      add(d.item, d.pipe.get_fluid_contents()[d.item] ?? 0)
+      d.pipe.clear_fluid_inside()
     }
     if (opts.chestBar === undefined && tick % 60 === 0) {
       for (const c of chests) {

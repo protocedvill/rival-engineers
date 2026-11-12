@@ -274,7 +274,7 @@ describe("mining arena (B1)", () => {
   before_each(() => {
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1 && config.benchmarkWalkTiles === 0 && config.benchmarkCraftingMultiplier === 1, "debug parity toggles must be off")
   })
 
   test("every tree and rock prototype from 8 directions, off the grid", () => {

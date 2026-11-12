@@ -1,4 +1,4 @@
-import { assemblerRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chemRow, labArray, miningOutpost, smelterColumn, steamBlock } from "../src/modules/generators"
 import { IDENTITY, Transform, transformModule } from "../src/modules/geometry"
 import { connectionId, moduleId, routeId, poleId, poleLineId, layoutClaimTag } from "../src/shared/ids"
 import { EAST, ModuleDef, NORTH, Port, SOUTH } from "../src/modules/types"
@@ -6,11 +6,12 @@ import { availableTiers, beltTiers, checkEdge, decideOverflow, tierByBelt } from
 import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
-import { asciiTerrain, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
-import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, layoutRevision, LayoutState, newLayout, PlacedModule, Route, unmarkModule } from "../src/planner/layout"
-import { LANE_HOP, laneWayOut, placeNow } from "../src/planner/placement"
+import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
+import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, portApproach, rerootTap, Route, unmarkModule } from "../src/planner/layout"
+import { LANE_HOP, laneWayOut, openPortEnds, placedPatch, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
-import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, runJob } from "../src/planner/plan"
+import { planReroute } from "../src/planner/reroute"
+import { cloneLayout, ConnectionRequest, newPlanJob, newRoutingJob, planNow, PlanRequest, replacementAvoid, ripForReplace, runJob } from "../src/planner/plan"
 import { EARLY_COMPACT, LayoutPolicy, packingScorer, placementTerms, policyIds, registerPolicy, selectPolicy } from "../src/planner/policy"
 import { newTraceSink, planTrace } from "../src/planner/trace"
 import { eq, near, ok, run, test } from "./harness"
@@ -460,26 +461,41 @@ test("router: underground across a 3-wide river; fails across 5 with yellow (max
   noProblems(s6f, t6, "river 6 fast")
 })
 
-test("router: never enters a module footprint, goes around (or under, when allowed)", () => {
+test("router: never enters a module footprint; B121: goes under one only if it has no undergrounds of its own", () => {
   const terrain = asciiTerrain(field(40, 30))
-  const state = newLayout()
   const a = source("a", EAST)
   const b = sink("b", EAST)
-  const wall = box("wall", 3, 20, [])
+  // A module with an underground belt pair inside (a curated block): ours could pair with its ends, so it is a wall.
+  const walled = box("walled", 3, 20, [])
+  walled.entities = [
+    { name: "underground-belt", x: 1.5, y: 2.5, dir: 4, ioType: "input" },
+    { name: "underground-belt", x: 1.5, y: 5.5, dir: 4, ioType: "output" },
+  ] as never
+  const state = newLayout()
   place(state, a, 2, 15)
   place(state, b, 30, 15)
-  place(state, wall, 15, 5)
-  eq(routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b, wall]).phase, "done", "routed")
-  eq(state.routes["route:c"].undergrounds, 0, "no underground under the module by default")
+  place(state, walled, 15, 5)
+  eq(routeOne(state, terrain, policy(), conn("c", "a", "b"), [a, b, walled]).phase, "done", "routed")
+  eq(state.routes["route:c"].undergrounds, 0, "no underground under a module with undergrounds of its own")
   noProblems(state, terrain, "around")
+  // B121 (seed 11 g78, in game): a module with none (a smelter column) can't steal an underground's pair: pass under it.
+  const plain = box("plain", 3, 20, [])
   const s2 = newLayout()
   place(s2, a, 2, 15)
   place(s2, b, 30, 15)
-  place(s2, wall, 15, 5)
+  place(s2, plain, 15, 5)
+  eq(routeOne(s2, terrain, policy(), conn("c", "a", "b"), [a, b, plain]).phase, "done", "routed under")
+  eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module without undergrounds")
+  for (const st of s2.routes["route:c"].steps) ok(string.sub(s2.occ[tkey(st.x, st.y)] ?? "", 1, 2) !== "m:", "no belt end on the module")
+  // underModules: true lets undergrounds under any module.
+  const s3 = newLayout()
+  place(s3, a, 2, 15)
+  place(s3, b, 30, 15)
+  place(s3, walled, 15, 5)
   const pol = policy()
   pol.router = { ...pol.router, underModules: true }
-  routeOne(s2, terrain, pol, conn("c", "a", "b"), [a, b, wall])
-  eq(s2.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
+  routeOne(s3, terrain, pol, conn("c", "a", "b"), [a, b, walled])
+  eq(s3.routes["route:c"].undergrounds, 1, "under the 3-wide module when allowed")
 })
 
 test("router: B60 merge side-loads a second provider into an existing route without a blocker", () => {
@@ -656,6 +672,197 @@ test("router: splitter tap feeds a second consumer from an existing route (split
   eq(g.logical.edges[1].physical.length, 2, "the tapped flow maps to trunk + branch")
 })
 
+test("B151: a pipe port's lane is protected like a belt port's", () => {
+  // Placement only saw belt-in/belt-out lanes, so a later module could wall in a pipe-in port (the sulfur row's
+  // petroleum port at 367,-145): every new oil complex then failed "no pipe path".
+  const state = newLayout()
+  const def = chemRow(F, { recipe: "sulfur", chemPlants: 1 })
+  place(state, def, 10, 10)
+  const m = findModule(state, def.id)!
+  const ends = openPortEnds(state, undefined)
+  for (const p of def.ports) {
+    if (p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
+    const a = portApproach(m, p)
+    ok(ends.some((e) => e.x === a.x && e.y === a.y), `${p.id} lane end at ${a.x},${a.y} is protected`)
+  }
+})
+
+test("B158: moving a module rips a merge join on its trunk too (seed 11 g203)", () => {
+  // trunk a→b, splitter tap a→c, and a second provider m merged onto the trunk. Moving a (the start-side seal remedy)
+  // must take the merge join too: ripping only the routes that touch a left m's join on a trunk the re-rooted tap now
+  // owns, and the completed layout failed `checkLayoutIndexes`.
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  const m = source("m", EAST)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  place(state, m, 2, 2)
+  const tp = policy({ topology: "splitter-tap" })
+  const base = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  eq(runJob(newRoutingJob(base, YELLOW, state, ["ab", "ac"]), terrain, F, tp).phase, "done", "trunk and tap")
+  const merge: ConnectionRequest = { ...conn("mb", "m", "b"), merge: true }
+  const merged = runJob(newRoutingJob(request([a, b, c, m], [merge], 40, 30), YELLOW, state, ["mb"]), terrain, F, policy())
+  eq(merged.phase, "done", `merge: ${serpentLine(merged.failures)}`)
+  ok(state.routes["route:mb"] !== undefined, "a merge route")
+  const removed = ripForReplace(state, "a", { ab: true, ac: true, mb: true })
+  ok(removed.indexOf(routeId("route:mb")) >= 0, `the merge dependent goes with the trunk (${removed.join(",")})`)
+  const problems = checkLayoutIndexes(state).problems
+  eq(problems.length, 0, problems.join("; "))
+})
+
+test("B158: re-rooting a tap trunk keeps its outer trunk's splitter head", () => {
+  // U (plain trunk) → T (tap of U) → S (tap of T). Re-rooting T onto S adopts T's prefix, but T's splitter head (5,5)
+  // belongs to U: claiming it for S left S owning a tile U still listed (the in-game invalid-layout-indexes).
+  const layout = newLayout()
+  const mk = (id: string, conn: string, tapOf?: string): Route => ({
+    id: routeId(id),
+    conn: connectionId(conn),
+    item: "iron-plate",
+    to: { module: "sink", port: "in" },
+    steps: [],
+    tiles: [],
+    spans: [],
+    belt: "transport-belt",
+    underground: "underground-belt",
+    splitter: "splitter",
+    length: 0,
+    undergrounds: 0,
+    cost: 0,
+    ripped: 0,
+    tapOf: tapOf !== undefined ? routeId(tapOf) : undefined,
+  })
+  const u = mk("U", "u")
+  u.steps = [{ kind: "belt", x: 5, y: 5, dir: 1 }, { kind: "belt", x: 6, y: 5, dir: 1 }]
+  u.tiles = [tkey(5, 5), tkey(6, 5)]
+  commitRoute(layout, u)
+  const t = mk("T", "t", "U")
+  t.steps = [
+    { kind: "splitter", x: 5, y: 5, x2: 5, y2: 6, dir: 1 },
+    { kind: "belt", x: 5, y: 6, dir: 1 },
+    { kind: "belt", x: 6, y: 6, dir: 1 },
+  ]
+  t.tiles = [tkey(5, 6), tkey(6, 6)]
+  commitRoute(layout, t)
+  const s = mk("S", "s", "T")
+  s.steps = [{ kind: "splitter", x: 6, y: 6, x2: 6, y2: 7, dir: 1 }, { kind: "belt", x: 6, y: 7, dir: 1 }]
+  s.tiles = [tkey(6, 7)]
+  commitRoute(layout, s)
+  const removed = rerootTap(layout, routeId("T"), routeId("S"))
+  ok((removed ?? []).indexOf(routeId("T")) >= 0, "T is ripped")
+  const problems = checkLayoutIndexes(layout).problems
+  eq(problems.length, 0, problems.join("; "))
+  eq(layout.routeOcc[tkey(5, 5)], "U", "U keeps its splitter head")
+  ok(layout.routes["S"].tiles.indexOf(tkey(5, 5)) < 0, "S does not claim U's head")
+})
+
+test("reroute: a route from a port that already feeds another route joins it with a tap", () => {
+  // M7d.5: the robot chain's shared iron feed had 2 feeds and 0/s; every repair failed "port n326.out already feeds a
+  // route (point-to-point topology; use splitter-tap)". The reroute must choose the tap itself.
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  const req = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  const tp = policy({ topology: "splitter-tap" })
+  eq(runJob(newRoutingJob(req, YELLOW, state, ["ab", "ac"]), terrain, F, tp).phase, "done", "the tap plans")
+  const plan = planReroute(state, terrain, F, policy(), YELLOW, [routeId("route:ac")], { x: 0, y: 0, w: 40, h: 30 })
+  eq(plan.ok, true, plan.reason)
+  const r = plan.layout.routes["route:ac"]
+  ok(r !== undefined && r.tapOf === "route:ab", `the rerouted route taps the trunk (${r?.tapOf})`)
+})
+
+test("re-root: a tap keeps its belt and the trunk's first part when the trunk goes (seed 11 g108)", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  const req = request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  const tp = policy({ topology: "splitter-tap" })
+  runJob(newRoutingJob(req, YELLOW, state, ["ab", "ac"]), terrain, F, tp)
+  const trunk = state.routes["route:ab"]
+  const sp = state.routes["route:ac"].steps[0]
+  let at = 0
+  while (trunk.steps[at].x !== sp.x || trunk.steps[at].y !== sp.y) at++
+  const before = routeEntities(state)
+  const tapLength = state.routes["route:ac"].length
+  const keep = (e: { x: number; y: number }): boolean => {
+    // The trunk's tail (after the splitter) goes; everything else stays as it is.
+    for (let i = at + 1; i < trunk.steps.length; i++) if (math.floor(e.x) === trunk.steps[i].x && math.floor(e.y) === trunk.steps[i].y) return false
+    return true
+  }
+  const fmt = (es: { name: string; x: number; y: number; dir: number }[]) => es.map((e) => `${e.name}@${e.x},${e.y}/${e.dir}`).sort().join(" ")
+  const removed = rerootTap(state, routeId("route:ab"), routeId("route:ac"))
+  eq((removed ?? []).join(","), "route:ab")
+  const r = state.routes["route:ac"]
+  eq(r.tapOf, undefined, "no longer a tap")
+  eq(r.from?.module, "a")
+  eq(r.length, tapLength + at, "the trunk's belts up to the splitter joined it")
+  eq(fmt(routeEntities(state)), fmt(before.filter((e) => keep(e))), "the same entities, minus the trunk's tail")
+  const dead = tkey(sp.x + 1, sp.y)
+  eq(state.routeOcc[dead], "route:ac", "the splitter's dead output stays clear")
+  noProblems(state, terrain, "re-rooted")
+  // The trunk's connection comes back as a tap of the re-rooted route.
+  const job = runJob(newRoutingJob(req, YELLOW, state, ["ab"]), terrain, F, tp)
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  eq(state.routes["route:ab"].tapOf, "route:ac")
+  noProblems(state, terrain, "trunk routed again")
+})
+
+test("M7 (seed 11 g113): a turned cliff box covers the tiles it reaches, not its unturned corners", () => {
+  // The north-to-west cliff at (366, -425.5), as the game reported its box; the tiles a belt could not be placed on.
+  const tiles: Record<string, boolean> = {}
+  for (const p of boxTiles({ x: 364.54296875, y: -428.515625 }, { x: 365.9609375, y: -424.984375 }, 0.125)) tiles[`${p.x},${p.y}`] = true
+  for (const k of ["363,-427", "364,-428", "365,-428", "365,-429"]) ok(tiles[k] === true, `${k} is under the cliff`)
+  for (const k of ["364,-429", "362,-427", "362,-428"]) eq(tiles[k], undefined, `${k} is free`)
+  // An unturned box keeps its old tiles.
+  eq(boxTiles({ x: 1.1, y: 2.1 }, { x: 2.9, y: 2.9 }).map((p) => `${p.x},${p.y}`).join(" "), "1,2 2,2")
+})
+
+test("M7 B (seed 11 g111): a heir's merges into one tap tree: the join above the tap covers the other port", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  const m = source("m", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  place(state, m, 6, 2)
+  const tp = policy({ topology: "splitter-tap" })
+  const base = request([a, b, c, m], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30)
+  runJob(newRoutingJob(base, YELLOW, state, ["ab", "ac"]), terrain, F, tp)
+  const trunk = state.routes["route:ab"]
+  const sp = state.routes["route:ac"].steps[0]
+  let at = 0
+  while (trunk.steps[at].x !== sp.x || trunk.steps[at].y !== sp.y) at++
+  ok(pointFeeds(state, trunk.steps[0].x, trunk.steps[0].y, { module: "c", port: "in" }), "the trunk's head feeds the tap")
+  eq(pointFeeds(state, trunk.steps[at + 1].x, trunk.steps[at + 1].y, { module: "c", port: "in" }), false, "below the splitter it does not")
+  ok(pointFeeds(state, trunk.steps[at + 1].x, trunk.steps[at + 1].y, { module: "b", port: "in" }), "the trunk's own end, from anywhere on it")
+  const mb: ConnectionRequest = { ...conn("mb", "m", "b"), merge: true }
+  const mc: ConnectionRequest = { ...conn("mc", "m", "c"), merge: true }
+  const job = runJob(newRoutingJob(request([a, b, c, m], [conn("ab", "a", "b"), conn("ac", "a", "c"), mb, mc], 40, 30), YELLOW, state, ["mb", "mc"]), terrain, F, tp)
+  eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
+  const routed = state.routes["route:mb"] !== undefined ? "mb" : "mc"
+  const other = routed === "mb" ? "mc" : "mb"
+  eq(state.routes[`route:${other}`], undefined, `${other} has no belt of its own`)
+  eq(job.covered?.[other], routed, `${other} rides on ${routed}`)
+  ok(landsDownstream(state, `route:${routed}`, { module: "b", port: "in" }) && landsDownstream(state, `route:${routed}`, { module: "c", port: "in" }), "one join feeds both ports")
+  noProblems(state, terrain, "one heir join")
+})
+
 test("plan: a module whose port is walled in is re-placed elsewhere, then routed", () => {
   const rows = field(40, 30)
   // A closed pocket of unknown land around (33, 8).
@@ -736,6 +943,17 @@ test("placement: compact next to the partner, at least the minimum corridor away
   ok(math.abs(px - target.x) + math.abs(py - target.y) <= 20, `input port near the smelter's output (${px},${py} vs ${target.x},${target.y})`)
 })
 
+test("placement: M7 an expandable module's window holds the growth band it scores, not its whole cap", () => {
+  // m7-seed11-blue-wide: a blue-pack assembler row may grow ~300 tiles; its window was 711×224 at the smallest radius.
+  const terrain = asciiTerrain(field(400, 400))
+  const row = assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 })
+  const def = { ...row, expand: { ...row.expand!, maxUnits: 60 } }
+  const s = placeNow({ id: "g", def, targets: {}, center: { x: 200, y: 200 }, region: { x: 0, y: 0, w: 400, h: 400 } }, newLayout(), terrain, policy())
+  eq(s.phase, "done", "placed")
+  const R = policy().searchRadii[0]
+  ok(s.ww < 2 * R + 120, `window ${s.ww}×${s.wh} near the radius (${2 * R + 1} tiles of origins)`)
+})
+
 test("placement trace: same decision with the trace on; score terms sum to the score; rejections name their blocker", () => {
   const rows = field(50, 50)
   for (let y = 15; y < 35; y++) rows[y] = string.rep(".", 15) + string.rep("i", 20) + string.rep(".", 15)
@@ -801,6 +1019,18 @@ test("placement: steam block lands on a shore (anchor water tiles are water)", (
   for (let x = m.rect.x; x < m.rect.x + m.rect.w; x++) for (let y = m.rect.y; y < m.rect.y + m.rect.h; y++) eq(terrain.block(x, y), FREE, "footprint on land")
 })
 
+test("placement M7c.8: a steam block whose nearest shore is built out goes on to the next lake (seed 11)", () => {
+  // A pond at x 4..9 ringed by own buildings (the base lake after six steam blocks), and a free lake at x 340..359.
+  const rows = field(360, 40)
+  for (let y = 0; y < 40; y++) rows[y] = string.rep("#", 22) + rows[y].substring(22, 340) + string.rep("~", 20)
+  for (let y = 14; y < 26; y++) rows[y] = string.rep("#", 4) + string.rep("~", 6) + rows[y].substring(10)
+  const def = steamBlock(F, { boilers: 1 })
+  const s = placeNow({ id: "steam", def, targets: {}, center: { x: 30, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }, newLayout(), asciiTerrain(rows), policy())
+  eq(s.phase, "done", `placed (${s.reason})`)
+  ok(s.result!.origin.x >= 300, `on the far shore (x ${s.result!.origin.x})`)
+  eq(s.deadSites?.length, 1, "the built-out pond was searched once")
+})
+
 test("placement: mining outpost lands on its patch with its drills over ore", () => {
   const rows = field(60, 60)
   for (let y = 40; y < 56; y++) rows[y] = string.rep(".", 35) + string.rep("i", 14) + string.rep(".", 11)
@@ -863,6 +1093,28 @@ test("placement D57 (c): a patch remembered as full under the same terrain stamp
   ok(again.candidates < first.candidates, `fewer candidates (${again.candidates} < ${first.candidates})`)
   const changed = placeNow({ ...req, dead: first.deadFound }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
   eq(changed.candidates, first.candidates, "searched again once the terrain changed")
+})
+
+test("review fix: a placed mine's patch (placedPatch) marked dead is skipped by the next search on that terrain", () => {
+  // Two full patches: the near one is chosen first. A later failure (its pole line cannot reach) marks the site dead
+  // under the placement's own key and stamp; the next search goes to the far patch, until the terrain changes.
+  const rows = field(360, 40)
+  for (let y = 10; y < 30; y++) rows[y] = rows[y].substring(0, 20) + string.rep("i", 20) + rows[y].substring(40, 320) + string.rep("i", 20) + rows[y].substring(340)
+  const base = asciiTerrain(rows)
+  const terrain = { block: base.block, ore: base.ore, stamp: () => "s1" }
+  const def = miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 2 })
+  const req = { id: "mine", def, targets: {}, center: { x: 5, y: 20 }, region: { x: 0, y: 0, w: 360, h: 40 } }
+  const first = placeNow(req, newLayout(), terrain, policy())
+  eq(first.phase, "done", `placed (${first.reason})`)
+  ok(first.result!.origin.x < 60, `near patch first (x ${first.result!.origin.x})`)
+  const site = placedPatch(first)!
+  ok(site !== undefined, "the placement names its patch")
+  const dead = { [site.key]: terrain.stamp() }
+  const again = placeNow({ ...req, dead }, newLayout(), terrain, policy())
+  eq(again.phase, "done", `placed again (${again.reason})`)
+  ok(again.result!.origin.x >= 300, `the dead site is skipped (x ${again.result!.origin.x})`)
+  const changed = placeNow({ ...req, dead }, newLayout(), { ...terrain, stamp: () => "s2" }, policy())
+  eq(changed.result!.origin.x, first.result!.origin.x, "the near patch again once its ground changed")
 })
 
 test("placement D57: a fresh field counts `newField` tiles farther than a field the faction already mines", () => {
@@ -1107,7 +1359,7 @@ test("plan: the 5-module set on terrain with a lake, cliffs, trees, ore and stru
   for (const e of g.physical.edges) ok(e.capacity.ok, `${e.id} within capacity`)
   print(
     string.format(
-      "    [router-cost] 5-module set: %d steps of ≤400 units, work %.0f (placement %.0f, routing %.0f), %d A* expansions in %d searches, %d rip-ups, %d belt tiles, %d undergrounds, %.1f ms total (%.3f ms/step, plain Lua)",
+      "    [router-cost] 5-module set: %d steps of ≤400 units, work %.0f (placement %.0f, routing %.0f), %.0f A* expansion work in %d searches, %d rip-ups, %d belt tiles, %d undergrounds, %.1f ms total (%.3f ms/step, plain Lua)",
       job.stats.steps,
       job.stats.work,
       job.stats.placeWork,

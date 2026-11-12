@@ -1,4 +1,5 @@
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
+import { FORCE_PREFIX } from "../jobs/faction"
 
 // Test lab: a cleared, flat, generated area far from spawn, one per test, so tests don't interact.
 
@@ -10,7 +11,30 @@ export interface Lab {
   radius: number
 }
 
+/** Forces in the game (Factorio allows 64) at which a new lab frees stale faction forces. */
+const STALE_FORCE_LIMIT = 56
+
+/**
+ * Factorio allows 64 forces, and a destroyed test faction keeps its force: a T2 shard that created ~60 factions failed
+ * every later `createFaction` with "Too many forces" (M7c.8). Near the limit, a new lab merges the forces of factions
+ * that no longer exist into neutral; the engine frees them at the end of the tick. Only near it: a merged force stays
+ * until then, and a test that recreates its faction under the same name in that tick (the reconciler tests' `rec-1`)
+ * reuses it and loses it at the tick's end.
+ */
+function freeStaleForces(): void {
+  let count = 0
+  for (const [_name] of pairs(game.forces)) count++
+  if (count < STALE_FORCE_LIMIT) return
+  const live: Record<string, boolean> = {}
+  for (const [, f] of pairs(storage.factions ?? {})) live[f.force] = true
+  for (const [name, force] of pairs(game.forces)) {
+    const n = name as string
+    if (string.sub(n, 1, FORCE_PREFIX.length) === FORCE_PREFIX && !live[n]) game.merge_forces(force, "neutral")
+  }
+}
+
 export function createLab(radius = 32): Lab {
+  freeStaleForces()
   const surface = game.surfaces[1]
   // Labs march along y = 2000 with a gap between them, whatever their sizes.
   const origin = { x: nextLabX + radius, y: 2000 }

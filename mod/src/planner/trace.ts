@@ -1,4 +1,4 @@
-// Plan decision trace (T1 plan-replay dumps, README "Debugging a failing soak seed"): why each module went where it
+// Plan decision trace (T1 plan-replay dumps, docs/DEVELOPMENT.md "Debugging a failing soak seed"): why each module went where it
 // did (the best candidates with every weighted score term, rejected candidates with what blocked them) and why routes
 // failed (what walls the explored region). Off unless a tool sets `planTrace.sink`, which the mod never does: the
 // planner then pays one nil check per placement candidate and per failure. Pure: no Factorio globals.
@@ -83,7 +83,11 @@ export interface PlacementAcc {
   rejected: Record<string, { count: number; examples: { ti: number; ox: number; oy: number; dist: number }[] }>
 }
 
-export const planTrace: { sink?: PlanTraceSink } = {}
+/**
+ * `sink`: the decision trace (above). `searches`: one line per finished route search (connection, outcome, rip-up mode,
+ * window, work units, and what a rip-up displaced), for replays (`REPLAY_SEARCHES=1`); the mod never sets either.
+ */
+export const planTrace: { sink?: PlanTraceSink; searches?: (this: void, line: string) => void } = {}
 
 export function newTraceSink(maxTop = 8, maxExamples = 3): PlanTraceSink {
   return { placements: [], routeFailures: [], events: [], maxTop, maxExamples }

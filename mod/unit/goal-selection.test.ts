@@ -31,6 +31,19 @@ test("production waits for active foundations and research", () => {
   eq(research.decisions[0].waiting, "production waits for research: logistics")
 })
 
+test("M7c: a production goal feeding a building goal's unfed input starts while that goal builds", () => {
+  // Seed 11: the blue line (production, building) needed steel; its iron mine was retired and the replacement mine's
+  // production goal waited for the blue line to finish: neither could move for ~6 game-hours.
+  const plain = selectGoals([spec("production")], state({ active: { production: true } }))
+  eq(plain.decisions[0].action, "skip", "another production still waits for the active one")
+  const feeds = selectGoals([spec("production", { feedsBuilding: true })], state({ active: { production: true } }))
+  eq(feeds.decisions[0].action, "start", "the replacement feed starts")
+  const planningNow = selectGoals([spec("production", { feedsBuilding: true })], state({ active: { production: true }, planning: true }))
+  eq(planningNow.decisions.length, 0, "never while a plan is running")
+  const research = selectGoals([spec("production", { feedsBuilding: true, techs: ["steel-processing"] })], state({ active: { production: true } }))
+  eq(research.decisions[0].waiting, "production waits for research: steel-processing", "research still gates it")
+})
+
 test("power growth goes before other growth and consumers", () => {
   const specs = [
     spec("grow", { growth: { role: "iron", have: 1, need: 2, units: 1, power: false, failed: 0 } }),
@@ -89,6 +102,13 @@ test("a planning goal freezes new starts", () => {
   const result = selectGoals([spec("power")], state({ planning: true }))
   eq(result.decisions.length, 0)
   eq(result.pending, 1)
+})
+
+test("B185: a power goal waiting for its stock rows is skipped; production may start", () => {
+  const out = selectGoals([spec("power", { waitsFor: ["stock:solar-panel"] }), spec("production")], state())
+  eq(out.decisions[0].action, "skip", "power waits")
+  eq(out.decisions[0].waiting, "power waits for its machine-made buildings: stock:solar-panel")
+  eq(out.decisions[1].action, "start", "the production goal building the rows starts")
 })
 
 run("goal-selection")

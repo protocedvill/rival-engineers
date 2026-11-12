@@ -12,6 +12,7 @@ import {
   missingMaterials,
   newBoard,
   planBatch,
+  planTour,
   planTrip,
   prefetchJobs,
   Pos,
@@ -289,6 +290,51 @@ test("D66 prefetch: a far source loads the jobs nearer the batch than the source
   // Claimed jobs and other kinds are never prefetched.
   claim(board, [ids[1]], 7, 0)
   ok(prefetchJobs(board, batch, { x: 0, y: 0 }, 20, 0, {}, 2, stacks).every((j) => j.id !== ids[1]), "a claimed job is skipped")
+})
+
+test("planTour: a belt line is worked from several standing spots, each hop from the last, within share and inventory", () => {
+  const board = newBoard<undefined>()
+  const belt = (x: number): JobId => addJob(board, { kind: "place", pos: { x: x + 0.5, y: 0.5 }, footprint: { x1: x, y1: 0, x2: x + 1, y2: 1 }, priority: 0, deps: [], payload: undefined, materials: [{ item: "transport-belt", count: 1 }] }, 0).id
+  const ids: JobId[] = []
+  for (let x = 0; x < 200; x++) ids.push(belt(x))
+  const stacks = (need: { item: string; count: number }[]): number => {
+    let n = 0
+    for (const m of need) n += math.ceil(m.count / 100)
+    return n
+  }
+  const opts = { reach: 8, maxJobs: 10, maxSpots: 4, hop: 32, maxTotal: 1000 }
+  const legs = planTour(board, board.jobs[ids[0]], { x: 0, y: 3 }, 0, opts)
+  eq(legs.length, 4, "four spots")
+  let n = 0
+  const seen: Record<number, boolean> = {}
+  for (const leg of legs) {
+    ok(leg.spot !== undefined, "every leg has a spot")
+    for (const id of leg.jobs) {
+      ok(!seen[id], "no job in two legs")
+      seen[id] = true
+      ok(distance(board.jobs[id].pos, leg.spot!) <= 8 + 1e-9, "each job in reach of its leg's spot")
+      n++
+    }
+  }
+  ok(n > 30 && n <= 40, `4 legs of up to 10 (${n})`)
+  eq(legs[0].jobs.length, planBatch(board, board.jobs[ids[0]], { x: 0, y: 3 }, 0, opts).jobs.length, "the first leg is the plain batch")
+  ok(legs[3].spot!.x > legs[0].spot!.x, "the tour moves along the line")
+  // One spot: the plain batch.
+  eq(planTour(board, board.jobs[ids[0]], { x: 0, y: 3 }, 0, { ...opts, maxSpots: 1 }).length, 1, "maxSpots 1 is one batch")
+  // The share caps the jobs after the first leg.
+  const shared = planTour(board, board.jobs[ids[0]], { x: 0, y: 3 }, 0, { ...opts, maxTotal: 5 })
+  eq(shared.length, 2, "one more leg")
+  eq(shared[1].jobs.length, 5, "of 5 jobs")
+  // The inventory caps the whole load: with 25 belts held and no free slot, the tour takes 25 jobs.
+  const full = planTour(board, board.jobs[ids[0]], { x: 0, y: 3 }, 0, { ...opts, maxSpots: 20, slots: 0, slotsFor: stacks, held: { "transport-belt": 25 } })
+  let m = 0
+  for (const leg of full) m += leg.jobs.length
+  eq(m, 25, "no more than the held belts with no free slot")
+  // A gap wider than the hop ends the tour.
+  const gapBoard = newBoard<undefined>()
+  const a = addJob(gapBoard, { kind: "place", pos: { x: 0.5, y: 0.5 }, priority: 0, deps: [], payload: undefined }, 0).id
+  addJob(gapBoard, { kind: "place", pos: { x: 100.5, y: 0.5 }, priority: 0, deps: [], payload: undefined }, 0)
+  eq(planTour(gapBoard, gapBoard.jobs[a], { x: 0, y: 3 }, 0, opts).length, 1, "nothing within the hop")
 })
 
 run("board")

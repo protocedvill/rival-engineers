@@ -7,7 +7,7 @@ import * as profiling from "./profiling"
 import { PROFILE_PARTS, setAiProfiler, setPartProfilers } from "./profiling"
 import { workReport } from "./work"
 import { factionDiagnostics } from "./diagnostics"
-import { INFINITE_RESEARCH } from "./strategy/research-queue"
+import { INFINITE_RESEARCH, INFINITE_RESEARCH_BLUE } from "./strategy/research-queue"
 
 // Telemetry (SPEC §5.6, §7 T3): JSON written through helpers.write_file (server-side only, no gameplay
 // effect) for the soak harness, plus entity frame dumps for tools/render. Off unless the intervals are set.
@@ -108,7 +108,7 @@ function researchState(forceName: string) {
   const force = game.forces[forceName]
   if (force === undefined) return undefined
   let researched = 0
-  for (const [name, t] of pairs(force.technologies)) if (name !== INFINITE_RESEARCH && t.researched) researched++
+  for (const [name, t] of pairs(force.technologies)) if (name !== INFINITE_RESEARCH && name !== INFINITE_RESEARCH_BLUE && t.researched) researched++
   return { current: force.current_research?.name, progress: force.research_progress, researched }
 }
 

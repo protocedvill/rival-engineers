@@ -1,5 +1,6 @@
 import { mergeGoals } from "../src/planner/merge"
 import type { LayoutState, Route, RouteStep } from "../src/planner/layout"
+import { routeFeedsPort, routesLand } from "../src/planner/layout"
 import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { DX, DY, tkey } from "../src/planner/grid"
 import { eq, run, test } from "./harness"
@@ -152,6 +153,95 @@ test("B94: merge candidates span the whole trunk, not only its nearest stretch (
   let far = 0
   for (const g of splitters) if (g.y >= 10 + 40) far++
   eq(far > 0, true, `some candidates on the trunk's far half (${far})`)
+})
+
+test("M7 (seed 11 g78): a tap sealed in by the base is joined on its trunk, above its splitter", () => {
+  // Trunk south from 10,10 to 10,29 (to another consumer); a tap's splitter at 10,20 (second tile 11,20), then east along
+  // y = 21 to `consumer.in-coal`, both sides of the tap walled in.
+  const t = trunk(20, "in-other")
+  const steps: RouteStep[] = [{ kind: "splitter", x: 10, y: 20, dir: 2, x2: 11, y2: 20 } as RouteStep, belt(11, 21, 1), belt(12, 21, 1), belt(13, 21, 1)]
+  const tap: Route = { ...trunk(1), id: routeId("r:tap"), conn: connectionId("coal>c=>consumer.in-coal"), steps, tiles: steps.map((x) => tkey(x.x, x.y)), tapOf: t.id, startDir: undefined, length: 4 }
+  const s = layoutOf([t, tap])
+  for (let x = 11; x <= 13; x++) {
+    s.occ[tkey(x, 20)] = "module:wall" as never
+    s.occ[tkey(x, 22)] = "module:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  eq(goals.length > 0, true)
+  for (const g of goals) {
+    eq(g.x, 10)
+    eq(g.y < 20, true)
+  }
+  // A merge there lands on the port through the tap, and the layout check accepts its target.
+  const stub: Route = { ...trunk(1), id: routeId("r:stub"), conn: connectionId("coal>new=>consumer.in-coal"), steps: [belt(9, 15, 1)], tiles: [tkey(9, 15)], merge: { x: 10, y: 15, dir: 2, side: "left" } }
+  s.routes[stub.id] = stub
+  s.routeOrder.push(stub.id)
+  for (const r of [t, tap]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  const m = { id: "consumer", rect: { x: 14, y: 20, w: 2, h: 2 }, origin: { x: 14, y: 20 }, def: { ports: [{ id: "in-coal", kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: 4, item: "coal" }] } }
+  s.modules.push(m as never)
+  eq(routeFeedsPort(s, t.id, { module: moduleId("consumer"), port: "in-coal" }), true)
+  eq(routesLand(s, [stub.id], { module: moduleId("consumer"), port: "in-coal" }), true)
+  // Below the splitter the trunk no longer carries the tap's items: nothing is offered there.
+  eq(goals.some((g) => g.y >= 20), false)
+})
+
+test("B132: a tap whose first splitter is not on its parent route does not make the parent land", () => {
+  // Seed 11, minute 180: a re-rooted tap's steps were reversed (first splitter on another route, last splitter on the
+  // parent), so it physically led nowhere, but tapsReach followed it to n22 and the repair found "nothing missing".
+  const t = trunk(20, "in-other")
+  const badSteps: RouteStep[] = [{ kind: "splitter", x: 9, y: 20, dir: 0, x2: 9, y2: 21 } as RouteStep, belt(13, 21, 1)]
+  const bad: Route = { ...trunk(1), id: routeId("r:bad"), conn: connectionId("coal>bad=>consumer.in-coal"), steps: badSteps, tiles: badSteps.map((s) => tkey(s.x, s.y)), tapOf: t.id, length: 2 }
+  const s = layoutOf([t, bad])
+  const m = { id: "consumer", rect: { x: 14, y: 20, w: 2, h: 2 }, origin: { x: 14, y: 20 }, def: { ports: [{ id: "in-coal", kind: "belt-in", pos: { x: 0.5, y: 1.5 }, dir: 4, item: "coal" }] } }
+  s.modules.push(m as never)
+  eq(routesLand(s, [t.id], TO), false, "a bogus tap does not make its parent land")
+  const goodSteps: RouteStep[] = [{ kind: "splitter", x: 10, y: 20, dir: 2, x2: 11, y2: 20 } as RouteStep, belt(11, 21, 1), belt(12, 21, 1), belt(13, 21, 1)]
+  const good: Route = { ...trunk(1), id: routeId("r:good"), conn: connectionId("coal>good=>consumer.in-coal"), steps: goodSteps, tiles: goodSteps.map((s) => tkey(s.x, s.y)), tapOf: t.id, length: 4 }
+  s.routes[good.id] = good
+  s.routeOrder.push(good.id)
+  eq(routesLand(s, [t.id], TO), true, "a tap whose splitter is on the trunk lands")
+})
+
+test("B122 (seed 11 g78, in game): a belt that merges into the trunk is a merge point too", () => {
+  // Trunk south from 10,10 to 10,29 to `consumer.in-coal`, walled in on both sides; a first replacement's belt runs
+  // east along y = 12 from x = 2 and side-loads into it at 10,12.
+  const t = trunk(20)
+  const fsteps: RouteStep[] = []
+  for (let x = 2; x <= 9; x++) fsteps.push(belt(x, 12, 1))
+  const feeder: Route = { ...trunk(1), id: routeId("r:first"), conn: connectionId("coal>new=>consumer.in-coal"), from: { module: moduleId("mine1"), port: "out" }, steps: fsteps, tiles: fsteps.map((x) => tkey(x.x, x.y)), startDir: 1, length: fsteps.length, merge: { x: 10, y: 12, dir: 2, side: "right" } }
+  const s = layoutOf([t, feeder])
+  for (const r of [t, feeder]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  for (let y = 10; y <= 29; y++) {
+    if (y !== 12) s.occ[tkey(9, y)] = "m:wall" as never
+    s.occ[tkey(11, y)] = "m:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  eq(goals.length > 0, true)
+  // Every goal is on the first replacement's belt, outside the walls.
+  for (const g of goals) {
+    eq(g.y, 12)
+    eq(g.x < 10, true)
+  }
+  // A second route merging there feeds the port through the first and the trunk.
+  eq(routeFeedsPort(s, feeder.id, { module: moduleId("consumer"), port: "in-coal" }), true)
+})
+
+test("B174 (m7-fresh4 seed 222, g94-g110): a trunk tile another route already joins is no merge goal", () => {
+  // Trunk south down x = 10; one route merges with a splitter at 10,15 (its belt beside it at 11,15), another
+  // side-loads at 10,20 from the east. Neither tile may take a second join: two splitters on 10,15 overlapped and the
+  // build was rejected before stamping, for 17 goals in a row.
+  const t = trunk(20)
+  const ms: Route = { ...trunk(1), id: routeId("r:ms"), conn: connectionId("coal>ms=>consumer.in-coal"), steps: [belt(11, 14, 2), { kind: "splitter", x: 10, y: 15, dir: 2, x2: 11, y2: 15 } as RouteStep], tiles: [tkey(11, 14), tkey(11, 15)], mergeSplitter: { x: 10, y: 15, dir: 2, x2: 11, y2: 15 } }
+  const sl: Route = { ...trunk(1), id: routeId("r:sl"), conn: connectionId("coal>sl=>consumer.in-coal"), steps: [belt(11, 20, 3)], tiles: [tkey(11, 20)], merge: { x: 10, y: 20, dir: 2, side: "left" } }
+  const s = layoutOf([t, ms, sl])
+  for (const r of [t, ms, sl]) for (const k of r.tiles) s.routeOcc[k] = r.id
+  // Walled in on both sides except beside the two joined tiles.
+  for (let y = 10; y <= 29; y++) {
+    if (y !== 15 && y !== 20) s.occ[tkey(9, y)] = "m:wall" as never
+    if (s.routeOcc[tkey(11, y)] === undefined) s.occ[tkey(11, y)] = "m:wall" as never
+  }
+  const goals = mergeGoals(s, TO, undefined)
+  for (const g of goals) eq(g.x === 10 && (g.y === 15 || g.y === 20), false, `goal at ${g.x},${g.y}`)
 })
 
 run("merge")

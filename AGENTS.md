@@ -57,5 +57,5 @@ appropriate guide and pinned by the cheapest useful regression test.
 - When a plan, placement or route misbehaves, read its dump (`REPLAY_DUMP=1`, or the failure dump in
   `out/replay-dumps/`) before running variants; sweep variants with `npm run replay:sweep`.
 
-Commands live in [`README.md`](README.md). The short path is: `npm run typecheck`, `npm run test:unit -- [--no-build] [-t <test>] <file>`,
+Commands live in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). The short path is: `npm run typecheck`, `npm run test:unit -- [--no-build] [-t <test>] <file>`,
 targeted `npm test -- "Lua pattern"`, then the relevant acceptance run only after cheap checks pass.

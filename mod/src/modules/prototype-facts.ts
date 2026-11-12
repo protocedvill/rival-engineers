@@ -62,7 +62,31 @@ function entityFacts(p: LuaEntityPrototype): EntityFacts {
     f.maxPowerPerTick = tryCall(() => p.get_max_power_output())
     f.fluidPerTick = tryCall(() => p.get_fluid_usage_per_tick())
   }
+  if (t === "roboport") {
+    f.logisticRadius = p.logistic_radius
+    f.constructionRadius = p.construction_radius
+  }
   if (t === "offshore-pump") f.pumpingPerTick = tryCall(() => p.get_pumping_speed())
+  if (t === "solar-panel") f.productionPerTick = tryCall(() => p.get_max_energy_production())
+  if (t === "accumulator") f.bufferJ = p.electric_energy_source_prototype?.buffer_capacity
+  // M7b: fluid boxes, north-facing (`positions[0]` is the north orientation's connection tile offset).
+  const boxes = p.fluidbox_prototypes
+  if (boxes !== undefined && boxes.length > 0) {
+    f.fluidBoxes = []
+    for (const b of boxes) {
+      const connections: { x: number; y: number; dir: number; positions?: { x: number; y: number }[] }[] = []
+      for (const c of b.pipe_connections) {
+        const pos = c.positions !== undefined ? vec(c.positions[0]) : undefined
+        if (pos === undefined || c.direction === undefined || c.connection_type === "linked") continue
+        const positions = c.positions!.length === 4 ? c.positions!.map((q) => vec(q)!) : undefined
+        connections.push({ x: pos.x, y: pos.y, dir: math.floor(c.direction / 4), positions })
+      }
+      f.fluidBoxes.push({ production: b.production_type as "input", connections })
+    }
+  }
+  if (t === "pipe-to-ground") {
+    for (const b of boxes ?? []) for (const c of b.pipe_connections) if (c.connection_type === "underground" && c.max_underground_distance !== undefined) f.maxPipeUnderground = c.max_underground_distance
+  }
   if (t !== "generator" && t !== "offshore-pump") f.energyPerTick = tryCall(() => p.get_max_energy_usage())
   return f
 }
@@ -88,10 +112,18 @@ export const prototypeFacts: ProtoFacts = {
       const r = prototypes.recipe[name]
       if (r === undefined) c = false
       else {
-        const ingredients: { name: string; amount: number }[] = []
-        for (const i of r.ingredients) if (i.type === "item") ingredients.push({ name: i.name, amount: i.amount })
-        const products: { name: string; amount: number }[] = []
-        for (const p of r.products) if (p.type === "item") products.push({ name: p.name, amount: p.amount ?? ((p.amount_min ?? 1) + (p.amount_max ?? 1)) / 2 })
+        // M7b: fluids too (flagged): a refinery's or chemical plant's fluids come by pipe.
+        const ingredients: RecipeFacts["ingredients"] = []
+        for (const i of r.ingredients) {
+          if (i.type === "item") ingredients.push({ name: i.name, amount: i.amount })
+          else if (i.type === "fluid") ingredients.push({ name: i.name, amount: i.amount, fluid: true, box: (i as { fluidbox_index?: number }).fluidbox_index })
+        }
+        const products: RecipeFacts["products"] = []
+        for (const p of r.products) {
+          const amount = p.amount ?? ((p.amount_min ?? 1) + (p.amount_max ?? 1)) / 2
+          if (p.type === "item") products.push({ name: p.name, amount })
+          else if (p.type === "fluid") products.push({ name: p.name, amount, fluid: true, box: (p as { fluidbox_index?: number }).fluidbox_index })
+        }
         c = { name, energy: r.energy, category: r.category, ingredients, products }
       }
       recipeCache[name] = c
@@ -127,13 +159,30 @@ export const prototypeFacts: ProtoFacts = {
     let c = recipeForItemCache[item]
     if (c === undefined) {
       const names: string[] = []
-      const found = prototypes.get_recipe_filtered([{ filter: "has-product-item", elem_filters: [{ filter: "name", name: item }] }])
-      for (const [name] of pairs(found)) names.push(name as string)
+      if (prototypes.fluid[item] !== undefined) {
+        // M7d.5 (soak m7d5-robots6: "no module makes sulfuric-acid", so no batteries and no robots): a fluid's recipes
+        // only match `has-product-fluid`. Only a same-named recipe counts (sulfuric acid, lubricant), as in the T1 facts:
+        // petroleum gas comes from the oil complex, not from one of its five refinery and cracking recipes.
+        const found = prototypes.get_recipe_filtered([{ filter: "has-product-fluid", elem_filters: [{ filter: "name", name: item }] }])
+        for (const [name] of pairs(found)) if (name === item) names.push(name as string)
+      } else {
+        const found = prototypes.get_recipe_filtered([{ filter: "has-product-item", elem_filters: [{ filter: "name", name: item }] }])
+        for (const [name] of pairs(found)) names.push(name as string)
+      }
       names.sort()
       c = names.indexOf(item) >= 0 ? item : (names[0] ?? false)
       recipeForItemCache[item] = c
     }
     return c === false ? undefined : c
+  },
+  isFluid(name: string): boolean {
+    return prototypes.fluid[name] !== undefined
+  },
+  handCategories(): Record<string, boolean> {
+    const out: Record<string, boolean> = {}
+    const cats = prototypes.entity["character"]?.crafting_categories
+    if (cats !== undefined) for (const [c] of pairs(cats)) out[c as string] = true
+    return out
   },
   itemToPlace(entity: string): string | undefined {
     const items = prototypes.entity[entity]?.items_to_place_this

@@ -27,6 +27,25 @@ test("phase 2: demand propagates up the feed chain to a fixpoint", () => {
   ok(math.abs((req["copper-ore>smelt"] ?? 0) - 0.827) < 1e-6, `the mine must feed the smelter: ${req["copper-ore>smelt"]}`)
 })
 
+test("B199: parallel providers of one input share its requirement by their edges", () => {
+  // seed 11 min 222: engine-unit main (0.2) and ~2 (0.05) feed one pack row. Each edge was raised to the row's whole
+  // 0.25, so both short providers were asked to grow past what they make.
+  const nodes: SupplyNode[] = [
+    { role: "engine", item: "engine-unit", planned: 0.2, capacity: 0.2, unitRate: 0, maxUnits: 0, inputs: [] },
+    { role: "engine~2", item: "engine-unit", planned: 0.05, capacity: 0.1, unitRate: 0, maxUnits: 0, inputs: [] },
+    { role: "blue", item: "chemical-science-pack", planned: 0.25, capacity: 0.25, unitRate: 0, maxUnits: 0, inputs: [{ item: "engine-unit", perOutput: 1 }] },
+  ]
+  const fed = (blue: number): SupplyEdge[] => [
+    { from: "engine", to: "blue", item: "engine-unit", rate: 0.2 },
+    { from: "engine~2", to: "blue", item: "engine-unit", rate: 0.05 },
+    { from: "blue", to: "labs", item: "chemical-science-pack", rate: blue },
+  ]
+  const exact = requiredRates(nodes, fed(0.25))
+  ok(math.abs(exact["engine"] - 0.2) < 1e-9 && math.abs(exact["engine~2"] - 0.05) < 1e-9, `a fed row raises neither: ${exact["engine"]}, ${exact["engine~2"]}`)
+  const more = requiredRates(nodes, fed(0.5))
+  ok(math.abs(more["engine"] - 0.4) < 1e-9 && math.abs(more["engine~2"] - 0.1) < 1e-9, `a short row raises both by their share: ${more["engine"]}, ${more["engine~2"]}`)
+})
+
 test("phase 2: deepest first, ore before plates before packs", () => {
   const { nodes, edges } = chain()
   const order = depthOrder(nodes, edges)

@@ -213,6 +213,36 @@ describe("D38 temporary factories", () => {
     })
   })
 
+  test("a cell ingredient has one refill in flight however the stock changes (M7c.7)", () => {
+    // Seed 11 (M7c.7): each think queued another refill for the same input while one was open; the key moved to the
+    // new job and the old one stayed on the board unclaimed (~800 one-item refills by game-minute 30).
+    const lab = createLab(32)
+    // No crew: every refill stays open. The depot gets more plates between thinks.
+    const faction = createFaction("d38-onekey", { position: at(lab, 0, 8), crew: 0, starterItems: {} })
+    const { brain, depot, cell } = quietPlateDepot(lab, faction)
+    depot.remove_item({ name: "iron-plate", count: 190 })
+    brain.nextThink = game.tick + 1
+    let thinks = 0
+    let ticks = 0
+    async(60 * 30)
+    on_tick(() => {
+      if (++ticks % 30 !== 0) return
+      depot.insert({ name: "iron-plate", count: 10 })
+      brain.nextThink = game.tick + 1
+      thinks++
+      if (thinks < 8) return
+      const refills: number[] = []
+      for (const id of faction.board.active) {
+        const job = faction.board.jobs[id]
+        if (job.payload.kind === "fuel" && job.payload.target === cell.input && job.payload.item === "iron-plate") refills.push(id)
+      }
+      log(`[m7c7] ${thinks} thinks: open refills ${refills.join(",")}; key -> ${brain.jobKeys[cellKey(cell, "iron-plate")]}`)
+      assert(refills.length === 1, `one refill in flight (${refills.length})`)
+      assert(brain.jobKeys[cellKey(cell, "iron-plate")] === refills[0], "the key names it")
+      done()
+    })
+  })
+
   test("the refill priority 0 keeps the cells demand-fed only", () => {
     setConfigOverride("bootstrapTempCellFeedPriority", 0)
     const lab = createLab(32)

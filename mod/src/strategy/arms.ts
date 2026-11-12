@@ -86,9 +86,15 @@ export function chunksAround(pos: Vec, r: number): Vec[] {
   return out
 }
 
-/** The ore a plan failure says has no free patch ("module n45 (...): no free copper-ore patch in the region"). */
-export function noPatchResource(reason: string | undefined): string | undefined {
-  if (reason === undefined) return undefined
-  const [ore] = string.match(reason, "no free (%S+) patch in the region")
-  return ore
+
+/**
+ * M7c.8: the next arm from `next` in round-robin order that no pole line has been proven unable to reach (`cut`: a lake
+ * across the strip; every later outpost on that arm needs a line through the same water). Undefined when all are cut.
+ */
+export function nextArm(next: number, cut: boolean[] | undefined): number | undefined {
+  for (let i = 0; i < 4; i++) {
+    const arm = (next + i) % 4
+    if (cut?.[arm] !== true) return arm
+  }
+  return undefined
 }

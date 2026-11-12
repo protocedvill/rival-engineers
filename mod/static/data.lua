@@ -40,7 +40,8 @@ data:extend({
 })
 
 -- Debug/soak only: after the v1 research goal, this hidden infinite technology gives the labs a repeatable pack sink
--- for sustained-throughput tests. It is selected only when `debug-infinite-research` is enabled, and never counts
+-- for sustained-throughput tests. B112: its units are short (5 s) so the labs, sized for the goal's unit times, are never
+-- the bottleneck (at 60 s they consumed 18/min of a factory making 25: sweep m7a-random20 seed 2034469). It is selected only when `debug-infinite-research` is enabled, and never counts
 -- toward the v1 research goal.
 data:extend({
   {
@@ -56,7 +57,26 @@ data:extend({
         {"automation-science-pack", 1},
         {"logistic-science-pack", 1},
       },
-      time = 60,
+      time = 5,
+    },
+    effects = {},
+  },
+  -- M7: the same sink with blue packs too (the M7 bar sustains red, green and blue).
+  {
+    type = "technology",
+    name = "rival-engineers-throughput-test-blue",
+    icon = "__base__/graphics/technology/chemical-science-pack.png",
+    icon_size = 256,
+    hidden = true,
+    max_level = "infinite",
+    unit = {
+      count_formula = "30",
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1},
+        {"chemical-science-pack", 1},
+      },
+      time = 5,
     },
     effects = {},
   },

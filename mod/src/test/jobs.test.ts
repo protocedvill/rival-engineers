@@ -1,7 +1,10 @@
 import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
-import { addJob } from "../jobs/board"
+import { addJob, failJob } from "../jobs/board"
+import { sweepOrders } from "../jobs/robot-orders"
+import { orderDepotUpgrades } from "../strategy/provider-chests"
+import { bufferChests, registerBuffer } from "../modules/buffers"
 import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
 import { setAiProfiler } from "../profiling"
@@ -165,7 +168,7 @@ describe("job board", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1 && config.benchmarkWalkTiles === 0 && config.benchmarkCraftingMultiplier === 1, "debug parity toggles must be off")
   })
 
   test("B54: a factory build's pole place jobs come before every other job (power first)", () => {
@@ -241,6 +244,38 @@ describe("job board", () => {
     })
   })
 
+  test("a batch tours a long belt line: several standing spots per haul (user request 2026-11-03)", () => {
+    // One member, 90 belt ghosts in a line from a stockpile at its start: with tours a batch walks on to the next spots,
+    // so the line takes fewer batches than one spot per batch (24 jobs from one spot reach at most ~17 tiles of a line).
+    // Config overrides are global, so the two runs go one after the other.
+    const lab = createLab(64)
+    const start = (spots: number, y: number): number => {
+      setConfigOverride("batchMaxSpots", spots)
+      const faction = createFaction(newFactionName(`tour${spots}`), { position: at(lab, -50, y + 4), crew: 1 })
+      for (let x = -45; x < 45; x++) assert(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, x + 0.5, y + 0.5), direction: defines.direction.east, force: faction.force }), `ghost at ${x}`)
+      stockpile(lab, faction, -50.5, y + 2.5, { "transport-belt": 90 })
+      assert(planGhosts(faction, {}) === 90, "90 place jobs")
+      return faction.crew[0]
+    }
+    const finished = (id: number): boolean => storage.crew[id].claims.length === 0 && storage.crew[id].stats.jobsDone >= 90
+    const one = start(1, -20)
+    let four: number | undefined
+    async(30000)
+    on_tick(() => {
+      if (four === undefined) {
+        if (finished(one)) four = start(4, 10)
+        return
+      }
+      if (!finished(four)) return
+      const b1 = storage.crew[one].stats.batches
+      const b4 = storage.crew[four].stats.batches
+      log(`[tour] batches: 1 spot ${b1}, 4 spots ${b4}`)
+      clearConfigOverrides()
+      assert(b4 < b1, `tours take fewer batches (${b4} against ${b1})`)
+      done()
+    })
+  })
+
   test("a blocked ghost fails with a reason after bounded retries and blocks nothing else", () => {
     const lab = createLab(32)
     const faction = createFaction(newFactionName("blocked"), { position: at(lab, 0, 12), crew: 2 })
@@ -289,6 +324,142 @@ describe("job board", () => {
       assert(job.status === "done", describeBoard(faction))
       assert(!twin!.valid, "the impossible ghost is gone")
       assert(live.valid, "the live pole stays")
+    })
+  })
+
+  /** A powered roboport with 10 robots and a storage chest of 20 belts for `faction`, and six belt ghosts with place jobs. */
+  function robotScene(lab: Lab, faction: FactionState): number[] {
+    const f = faction.force
+    const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: at(lab, -6, 0), force: f })!
+    eei.electric_buffer_size = 1e9
+    eei.power_production = 1e7
+    lab.surface.create_entity({ name: "medium-electric-pole", position: at(lab, -4, 2), force: f })
+    const port = lab.surface.create_entity({ name: "roboport", position: at(lab, 0, 0), force: f })!
+    port.get_inventory(defines.inventory.roboport_robot)!.insert({ name: "construction-robot", count: 10 })
+    const chest = lab.surface.create_entity({ name: "storage-chest", position: at(lab, 3.5, 3.5), force: f })!
+    chest.insert({ name: "transport-belt", count: 20 })
+    const ids: number[] = []
+    for (let x = -3; x < 3; x++) {
+      const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: at(lab, x + 0.5, 10.5), force: f })!
+      ids.push(addPlaceJob(faction, g, {})!)
+    }
+    return ids
+  }
+
+  test("M7d.5: a place job whose ghost a construction robot builds is done (robot-built), not failed", () => {
+    // The crew has no belts (they are in the network's storage chest, not a stockpile): only the robots can build.
+    setConfigOverride("factoryRobotFirstSeconds", 0)
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots"), { position: at(lab, -10, 8), crew: 1 })
+    const ids = robotScene(lab, faction)
+    awaitBoard(faction, 3600, () => {
+      clearConfigOverrides()
+      for (const id of ids) {
+        const job = faction.board.jobs[id]
+        const p = job.payload as Extract<JobPayload, { kind: "place" }>
+        assert(job.status === "done" && job.reason === "robot-built", `job ${id}: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+        assert(p.built !== undefined && p.built.valid && p.built.name === "transport-belt", `job ${id}: the built belt is recorded`)
+      }
+      assert(itemCount(storage.crew[faction.crew[0]].character, "transport-belt") === 0, "the crew placed none")
+    })
+  })
+
+  test("M7d.5: robots take down a clear job's tree in range; the job is done (robot-removed)", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-clear"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    const tree = lab.surface.create_entity({ name: "tree-01", position: at(lab, 8, -8) })!
+    const id = addClearJob(faction, tree)!
+    awaitBoard(faction, 3600, () => {
+      const job = faction.board.jobs[id]
+      assert(job.status === "done" && job.reason === "robot-removed", `clear job: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+      assert(!tree.valid, "the tree is gone")
+    })
+  })
+
+  test("M7d.5: with a network, a clear job is a deconstruction order at once; a dropped job's order is cancelled", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-orders"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    // Far outside the network's construction range: only the order itself is tested here.
+    const kept = lab.surface.create_entity({ name: "tree-01", position: at(lab, 90, -90) })!
+    const id = addClearJob(faction, kept)
+    assert(kept.to_be_deconstructed(), "marked when the job was made")
+    failJob(faction.board, id, "replan", game.tick)
+    sweepOrders(faction)
+    assert(kept.valid && !kept.to_be_deconstructed(), "the dropped job's order is cancelled")
+    assert((faction.deconOrders ?? []).length === 0, "and forgotten")
+    // A replan that drops one job and queues another for the same target keeps the order.
+    const a = addClearJob(faction, kept)
+    addClearJob(faction, kept)
+    failJob(faction.board, a, "replan", game.tick)
+    sweepOrders(faction)
+    assert(kept.to_be_deconstructed(), "the second job keeps the order")
+    kept.destroy()
+    sweepOrders(faction)
+    assert((faction.deconOrders ?? []).length === 0, "a removed target's order is forgotten")
+  })
+
+  test("M7d.5: robots upgrade a buffer chest to a passive provider in place: contents kept, the registry follows", () => {
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-upgrade"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    const chests = lab.surface.find_entities_filtered({ name: "storage-chest", force: faction.force })
+    chests[0].insert({ name: "passive-provider-chest", count: 1 })
+    const old = lab.surface.create_entity({ name: "iron-chest", position: at(lab, 6.5, -6.5), force: faction.force })!
+    registerBuffer(lab.surface, faction.force, old)
+    old.insert({ name: "iron-gear-wheel", count: 50 })
+    const pos = old.position
+    assert(old.order_upgrade({ target: "passive-provider-chest", force: faction.force }), "upgrade ordered")
+    async(3600)
+    on_tick(() => {
+      const now = lab.surface.find_entities_filtered({ position: pos, force: faction.force, type: ["container", "logistic-container"] })[0]
+      if (now === undefined || now.name !== "passive-provider-chest") return
+      assert(now.get_item_count("iron-gear-wheel") === 50, `contents kept (${now.get_item_count("iron-gear-wheel")})`)
+      const listed = bufferChests(faction.force)
+      assert(listed.length === 1 && listed[0] === now, `the registry follows the new chest (${listed.length})`)
+      const inv = now.get_inventory(defines.inventory.chest)!
+      assert(inv.get_bar() === getConfig().moduleBufferSlots + 1, `slot limit kept (bar ${inv.get_bar()})`)
+      done()
+      return false
+    })
+  })
+
+  test("B203: robots upgrade the crew's depot chests in the network to storage chests: contents kept, still a depot", () => {
+    // User, in-session 2026-11-12: "for robots we need the depots to actually be storage chests".
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-depot"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    lab.surface.find_entities_filtered({ name: "storage-chest", force: faction.force })[0].insert({ name: "storage-chest", count: 1 })
+    const depot = stockpile(lab, faction, 6.5, -6.5, { "iron-gear-wheel": 50 })
+    // Outside the network: robots can't reach it, so it stays as it is.
+    const far = stockpile(lab, faction, 90.5, -90.5, { "iron-plate": 10 })
+    const pos = depot.position
+    async(3600)
+    on_tick(() => {
+      orderDepotUpgrades(faction, lab.surface, game.forces[faction.force], "storage-chest")
+      const now = lab.surface.find_entities_filtered({ position: pos, force: faction.force, type: ["container", "logistic-container"] })[0]
+      if (now === undefined || now.name !== "storage-chest" || faction.stockpiles.indexOf(now) < 0) return
+      assert(now.get_item_count("iron-gear-wheel") === 50, `contents kept (${now.get_item_count("iron-gear-wheel")})`)
+      assert(far.valid && far.name === "iron-chest" && !far.to_be_upgraded(), "the depot chest outside the network is left alone")
+      assert((faction.depotUpgrades ?? []).length === 0, "no order left waiting")
+      done()
+      return false
+    })
+  })
+
+  test("M7d.5: the crew leaves place jobs the robots can do now to them (factory-robot-first-seconds)", () => {
+    // The crew has belts of its own next to it, yet the robots build every ghost.
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("robots-first"), { position: at(lab, -10, 8), crew: 1 })
+    const own = stockpile(lab, faction, -8.5, 10.5, { "transport-belt": 6 })
+    const ids = robotScene(lab, faction)
+    awaitBoard(faction, 3600, () => {
+      for (const id of ids) {
+        const job = faction.board.jobs[id]
+        assert(job.status === "done" && job.reason === "robot-built", `job ${id}: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+      }
+      assert(own.get_item_count("transport-belt") === 6, `the crew's belts stay (${own.get_item_count("transport-belt")})`)
     })
   })
 
@@ -406,7 +577,8 @@ describe("job board", () => {
         assert((m.stats.backgroundCrafts ?? 0) >= 1, "the craft ran in the background")
         assert(f1.stockpiles[0].get_item_count("iron-gear-wheel") === 40, "40 gears delivered to the depot")
         log(`[d38] craft + build: standing ${standing} ticks, in the background ${background} ticks`)
-        assert(background < standing - 200, `background crafting saves time: ${background} vs ${standing} ticks`)
+        // B117: the member keeps the chests between placements in both runs (1521 vs 1402 ticks), which narrowed the gap.
+        assert(background < standing - 100, `background crafting saves time: ${background} vs ${standing} ticks`)
         done()
       })
     })
@@ -583,6 +755,42 @@ describe("job board", () => {
         log(`[b22] the member mined ${planted - standing} tree(s) to get out and built the chest at tick ${game.tick}`)
       },
     )
+  })
+
+  test("M7c.8: a member walled in with nothing to clear leaves no haul or deposit job open", () => {
+    // Seed 11 (fresh-11): 717 "stuck and nothing in reach to clear" unboxes each lost a haul's failed take with its
+    // claim held; the leftover claims went back to the board as 2077 open self-jobs nobody may claim, and idle members
+    // scanned them every tick (crew 1 -> 21 ms/tick).
+    const lab = createLab(40)
+    const centre = { x: 0.5, y: 0.5 }
+    // Another force's walls: nothing the member may pick up or mine (a script-set water ring did not hold a character
+    // on the lab surface: it walked across).
+    for (let d = -4; d <= 4; d++) {
+      for (const [x, y] of [[d, -4], [d, 4], [-4, d], [4, d]]) lab.surface.create_entity({ name: "stone-wall", position: at(lab, x + 0.5, y + 0.5), force: "player" })
+    }
+    const faction = createFaction("m7c8-selfjobs", { position: at(lab, centre.x, centre.y), crew: 1, starterItems: {} })
+    stockpile(lab, faction, 12.5, 0.5, { "wooden-chest": 3 })
+    for (const y of [-6.5, -8.5, -10.5]) lab.surface.create_entity({ name: "entity-ghost", inner_name: "wooden-chest", position: at(lab, 12.5, y), force: faction.force })
+    planGhosts(faction)
+    const m = storage.crew[faction.crew[0]]
+    const openSelf = (): string | undefined => {
+      for (const id of faction.board.active) {
+        const j = faction.board.jobs[id]
+        if ((j.payload.kind === "haul" || j.payload.kind === "deposit") && j.status === "open") return `#${id} ${j.payload.kind} ${j.reason ?? ""}`
+      }
+      return undefined
+    }
+    async(3700)
+    let left = 3600
+    on_tick(() => {
+      const open = openSelf()
+      assert(open === undefined, `an open self-job: ${open}`)
+      if (left-- > 0) return undefined
+      assert(m.unboxRetryAt !== undefined, `the member was never found boxed in with nothing to clear: ${describeBoard(faction)}`)
+      assert(faction.board.counters.added > 3, `it planned hauls: ${describeBoard(faction)}`)
+      done()
+      return false
+    })
   })
 
   test("B22: a member enveloped by its own machines picks one up, gets out and the machine is re-placed", () => {

@@ -10,6 +10,14 @@ export interface GoalSelectionSpec {
   cluster?: number
   techs: string[]
   growth?: { role: string; have: number; need: number; units: number; power: boolean; failed: number }
+  /**
+   * M7c: the goal feeds an input of a module a goal is still building, an input nothing feeds now (its provider was
+   * retired). It may start while that goal builds: the building goal cannot finish without it (seed 11: the blue line
+   * waited ~6 game-hours on steel whose iron mine was gone, and the replacement mine waited for the blue line).
+   */
+  feedsBuilding?: boolean
+  /** B185: stock rows (roles) that must be built before this goal starts (a solar field's machine-made buildings). */
+  waitsFor?: string[]
 }
 
 export interface GoalSelectionState {
@@ -75,8 +83,12 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
 
   const decisions: GoalDecision[] = []
   for (const { spec, index } of pending) {
-    if (state.active[spec.kind]) {
+    if (state.active[spec.kind] && !(spec.kind === "production" && spec.feedsBuilding === true)) {
       decisions.push({ index, action: "skip" })
+      continue
+    }
+    if (spec.waitsFor !== undefined && spec.waitsFor.length > 0) {
+      decisions.push({ index, action: "skip", waiting: `${spec.kind} waits for its machine-made buildings: ${spec.waitsFor.join(", ")}` })
       continue
     }
     const cluster = spec.cluster ?? 1
@@ -103,7 +115,7 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
       const blocked: string[] = []
       // B52: a growth reroutes the routes around its module; a goal still building (the mall's included) would keep
       // placing its old copy of a rerouted route. A growth waits for every other active goal.
-      const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : spec.kind === "grow" ? ["power", "labs", "production", "mall", "repair", "temp", "radar"] : ["power", "labs", "production"]
+      const before: GoalKind[] = spec.kind === "production" ? ["power", "labs"] : spec.kind === "grow" ? ["power", "labs", "production", "mall", "repair", "temp", "radar", "robots"] : ["power", "labs", "production"]
       for (const kind of before) {
         // B29: a power/fuel growth is the critical path out of a power-short production stall. An active production
         // building must not block it; `startGrow` still waits if its reroute would touch that production's route (B52).

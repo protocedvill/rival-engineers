@@ -21,6 +21,9 @@ export interface RouterWeights {
   underground: number
   /** Cost of a splitter tap. */
   splitter: number
+  /** M7b: extra cost of a pipe-to-ground pair and of a pump on a fluid route (pipe tiles cost like belt tiles). */
+  pipeUnderground?: number
+  pump?: number
   /** Extra cost per tree or rock to clear (when the policy clears them). */
   clearTree: number
   clearRock: number
@@ -32,10 +35,23 @@ export interface RouterWeights {
   rip: number
   /** Times a connection may be ripped up before routing gives up on it. */
   maxRipups: number
+  /**
+   * Seed 11 g104: 1 = a connection that would rip the same route a second time moves a module at once (plan.ts
+   * `ripPairs`), 0 = off (rip up to `maxRipups`).
+   */
+  ripLoop?: number
+  /** Seed 11 g111: a provider-group merge's next goal reuses the failed search for the previous one (`retargetSearch`). */
+  mergeReuse?: boolean
   /** Search window margin around a connection's endpoints (tiles). */
   margin: number
   /** Undergrounds may pass under module footprints. */
   underModules: boolean
+  /**
+   * Tunnel crossings (user request, 2026-11-03; `planner/tunnel.ts`): extra cost of crossing another route's straight
+   * run, whose three tiles around the crossing become an underground pair. Paid instead of ripping that route up (or
+   * failing on a built one). Absent or 0: off.
+   */
+  tunnel?: number
   /**
    * B7: cost factor of a tile next to another route's belt (< 1: routes bundle). Multiplies with `corridorFactor`.
    * Reserved tiles (port outside and approach tiles, P5/P15) stay blocked whatever the bonus.
@@ -85,6 +101,8 @@ export interface PlacementWeights {
   center: number
   /** Per tile from a belt port to where its connection comes from. */
   port: number
+  /** M7c.8: a pipe port's distance to its connection counts this many times a belt port's (default 1). */
+  pipePort?: number
   /** A port facing away from its connection. */
   facing: number
   /** Per clear-cost unit of trees and rocks in the footprint. */
@@ -118,6 +136,12 @@ export interface PlacementWeights {
    * (seed 11) count as open.
    */
   portEscape?: number
+  /**
+   * Seed 11 g104: all of a candidate's belt ports must be able to leave together, no two belts sharing a tile, to this
+   * many tiles out from its footprint (or to their connections' targets): `egress.ts` (0: off). `portEscape` checks
+   * each port alone.
+   */
+  portEgress?: number
   /**
    * D57: a new mine ranks the patches it may use by distance; a patch where the faction has no mine yet (a fresh
    * field) counts this many tiles farther.
@@ -277,8 +301,11 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorFactor: 0.9,
     rip: 25,
     maxRipups: 3,
+    ripLoop: 1,
+    mergeReuse: true,
     margin: 24,
     underModules: false,
+    tunnel: 12,
     bundleFactor: 0.9,
     softClaim: 10,
     softClaimDecay: 0.5,
@@ -290,7 +317,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorCells: 1,
     corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, newField: 50 },
+  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, portEgress: 50, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 

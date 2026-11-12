@@ -1,8 +1,12 @@
-import { LuaForce, LuaTechnologyPrototype } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaTechnologyPrototype } from "factorio:runtime"
 import { CatalogEntry, catalogModule, generatedModule, V1_CATALOG } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ModuleDef } from "../modules/types"
-import { LabOptions, LabResult, runModuleLab } from "./module-lab"
+import { portOutsideTile } from "../modules/geometry"
+import { stampModule, worldPos } from "../modules/stamp"
+import { createLab } from "./lab"
+import { DesignContext, producerFor } from "../strategy/design"
+import { LabOptions, LabResult, labForce, runModuleLab } from "./module-lab"
 
 // M4 validation lab (SPEC §5.4 step 4, D33): every generator at representative parameters and every curated module is
 // stamped into a lab, fed at exactly its declared input rates, and must deliver ≥ 90% of its declared output rates
@@ -82,8 +86,8 @@ function check(name: string, def: ModuleDef, r: LabResult): void {
   assert(any, `${def.id} declares no outputs`)
 }
 
-/** The red+green technology with the most units (so a lab run never finishes it), with its prerequisites. */
-function researchTarget(): LuaTechnologyPrototype {
+/** The technology researched with exactly `packs` with the most units (a lab run never finishes it). */
+function researchTarget(packs: string[] = ["automation-science-pack", "logistic-science-pack"]): LuaTechnologyPrototype {
   let best: LuaTechnologyPrototype | undefined
   const names: string[] = []
   for (const [n] of pairs(prototypes.technology)) names.push(n as string)
@@ -91,10 +95,10 @@ function researchTarget(): LuaTechnologyPrototype {
   for (const n of names) {
     const t = prototypes.technology[n]
     const ing = t.research_unit_ingredients
-    if (ing.length !== 2 || t.research_unit_count_formula !== undefined) continue
+    if (ing.length !== packs.length || t.research_unit_count_formula !== undefined) continue
     const set: Record<string, boolean> = {}
     for (const i of ing) set[i.name] = true
-    if (!set["automation-science-pack"] || !set["logistic-science-pack"]) continue
+    if (packs.some((pk) => !set[pk])) continue
     if (best === undefined || t.research_unit_count > best.research_unit_count) best = t
   }
   return best!
@@ -124,7 +128,8 @@ function labTest(entry: CatalogEntry): void {
     let setupForce: ((this: void, force: LuaForce) => void) | undefined
     if (entry.generator === "lab-array") {
       // Declare the lab array for the technology it will research.
-      const tech = researchTarget()
+      const packs = ((entry.params?.packs as string[] | undefined) ?? []).length > 0 ? (entry.params!.packs as string[]) : undefined
+      const tech = researchTarget(packs)
       def = generatedModule("lab-array", { ...(entry.params ?? {}), unitTime: tech.research_unit_energy / 60 })
       setupForce = (force) => {
         researchPrerequisites(force, tech.name)
@@ -147,6 +152,57 @@ function labTest(entry: CatalogEntry): void {
   })
 }
 
+test("B185: a solar field's panels and accumulators are all on its power port's network and carry a load at noon", () => {
+  const lab = createLab(40)
+  const def = generatedModule("solar-field", { units: 2 })
+  const origin = { x: lab.origin.x - 20, y: lab.origin.y - 10 }
+  const placed = stampModule(lab.surface, labForce(), def, origin)
+  const port = def.ports.find((p) => p.kind === "power")!
+  const portPole = lab.surface.find_entities_filtered({ type: "electric-pole", position: worldPos(origin, port.pos) })[0]
+  assert(portPole !== undefined, "a pole on the power port")
+  let panels = 0
+  for (let i = 0; i < def.entities.length; i++) {
+    const e = placed[i]
+    assert(e !== undefined && e.valid, `${def.entities[i].name} placed`)
+    if (e!.type !== "solar-panel" && e!.type !== "accumulator") continue
+    if (e!.type === "solar-panel") panels++
+    assert(e!.electric_network_id === portPole.electric_network_id, `${e!.name} at ${e!.position.x},${e!.position.y} is on the port's network`)
+  }
+  assert(panels === 12, `12 panels: ${panels}`)
+  // Noon with no load: everything the panels make charges the accumulators (they take up to 300 kW each, more than the
+  // panels give), so their stored energy grows at the panels' peak.
+  const surface = lab.surface
+  const wasFrozen = surface.freeze_daytime
+  const wasTime = surface.daytime
+  surface.daytime = 0
+  surface.freeze_daytime = true
+  const peakPerTick = (prototypeFacts.entity("solar-panel")?.productionPerTick ?? 0) * panels
+  const stored = (): number => {
+    let j = 0
+    for (let i = 0; i < def.entities.length; i++) if (placed[i]!.type === "accumulator") j += placed[i]!.energy
+    return j
+  }
+  const before = stored()
+  after_ticks(120, () => {
+    const gained = stored() - before
+    surface.daytime = wasTime
+    surface.freeze_daytime = wasFrozen
+    assert(gained >= 0.9 * 120 * peakPerTick, `the accumulators charge at the panels' peak at noon: ${gained} J in 120 ticks, peak ${peakPerTick} J/tick`)
+  })
+})
+
+test("M7d.5: the game's facts find a fluid's recipe, so the design makes sulfuric acid in a chemistry row", () => {
+  // Soak m7d5-robots6: recipeForItem searched products by item only, so the design had "no module makes sulfuric-acid",
+  // the battery plant stood without acid, and no robot was ever made. T1 facts hid it (they look recipes up by name).
+  assert(prototypeFacts.recipeForItem("sulfuric-acid") === "sulfuric-acid", `acid: ${prototypeFacts.recipeForItem("sulfuric-acid")}`)
+  assert(prototypeFacts.recipeForItem("lubricant") === "lubricant", `lubricant: ${prototypeFacts.recipeForItem("lubricant")}`)
+  assert(prototypeFacts.recipeForItem("petroleum-gas") === undefined, "petroleum comes from the oil complex, not a recipe of its own")
+  assert(prototypeFacts.recipeForItem("battery") === "battery", "an item still finds its recipe")
+  const ctx = { facts: prototypeFacts, enabled: { "advanced-oil-processing": true }, assembler: "assembling-machine-2", assemblers: ["assembling-machine-2"], furnace: "stone-furnace", rowInputs: 4, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"] } as unknown as DesignContext
+  assert(producerFor(ctx, "sulfuric-acid") === "chem-row", `acid: ${producerFor(ctx, "sulfuric-acid")}`)
+  assert(producerFor(ctx, "battery") === "chem-row", `battery: ${producerFor(ctx, "battery")}`)
+})
+
 describe("module validation lab", () => {
   let speed = 1
   before_all(() => {
@@ -168,4 +224,87 @@ describe("module validation lab", () => {
       assert(missing.length === 0, `never made: ${missing.join(", ")}`)
     })
   })
+})
+
+// M7d (D81): the oil complex runs in the engine. Crude and water come from infinity pipes (only the outputs are judged);
+// each fluid output goes through a pump into a pipe that is drained and counted every tick (a pump starts its own fluid
+// segment, so draining that pipe does not empty the module's manifold). Passes at ≥ 90% of the declared rates.
+function oilComplexLab(refineries: number, lubePlants: number): void {
+  test(`validation slow: oil complex, ${refineries} refineries + ${lubePlants} lubricant plants delivers its declared fluids`, () => {
+    async(60 * 60 * 6)
+    const def = generatedModule("oil-complex", { refineries, lubePlants })
+    writeDump(def)
+    const radius = math.ceil(math.max(def.footprint.w, def.footprint.h) / 2) + 12
+    const lab = createLab(radius)
+    const surface = lab.surface
+    const force = labForce()
+    const ox = math.floor(lab.origin.x - def.footprint.w / 2)
+    const oy = math.floor(lab.origin.y - def.footprint.h / 2)
+    const origin = { x: ox, y: oy }
+    const placed = stampModule(surface, force, def, origin)
+    const missing: string[] = []
+    for (let i = 0; i < def.entities.length; i++) if (placed[i] === undefined) missing.push(`${def.entities[i].name}@${def.entities[i].x},${def.entities[i].y}`)
+    assert(missing.length === 0, `not placed: ${missing.join(" ")}`)
+    const energy = (x: number, y: number): void => {
+      const e = surface.create_entity({ name: "electric-energy-interface", position: { x, y }, force })!
+      e.electric_buffer_size = 1e8
+      e.power_production = 1e7
+    }
+    // Inputs.
+    for (const port of def.ports) {
+      if (port.kind !== "pipe-in") continue
+      const src = surface.create_entity({ name: "infinity-pipe", position: worldPos(origin, portOutsideTile(port)), force })
+      assert(src !== undefined, `no room for the ${port.item} source`)
+      src!.set_infinity_pipe_filter({ name: port.item!, percentage: 1, mode: "at-least" })
+    }
+    // Outputs: pump, drained pipe. The east-side pumps share a pole and an energy interface.
+    const drains: { item: string; pipe: LuaEntity }[] = []
+    for (const port of def.ports) {
+      if (port.kind !== "pipe-out") continue
+      assert(port.dir === 4, `${port.id} faces east`)
+      const px = ox + math.floor(port.pos.x)
+      const py = oy + math.floor(port.pos.y)
+      assert(surface.create_entity({ name: "pump", position: { x: px + 2, y: py + 0.5 }, direction: defines.direction.east, force }) !== undefined, `pump for ${port.item}`)
+      drains.push({ item: port.item!, pipe: surface.create_entity({ name: "pipe", position: { x: px + 3.5, y: py + 0.5 }, force })! })
+    }
+    const east = ox + def.footprint.w
+    surface.create_entity({ name: "small-electric-pole", position: { x: east + 0.5, y: oy + 12.5 }, force })
+    energy(east + 3, oy + 13)
+    // Module power: a pole west of the power port, its own energy interface.
+    const power = def.ports.find((p) => p.kind === "power")!
+    surface.create_entity({ name: "small-electric-pole", position: { x: ox - 1.5, y: oy + power.pos.y }, force })
+    energy(ox - 4, oy + math.floor(power.pos.y) + 1)
+    const warmup = 60 * 60 * 2
+    const measure = 60 * 60 * 2
+    const start = game.tick
+    const got: Record<string, number> = {}
+    on_tick(() => {
+      const t = game.tick - start
+      for (const d of drains) {
+        if (t > warmup) got[d.item] = (got[d.item] ?? 0) + (d.pipe.get_fluid_contents()[d.item] ?? 0)
+        d.pipe.clear_fluid_inside()
+      }
+      if (t < warmup + measure) return true
+      const parts: string[] = []
+      const short: string[] = []
+      for (const r of def.rates.outputs) {
+        if (r.kind !== "fluid") continue
+        const rate = (got[r.item] ?? 0) / (measure / 60)
+        parts.push(`${r.item} ${string.format("%.2f", rate)}/${string.format("%.2f", r.perSecond)}`)
+        if (rate < PASS_RATIO * r.perSecond) short.push(r.item)
+      }
+      const machines: string[] = []
+      for (const e of placed) if (e !== undefined && e.valid && (e.type === "assembling-machine" || e.type === "furnace")) machines.push(`${e.get_recipe()[0]?.name ?? "?"}@${e.position.x - ox},${e.position.y - oy}:${e.status}:${e.products_finished}`)
+      log(`[m7d] oil complex ${def.id}: ${parts.join(", ")}`)
+      if (short.length > 0) log(`[m7d] oil complex machines: ${machines.join(" ")}`)
+      assert(short.length === 0, `short of ${short.join(", ")}: ${parts.join(", ")}; ${machines.join(" ")}`)
+      done()
+      return false
+    })
+  })
+}
+
+describe("oil complex validation", () => {
+  oilComplexLab(2, 1)
+  oilComplexLab(4, 0)
 })

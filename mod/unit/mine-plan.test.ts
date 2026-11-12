@@ -7,8 +7,9 @@ import { entityRect, portOutsideTile } from "../src/modules/geometry"
 import { partEntities } from "../src/planner/build-list"
 import { FREE, keyX, keyY, Rect, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { commitModule, modulesOnTiles, newLayout, PlacedModule } from "../src/planner/layout"
-import { connectedPatch, liveGrowth, materializeMinePlan, planWholePatch } from "../src/planner/mine-plan"
-import { placeNow, prepareWholePatchPlacement, tryExpand } from "../src/planner/placement"
+import { connectedPatch, liveGrowth, materializeMinePlan, newPatchSearch, planWholePatch, stepPatchSearch, WholePatchMinePlan } from "../src/planner/mine-plan"
+import { placeNow, tryExpand } from "../src/planner/placement"
+import { newWholePatchPrep, prepareWholePatchPlacement, stepWholePatch } from "../src/planner/whole-patch"
 import { selectPolicy } from "../src/planner/policy"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
@@ -162,6 +163,59 @@ test("D52 placement reserves the exact 2D plan and growth completes it without m
   ok(complete > partial, `${partial} drills grow to ${complete}`)
   eq(m.def.ports[0].pos.x, port.x, "port x does not move")
   eq(m.def.ports[0].pos.y, port.y, "port y does not move")
+})
+
+function planKey(p: WholePatchMinePlan): string {
+  const parts: string[] = [p.axis]
+  for (const d of p.drills) parts.push(string.format("%g,%g,%g,%d,%d", d.x, d.y, d.lane, d.side, d.ore ?? -1))
+  return `${parts.join(" ")} | ${p.covered.join(",")}`
+}
+
+test("M7: the whole-patch search and the mine's preparation run in budgeted steps and give the one-shot result", () => {
+  const region = { x: 0, y: 0, w: 100, h: 80 }
+  // An irregular field with a foreign ore beside it (B6 keeps drills out of its reach).
+  const view = terrain(region, (x, y) => {
+    if ((x >= 20 && x < 44 && y >= 20 && y < 38) || (x >= 38 && x < 53 && y >= 32 && y < 47)) return "iron-ore"
+    if (x >= 53 && x < 60 && y >= 32 && y < 40) return "copper-ore"
+    return undefined
+  })
+  const patch = connectedPatch(view, "iron-ore", [{ x: 25, y: 25 }], region)!
+  const once = planWholePatch(view, patch, DRILL)
+  const s = newPatchSearch(patch, DRILL)
+  const budget = 100
+  let steps = 0
+  let most = 0
+  let total = 0
+  while (s.result === undefined) {
+    const used = stepPatchSearch(s, view, DRILL, budget)
+    steps++
+    total += used
+    most = math.max(most, used)
+  }
+  eq(planKey(s.result), planKey(once), "stepped search plans the same mine")
+  ok(steps >= 5, `${steps} steps of at most ${budget} work (+ one piece)`)
+  ok(most <= 2 * budget, `largest step ${most} work (total ${total})`)
+
+  const policy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const, searchRadii: [0] }
+  const raw = { ...miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), rotatable: false, mirrorable: false }
+  const place = (): PlacedModule => {
+    const placed = placeNow({ id: "mine", def: raw, targets: {}, center: { x: 25, y: 25 }, region }, newLayout(), view, policy)
+    eq(placed.phase, "done", `small placement (${placed.reason})`)
+    return placed.result!
+  }
+  const a = place()
+  prepareWholePatchPlacement(a, view, F, region, policy)
+  const b = place()
+  const prep = newWholePatchPrep()
+  let prepSteps = 0
+  while (prep.stage !== "done") {
+    stepWholePatch(prep, b, { terrain: view, facts: F, region, policy, splitters: false }, budget)
+    prepSteps++
+  }
+  ok(a.minePlan !== undefined && b.minePlan !== undefined, "both get the whole-patch plan")
+  eq(b.minePlan!.claim.join(","), a.minePlan!.claim.join(","), "stepped preparation claims the same tiles")
+  eq(`${b.origin.x},${b.origin.y} ${b.def.entities.length}`, `${a.origin.x},${a.origin.y} ${a.def.entities.length}`, "same origin and entities")
+  ok(prepSteps > steps, `preparation took ${prepSteps} steps`)
 })
 
 test("B21 finds an older module under a later whole-patch claim", () => {

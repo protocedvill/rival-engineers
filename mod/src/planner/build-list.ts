@@ -3,8 +3,8 @@
 // Pure: no Factorio globals.
 
 import { worldEntity } from "./world-entity"
-import { dirValue, tkey } from "./grid"
-import { LayoutState, moduleMargin, moduleTiles } from "./layout"
+import { DX, DY, dirValue, tkey } from "./grid"
+import { LayoutState, moduleMargin, moduleTiles, Route, RouteStep } from "./layout"
 import type { PoleId, RouteId } from "../shared/ids"
 
 export interface EntitySpec {
@@ -41,6 +41,19 @@ export function entityDiff(before: EntitySpec[], after: EntitySpec[]): { remove:
   return { remove: before.filter((e) => !has[diffKey(e)]), add: after.filter((e) => !had[diffKey(e)]) }
 }
 
+/**
+ * M7c.8: what changes on the routes a rebuild leaves alone (`changed` holds the route ids it rips and lays): a splitter
+ * tap laid on one of them replaces that route's belt there, and a tap moved off one gives its belt back. A reroute or
+ * growth that diffed only its own routes left the trunk's belt under the new splitter, so the splitter ghost could not
+ * be created (fixes-360 seed 11: g101 and g103 "cannot place splitter@574,-25.5", the power plant's coal cut until the
+ * next repair picked the belt up as stale), and left a gap where the old splitter stood.
+ */
+export function bystanderDiff(before: LayoutState, after: LayoutState, changed: Record<string, boolean>): { remove: EntitySpec[]; add: EntitySpec[] } {
+  const was = routeEntities(before).filter((e) => !changed[e.owner] && after.routes[e.owner as RouteId] !== undefined)
+  const now = routeEntities(after).filter((e) => !changed[e.owner] && before.routes[e.owner as RouteId] !== undefined)
+  return entityDiff(was, now)
+}
+
 export function moduleEntities(layout: LayoutState): EntitySpec[] {
   const out: EntitySpec[] = []
   for (const m of layout.modules) for (const e of m.def.entities) out.push({ ...worldEntity(e, m.origin, m.id), carries: `module:${m.id}` })
@@ -60,6 +73,10 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
         replaced[tkey(s.x, s.y)] = true
         continue
       }
+      if (r.fluid !== undefined) {
+        out.push(fluidEntity(r, s))
+        continue
+      }
       const spec: EntitySpec = { name: s.kind === "belt" ? r.belt : r.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: id, carries: r.item }
       if (s.kind === "ug-in") spec.ioType = "input"
       if (s.kind === "ug-out") spec.ioType = "output"
@@ -70,6 +87,18 @@ export function routeEntities(layout: LayoutState): EntitySpec[] {
   for (const e of out) if (!replaced[tkey(math.floor(e.x), math.floor(e.y))]) kept.push(e)
   for (const s of splitters) kept.push(s)
   return kept
+}
+
+/**
+ * M7b: the entity of a fluid route step. A pipe-to-ground faces its above-ground side: back against the flow at the
+ * entrance, along it at the exit. A pump (two tiles along the flow) faces the flow and sits between its tiles.
+ */
+function fluidEntity(r: Route, s: RouteStep): EntitySpec {
+  const f = r.fluid!
+  if (s.kind === "pump") return { name: f.pump, x: s.x + 0.5 + DX[s.dir] / 2, y: s.y + 0.5 + DY[s.dir] / 2, dir: dirValue(s.dir), owner: r.id, carries: f.name }
+  if (s.kind === "pipe-ug-in") return { name: f.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue((s.dir + 2) % 4), owner: r.id, carries: f.name }
+  if (s.kind === "pipe-ug-out") return { name: f.underground, x: s.x + 0.5, y: s.y + 0.5, dir: dirValue(s.dir), owner: r.id, carries: f.name }
+  return { name: f.pipe, x: s.x + 0.5, y: s.y + 0.5, dir: 0, owner: r.id, carries: f.name }
 }
 
 /** Which parts of a layout to build (a plan on top of an existing base builds only what it added). */

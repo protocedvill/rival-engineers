@@ -4,7 +4,7 @@ import { moduleId } from "../shared/ids"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { FREE, TerrainView } from "../planner/grid"
 import { commitModule, newLayout, PlacedModule } from "../planner/layout"
-import { prepareWholePatchPlacement } from "../planner/placement"
+import { prepareWholePatchPlacement } from "../planner/whole-patch"
 import { selectPolicy } from "../planner/policy"
 import { drawGrowthLayout } from "../review/growth-overlay"
 import { enqueue, getAction } from "../character/controller"
@@ -45,7 +45,7 @@ describe("review tools", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1 && config.benchmarkWalkTiles === 0 && config.benchmarkCraftingMultiplier === 1, "debug parity toggles must be off")
   })
 
   test("time accounting: a walking crew member accrues walking time and categories sum to elapsed ticks", () => {

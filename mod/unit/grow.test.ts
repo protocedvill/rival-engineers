@@ -3,8 +3,8 @@ import { transformModule } from "../src/modules/geometry"
 import { connectionId, moduleId, routeId } from "../src/shared/ids"
 import { beltTiers } from "../src/planner/capacity"
 import { checkClaimOwners } from "../src/planner/claims"
-import { entityDiff, factoryReserveTiles, partEntities } from "../src/planner/build-list"
-import { FREE, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
+import { entityDiff, EntitySpec, factoryReserveTiles, partEntities, routeEntities } from "../src/planner/build-list"
+import { FREE, keyX, keyY, TerrainView, tkey, UNKNOWN } from "../src/planner/grid"
 import { limitUnderground, planGrowth } from "../src/planner/grow"
 import { checkLayout, checkLayoutIndexes, commitModule, findModule, LayoutState, newLayout, PlacedModule, portFeedsRoute, ripRoute, routesLand, sealedGoalPorts, tapTree } from "../src/planner/layout"
 import { tryExpand } from "../src/planner/placement"
@@ -196,8 +196,8 @@ test("the factory's reserved tiles follow its layout: tiles a growth or reroute 
   const now: Record<number, boolean> = {}
   for (const k of factoryReserveTiles(g.layout)) now[k] = true
   const near = (k: number): boolean => {
-    const x = math.floor(k / 2097152) - 1048576
-    const y = (k % 2097152) - 1048576
+    const x = keyX(k)
+    const y = keyY(k)
     for (const m of g.layout.modules) if (x >= m.rect.x - 1 && x <= m.rect.x + m.rect.w && y >= m.rect.y - 1 && y <= m.rect.y + m.rect.h) return true
     return false
   }
@@ -409,6 +409,68 @@ test("B88: rerouting a trunk in place routes its taps again with it; nothing is 
   const orphans = checkLayoutIndexes(plan.layout).problems.filter((p) => string.find(p, "taps missing", 1, true)[0] !== undefined)
   eq(orphans.length, 0, orphans.join("; "))
   ok(routesLand(plan.layout, plan.layout.routeOrder.filter((r) => plan.layout.routes[r].conn === "ore-a"), { module: "a", port: "in-ore" }), "the trunk lands on its port")
+})
+
+/** World entity keys a layout's routes build. */
+function routeKeys(specs: EntitySpec[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const e of specs) out[string.format("%s@%g,%g:%g:%s", e.name, e.x, e.y, e.dir, e.ioType ?? "")] = true
+  return out
+}
+
+test("M7c.8: a tap rerouted onto a trunk that stays picks up the trunk's belt under its new splitter and restores the old spot", () => {
+  // fixes-360 seed 11: the coal line's reroutes g101/g103 "cannot place splitter@574,-25.5": the trunk's built belt
+  // stood there, and only the next repair picked it up as stale; the power plant had no coal meanwhile.
+  const view = oreField(120, 120, 45)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  place(l, "b", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 70, 20)
+  const conns: ConnectionRequest[] = [
+    { id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } },
+    { id: connectionId("ore-b"), from: { module: "mine", port: "out" }, to: { module: "b", port: "in-ore" } },
+  ]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  for (const r of job.layout.routeOrder) job.layout.routes[r].fixed = true
+  const tap = job.layout.routeOrder.find((r) => job.layout.routes[r].tapOf !== undefined)!
+  const sp = job.layout.routes[tap].steps[0]
+  eq(sp.kind, "splitter", "the tap starts at a splitter")
+  // Keep the reroute off the old splitter's spot (both sides of its trunk tile): it must tap the trunk elsewhere.
+  const blocked: Record<number, boolean> = { [tkey(sp.x2!, sp.y2!)]: true, [tkey(2 * sp.x - sp.x2!, 2 * sp.y - sp.y2!)]: true }
+  const view2: TerrainView = { block: (x, y) => (blocked[tkey(x, y)] ? UNKNOWN : view.block(x, y)), ore: view.ore }
+  const plan = planReroute(job.layout, view2, F, tapPolicy, TIER, [tap as never], { x: 0, y: 0, w: 120, h: 120 })
+  ok(plan.ok, `rerouted: ${plan.reason}`)
+  const now = plan.layout.routes[plan.routes.find((r) => plan.layout.routes[r].tapOf !== undefined)!]
+  ok(now !== undefined && now.steps[0].kind === "splitter" && (now.steps[0].x !== sp.x || now.steps[0].y !== sp.y), "the new tap's splitter stands elsewhere on the trunk")
+  // The world after the plan: what stood, minus what it picks up, plus what it builds, is what the new layout builds.
+  const world = routeKeys(routeEntities(job.layout))
+  for (const k of Object.keys(routeKeys(plan.remove))) delete world[k]
+  for (const k of Object.keys(routeKeys(plan.add))) world[k] = true
+  const want = routeKeys(routeEntities(plan.layout))
+  const extra = Object.keys(world).filter((k) => !want[k])
+  const lacking = Object.keys(want).filter((k) => !world[k])
+  eq(extra.length, 0, `left standing: ${extra.slice(0, 3).join("; ")}`)
+  eq(lacking.length, 0, `never built: ${lacking.slice(0, 3).join("; ")}`)
+})
+
+test("M7 (seed 11 g113): a stuck route reroutes around the tiles its ghosts could not be placed on", () => {
+  const view = oreField(120, 120, 45)
+  const l = newLayout()
+  const tapPolicy = { ...selectPolicy("early-compact", {}), topology: "splitter-tap" as const }
+  place(l, "mine", miningOutpost(F, { resource: "iron-ore", rows: 2, sides: 1 }), 50, 70)
+  place(l, "a", smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }), 30, 20)
+  const conns: ConnectionRequest[] = [{ id: connectionId("ore-a"), from: { module: "mine", port: "out" }, to: { module: "a", port: "in-ore" } }]
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: 60, y: 60 }, region: { x: 0, y: 0, w: 120, h: 120 } }, TIER, l), view, F, tapPolicy)
+  eq(job.phase, "done", "routed")
+  const rid = job.layout.routeOrder[0]
+  const r = job.layout.routes[rid]
+  const mid = r.steps[math.floor(r.steps.length / 2)]
+  const avoid: Record<number, boolean> = { [tkey(mid.x, mid.y)]: true }
+  const plan = planReroute(job.layout, view, F, tapPolicy, TIER, [rid], { x: 0, y: 0, w: 120, h: 120 }, avoid)
+  ok(plan.ok, `rerouted: ${plan.reason}`)
+  for (const id of plan.routes) for (const k of plan.layout.routes[id].tiles) ok(!avoid[k], `${id} keeps off ${mid.x},${mid.y}`)
 })
 
 /** B91: every join (side-load or splitter merge) points at a tile its trunk still runs straight through. */

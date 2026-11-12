@@ -77,6 +77,15 @@ interface Node {
   /** Output inserters drop into another machine (direct insertion) / into a chest. */
   toMachine: boolean
   toChest: boolean
+  /** M7b: ingredients and products that are fluids (piped: no inserter carries them). */
+  fluids: Record<string, boolean>
+}
+
+/** The amounts of `map` that are not fluids. */
+function solidSum(map: Record<string, number>, fluids: Record<string, boolean>): number {
+  let s = 0
+  for (const [k, v] of pairs(map)) if (!fluids[k as string]) s += v
+  return s
 }
 
 function addTo(map: Record<string, number>, key: string, v: number): void {
@@ -101,111 +110,156 @@ function sortedRates(map: Record<string, number>, kindOf: (item: string) => Rate
   return out
 }
 
-export function computeRates(entities: ModuleEntity[], ports: Port[], facts: ProtoFacts, opts: RateOptions = {}): RateReport {
-  const hand = opts.hand ?? 1
-  const warnings: string[] = []
+/** What the passes of `computeRates` share. */
+interface RateCtx {
+  entities: ModuleEntity[]
+  facts: ProtoFacts
+  opts: RateOptions
+  warnings: string[]
+  /** Items entering by an input port, leaving by an output port, and leaving on a belt or pipe. */
+  inPortItems: Record<string, boolean>
+  outPortItems: Record<string, boolean>
+  /** Output items leaving on belts: their makers are final unless they feed another machine directly. */
+  beltOutItems: Record<string, boolean>
+  fuelItem?: string
+  nodes: Record<number, Node>
+  fluidItems: Record<string, boolean>
+  machineCounts: Record<string, number>
+  upkeep: Record<string, number>
+  /** The steam plant's parts (one prototype each: the last seen counts) and the module's electric demand. */
+  boilers: number
+  boilerPower: number
+  engines: number
+  enginePower: number
+  engineSteamPerJ: number
+  pumps: number
+  pumpPerTick: number
+  panels: number
+  panelPerTick: number
+  accumulators: number
+  accumulatorJ: number
+  electricDemand: number
+  /** Inserter throughput into boilers (fuel). */
+  boilerFeedCap: number
+}
+
+function newRateCtx(entities: ModuleEntity[], ports: Port[], facts: ProtoFacts, opts: RateOptions): RateCtx {
+  const ctx: RateCtx = {
+    entities, facts, opts, warnings: [], inPortItems: {}, outPortItems: {}, beltOutItems: {}, nodes: {}, fluidItems: {}, machineCounts: {}, upkeep: {},
+    boilers: 0, boilerPower: 0, engines: 0, enginePower: 0, engineSteamPerJ: 0, pumps: 0, pumpPerTick: 0, panels: 0, panelPerTick: 0, accumulators: 0, accumulatorJ: 0, electricDemand: 0, boilerFeedCap: 0,
+  }
+  for (const p of ports) {
+    if (p.item === undefined) continue
+    if (p.kind === "belt-in" || p.kind === "pipe-in" || p.kind === "chest-in") ctx.inPortItems[p.item] = true
+    if (p.kind === "belt-out" || p.kind === "pipe-out" || p.kind === "chest-out") ctx.outPortItems[p.item] = true
+    if (p.kind === "belt-out" || p.kind === "pipe-out") ctx.beltOutItems[p.item] = true
+  }
+  for (const [item] of pairs(ctx.inPortItems)) if (facts.fuelValue(item) > 0) ctx.fuelItem = item
+  return ctx
+}
+
+/** Counts a steam plant part (boiler, engine, offshore pump); false if `f` is none. */
+function addPlantPart(ctx: RateCtx, name: string, f: EntityFacts): boolean {
+  if (f.type === "boiler") {
+    ctx.boilers++
+    ctx.boilerPower = f.energyPerTick ?? 0
+  } else if (f.type === "generator") {
+    ctx.engines++
+    ctx.enginePower = f.maxPowerPerTick ?? 0
+    ctx.engineSteamPerJ = (f.fluidPerTick ?? 0) / Math.max(1, ctx.enginePower)
+  } else if (f.type === "offshore-pump") {
+    ctx.pumps++
+    ctx.pumpPerTick = f.pumpingPerTick ?? 0
+  } else if (f.type === "solar-panel") {
+    ctx.panels++
+    ctx.panelPerTick = f.productionPerTick ?? 0
+  } else if (f.type === "accumulator") {
+    ctx.accumulators++
+    ctx.accumulatorJ = f.bufferJ ?? 0
+  } else return false
+  addTo(ctx.machineCounts, name, 1)
+  return true
+}
+
+function crafterNode(ctx: RateCtx, i: number, e: ModuleEntity, f: EntityFacts): Node | undefined {
+  if (e.recipe === undefined) {
+    ctx.warnings.push(`${e.name}@${e.x},${e.y} has no recipe`)
+    return undefined
+  }
+  const r = ctx.facts.recipe(e.recipe)
+  if (!r) {
+    ctx.warnings.push(`unknown recipe ${e.recipe}`)
+    return undefined
+  }
+  const node: Node = newNode(i, "crafter", (f.craftingSpeed ?? 1) / r.energy)
+  for (const ing of r.ingredients) {
+    addTo(node.ins, ing.name, ing.amount)
+    if (ing.fluid === true) node.fluids[ing.name] = ctx.fluidItems[ing.name] = true
+  }
+  for (const p of r.products) {
+    addTo(node.outs, p.name, p.amount)
+    if (p.fluid === true) node.fluids[p.name] = ctx.fluidItems[p.name] = true
+  }
+  if (f.burner) {
+    const perSecond = ((f.energyPerTick ?? 0) * 60) / Math.max(1, ctx.facts.fuelValue(ctx.fuelItem ?? "coal"))
+    node.fuelPerCraft = perSecond / node.ideal
+    if (ctx.fuelItem === undefined) addTo(ctx.upkeep, e.name, 1)
+  }
+  return node
+}
+
+function drillNode(ctx: RateCtx, i: number, e: ModuleEntity, f: EntityFacts): Node | undefined {
+  const resource = e.mines ?? ctx.opts.resource
+  const time = resource !== undefined ? ctx.facts.resourceMiningTime(resource) : undefined
+  const product = resource !== undefined ? ctx.facts.resourceProduct(resource) : undefined
+  if (time === undefined || product === undefined) {
+    ctx.warnings.push(`drill ${e.name}@${e.x},${e.y}: unknown resource ${tostring(resource)}`)
+    return undefined
+  }
+  const node = newNode(i, "drill", e.perSecond ?? (f.miningSpeed ?? 0) / time)
+  node.outs[product] = 1
+  if (e.perSecond !== undefined) node.fluids[product] = ctx.fluidItems[product] = true
+  if (f.burner) addTo(ctx.upkeep, e.name, 1)
+  return node
+}
+
+function labNode(ctx: RateCtx, i: number, f: EntityFacts): Node {
+  const node = newNode(i, "lab", (f.researchSpeed ?? 1) / (ctx.opts.researchUnitTime ?? 30))
+  for (const pack of ctx.opts.researchPacks ?? []) node.ins[pack] = 1
+  node.outs["research-unit"] = 1
+  return node
+}
+
+/** Step 1: a node per machine (crafter, drill, lab), the steam plant's parts and the electric demand. */
+function addNodes(ctx: RateCtx): void {
+  for (let i = 0; i < ctx.entities.length; i++) {
+    const e = ctx.entities[i]
+    const f = ctx.facts.entity(e.name)
+    if (!f) {
+      ctx.warnings.push(`unknown entity ${e.name}`)
+      continue
+    }
+    // B185: an accumulator's charge rate is not a demand (it stores the field's surplus), nor a panel's anything.
+    if (f.electric && f.energyPerTick && f.type !== "accumulator" && f.type !== "solar-panel") ctx.electricDemand += f.energyPerTick * 60
+    if (CRAFTER_TYPES[f.type] || f.type === "mining-drill" || f.type === "lab") addTo(ctx.machineCounts, e.name, 1)
+    if (addPlantPart(ctx, e.name, f)) continue
+    let node: Node | undefined
+    if (CRAFTER_TYPES[f.type]) node = crafterNode(ctx, i, e, f)
+    else if (f.type === "mining-drill") node = drillNode(ctx, i, e, f)
+    else if (f.type === "lab") node = labNode(ctx, i, f)
+    if (node !== undefined) ctx.nodes[i] = node
+  }
+}
+
+/** Step 2: each inserter's capacity into the machine it drops into and out of the one it picks from. */
+function linkInserters(ctx: RateCtx, hand: number): void {
+  const { entities, facts, nodes } = ctx
   const occ: Record<string, number> = {}
   for (let i = 0; i < entities.length; i++) {
     const r = entityRect(entities[i], facts)
     for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) occ[tileKey(x, y)] = i
   }
   const at = (p: { x: number; y: number }): number | undefined => occ[tileKey(Math.floor(p.x), Math.floor(p.y))]
-
-  const inPortItems: Record<string, boolean> = {}
-  const outPortItems: Record<string, boolean> = {}
-  /** Output items leaving on belts: their makers are final unless they feed another machine directly. */
-  const beltOutItems: Record<string, boolean> = {}
-  for (const p of ports) {
-    if (p.item === undefined) continue
-    if (p.kind === "belt-in" || p.kind === "pipe-in" || p.kind === "chest-in") inPortItems[p.item] = true
-    if (p.kind === "belt-out" || p.kind === "pipe-out" || p.kind === "chest-out") outPortItems[p.item] = true
-    if (p.kind === "belt-out" || p.kind === "pipe-out") beltOutItems[p.item] = true
-  }
-  let fuelItem: string | undefined
-  for (const [item] of pairs(inPortItems)) if (facts.fuelValue(item) > 0) fuelItem = item
-
-  // --- nodes
-  const nodes: Record<number, Node> = {}
-  const machineCounts: Record<string, number> = {}
-  const upkeep: Record<string, number> = {}
-  let boilers = 0
-  let boilerPower = 0
-  let engines = 0
-  let enginePower = 0
-  let engineSteamPerJ = 0
-  let pumps = 0
-  let pumpPerTick = 0
-  let electricDemand = 0
-  for (let i = 0; i < entities.length; i++) {
-    const e = entities[i]
-    const f = facts.entity(e.name)
-    if (!f) {
-      warnings.push(`unknown entity ${e.name}`)
-      continue
-    }
-    if (f.electric && f.energyPerTick) electricDemand += f.energyPerTick * 60
-    if (CRAFTER_TYPES[f.type] || f.type === "mining-drill" || f.type === "lab") addTo(machineCounts, e.name, 1)
-    if (f.type === "boiler") {
-      boilers++
-      boilerPower = f.energyPerTick ?? 0
-      addTo(machineCounts, e.name, 1)
-      continue
-    }
-    if (f.type === "generator") {
-      engines++
-      enginePower = f.maxPowerPerTick ?? 0
-      engineSteamPerJ = (f.fluidPerTick ?? 0) / Math.max(1, enginePower)
-      addTo(machineCounts, e.name, 1)
-      continue
-    }
-    if (f.type === "offshore-pump") {
-      pumps++
-      pumpPerTick = f.pumpingPerTick ?? 0
-      addTo(machineCounts, e.name, 1)
-      continue
-    }
-    if (CRAFTER_TYPES[f.type]) {
-      if (e.recipe === undefined) {
-        warnings.push(`${e.name}@${e.x},${e.y} has no recipe`)
-        continue
-      }
-      const r = facts.recipe(e.recipe)
-      if (!r) {
-        warnings.push(`unknown recipe ${e.recipe}`)
-        continue
-      }
-      const node: Node = newNode(i, "crafter", (f.craftingSpeed ?? 1) / r.energy)
-      for (const ing of r.ingredients) addTo(node.ins, ing.name, ing.amount)
-      for (const p of r.products) addTo(node.outs, p.name, p.amount)
-      if (f.burner) {
-        const perSecond = ((f.energyPerTick ?? 0) * 60) / Math.max(1, facts.fuelValue(fuelItem ?? "coal"))
-        node.fuelPerCraft = perSecond / node.ideal
-        if (fuelItem === undefined) addTo(upkeep, e.name, 1)
-      }
-      nodes[i] = node
-    } else if (f.type === "mining-drill") {
-      const resource = e.mines ?? opts.resource
-      const time = resource !== undefined ? facts.resourceMiningTime(resource) : undefined
-      const product = resource !== undefined ? facts.resourceProduct(resource) : undefined
-      if (time === undefined || product === undefined) {
-        warnings.push(`drill ${e.name}@${e.x},${e.y}: unknown resource ${tostring(resource)}`)
-        continue
-      }
-      const node = newNode(i, "drill", (f.miningSpeed ?? 0) / time)
-      node.outs[product] = 1
-      if (f.burner) addTo(upkeep, e.name, 1)
-      nodes[i] = node
-    } else if (f.type === "lab") {
-      const unit = opts.researchUnitTime ?? 30
-      const node = newNode(i, "lab", (f.researchSpeed ?? 1) / unit)
-      for (const pack of opts.researchPacks ?? []) node.ins[pack] = 1
-      node.outs["research-unit"] = 1
-      nodes[i] = node
-    }
-  }
-
-  // --- inserter links
-  let boilerFeedCap = 0
   for (let i = 0; i < entities.length; i++) {
     const e = entities[i]
     const f = facts.entity(e.name)
@@ -218,42 +272,41 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
     const fromFacts = fromName !== undefined ? facts.entity(fromName) : undefined
     const fromBelt = fromFacts !== undefined && BELT_TYPES[fromFacts.type] === true
     const cap = inserterCapacity(f, hand, fromBelt)
+    const target = to !== undefined ? facts.entity(entities[to].name) : undefined
     // A burner inserter refuels from the fuel it carries: self-sufficient when it feeds a burner from a fuel belt.
-    if (f.burner) {
-      const target = to !== undefined ? facts.entity(entities[to].name) : undefined
-      if (fuelItem === undefined || !fromBelt || target === undefined || target.burner !== true) addTo(upkeep, e.name, 1)
-    }
+    if (f.burner && (ctx.fuelItem === undefined || !fromBelt || target === undefined || target.burner !== true)) addTo(ctx.upkeep, e.name, 1)
     if (to !== undefined && nodes[to] !== undefined) nodes[to].inCap += cap
-    if (to !== undefined && facts.entity(entities[to].name)?.type === "boiler") boilerFeedCap += cap
-    if (from !== undefined && nodes[from] !== undefined) {
-      nodes[from].outCap += cap
-      nodes[from].hasOutInserter = true
-      if (to !== undefined && nodes[from].kind === "lab" && nodes[to]?.kind === "lab") nodes[from].feeds.push(to)
-      if (to !== undefined && nodes[to] !== undefined) nodes[from].toMachine = true
-      if (to !== undefined && facts.entity(entities[to].name)?.type === "container") nodes[from].toChest = true
-    }
+    if (target?.type === "boiler") ctx.boilerFeedCap += cap
+    if (from === undefined || nodes[from] === undefined) continue
+    const n = nodes[from]
+    n.outCap += cap
+    n.hasOutInserter = true
+    if (to === undefined) continue
+    if (n.kind === "lab" && nodes[to]?.kind === "lab") n.feeds.push(to)
+    if (nodes[to] !== undefined) n.toMachine = true
+    if (target?.type === "container" || target?.type === "logistic-container") n.toChest = true
   }
+}
 
-  // --- per-machine inserter caps
-  const order: number[] = []
-  for (const [i] of pairs(nodes)) order.push(i)
-  order.sort((a, b) => a - b)
-  for (const i of order) {
-    const n = nodes[i]
-    let r = n.ideal
-    if (n.kind === "crafter") {
-      const perIn = sumValues(n.ins) + n.fuelPerCraft
-      if (perIn > 0) r = Math.min(r, n.inCap / perIn)
-      const perOut = sumValues(n.outs)
-      if (!n.hasOutInserter) {
-        warnings.push(`${entities[i].name}@${entities[i].x},${entities[i].y} has no output inserter`)
-        r = 0
-      } else if (perOut > 0) r = Math.min(r, n.outCap / perOut)
-      if (n.inCap === 0) warnings.push(`${entities[i].name}@${entities[i].x},${entities[i].y} has no input inserter`)
-    }
-    n.rate = r
-  }
-  // Labs: a lab's input inserters also carry the packs for the labs it feeds.
+/** Step 3a: a crafter runs no faster than its inserters carry its solid ingredients (and fuel) and products. */
+function capCrafter(ctx: RateCtx, i: number, n: Node): number {
+  const e = ctx.entities[i]
+  let r = n.ideal
+  // M7b: fluids come and go by pipe; inserters carry only the items.
+  const perIn = solidSum(n.ins, n.fluids) + n.fuelPerCraft
+  if (perIn > 0) r = Math.min(r, n.inCap / perIn)
+  const perOut = solidSum(n.outs, n.fluids)
+  // Only fluids out: no output inserter.
+  if (perOut !== 0 && !n.hasOutInserter) {
+    ctx.warnings.push(`${e.name}@${e.x},${e.y} has no output inserter`)
+    r = 0
+  } else if (perOut > 0) r = Math.min(r, n.outCap / perOut)
+  if (n.inCap === 0 && perIn > 0) ctx.warnings.push(`${e.name}@${e.x},${e.y} has no input inserter`)
+  return r
+}
+
+/** Step 3b: a lab's input inserters also carry the packs for the labs it feeds; scale the chain when they can't. */
+function capLabs(nodes: Record<number, Node>, order: number[]): void {
   const labDemand = (i: number, depth: number): number => {
     const n = nodes[i]
     let d = n.rate * sumValues(n.ins)
@@ -264,29 +317,27 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
     const n = nodes[i]
     if (n.kind !== "lab") continue
     const need = labDemand(i, 0)
-    if (need > n.inCap + 1e-9 && need > 0) {
-      const s = n.inCap / need
-      const scale = (j: number, depth: number): void => {
-        nodes[j].rate *= s
-        if (depth < 64) for (const k of nodes[j].feeds) scale(k, depth + 1)
-      }
-      scale(i, 0)
+    if (need <= n.inCap + 1e-9 || need <= 0) continue
+    const s = n.inCap / need
+    const scale = (j: number, depth: number): void => {
+      nodes[j].rate *= s
+      if (depth < 64) for (const k of nodes[j].feeds) scale(k, depth + 1)
     }
+    scale(i, 0)
   }
+}
 
-  // --- internal balance (see the header, step 3)
-  balance(nodes, order, inPortItems, beltOutItems, warnings)
-
-  // --- totals
+/** Step 5: the module's net item inputs and outputs (fuel included) from the balanced machine rates. */
+function netRates(ctx: RateCtx, order: number[]): { inputs: Record<string, number>; outputs: Record<string, number>; activity: Record<number, number>; ideal: Record<number, number> } {
   const inputs: Record<string, number> = {}
   const outputs: Record<string, number> = {}
   const prod: Record<string, number> = {}
   const cons: Record<string, number> = {}
-  let fuel = 0
   const activity: Record<number, number> = {}
   const ideal: Record<number, number> = {}
+  let fuel = 0
   for (const i of order) {
-    const n = nodes[i]
+    const n = ctx.nodes[i]
     activity[i] = n.rate
     ideal[i] = n.ideal
     for (const [item, a] of pairs(n.outs)) addTo(prod, item, a * n.rate)
@@ -295,44 +346,102 @@ export function computeRates(entities: ModuleEntity[], ports: Port[], facts: Pro
   }
   for (const [item, c] of pairs(cons)) {
     const p = prod[item] ?? 0
-    if (c > p + 1e-9) {
-      if (!inPortItems[item]) warnings.push(`${item} is needed but has no input port`)
-      inputs[item] = c - p
-    }
+    if (c <= p + 1e-9) continue
+    if (!ctx.inPortItems[item]) ctx.warnings.push(`${item} is needed but has no input port`)
+    inputs[item] = c - p
   }
   for (const [item, p] of pairs(prod)) {
     const c = cons[item] ?? 0
-    if (p > c + 1e-9 && (outPortItems[item] || item === "research-unit")) outputs[item] = p - c
+    if (p > c + 1e-9 && (ctx.outPortItems[item] || item === "research-unit")) outputs[item] = p - c
   }
-  if (fuelItem !== undefined && fuel > 0) addTo(inputs, fuelItem, fuel)
-
-  // --- steam power
-  if (boilers > 0 || engines > 0) {
-    let power = boilers * boilerPower // J/tick
-    power = Math.min(power, engines * enginePower)
-    if (engineSteamPerJ > 0) power = Math.min(power, (pumps * pumpPerTick) / engineSteamPerJ)
-    if (power > 0) {
-      outputs["electricity"] = power * 60
-      const coal = (power * 60) / Math.max(1, facts.fuelValue(fuelItem ?? "coal"))
-      if (fuelItem !== undefined) {
-        addTo(inputs, fuelItem, coal)
-        if (boilerFeedCap < coal - 1e-9) warnings.push(`boiler fuel inserters move ${boilerFeedCap}/s, need ${coal}/s`)
-      }
-    }
-    if (fuelItem === undefined && boilers > 0) upkeep["boiler"] = boilers
-  }
-  if (electricDemand > 0) inputs["electricity"] = electricDemand
-
-  const machines: MachineCount[] = []
-  for (const [name, count] of pairs(machineCounts)) machines.push({ name, count })
-  machines.sort((a, b) => (a.name < b.name ? -1 : 1))
-  const upkeepFuel: MachineCount[] = []
-  for (const [name, count] of pairs(upkeep)) upkeepFuel.push({ name, count })
-  upkeepFuel.sort((a, b) => (a.name < b.name ? -1 : 1))
-  const kindOf = (item: string): Rate["kind"] => (item === "electricity" ? "power" : item === "research-unit" ? "research" : "item")
-  return { rates: { inputs: sortedRates(inputs, kindOf), outputs: sortedRates(outputs, kindOf) }, machines, activity, ideal, upkeepFuel, warnings }
+  if (ctx.fuelItem !== undefined && fuel > 0) addTo(inputs, ctx.fuelItem, fuel)
+  return { inputs, outputs, activity, ideal }
 }
 
+/**
+ * B185: Nauvis's day as fractions of `NAUVIS_TICKS_PER_DAY` (engine defaults, `LuaSurface.dusk/evening/morning/dawn`):
+ * full light from dawn to dusk, fading to dark by evening, dark until morning, brightening until dawn.
+ */
+const NAUVIS_DAY = { dusk: 0.25, evening: 0.45, morning: 0.55, dawn: 0.75 }
+const NAUVIS_TICKS_PER_DAY = 25000
+
+/**
+ * B185: the electricity (W) solar panels of `peakW` together sustain all day, with `storedJ` of accumulators. Unlimited
+ * storage: the daily average (0.7 of peak on Nauvis). Each watt of that load needs this many joules stored through the
+ * night: the light falls below the load's share of peak for part of each ramp and is out between them (100 J per W on
+ * Nauvis, so a 5 MJ accumulator carries 50 kW: 0.84 per 60 kW panel).
+ */
+export function solarSustained(peakW: number, storedJ: number): number {
+  const d = NAUVIS_DAY
+  const day = NAUVIS_TICKS_PER_DAY / 60
+  const fade = (d.evening - d.dusk) * day
+  const dark = (d.morning - d.evening) * day
+  const rise = (d.dawn - d.morning) * day
+  const average = 1 - (d.dawn - d.dusk) + 0.5 * (d.evening - d.dusk) + 0.5 * (d.dawn - d.morning)
+  const nightJPerW = 0.5 * average * (fade + rise) + dark
+  return Math.min(peakW * average, storedJ / nightJPerW)
+}
+
+/** Step 6: a steam plant's electricity (and its coal), an offshore pump's water, and the module's electric demand. */
+function plantRates(ctx: RateCtx, inputs: Record<string, number>, outputs: Record<string, number>): void {
+  if (ctx.boilers > 0 || ctx.engines > 0) {
+    let power = Math.min(ctx.boilers * ctx.boilerPower, ctx.engines * ctx.enginePower) // J/tick
+    // B184: a steam block without a pump of its own takes its water through a pipe port, as much as it boils.
+    const piped = ctx.pumps === 0 && ctx.inPortItems["water"] === true
+    if (ctx.engineSteamPerJ > 0 && !piped) power = Math.min(power, (ctx.pumps * ctx.pumpPerTick) / ctx.engineSteamPerJ)
+    if (piped && power > 0) {
+      inputs["water"] = power * 60 * ctx.engineSteamPerJ
+      ctx.fluidItems["water"] = true
+    }
+    if (power > 0) {
+      outputs["electricity"] = power * 60
+      const coal = (power * 60) / Math.max(1, ctx.facts.fuelValue(ctx.fuelItem ?? "coal"))
+      if (ctx.fuelItem !== undefined) {
+        addTo(inputs, ctx.fuelItem, coal)
+        if (ctx.boilerFeedCap < coal - 1e-9) ctx.warnings.push(`boiler fuel inserters move ${ctx.boilerFeedCap}/s, need ${coal}/s`)
+      }
+    }
+    if (ctx.fuelItem === undefined && ctx.boilers > 0) ctx.upkeep["boiler"] = ctx.boilers
+  }
+  // B185: solar panels and accumulators: the power they sustain day and night (`solarSustained`).
+  if (ctx.panels > 0) {
+    const sustained = solarSustained(ctx.panels * ctx.panelPerTick * 60, ctx.accumulators * ctx.accumulatorJ)
+    if (sustained > 0) outputs["electricity"] = (outputs["electricity"] ?? 0) + sustained
+  }
+  // M7b: offshore pumps that feed a water port (not boilers) put their water out.
+  if (ctx.pumps > 0 && ctx.boilers === 0 && ctx.outPortItems["water"]) {
+    outputs["water"] = ctx.pumps * ctx.pumpPerTick * 60
+    ctx.fluidItems["water"] = true
+  }
+  if (ctx.electricDemand > 0) inputs["electricity"] = ctx.electricDemand
+}
+
+function sortedCounts(map: Record<string, number>): MachineCount[] {
+  const out: MachineCount[] = []
+  for (const [name, count] of pairs(map)) out.push({ name, count })
+  out.sort((a, b) => (a.name < b.name ? -1 : 1))
+  return out
+}
+
+export function computeRates(entities: ModuleEntity[], ports: Port[], facts: ProtoFacts, opts: RateOptions = {}): RateReport {
+  const ctx = newRateCtx(entities, ports, facts, opts)
+  addNodes(ctx)
+  linkInserters(ctx, opts.hand ?? 1)
+  const order: number[] = []
+  for (const [i] of pairs(ctx.nodes)) order.push(i)
+  order.sort((a, b) => a - b)
+  for (const i of order) {
+    const n = ctx.nodes[i]
+    n.rate = n.kind === "crafter" ? capCrafter(ctx, i, n) : n.ideal
+  }
+  capLabs(ctx.nodes, order)
+  // Step 4: internal balance (see the header, step 3).
+  balance(ctx.nodes, order, ctx.inPortItems, ctx.beltOutItems, ctx.warnings)
+  const net = netRates(ctx, order)
+  plantRates(ctx, net.inputs, net.outputs)
+  const kindOf = (item: string): Rate["kind"] => (item === "electricity" ? "power" : item === "research-unit" ? "research" : ctx.fluidItems[item] ? "fluid" : "item")
+  return { rates: { inputs: sortedRates(net.inputs, kindOf), outputs: sortedRates(net.outputs, kindOf) }, machines: sortedCounts(ctx.machineCounts), activity: net.activity, ideal: net.ideal, upkeepFuel: sortedCounts(ctx.upkeep), warnings: ctx.warnings }
+}
 function mainOut(n: Node): string | undefined {
   for (const [item] of pairs(n.outs)) return item
   return undefined
@@ -441,7 +550,7 @@ function balance(nodes: Record<number, Node>, order: number[], inPort: Record<st
 }
 
 function newNode(index: number, kind: NodeKind, ideal: number): Node {
-  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [], toMachine: false, toChest: false }
+  return { index, kind, ideal, ins: {}, outs: {}, fuelPerCraft: 0, rate: ideal, inCap: 0, outCap: 0, hasOutInserter: false, feeds: [], toMachine: false, toChest: false, fluids: {} }
 }
 
 /** The rate of `item` in a rate list (0 if absent). */

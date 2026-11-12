@@ -45,7 +45,8 @@ export interface PortRef {
 
 /** One piece of a route. `dir` is a direction index (0..3 = N, E, S, W). */
 export interface RouteStep {
-  kind: "belt" | "ug-in" | "ug-out" | "splitter"
+  /** Belt routes: belt, ug-in/ug-out, splitter. Fluid routes (M7b, `Route.fluid`): pipe, pipe-ug-in/out, pump. */
+  kind: "belt" | "ug-in" | "ug-out" | "splitter" | "pipe" | "pipe-ug-in" | "pipe-ug-out" | "pump"
   x: number
   y: number
   dir: number
@@ -100,6 +101,31 @@ export interface Route {
   ripped: number
   /** Built already (part of the faction's base): never ripped up. */
   fixed?: boolean
+  /**
+   * Tunnel crossings (`planner/tunnel.ts`, user request 2026-11-03): tiles where another route crosses this one, each
+   * turned into an underground pair around it. A plan that adds one to a built route rebuilds those tiles (plan delta
+   * `reworked`).
+   */
+  tunnels?: { x: number; y: number }[]
+  /**
+   * M7b: a fluid route (`pipe-out` → `pipe-in` port; `planner/pipe-router.ts`): the fluid and the entities it uses.
+   * Its steps are pipes, pipe-to-ground pairs and pumps; `belt`/`underground`/`splitter` are unused.
+   */
+  fluid?: {
+    name: string
+    pipe: string
+    underground: string
+    pump: string
+    /** B147: the connection's limits and pump pole, kept so a reroute can route it again (unset on older routes). */
+    maxUnderground?: number
+    extent?: number
+    pole?: string
+  }
+  /**
+   * B149: a fluid route that ends beside a plain pipe of this other line of the same fluid, which already feeds the same
+   * port (a second provider's line joins the first, as a belt provider-group merge does), instead of at the port.
+   */
+  joins?: RouteId
 }
 
 /** A planned pole between modules (world tile; the entity sits at its centre). See power.ts. */
@@ -396,13 +422,21 @@ export function removeModule(state: LayoutState, id: string, facts: ProtoFacts):
   return n
 }
 
+/**
+ * A port whose outside and approach tiles are kept for its route: belt ports, and (M7c.8, seed 11) pipe ports, whose
+ * entry tiles belt routes and poles otherwise took before the fluid lines were routed.
+ */
+function isLanePort(p: Port): boolean {
+  return p.kind === "belt-in" || p.kind === "belt-out" || p.kind === "pipe-in" || p.kind === "pipe-out"
+}
+
 export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFacts, corridor: number): void {
   // B37: pole lines on the module's ground (footprint, interaction tiles, port lanes, a mine's claim) give way.
   if ((state.poles?.length ?? 0) > 0) {
     const keys = [...moduleTiles(m)]
     for (const t of interactionTiles(m.def, facts)) keys.push(tkey(m.origin.x + t.x, m.origin.y + t.y))
     for (const p of m.def.ports) {
-      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      if (!isLanePort(p)) continue
       const o = portOutside(m, p)
       const a = portApproach(m, p)
       keys.push(tkey(o.x, o.y), tkey(a.x, a.y))
@@ -420,7 +454,7 @@ export function markModule(state: LayoutState, m: PlacedModule, facts: ProtoFact
     claimInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    if (!isLanePort(p)) continue
     const o = portOutside(m, p)
     reserveTile(state, tkey(o.x, o.y), portTag(m.id, p.id))
     // The approach tile beyond it too (P5 lane): later routes must not box in a port, built or not yet connected.
@@ -556,7 +590,7 @@ export function unmarkModule(state: LayoutState, m: PlacedModule, facts: ProtoFa
     releaseInteractionTile(state, tkey(m.origin.x + t.x, m.origin.y + t.y), m.id)
   }
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    if (!isLanePort(p)) continue
     const o = portOutside(m, p)
     releaseReservation(state, tkey(o.x, o.y), portTag(m.id, p.id))
     const a = portApproach(m, p)
@@ -590,6 +624,86 @@ export function commitRoute(state: LayoutState, route: Route): void {
   bumpLayout(state)
 }
 
+/**
+ * Re-rooting (seed 11 g108): trunk `id` goes (its consumer moves), but tap `tapId` keeps its belt: the tap takes over the
+ * trunk's steps up to its splitter and becomes the route from the trunk's source. The splitter stays where it is with
+ * its trunk-side output left dead (that tile stays reserved, empty), so every built belt of the kept part is unchanged
+ * and the splitter sends everything to the tap. Taps on the kept part now hang off the re-rooted route; the trunk's
+ * tail goes with its other taps, as `ripRoute`. Before this, a 400-tile coal tap was searched again from scratch
+ * (~3M work units) each time the trunk's smelter moved. Returns the removed route ids, or undefined (nothing changed)
+ * if the tap's splitter is not on the trunk.
+ */
+export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId): RouteId[] | undefined {
+  const trunk = state.routes[id]
+  const tap = state.routes[tapId]
+  if (trunk === undefined || tap === undefined || tap.tapOf !== id || trunk.fixed || tap.fixed || trunk.fluid !== undefined) return undefined
+  const sp = tap.steps[0]
+  if (sp === undefined || sp.kind !== "splitter") return undefined
+  let at = -1
+  for (let i = 0; i < trunk.steps.length && at < 0; i++) {
+    const st = trunk.steps[i]
+    if (st.kind === "belt" && st.x === sp.x && st.y === sp.y) at = i
+  }
+  if (at < 0) return undefined
+  const prefix = trunk.steps.slice(0, at)
+  // B158: claim only the tiles the trunk itself owns. A trunk that is itself a tap starts with a splitter on its outer
+  // trunk: that head tile belongs to the outer route (the tap's `tiles` exclude it), and claiming it here left the
+  // re-rooted route owning a tile the outer trunk still listed.
+  const owned: Record<number, boolean> = {}
+  for (const k of trunk.tiles) owned[k] = true
+  const kept: Record<number, boolean> = {}
+  for (const st of prefix) {
+    const k = tkey(st.x, st.y)
+    if (owned[k] === true) kept[k] = true
+  }
+  // Taps on the kept part move to the re-rooted route; the tap leaves the trunk, so the rip below spares them.
+  for (const rid of state.routeOrder) {
+    const r = state.routes[rid]
+    const s0 = r.steps[0]
+    if (rid !== tapId && r.tapOf === id && s0?.kind === "splitter" && kept[tkey(s0.x, s0.y)]) r.tapOf = tapId
+  }
+  tap.tapOf = trunk.tapOf
+  const removed = ripRoute(state, id)
+  const head = tkey(sp.x, sp.y)
+  const dead = tkey(sp.x + DX[sp.dir], sp.y + DY[sp.dir])
+  const tiles: number[] = []
+  for (const st of prefix) {
+    const k = tkey(st.x, st.y)
+    if (owned[k] === true) tiles.push(k)
+  }
+  tiles.push(head)
+  if (state.routeOcc[dead] === undefined && state.occ[dead] === undefined && state.reserved[dead] === undefined) tiles.push(dead)
+  const spans: Route["spans"] = []
+  let ugs = 0
+  for (let i = 0; i < prefix.length; i++) {
+    const st = prefix[i]
+    const out = prefix[i + 1]
+    if (st.kind !== "ug-in" || out === undefined) continue
+    ugs++
+    const line = lineKey(st.x, st.y, st.dir)
+    const a = st.dir % 2 === 1 ? math.min(st.x, out.x) : math.min(st.y, out.y)
+    const b = st.dir % 2 === 1 ? math.max(st.x, out.x) : math.max(st.y, out.y)
+    spans.push({ line, span: { a, b, route: tapId } })
+  }
+  for (const k of tiles) claimRouteTile(state, k, tapId)
+  for (const sp2 of spans) (state.spans[sp2.line] ??= []).push(sp2.span)
+  tap.steps = [...prefix, ...tap.steps]
+  tap.tiles = [...tiles, ...tap.tiles]
+  tap.spans = [...spans, ...tap.spans]
+  tap.from = trunk.from
+  tap.startDir = trunk.startDir
+  tap.length += prefix.length
+  tap.undergrounds += ugs
+  tap.cost += trunk.cost * (prefix.length / math.max(1, trunk.length))
+  // A tunnel's crossed tile lies between the kept underground pair around it.
+  const own: Record<number, boolean> = {}
+  for (const k of tiles) own[k] = true
+  const tunnels = (trunk.tunnels ?? []).filter((t) => (own[tkey(t.x - 1, t.y)] && own[tkey(t.x + 1, t.y)]) || (own[tkey(t.x, t.y - 1)] && own[tkey(t.x, t.y + 1)]))
+  if (tunnels.length > 0) tap.tunnels = [...tunnels, ...(tap.tunnels ?? [])]
+  bumpLayout(state)
+  return removed
+}
+
 /** Removes a route (and the splitter taps hanging off it). Returns the removed route ids. */
 /**
  * B88: routes `rids` and every route that taps one of them, at any depth (what `ripRoute` takes with each): the routes a
@@ -613,10 +727,13 @@ export function tapTree(state: LayoutState, rids: RouteId[]): RouteId[] {
 }
 
 /**
- * B91: routes `rids` and every route that depends on one of them, at any depth: its splitter taps (`tapOf`) and the
- * provider-group joins onto its belt (a side-load `merge` or a `mergeSplitter` on one of its tiles). A route that moves
- * takes them with it: a join left behind points at a tile the trunk may no longer run straight through (sweep 922c77c
- * seed 2034469: a growth rerouted a trunk into a curve under a built merge splitter; the splitter cut it). Layout order.
+ * B91: routes `rids` and every route that depends on one of them, at any depth: its splitter taps (`tapOf`), the
+ * provider-group joins onto its belt (a side-load `merge` or a `mergeSplitter` on one of its tiles), and the same-fluid
+ * line that `joins` it beside a pipe (B149: a second provider ends beside the line already feeding the port). A route
+ * that moves takes them with it: a join left behind points at a tile the trunk may no longer run straight through
+ * (sweep 922c77c seed 2034469: a growth rerouted a trunk into a curve under a built merge splitter; the splitter cut
+ * it), and a fluid `joins` left behind ends beside a pipe that is no longer there (`checkLayoutIndexes`: "joins … not a
+ * line of its fluid"). Layout order.
  */
 export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] {
   const inTree: Record<string, boolean> = {}
@@ -634,13 +751,18 @@ export function dependentRoutes(state: LayoutState, rids: RouteId[]): RouteId[] 
       const r = state.routes[id]
       if (r === undefined) continue
       const join = r.merge ?? r.mergeSplitter
-      if ((r.tapOf !== undefined && inTree[r.tapOf]) || (join !== undefined && tiles[tkey(join.x, join.y)])) {
+      if ((r.tapOf !== undefined && inTree[r.tapOf]) || (join !== undefined && tiles[tkey(join.x, join.y)]) || (r.joins !== undefined && inTree[r.joins])) {
         add(id)
         grew = true
       }
     }
   }
   return state.routeOrder.filter((id) => inTree[id])
+}
+
+/** M7b: the pole line of a fluid route's pumps (one pole beside each pump; the pole planner joins it to the network). */
+export function pumpPoleLine(route: string): PoleLineId {
+  return `pump:${route}` as PoleLineId
 }
 
 export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
@@ -651,6 +773,17 @@ export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
     if (state.routes[other]?.tapOf === id) for (const r of ripRoute(state, other)) removed.push(r)
   }
   for (const k of route.tiles) releaseRouteTile(state, k, id)
+  // M7b: a fluid route's pump poles go with it.
+  if (route.fluid !== undefined) {
+    const line = pumpPoleLine(id)
+    const kept: PlannedPole[] = []
+    for (const p of state.poles ?? []) {
+      if (p.line === line) releasePoleTile(state, tkey(p.x, p.y), line)
+      else kept.push(p)
+    }
+    if (state.poles !== undefined) state.poles = kept
+    if (state.poleLines !== undefined) state.poleLines = state.poleLines.filter((l) => l.id !== line)
+  }
   for (const s of route.spans) {
     const list = state.spans[s.line]
     if (list === undefined) continue
@@ -663,34 +796,6 @@ export function ripRoute(state: LayoutState, id: RouteId): RouteId[] {
   if (i >= 0) state.routeOrder.splice(i, 1)
   bumpLayout(state)
   return removed
-}
-
-/**
- * Provider handover (goalpost 1): a route outlives the connection that planned it. The retiring provider's belt to a
- * consumer is kept when its replacement side-loads into it (`Route.merge`), so the consumer never loses its feed while
- * the old module is deconstructed: the replacement connection adopts the route. Its `conn` becomes the replacement's
- * and `from` the replacement's port, while the laid tiles stay exactly where they are.
- */
-export function adoptRoute(state: LayoutState, id: RouteId, conn: ConnectionId, from: PortRef | undefined): RouteId | undefined {
-  const route = state.routes[id]
-  if (route === undefined) return undefined
-  // B93 (sweep 3e1c4d7 seed 1376111): a kept route gets an id of its own. Kept as `route:<old conn>`, it bore the id the
-  // replacement connection's own route takes when the replacement has the same role (D55): planned, that route replaced
-  // the belt it was to join.
-  let nid = `${id}#kept` as RouteId
-  for (let n = 2; state.routes[nid] !== undefined; n++) nid = `${id}#kept${n}` as RouteId
-  delete state.routes[id]
-  route.id = nid
-  state.routes[nid] = route
-  const i = state.routeOrder.indexOf(id)
-  if (i >= 0) state.routeOrder[i] = nid
-  for (const k of route.tiles) if (state.routeOcc[k] === id) state.routeOcc[k] = nid
-  for (const sp of route.spans) for (const x of state.spans[sp.line] ?? []) if (x.route === id) x.route = nid
-  for (const other of state.routeOrder) if (state.routes[other]?.tapOf === id) state.routes[other]!.tapOf = nid
-  route.conn = conn
-  route.from = from
-  bumpLayout(state)
-  return nid
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -725,7 +830,21 @@ export function checkLayoutIndexes(state: LayoutState): LayoutIndexCheck {
     }
     // B88: a tap whose trunk is gone (a replanned connection's route replaced the trunk it tapped; telemetry crashed on it).
     if (route.tapOf !== undefined && state.routes[route.tapOf] === undefined) problems.push(`route ${id} taps missing route ${route.tapOf}`)
-    for (const k of route.tiles) if (state.routeOcc[k] !== id) problems.push(`route ${id} tile ${keyX(k)},${keyY(k)} indexed as ${state.routeOcc[k] ?? "free"}`)
+    for (const k of route.tiles) {
+      if (state.routeOcc[k] === id) continue
+      const owner = state.routeOcc[k]
+      const or = owner !== undefined ? state.routes[owner] : undefined
+      const kx = keyX(k)
+      const ky = keyY(k)
+      const joinText = (x: Route | undefined): string => x === undefined ? "-" : `tap=${x.tapOf ?? "-"} merge=${x.merge !== undefined ? `${x.merge.x},${x.merge.y}` : "-"} ms=${x.mergeSplitter !== undefined ? `${x.mergeSplitter.x},${x.mergeSplitter.y}` : "-"}`
+      const around = (x: Route | undefined): string => {
+        if (x === undefined) return "-"
+        const out: string[] = []
+        for (const st of x.steps) if (math.abs(st.x - kx) <= 1 && math.abs(st.y - ky) <= 1) out.push(`${st.kind}@${st.x},${st.y}/${st.dir}${st.kind === "splitter" ? ` x2=${st.x2},${st.y2}` : ""}`)
+        return out.join(" ")
+      }
+      problems.push(`route ${id} tile ${kx},${ky} indexed as ${owner ?? "free"} [${id}: ${joinText(route)} steps ${around(route)}; ${owner ?? "-"}: ${joinText(or)} steps ${around(or)}]`)
+    }
     for (const s of route.spans) {
       const found = state.spans[s.line]?.some((x) => x.route === id && x.a === s.span.a && x.b === s.span.b) ?? false
       if (!found) problems.push(`route ${id} span ${s.line}:${s.span.a}..${s.span.b} is not indexed`)
@@ -777,6 +896,58 @@ export function spanConflicts(state: LayoutState, line: string, a: number, b: nu
 // ---------------------------------------------------------------------------------------------------------
 // Independent checker: what the acceptance tests assert about a finished layout.
 
+/**
+ * M7b: a fluid route connects from its `pipe-out` port's outside tile to its `pipe-in` port's: each entity joins the
+ * next along the flow (a pipe-to-ground pair within reach, a pump two tiles long), and the last connects into the port.
+ */
+function checkPipeRoute(state: LayoutState, r: Route, to: PlacedModule, toPort: Port, claim: (this: void, route: Route, x: number, y: number, what: string) => void, problems: string[]): void {
+  const fm = r.from !== undefined ? findModule(state, r.from.module) : undefined
+  const fp = fm !== undefined && r.from !== undefined ? findPort(fm, r.from.port) : undefined
+  if (fm === undefined || fp === undefined) {
+    problems.push(`${r.id}: unknown source`)
+    return
+  }
+  let at = portOutside(fm, fp)
+  // B120: a tap starts beside a plain pipe of the line it taps.
+  const trunk = r.tapOf !== undefined ? state.routes[r.tapOf] : undefined
+  if (r.tapOf !== undefined) {
+    const s0 = r.steps[0]
+    const beside = trunk !== undefined && s0 !== undefined && trunk.steps.some((t) => t.kind === "pipe" && math.abs(t.x - s0.x) + math.abs(t.y - s0.y) === 1)
+    if (!beside) problems.push(`${r.id}: tap does not start beside a pipe of ${r.tapOf}`)
+    else at = { x: s0.x, y: s0.y }
+  }
+  for (let i = 0; i < r.steps.length; i++) {
+    const s = r.steps[i]
+    if (s.x !== at.x || s.y !== at.y) problems.push(`${r.id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${at.x},${at.y}`)
+    claim(r, s.x, s.y, s.kind)
+    if (s.kind === "pipe-ug-in") {
+      const out = r.steps[i + 1]
+      if (out === undefined || out.kind !== "pipe-ug-out" || out.dir !== s.dir || out.x !== s.x + DX[s.dir] * (math.abs(out.x - s.x) + math.abs(out.y - s.y)) || out.y !== s.y + DY[s.dir] * (math.abs(out.x - s.x) + math.abs(out.y - s.y))) {
+        problems.push(`${r.id}: pipe-to-ground at ${s.x},${s.y} has no exit on its line`)
+        return
+      }
+      claim(r, out.x, out.y, out.kind)
+      at = { x: out.x + DX[s.dir], y: out.y + DY[s.dir] }
+      i++
+    } else if (s.kind === "pump") {
+      claim(r, s.x + DX[s.dir], s.y + DY[s.dir], "pump")
+      at = { x: s.x + 2 * DX[s.dir], y: s.y + 2 * DY[s.dir] }
+    } else at = { x: s.x + DX[s.dir], y: s.y + DY[s.dir] }
+  }
+  const last = r.steps[r.steps.length - 1]
+  if (r.joins !== undefined) {
+    const line = state.routes[r.joins]
+    const beside = line !== undefined && last !== undefined && last.kind === "pipe" && line.steps.some((t) => t.kind === "pipe" && math.abs(t.x - last.x) + math.abs(t.y - last.y) === 1)
+    if (line === undefined || line.fluid?.name !== r.fluid?.name || line.to.module !== r.to.module || line.to.port !== r.to.port) problems.push(`${r.id}: joins ${r.joins}, not a line of its fluid to ${r.to.module}.${r.to.port}`)
+    else if (!beside) problems.push(`${r.id}: does not end beside a pipe of ${r.joins}`)
+    return
+  }
+  const end = portOutside(to, toPort)
+  const into = math.floor(toPort.dir / 4)
+  const ok = last !== undefined && last.x === end.x && last.y === end.y && (last.kind === "pipe" || (last.kind === "pipe-ug-out" && last.dir === into))
+  if (!ok) problems.push(`${r.id}: does not end on ${r.to.module}.${r.to.port}'s outside tile connecting into it`)
+}
+
 export interface LayoutCheck {
   problems: string[]
 }
@@ -817,6 +988,10 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       problems.push(`${id}: unknown target ${r.to.module}.${r.to.port}`)
       continue
     }
+    if (r.fluid !== undefined) {
+      checkPipeRoute(state, r, to, toPort, claim, problems)
+      continue
+    }
     const target = portTile(to, toPort)
     const portDir = math.floor(toPort.dir / 4)
     // The first tile: a belt-out's outside tile (or a splitter tap / an external stub).
@@ -840,7 +1015,7 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
         claim(r, s.x2, s.y2, "splitter")
         const owner = state.routeOcc[tkey(s.x, s.y)]
         const other = owner !== undefined ? state.routes[owner] : undefined
-        if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+        if (other === undefined || other.id === r.id || !routeFeedsPort(state, other.id, r.to)) {
           problems.push(`${id}: merge splitter ${s.x},${s.y} is not a route to ${r.to.module}.${r.to.port}`)
         }
         expect = undefined
@@ -849,6 +1024,12 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       }
       if (expect !== undefined && (s.x !== expect.x || s.y !== expect.y)) problems.push(`${id}: step ${i} (${s.kind}) at ${s.x},${s.y}, expected ${expect.x},${expect.y}`)
       if (s.kind === "splitter") {
+        // B172: a tap's splitter replaces a straight belt of its trunk, in the same direction. On an underground end
+        // it replaces that end and cuts the trunk (a tap's tunnel under its own trunk put the entrance there).
+        if (i === 0 && r.tapOf !== undefined) {
+          const on = state.routes[r.tapOf]?.steps.find((t) => t.kind !== "splitter" && t.x === s.x && t.y === s.y)
+          if (on !== undefined && (on.kind !== "belt" || on.dir !== s.dir)) problems.push(`${id}: tap splitter at ${s.x},${s.y} stands on ${on.kind}/${on.dir} of ${r.tapOf}`)
+        }
         claim(r, s.x2!, s.y2!, "splitter")
         expect = { x: s.x2! + DX[s.dir], y: s.y2! + DY[s.dir] }
         heading = s.dir
@@ -888,13 +1069,26 @@ export function checkLayout(state: LayoutState, terrain: TerrainView, maxUndergr
       want = r.merge.side === "left" ? (r.merge.dir + 1) % 4 : (r.merge.dir + 3) % 4
       const owner = state.routeOcc[tkey(r.merge.x, r.merge.y)]
       const other = owner !== undefined ? state.routes[owner] : undefined
-      if (other === undefined || other.id === r.id || other.to.module !== r.to.module || other.to.port !== r.to.port) {
+      if (other === undefined || other.id === r.id || !routeFeedsPort(state, other.id, r.to)) {
         problems.push(`${id}: merge target ${r.merge.x},${r.merge.y} is not a route to ${r.to.module}.${r.to.port}`)
       }
     }
     if (merged) continue
     if (expect === undefined || expect.x !== end.x || expect.y !== end.y) problems.push(`${id}: does not end at ${to.id}.${toPort.id} (${target.x},${target.y})`)
     else if (heading !== want) problems.push(`${id}: arrives at ${to.id}.${toPort.id} heading ${heading}, needs ${want}`)
+  }
+  // B174: a trunk tile takes one join. Two splitters (taps or merges) on it overlap, and a side-load into a splitter
+  // has no belt to land on.
+  const joined: Record<number, string> = {}
+  for (const id of state.routeOrder) {
+    const r = state.routes[id]
+    const s0 = r.steps[0]
+    for (const j of [r.merge ?? r.mergeSplitter, r.tapOf !== undefined && s0?.kind === "splitter" ? s0 : undefined]) {
+      if (j === undefined) continue
+      const k = tkey(j.x, j.y)
+      if (joined[k] !== undefined && joined[k] !== id) problems.push(`${id}: joins the trunk at ${j.x},${j.y} where ${joined[k]} already joins`)
+      joined[k] = id
+    }
   }
   return { problems }
 }
@@ -937,15 +1131,154 @@ export function routesLand(layout: LayoutState, rids: string[], to: PortRef): bo
   for (const rid of rids) {
     let r: Route | undefined = layout.routes[rid as RouteId]
     for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+      // B149/B158: a fluid line joining another ends beside one of its pipes, not on the port's tile; follow the joined
+      // line. Without this a valid second feed read as "does not reach its port" and the reconciler rerouted it in place
+      // forever (`2 feeds: 0/s arrives`, B83/B88).
+      if (r.joins !== undefined) {
+        const next: Route | undefined = layout.routes[r.joins]
+        r = next !== undefined && next.id !== r.id ? next : undefined
+        continue
+      }
       const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
       if (join === undefined) {
-        const last = r.steps[r.steps.length - 1]
-        if (r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))) return true
+        if (endsAt(r, to, goal, inner)) return true
+        // M7 (seed 11 g78): a merge onto a splitter tap's trunk lands through the tap (mergeGoals offers trunk tiles
+        // above a tap). Taps of taps too, a few levels down.
+        if (tapsReach(layout, r.id, to, goal, inner)) return true
         break
       }
       const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
       r = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
     }
+  }
+  return false
+}
+
+function endsAt(r: Route, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }): boolean {
+  const last = r.steps[r.steps.length - 1]
+  return r.to.module === to.module && r.to.port === to.port && last !== undefined && ((last.x === goal.x && last.y === goal.y) || (last.x === inner.x && last.y === inner.y))
+}
+
+/**
+ * Whether route `rid` goes to port `to`, itself or through its splitter taps (a merge onto a tap's trunk, M7), or, for a
+ * route that merges into another (B122: a replacement joining another replacement's belt), through the route it joins.
+ */
+export function routeFeedsPort(layout: LayoutState, rid: RouteId, to: PortRef): boolean {
+  let r: Route | undefined = layout.routes[rid]
+  for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    if (feedsDirect(layout, r, to)) return true
+    const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+    if (join === undefined) return false
+    const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+    r = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
+  }
+  return false
+}
+
+/**
+ * B132 (seed 11, minute 180): a tap is only a tap of its parent if its first splitter stands on a parent tile. A
+ * re-rooted tap had its steps reversed: the first splitter was on another route and the last one was on the parent, so
+ * the route physically led nowhere. `tapsReach` still followed it to n22 and the repair found "nothing missing".
+ */
+function tapOnRoute(layout: LayoutState, t: Route, parent: RouteId): boolean {
+  const p = layout.routes[parent]
+  const s0 = t.steps[0]
+  if (p === undefined || s0 === undefined || s0.kind !== "splitter") return false
+  if (p.tiles.indexOf(tkey(s0.x, s0.y)) >= 0) return true
+  return s0.x2 !== undefined && s0.y2 !== undefined && p.tiles.indexOf(tkey(s0.x2, s0.y2)) >= 0
+}
+
+/** Whether route `r` goes to port `to`, itself or through its splitter taps (up to 8 levels). */
+function feedsDirect(layout: LayoutState, r: Route, to: PortRef): boolean {
+  if (r.to.module === to.module && r.to.port === to.port) return true
+  let level: RouteId[] = [r.id]
+  for (let depth = 0; depth < 8 && level.length > 0; depth++) {
+    const next: RouteId[] = []
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (!tapOnRoute(layout, t, t.tapOf)) continue
+      if (t.to.module === to.module && t.to.port === to.port) return true
+      next.push(t.id)
+    }
+    level = next
+  }
+  return false
+}
+
+/** Whether a splitter tap of route `rid` (or a tap of one, up to 8 levels) ends at port `to`. */
+function tapsReach(layout: LayoutState, rid: RouteId, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }): boolean {
+  let level: RouteId[] = [rid]
+  for (let depth = 0; depth < 8 && level.length > 0; depth++) {
+    const next: RouteId[] = []
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      if (t?.tapOf === undefined || level.indexOf(t.tapOf) < 0) continue
+      if (!tapOnRoute(layout, t, t.tapOf)) continue
+      if (endsAt(t, to, goal, inner)) return true
+      next.push(t.id)
+    }
+    level = next
+  }
+  return false
+}
+
+/**
+ * M7 (B): whether the items of route `rid` reach port `to`, by position: a route that joins another (side-load or
+ * splitter merge) feeds only what lies downstream of its join on that route: the route's own end, and the splitter taps
+ * at or after the join (taps of taps too). `routesLand` accepts any tap of the joined trunk; a join below a tap's
+ * splitter does not feed that tap.
+ */
+export function landsDownstream(layout: LayoutState, rid: string, to: PortRef): boolean {
+  const m = findModule(layout, to.module)
+  const p = m !== undefined ? findPort(m, to.port) : undefined
+  if (m === undefined || p === undefined) return false
+  const goal = portOutside(m, p)
+  const inner = portTile(m, p)
+  let r: Route | undefined = layout.routes[rid as RouteId]
+  let from = 0
+  for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
+    if (join === undefined) return reachesFrom(layout, r, from, to, goal, inner, 0)
+    const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]
+    const next: Route | undefined = owner !== undefined && owner !== r.id ? layout.routes[owner] : undefined
+    if (next === undefined) return false
+    from = -1
+    for (let i = 0; i < next.steps.length && from < 0; i++) if (next.steps[i].x === join.x && next.steps[i].y === join.y) from = i
+    if (from < 0) return false
+    r = next
+  }
+  return false
+}
+
+/**
+ * M7 (B): whether items put onto the route belt at tile (x, y) (a merge goal) reach port `to`: the route's end, or a
+ * splitter tap at or after that tile. Ports that cannot be resolved count as not reached.
+ */
+export function pointFeeds(layout: LayoutState, x: number, y: number, to: PortRef): boolean {
+  const owner: RouteId | undefined = layout.routeOcc[tkey(x, y)]
+  const r = owner !== undefined ? layout.routes[owner] : undefined
+  const m = findModule(layout, to.module)
+  const p = m !== undefined ? findPort(m, to.port) : undefined
+  if (r === undefined || m === undefined || p === undefined) return false
+  let at = -1
+  for (let i = 0; i < r.steps.length && at < 0; i++) if (r.steps[i].x === x && r.steps[i].y === y) at = i
+  if (at < 0) return false
+  if (reachesFrom(layout, r, at, to, portOutside(m, p), portTile(m, p), 0)) return true
+  // A merge route's items go on to the route it joins.
+  return (r.merge ?? r.mergeSplitter) !== undefined && landsDownstream(layout, r.id, to)
+}
+
+function reachesFrom(layout: LayoutState, r: Route, from: number, to: PortRef, goal: { x: number; y: number }, inner: { x: number; y: number }, depth: number): boolean {
+  if (endsAt(r, to, goal, inner)) return true
+  if (depth >= 8) return false
+  for (const id of layout.routeOrder) {
+    const t = layout.routes[id]
+    const s0 = t?.steps[0]
+    if (t === undefined || t.tapOf !== r.id || s0 === undefined) continue
+    let at = -1
+    for (let i = from; i < r.steps.length && at < 0; i++) if (r.steps[i].x === s0.x && r.steps[i].y === s0.y) at = i
+    if (at >= 0 && reachesFrom(layout, t, 0, to, goal, inner, depth + 1)) return true
   }
   return false
 }
@@ -966,6 +1299,13 @@ export function portFeedsRoute(layout: LayoutState, from: PortRef): boolean {
 export function routeDangles(layout: LayoutState, rid: string): boolean {
   let r: Route | undefined = layout.routes[rid as RouteId]
   for (let hop = 0; hop < 8 && r !== undefined; hop++) {
+    // B149: a fluid line joining another dangles when that line is gone.
+    if (r.joins !== undefined) {
+      const next: Route | undefined = layout.routes[r.joins]
+      if (next === undefined || next.id === r.id) return true
+      r = next
+      continue
+    }
     const join: { x: number; y: number } | undefined = r.merge ?? r.mergeSplitter
     if (join === undefined) return false
     const owner: RouteId | undefined = layout.routeOcc[tkey(join.x, join.y)]

@@ -2,7 +2,7 @@ import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { spawnFaction } from "../autospawn"
 import { moduleId } from "../shared/ids"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
-import { createFaction, destroyFaction } from "../jobs/faction"
+import { createFaction, destroyFaction, factionForce } from "../jobs/faction"
 import { FactionState } from "../jobs/types"
 import { Site } from "../strategy/types"
 import { startBootstrap } from "../strategy/bootstrap"
@@ -61,7 +61,7 @@ describe("burner bootstrap", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     const config = getConfig()
-    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1, "debug parity toggles must be off")
+    assert(!config.debugTeleportWhenStuck && !config.debugInstantCraft && config.debugReachMultiplier === 1 && config.benchmarkWalkTiles === 0 && config.benchmarkCraftingMultiplier === 1, "debug parity toggles must be off")
     // Lab tests: keep scans inside the lab, so other tests' ore never counts.
     setConfigOverride("scanRadius", 40)
   })
@@ -117,6 +117,69 @@ describe("burner bootstrap", () => {
     log(`[m3] spawns: ${a.brain!.base.x},${a.brain!.base.y} and ${b.brain!.base.x},${b.brain!.base.y}, ${d} apart`)
   })
 
+  // B183 (m7-nocap seed 222): the depot was full, both pockets full of ore, and the next wooden chest needed wood no one
+  // could gather with a full pocket, while a member carried 814 iron plates.
+  test("B183: with plates and no wood, the depot is an iron chest", () => {
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "depot-iron", { "iron-plate": 40, coal: 10 })
+    until(3600, () => {
+      for (const s of faction.brain!.sites) {
+        if (s.kind !== "depot") continue
+        assert(s.parts[0].entity === "iron-chest", `the depot is an iron chest, not ${s.parts[0].entity}`)
+        if (s.status === "built") return true
+      }
+      return false
+    })
+  })
+
+  test("B183: with passive provider chests researched and their materials held, the depot is a passive provider", () => {
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "depot-provider", { "steel-plate": 20, "plastic-bar": 10, "iron-plate": 40, "copper-plate": 40, coal: 10 })
+    for (const r of ["steel-chest", "passive-provider-chest", "advanced-circuit", "electronic-circuit", "copper-cable"]) factionForce(faction).recipes[r].enabled = true
+    until(7200, () => {
+      for (const s of faction.brain!.sites) {
+        if (s.kind !== "depot") continue
+        assert(s.parts[0].entity === "passive-provider-chest", `the depot is a passive provider, not ${s.parts[0].entity}`)
+        if (s.status === "built") return true
+      }
+      return false
+    })
+  })
+
+  test("B203: with storage chests researched, the depot is a storage chest (before a passive provider)", () => {
+    // User, in-session 2026-11-12: "for robots we need the depots to actually be storage chests".
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    const faction = labFaction(lab, "depot-storage", { "steel-plate": 20, "plastic-bar": 10, "iron-plate": 40, "copper-plate": 40, coal: 10 })
+    for (const r of ["steel-chest", "storage-chest", "passive-provider-chest", "advanced-circuit", "electronic-circuit", "copper-cable"]) factionForce(faction).recipes[r].enabled = true
+    until(7200, () => {
+      for (const s of faction.brain!.sites) {
+        if (s.kind !== "depot") continue
+        assert(s.parts[0].entity === "storage-chest", `the depot is a storage chest, not ${s.parts[0].entity}`)
+        if (s.status === "built") return true
+      }
+      return false
+    })
+  })
+
+  test("B183: a depot without room for what the crew carries plans another chest", () => {
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    // 40 stacks of ore in the pockets: one iron chest (32 slots) can't take them.
+    const faction = labFaction(lab, "depot-room", { "iron-plate": 40, "iron-ore": 2000, coal: 10 })
+    until(7200, () => {
+      let built = 0
+      for (const s of faction.brain!.sites) if (s.kind === "depot" && s.status === "built") built++
+      return built >= 2
+    })
+  })
+
   test("a self-feeding coal drill pair is built and keeps itself fuelled", () => {
     const lab = createLab(40)
     ore(lab, "coal", 6, -8, 8, 8, 20000)
@@ -162,12 +225,13 @@ describe("burner bootstrap", () => {
       assert(refuels === 0, `no crew refuelling once running (a fuel job was active for ${refuels} ticks)`)
       assert(faction.brain!.milestones["burner-mining:coal"] !== undefined, "burner-mining:coal milestone")
       // B53: the lab has no water, so the factory's power goal finds no shore site; its kind then pauses
-      // (factory-site-retry-minutes) instead of starting a new goal at once, forever.
+      // (factory-site-retry-minutes) instead of starting a new goal at once, forever. B184: the shore failure replans
+      // once as an inland block, whose water pump finds no shore either: two goals, then the pause.
       const fac = storage.factories?.[faction.name]
       if (fac !== undefined) {
         let power = 0
         for (const g of fac.goals) if (g.kind === "power") power++
-        assert(power <= 1, `B53: ${power} power goals planned on a lab with no water (want at most 1, then a pause)`)
+        assert(power <= 2, `B53: ${power} power goals planned on a lab with no water (want at most 2, then a pause)`)
       }
       log(`[m3] coal pair built at tick ${builtAt}; self-fed for 3 minutes, coal in the depot ${faction.stockpiles[0].get_item_count("coal")}`)
       return true

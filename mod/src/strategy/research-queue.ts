@@ -9,6 +9,8 @@ let goalCache: string[] | undefined
 
 /** Debug/soak-only hidden technology: a repeatable red + green pack sink after the v1 research goal. */
 export const INFINITE_RESEARCH = "rival-engineers-throughput-test"
+/** M7: the same with blue packs. */
+export const INFINITE_RESEARCH_BLUE = "rival-engineers-throughput-test-blue"
 
 /** The research goal (D30), computed once per session from prototypes and config. */
 export function researchGoal(): string[] {
@@ -105,8 +107,15 @@ export function pickResearch(force: LuaForce, wanted: string[], packs: Record<st
   if (pick !== undefined) return { tech: pick, reason: "research goal" }
   // Debug/soak only: after every normal goal technology, keep the labs consuming red + green packs. This technology is
   // hidden, has no effects and is excluded from the v1 research count.
-  if (infinite && force.technologies[INFINITE_RESEARCH] !== undefined && packs["automation-science-pack"] && packs["logistic-science-pack"]) {
-    return { tech: INFINITE_RESEARCH, reason: "debug infinite research (throughput test)" }
+  if (infinite) {
+    // M7: the sink that uses every pack the labs get (blue too once it comes), so all of them are consumed.
+    for (const name of [INFINITE_RESEARCH_BLUE, INFINITE_RESEARCH]) {
+      const t = force.technologies[name]
+      if (t === undefined) continue
+      let all = true
+      for (const i of t.research_unit_ingredients) if (!packs[i.name]) all = false
+      if (all) return { tech: name, reason: "debug infinite research (throughput test)" }
+    }
   }
   return undefined
 }

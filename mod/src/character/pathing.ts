@@ -1,5 +1,7 @@
-import { LuaEntity, MapPosition, OnScriptPathRequestFinishedEvent } from "factorio:runtime"
-import { countWork } from "../work"
+import { LuaEntity, LuaSurface, MapPosition, OnScriptPathRequestFinishedEvent } from "factorio:runtime"
+import type { Rect } from "../jobs/board"
+import { inPocket, POCKET_ESCAPE } from "../jobs/pockets"
+import { countWork, findEntities } from "../work"
 
 // Async pathfinding for character bodies. Results arrive via on_script_path_request_finished
 // and are kept in storage so they survive save/load and are visible to every peer.
@@ -40,3 +42,21 @@ export function onPathRequestFinished(event: OnScriptPathRequestFinishedEvent): 
   request.path = event.path
   request.tryAgainLater = event.try_again_later
 }
+
+/**
+ * B176: whether a standing spot is in a pocket the pathfinder cannot enter (`jobs/pockets.ts`): what a character
+ * collides with around it (entities other than characters, water), within the flood's reach.
+ */
+export function spotInPocket(surface: LuaSurface, p: MapPosition): boolean {
+  const r = POCKET_ESCAPE + 1
+  const area: [[number, number], [number, number]] = [[p.x - r, p.y - r], [p.x + r, p.y + r]]
+  const rects: Rect[] = []
+  for (const e of findEntities(surface, { area, collision_mask: "player" })) {
+    if (e.type === "character") continue
+    const b = e.bounding_box
+    rects.push({ x1: b.left_top.x, y1: b.left_top.y, x2: b.right_bottom.x, y2: b.right_bottom.y })
+  }
+  for (const t of surface.find_tiles_filtered({ area, collision_mask: ["player", "water_tile"] })) rects.push({ x1: t.position.x, y1: t.position.y, x2: t.position.x + 1, y2: t.position.y + 1 })
+  return inPocket(p, rects)
+}
+

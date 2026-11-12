@@ -100,6 +100,8 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "mining iron 4x2 electric", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2 } },
   { name: "mining coal 3x2 burner", generator: "mining-outpost", params: { resource: "coal", rows: 3, sides: 2, drill: "burner-mining-drill" } },
   { name: "steam 2 boilers", generator: "steam-block", params: { boilers: 2 } },
+  // B184: the inland variant takes its water by pipe (an infinity pipe in the lab).
+  { name: "steam 2 boilers inland", generator: "steam-block", params: { boilers: 2, water: "pipe" } },
   { name: "assembler-row gear 4", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4 } },
   // D51 / B14: buffer heads (validation bars them).
   { name: "assembler-row gear 4 buffer", generator: "assembler-row", params: { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" } },
@@ -108,10 +110,33 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "assembler-row belt 2", generator: "assembler-row", params: { recipe: "transport-belt", count: 2 } },
   { name: "red-line 2", generator: "red-line", params: { units: 2 }, slow: true },
   { name: "circuit-block 1", generator: "circuit-block", params: { units: 1 } },
+  // B205 (user, 2026-11-12): medium poles once researched.
+  { name: "circuit-block 1 medium poles", generator: "circuit-block", params: { units: 1, pole: "medium-electric-pole" } },
+  { name: "mining iron 4x2 medium poles", generator: "mining-outpost", params: { resource: "iron-ore", rows: 4, sides: 2, pole: "medium-electric-pole" } },
   { name: "lab-array 4", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack"] }, slow: true },
   { name: "curated red-tile-ramqvist", curated: "red-tile-ramqvist", slow: true },
   { name: "curated green-line-hellpet", curated: "green-line-hellpet", slow: true },
   { name: "curated mall-polse", curated: "mall-polse", slow: true },
+  // M7b: refineries under chemical plants (crude and water from infinity pipes in the lab).
+  { name: "fluid-chain plastic 2/2", generator: "fluid-chain", params: { recipe: "plastic-bar", chemPlants: 2, refineries: 2 } },
+  { name: "fluid-chain sulfur 1/1", generator: "fluid-chain", params: { recipe: "sulfur", chemPlants: 1, refineries: 1 } },
+  // M7d.3: chemistry rows fed by pipe (petroleum, water, sulfuric acid from infinity pipes; acid leaves by pipe).
+  { name: "chem-row plastic 2", generator: "chem-row", params: { recipe: "plastic-bar", chemPlants: 2 } },
+  { name: "chem-row sulfur 2", generator: "chem-row", params: { recipe: "sulfur", chemPlants: 2 } },
+  { name: "chem-row sulfuric-acid 2", generator: "chem-row", params: { recipe: "sulfuric-acid", chemPlants: 2 } },
+  { name: "chem-row battery 2", generator: "chem-row", params: { recipe: "battery", chemPlants: 2 }, slow: true },
+  { name: "assembler-row electric-engine 2 lubricant", generator: "assembler-row", params: { recipe: "electric-engine-unit", count: 2 }, slow: true },
+  // M7c: three-ingredient rows (assembler 2; the third ingredient on its own belt).
+  { name: "assembler-row engine 2", generator: "assembler-row", params: { recipe: "engine-unit", count: 2, machine: "assembling-machine-2" }, slow: true },
+  { name: "lab-array 4 blue", generator: "lab-array", params: { labs: 4, packs: ["automation-science-pack", "logistic-science-pack", "chemical-science-pack"] }, slow: true },
+  { name: "assembler-row advanced-circuit 2", generator: "assembler-row", params: { recipe: "advanced-circuit", count: 2, machine: "assembling-machine-2" } },
+  // M7d.5: four ingredients (the two used most on row 7's lanes).
+  { name: "assembler-row flying-robot-frame 2", generator: "assembler-row", params: { recipe: "flying-robot-frame", count: 2, machine: "assembling-machine-2" }, slow: true },
+  // M7d.5: self-contained cells. The robot cell is validated without the roboport (the lab measures its chests; a
+  // roboport would move robots out of them); the roboport variant is covered by the pure generator test.
+  { name: "circuit-block advanced 1", generator: "circuit-block", params: { recipe: "advanced-circuit", units: 1, machine: "assembling-machine-2" } },
+  { name: "engine-cell 2", generator: "engine-cell", params: { count: 2, machine: "assembling-machine-2" }, slow: true },
+  { name: "robot-cell 2", generator: "robot-cell", params: { count: 2, machine: "assembling-machine-1" }, slow: true },
 ]
 
 export function catalogModule(entry: CatalogEntry): ModuleDef {

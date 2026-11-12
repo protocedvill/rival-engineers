@@ -5,10 +5,11 @@
 
 import { ProtoFacts } from "../modules/facts"
 import type { RouteId } from "../shared/ids"
-import { BuildParts, entityDiff, EntitySpec, partEntities } from "./build-list"
+import { BuildParts, bystanderDiff, entityDiff, EntitySpec, partEntities } from "./build-list"
 import { BeltTier } from "./capacity"
-import { FREE, OWN, Rect, TerrainView, tkey } from "./grid"
-import { dependentRoutes, LayoutState, ripRoute } from "./layout"
+import { isPoleTag } from "./claim-tags"
+import { FOREIGN, FREE, OWN, Rect, TerrainView, tkey } from "./grid"
+import { dependentRoutes, LayoutState, ripRoute, Route } from "./layout"
 import { cloneLayout, ConnectionRequest, newRoutingJob, runJob } from "./plan"
 import { LayoutPolicy } from "./policy"
 
@@ -23,12 +24,33 @@ export interface ReroutePlan {
   routes: RouteId[]
 }
 
+/** Engine default of a 2.0 pipeline's extent (utility constant `default_pipeline_extent`), for routes stored before B147. */
+const DEFAULT_PIPELINE_EXTENT = 320
+
+/** A fluid route's connection spec for routing it again (routes stored before B147 take their limits from the facts). */
+function rerouteFluid(f: Route["fluid"], facts: ProtoFacts): ConnectionRequest["fluid"] {
+  if (f === undefined) return undefined
+  return {
+    name: f.name,
+    pipe: f.pipe,
+    underground: f.underground,
+    pump: f.pump,
+    maxUnderground: f.maxUnderground ?? facts.entity(f.underground)?.maxPipeUnderground ?? 10,
+    extent: f.extent ?? DEFAULT_PIPELINE_EXTENT,
+    pole: f.pole,
+  }
+}
+
 /**
  * Plans new routes for `routeIds` of `base` (and the splitter taps hanging off them) inside `region`. `terrain` is the
  * faction's view (its built entities and ghosts are OWN, other forces' FOREIGN): the ripped routes' own tiles count as
  * free, so a reroute can reuse every piece not in the way; a foreign entity on them still blocks.
  */
-export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect): ReroutePlan {
+/**
+ * `avoid`: tiles the new routes must not use (M7: a build's ghosts there could never be placed, though the terrain scan
+ * reads them as free).
+ */
+export function planReroute(base: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, tier: BeltTier, routeIds: RouteId[], region: Rect, avoid?: Record<number, boolean>): ReroutePlan {
   const layout = cloneLayout(base)
   const before: EntitySpec[] = []
   const conns: ConnectionRequest[] = []
@@ -47,20 +69,45 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       for (const e of partEntities(layout, { modules: [], routes: [rid], poles: [] })) before.push(e)
       // B75: a provider-group merge is routed as one again (side-load or splitter onto the trunk), not as a second
       // belt into the port that the trunk then blocks (vps-b72 4410923: the steam block never grew).
-      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined })
+      // B147 (seed 11 g154): a fluid route is routed again with pipes. Without its fluid the routing job took it for a
+      // belt ("no belt-in port"), and a stuck pipe line made its goal give up a 5000-entity site instead.
+      conns.push({ id: r.conn, from: r.from, to: r.to, belt: r.belt, merge: r.merge !== undefined || r.mergeSplitter !== undefined || undefined, fluid: rerouteFluid(r.fluid, facts) })
     }
     for (const rid of group) ripRoute(layout, rid)
   }
   if (conns.length === 0) return { ok: false, reason: "no route to reroute", layout: base, remove: [], add: [], routes: [] }
+  // M7d.5: a reroute of a route whose source port already feeds another remaining route must join it with a splitter
+  // tap. Point-to-point is refused by the planner ("port already feeds a route"), which left the robot chain's shared
+  // iron feed with 0/s and no repair.
+  let pol = policy
+  if (pol.topology !== "splitter-tap") {
+    for (const c of conns) {
+      if (c.from === undefined) continue
+      let feeds = c.merge === true
+      for (const rid of layout.routeOrder) {
+        const r = layout.routes[rid]
+        if (r.from !== undefined && r.from.module === c.from.module && r.from.port === c.from.port) feeds = true
+      }
+      if (!feeds) continue
+      pol = { ...policy, topology: "splitter-tap" }
+      break
+    }
+  }
   for (const rid of layout.routeOrder) layout.routes[rid].fixed = true
   const view: TerrainView = {
     block: (x, y) => {
+      const k = tkey(x, y)
+      // M7c.8 (fixes-360 seed 11, minute 630): a reroute never evicts or re-lays pole lines, so their poles stay solid
+      // here. The claim view reads them as free (B37, for plans that re-lay them): an in-place coal reroute ran over
+      // main-line poles, a later repair picked the pole up as "not in the layout" and the whole base lost power.
+      if (isPoleTag(layout.occ[k])) return OWN
+      if (avoid?.[k] === true) return FOREIGN
       const b = terrain.block(x, y)
-      return freed[tkey(x, y)] && b === OWN ? FREE : b
+      return freed[k] && b === OWN ? FREE : b
     },
     ore: (x, y) => terrain.ore(x, y),
   }
-  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: region.x + region.w / 2, y: region.y + region.h / 2 }, region }, tier, layout), view, facts, policy)
+  const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: region.x + region.w / 2, y: region.y + region.h / 2 }, region }, tier, layout), view, facts, pol)
   if (job.phase !== "done") {
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k}: ${v}`)
@@ -77,5 +124,9 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
   const parts: BuildParts = { modules: [], routes, poles: [] }
   const after = partEntities(job.layout, parts)
   const d = entityDiff(before, after)
-  return { ok: true, layout: job.layout, remove: d.remove, add: d.add, routes }
+  const changed: Record<string, boolean> = {}
+  for (const [rid] of pairs(seen)) changed[rid as string] = true
+  for (const rid of routes) changed[rid] = true
+  const by = bystanderDiff(base, job.layout, changed)
+  return { ok: true, layout: job.layout, remove: [...d.remove, ...by.remove], add: [...d.add, ...by.add], routes }
 }

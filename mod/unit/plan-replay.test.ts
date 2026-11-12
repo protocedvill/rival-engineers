@@ -1,6 +1,7 @@
 // T1 replays of in-game plans that failed (soak regressions). A soak with frame dumps on writes each failed plan's
 // input to script-output/rival-engineers/failed-plans/<faction>/<goal>-a<attempt>-t<tick>.input.lua (runtime.ts
-// exportPlanInput); copy one into mod/unit/fixtures/ and list it below. Each replay runs the plan unbudgeted on the
+// exportPlanInput); copy one into mod/unit/fixtures/ and list it below. REPLAY_TIME=1 prints the fixture load, job setup
+// and plan CPU seconds (plain Lua's clock), so a T1 wall can be split from the plan itself. Each replay runs the plan unbudgeted on the
 // captured terrain and base layout and must succeed. (Plain Lua's `pairs` order is not Factorio's, so a replay is the
 // same scenario, not a bit-exact rerun.) Each replay prints a `REPLAY {json}` metrics line (tabulated by
 // `npm run replay:sweep`) and, when it fails or with REPLAY_DUMP=1, writes a decision dump (dump.ts) to
@@ -8,15 +9,20 @@
 
 import { BeltTier, beltTiers, tierByBelt } from "../src/planner/capacity"
 import { routeId, layoutClaimTag } from "../src/shared/ids"
+import { rekeyLayout, rekeyRequest } from "../src/planner/rekey"
 import { dirIndex, FOREIGN, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "../src/planner/grid"
-import { findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
+import { checkLayoutIndexes, findModule, growthUnitRects, LayoutState, moduleMargin, portOutside, portTag, ripRoute } from "../src/planner/layout"
 import { CompareResult, logisticsFirst, newPlanJob, PlanRequest, runJob, stepPlan } from "../src/planner/plan"
 import { laneLeadsOut, openPortEnds, sealedInputs } from "../src/planner/placement"
 import { EARLY_COMPACT, LayoutPolicy } from "../src/planner/policy"
 import { newSearch, RouteRequest, stepSearch } from "../src/planner/router"
+import { checkClaimOwners } from "../src/planner/claims"
+import { unpoweredModules } from "../src/planner/power"
 import { finishReplay, startTrace } from "./dump"
+import { planTrace } from "../src/planner/trace"
 import { ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
+import { generate, GeneratorName } from "../src/modules/generators"
 
 interface PlanInput {
   id: string
@@ -28,6 +34,14 @@ interface PlanInput {
   origin: { x: number; y: number }
   blocks: string[]
   ores: string[]
+  /** Rows are `<count><char>` runs. */
+  rle?: boolean
+}
+
+function unRunLength(row: string): string {
+  const out: string[] = []
+  for (const [n, c] of string.gmatch(row, "(%d+)(%D)")) out.push(string.rep(c, tonumber(n)!))
+  return out.join("")
 }
 
 const BLOCKS: Record<string, number> = { ".": 0, T: 1, R: 2, "#": 3, X: 4, "~": 5, C: 6, "?": 7 }
@@ -52,14 +66,24 @@ function fixtureView(fx: PlanInput): TerrainView {
   }
 }
 
-declare const os: { getenv(this: void, name: string): string | undefined }
+declare const os: { getenv(this: void, name: string): string | undefined; clock(this: void): number }
 declare function loadfile(this: void, path: string): ((this: void) => unknown) | undefined
 
 function load(name: string, captured = false): PlanInput {
   // $UNIT_SRC: mod/unit (set by the T1 runner, whatever the build dir); else relative to mod/build-unit.
-  const chunk = loadfile(`${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
+  // REPLAY_ADHOC passes capture files by absolute path (a soak's plans/slow/*.input.lua).
+  const chunk = loadfile(string.sub(name, 1, 1) === "/" ? name : `${os.getenv("UNIT_SRC") ?? "../unit"}/fixtures/${name}.lua`)
   if (chunk === undefined) error(`fixture ${name} not found (run through tools/run-unit-tests.mjs, or from mod/build-unit)`)
   const fx = chunk() as PlanInput
+  // Captures made before storage schema 2 carry the old full-map tile keys; rekey the base layout exactly as the save
+  // migration does, so lookups match the current encoder.
+  if (fx.base !== undefined) rekeyLayout(fx.base)
+  rekeyRequest(fx.request)
+  // M7c.8 captures run-length encode their rows (runtime.ts exportPlanInput).
+  if (fx.rle === true) {
+    fx.blocks = fx.blocks.map((row) => unRunLength(row))
+    fx.ores = fx.ores.map((row) => unRunLength(row))
+  }
   // A capture freezes the policy of its day; replays judge the planner as it is now (user, 2026-10-20). Every weight
   // comes from the current defaults; only the choices the game made for that plan (topology, smelting, utilization)
   // stay as captured. A test that pins a past decision pins its weights itself, saying why (compareReplay: B26, D59).
@@ -95,12 +119,18 @@ interface ReplayOptions {
   undergrounds?: boolean
   /** Tiles (x1, y1, x2, y2 inclusive) the capture saw as own ground that hold nothing: free them (stale reservations). */
   free?: [number, number, number, number][]
-  /** Expected outcome (default done). */
-  expect?: "done" | "failed"
+  /** Expected outcome (default done; "any": an ad-hoc replay, reported only). */
+  expect?: "done" | "failed" | "any"
   /** Text required in a failed replay's certificate. */
   failureIncludes?: string
+  /** Text forbidden in a failed replay's certificate. */
+  failureExcludes?: string
+  /** B188: a failed route of this connection must carry a start-side seal proof (what relocates a built provider). */
+  sealedStart?: string
   /** Requests that represent route-reassignment providers and must use an independent mine site. */
   newSites?: string[]
+  /** Modules regenerated from their params with today's generators (the capture holds the generator's old output). */
+  regenerate?: string[]
 }
 
 /** REPLAY_DUMP=1: each module's placement, mine plan (B33) or ore-clipped strip, and belt ports. */
@@ -111,15 +141,83 @@ function dumpModules(layout: LayoutState): void {
   }
 }
 
+/**
+ * REPLAY_MAP="x1,y1,x2,y2": the plan's layout over its terrain, row by row (`#` blocked ground, `r` a port reservation,
+ * `m` a mine claim, `=` a route, a module's tile its id's 4th character, `x` another claim, `,` ore).
+ */
+function printMap(layout: LayoutState, view: TerrainView, area: string): void {
+  const [x1, y1, x2, y2] = string.match(area, "(-?%d+),(-?%d+),(-?%d+),(-?%d+)")
+  for (let y = tonumber(y1)!; y <= tonumber(y2)!; y++) {
+    let row = ""
+    for (let x = tonumber(x1)!; x <= tonumber(x2)!; x++) {
+      const k = tkey(x, y)
+      const o = layout.occ[k]
+      let c = view.ore(x, y) !== undefined ? "," : "."
+      if (view.block(x, y) !== FREE) c = "#"
+      if (layout.mine?.[k] !== undefined) c = "m"
+      if (layout.reserved[k] !== undefined) c = "r"
+      if (o !== undefined) c = string.sub(o, 1, 1) === "m" ? string.sub(o, 4, 4) : "x"
+      if (layout.routeOcc[k] !== undefined) c = "="
+      row += c
+    }
+    print(`    ${y} ${row}`)
+  }
+}
+
+/**
+ * REPLAY_PROFILE=1: a sampling profiler (a count hook every 10000 VM instructions, 12 frames deep) that prints the 25 hottest functions
+ * by samples, inclusive (on the stack, at most once a sample) and exclusive (running), to find where a slow plan spends
+ * its time (no LuaProfiler outside the game).
+ */
+function startProfile(): () => void {
+  const self: Record<string, number> = {}
+  const incl: Record<string, number> = {}
+  let samples = 0
+  debug.sethook(
+    () => {
+      samples++
+      const seen: Record<string, boolean> = {}
+      for (let level = 2; level < 14; level++) {
+        const info = debug.getinfo(level, "Sn")
+        if (info === undefined) break
+        const k = `${info.short_src}:${info.linedefined} ${info.name ?? "?"}`
+        if (level === 2) self[k] = (self[k] ?? 0) + 1
+        if (!seen[k]) {
+          seen[k] = true
+          incl[k] = (incl[k] ?? 0) + 1
+        }
+      }
+    },
+    "",
+    10000,
+  )
+  return () => {
+    debug.sethook()
+    const top = (m: Record<string, number>, what: string): void => {
+      const list: [string, number][] = []
+      for (const [k, v] of pairs(m)) list.push([k as string, v as number])
+      list.sort((a, b) => b[1] - a[1])
+      print(`  profile (${what}, ${samples} samples):`)
+      for (let i = 0; i < math.min(25, list.length); i++) print(string.format("    %5.1f%% %s", (100 * list[i][1]) / samples, list[i][0]))
+    }
+    top(self, "exclusive")
+    top(incl, "inclusive")
+  }
+}
+
 function replay(name: string, opts: ReplayOptions = {}): void {
   test(`replay ${name}${opts.undergrounds ? " with undergrounds" : ""}${opts.free !== undefined ? " (stale reservations freed)" : ""}`, () => {
+    const tLoad = os.clock()
     const fx = load(name)
+    const tLoaded = os.clock()
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     for (const m of fx.request.modules) if (opts.newSites !== undefined && opts.newSites.indexOf(m.id) >= 0) m.newSite = true
+    for (const m of fx.request.modules) if (opts.regenerate !== undefined && opts.regenerate.indexOf(m.id) >= 0) m.def = generate(F, m.def.generator as GeneratorName, m.def.params ?? {})
     const ug = tonumber(os.getenv("REPLAY_UNDERGROUND") ?? "")
     if (ug !== undefined) fx.tiers = fx.tiers.map((t) => ({ ...t, maxUnderground: ug }))
     const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
     const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+    const tJob = os.clock()
     const view = fixtureView(fx)
     const free = opts.free ?? []
     const terrain: TerrainView = {
@@ -129,15 +227,47 @@ function replay(name: string, opts: ReplayOptions = {}): void {
       },
       ore: (x, y) => view.ore(x, y),
     }
+    if (os.getenv("REPLAY_SEARCHES") !== undefined) planTrace.searches = (line) => print(`  SEARCH ${line}`)
     startTrace()
+    const stopProfile = os.getenv("REPLAY_PROFILE") !== undefined ? startProfile() : undefined
     runJob(job, terrain, F, fx.policy, 100000)
+    const tRan = os.clock()
+    if (stopProfile !== undefined) stopProfile()
+    if (os.getenv("REPLAY_TIME") !== undefined) print(`  TIME ${name}: load ${string.format("%.2f", tLoaded - tLoad)}s, job ${string.format("%.2f", tJob - tLoaded)}s, run ${string.format("%.2f", tRan - tJob)}s (${job.stats.work} work)`)
     const why: string[] = []
     for (const [k, v] of pairs(job.failures)) why.push(`${k as string}: ${v as string}`)
     print(`  ${name}: ${job.phase} (${job.stats.searches} searches, ${job.stats.ripups} rip-ups, ${job.stats.replacements} replacements)`)
     if (os.getenv("REPLAY_DUMP") !== undefined) for (const m of job.layout.modules) print(`    module ${m.id} ${m.canonical.id} at ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h} rot ${m.transform.rot}${m.transform.mirror ? " mirror" : ""}`)
-    finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === (opts.expect ?? "done"))
-    ok(job.phase === (opts.expect ?? "done"), `plan ${opts.expect ?? "done"} (${job.phase}: ${why.join("; ")})`)
+    const map = os.getenv("REPLAY_MAP")
+    if (map !== undefined) printMap(job.layout, terrain, map)
+    planTrace.searches = undefined
+    const expected = opts.expect === "any" ? job.phase : opts.expect ?? "done"
+    finishReplay(`${name}${opts.undergrounds ? "-ug" : ""}${opts.free !== undefined ? "-freed" : ""}`, job, job.phase === expected)
+    ok(job.phase === expected, `plan ${expected} (${job.phase}: ${why.join("; ")})`)
     if (opts.failureIncludes !== undefined) ok(string.find(why.join("; "), opts.failureIncludes, 1, true)[0] !== undefined, `failure includes ${opts.failureIncludes}: ${why.join("; ")}`)
+    if (opts.failureExcludes !== undefined) ok(string.find(why.join("; "), opts.failureExcludes, 1, true)[0] === undefined, `failure excludes ${opts.failureExcludes}: ${why.join("; ")}`)
+    if (opts.sealedStart !== undefined) {
+      const proof = (job.evidence ?? []).find((e) => e.kind === "route" && e.subject === opts.sealedStart && e.sealed?.side === "start" && e.sealed.edge !== true)
+      ok(proof !== undefined, `${opts.sealedStart}: a start-side seal proof`)
+    }
+    // M7c.8: the game discards a finished plan whose claims name a missing owner (plan-delta); so does a replay.
+    // Problems the captured base already had are not the plan's (r333968-second-power: overlapping soft and mine claims).
+    if (job.phase === "done") {
+      const before: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const p of checkClaimOwners(fx.base)) before[p] = true
+      const claims = checkClaimOwners(job.layout).filter((p) => !before[p])
+      ok(claims.length === 0, `layout claims valid: ${claims.slice(0, 3).join("; ")}`)
+      // Problems the captured base already had are not the plan's (m6a2's base has two overlapping modules).
+      const beforeIdx: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const p of checkLayoutIndexes(fx.base).problems) beforeIdx[p] = true
+      const indexes = checkLayoutIndexes(job.layout).problems.filter((p) => !beforeIdx[p])
+      ok(indexes.length === 0, `layout indexes valid: ${indexes.slice(0, 3).join("; ")}`)
+      // M7c.8: nothing the plan adds is left off the network (each pump pole counts on its own).
+      const wasOff: Record<string, boolean> = {}
+      if (fx.base !== undefined) for (const id of unpoweredModules(fx.base, F)) wasOff[id] = true
+      const off = unpoweredModules(job.layout, F).filter((id) => !wasOff[id])
+      ok(off.length === 0, `everything powered: ${off.slice(0, 3).join("; ")}`)
+    }
   })
 }
 
@@ -146,6 +276,49 @@ function replay(name: string, opts: ReplayOptions = {}): void {
 // strategy now researches undergrounds after such a goal (FactoryState.needUndergrounds), and with them it plans
 // without a single rip-up.
 replay("seed222-production", { undergrounds: true })
+replay("m7-seed11-blue-wide", { expect: "failed", failureIncludes: "chemical-science-pack>labs", failureExcludes: "no pipe path" })
+// M7c.8 (seed 11, minute ~380 from the minute-360 save, goal g61): the sulfur module's water and crude lines (the oil
+// field ~900 tiles west of the hub) failed "no pipe path (budget exhausted, 200000 expansions)" on every attempt.
+replay("m7-seed11-sulfur")
+// M7c.8: the same chain after the pipe-port fixes (resume from minute 360, goal g62 attempt 2): the plastic chain sat
+// ~100 tiles inside the base's built block, and the ~900-tile crude line from the oil field stalled at its west edge.
+replay("m7-seed11-crude")
+// M7c.8: after the remote-pipe placement (resume from minute 360, goal g71 attempt 4): the chains at the base's west
+// edge, their crude lines failing one tile short of the ports. Routing fluid lines first routes the plastic one.
+// B156: the sulfur chain's crude pipe port was the sealed one: the goal-side flood proves it, and B106 re-places n261
+// (6x18, at 434,21) away from the 2-wide pocket, so this capture now plans (it used to fail on
+// "sulfur>chemical-science-pack>labs.in-crude-oil").
+replay("m7-seed11-edge", { expect: "done" })
+// M7c.8 (seed 11 minute 654, goal g107 attempt 1, from the crew-fix save at minute 645): the sulfur chain's water line
+// searched its whole 200000-expansion budget (76 s of planner time in a game minute) though the goal was 13 tiles away,
+// and the advanced-circuit belt failed "route crosses itself": both searches let a path that loops over its own tile
+// own a (tile, heading) state, so every arrival through it crossed itself. Both routes are found now; the plan then
+// failed on an ordinary rip-up limit (a later attempt re-placed). Since the g104 fixes (all of a module's belts must be
+// able to leave together; a rip-up loop moves a module at once) it plans.
+replay("m7-seed11-g107", { expect: "done" })
+// M7c.9 (seed 11 minute ~930, g160): an ~870-tile crude line into the base. The coarse corridor ran north of a module
+// block into ground closed by belt bands wider than a pipe-to-ground span, and the corridor search took the whole
+// 200000-unit budget there ("budget exhausted, nearest 110 at 415,17"); open ground just south reached the goal. The
+// coarse pass now counts only crossable bands, and the corridor search gets half the budget.
+replay("m7-seed11-g160-crude")
+
+// M7d.5 g198 (seed 11, minute 1074): the robot chain's 23-module plan failed every attempt because a new oil complex
+// was placed with its water port beside a built crude route: a pipe on the outside tile would join the crude line and
+// mix fluids. Placement now rejects a pipe port whose outside tile has another fluid's route beside it.
+replay("m7d5-g198-water")
+// B188 (m7-solar seed 11, goal g136): the sulfur module's water pump stood in a pocket (its own margin, a steam block's,
+// the lake); the pipe search explored the pocket and failed, the goal-side flood hit its cap, so no proof moved the
+// pump and the goal failed 8 plans. The exhausted search is the proof now (the game relocates the pump).
+replay("m7s-seed11-g136", { expect: "failed", sealedStart: "water>sulfur>chemical-science-pack>labs=>sulfur>chemical-science-pack>labs.in-water" })
+// B187 (m7-solar seed 44444, goal g212 attempt 3): the third lab cluster's 85-tile engine cell had no position within
+// 96 tiles of the centre on any attempt, though the region grew to 504 tiles. Now it is placed in the wider ring; its
+// steel feed then fails from the shared provider's sealed taps, which the game answers with providerNoTap (B61).
+replay("m7s-seed44444-g212a3", { expect: "failed", failureExcludes: "no feasible position" })
+// B190 (m7-b186 seed 44444, goal g65): the plastic row's second crude provider joins the first field's line (B149) at
+// the spot nearest its start, which sat on a segment already at the pump-free extent: 400,000 expansions, then fail.
+// Joins now prefer a segment with room. (The capture predates exporting the coal mine's ground 340 tiles out, so its
+// coal route reads unknown terrain at the mine and fails here, not in the game.)
+replay("m7s-seed44444-g65", { expect: "failed", failureExcludes: "no pipe path" })
 
 // D36's infinite case per attempt (M5d): the same capture without undergrounds fails to route; its comparison routes
 // the same placement with them, so the attempt says "research logistics first" at once instead of after every retry.
@@ -659,21 +832,13 @@ test("B85: the lab-cluster plan leaves its new red assembler's unconnected outpu
   ok(!sealed, "a later plan's route from n53.out is not sealed at its start")
 })
 
-// B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
-// used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under
-// the splitter's input, so the branch stood with no belt to take from. A tap may not rip a route it could tap.
-test("B58: a splitter tap never sits on the span of the route it taps", () => {
-  const fx = load("b58-g16")
-  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
-  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
-  const view = fixtureView(fx)
-  runJob(job, view, F, fx.policy, 100000)
-  ok(job.phase === "done", `plan done (${job.phase})`)
+/** Splitter taps standing on an underground span of the route they tap (they would replace an end or cut the run). */
+function tapsOnTrunkSpans(layout: LayoutState): string[] {
   const overlaps: string[] = []
-  for (const id of job.layout.routeOrder) {
-    const r = job.layout.routes[id]
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
     if (r.tapOf === undefined) continue
-    const parent = job.layout.routes[r.tapOf]
+    const parent = layout.routes[r.tapOf]
     if (parent === undefined) continue
     for (const s of r.steps) {
       if (s.kind !== "splitter") continue
@@ -689,12 +854,87 @@ test("B58: a splitter tap never sits on the span of the route it taps", () => {
       }
     }
   }
+  return overlaps
+}
+
+function replayTaps(name: string): LayoutState {
+  const fx = load(name)
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const overlaps = tapsOnTrunkSpans(job.layout)
   ok(overlaps.length === 0, `tap splitter on its trunk's span: ${overlaps.join("; ")}`)
+  return job.layout
+}
+
+// B58 (seed 1212121, goal g16): the n39 -> n37 coal feed is a splitter tap on the n39 -> n35 trunk. The tap search
+// used a trunk tile, ripped the trunk, and committed the tap; the trunk then re-routed with an underground span under
+// the splitter's input, so the branch stood with no belt to take from. A tap may not rip a route it could tap.
+test("B58: a splitter tap never sits on the span of the route it taps", () => {
+  replayTaps("b58-g16")
+})
+
+// B172 (m7-benchLayers14 seed 11, goal g227): the robot mall's circuit tap split off the n431 -> n433 circuit trunk at
+// (554, -115) and tunnelled under it at (554, -116); the tunnel's entrance was the splitter's own tile, the splitter
+// replaced it, and n433 got no circuits for the rest of the run ("nothing missing" on every repair).
+test("B172: a tap's tunnel under its own trunk leaves its splitter on a belt", () => {
+  const layout = replayTaps("m7d5-g227-tap-tunnel")
+  const tap = layout.routes[routeId("route:electronic-circuit*>stock:construction-robot=>stock:construction-robot.in-electronic-circuit-robot")]
+  ok(tap !== undefined && tap.tapOf !== undefined, "the robot circuit feed is a tap")
+})
+
+/** B174: trunk tiles two routes join (two splitters, or a side-load into a splitter). */
+function doubleJoins(layout: LayoutState): string[] {
+  const joined: Record<number, string> = {}
+  const out: string[] = []
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const s0 = r.steps[0]
+    for (const j of [r.merge ?? r.mergeSplitter, r.tapOf !== undefined && s0?.kind === "splitter" ? s0 : undefined]) {
+      if (j === undefined) continue
+      const k = tkey(j.x, j.y)
+      if (joined[k] !== undefined && joined[k] !== id) out.push(`${id} and ${joined[k]} at ${j.x},${j.y}`)
+      joined[k] = id
+    }
+  }
+  return out
+}
+
+// B174 (m7-fresh4 seed 222, g94-g110): the shared coal mine n191's trunks were planned again with a merge splitter of
+// one feed and another feed's merge splitter on the same trunk tile (176, 122), from either side. Every build was
+// rejected before stamping ("overlap with splitter"), and 17 goals in a row planned the same overlap.
+test("B174: two routes never join a trunk on the same tile", () => {
+  const fx = load("m7d5-g110-two-joins")
+  const before: Record<string, boolean> = {}
+  if (fx.base !== undefined) for (const p of doubleJoins(fx.base)) before[p] = true
+  const job = newPlanJob(fx.request, tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0], fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  const added = doubleJoins(job.layout).filter((p) => !before[p])
+  ok(added.length === 0, `double joins: ${added.join("; ")}`)
 })
 
 // B60 (m6-b60n-provider, seed 8646103 g19): after a route-infeasible shared coal provider is split per consumer,
 // each fresh provider must be placed where its one assigned consumer can actually be reached.
 replay("m6-b60-provider-single-route", { newSites: ["n51", "n52"], expect: "failed", failureIncludes: "no free coal patch in the region" })
+
+// M7c.8 (pocket5-360, seed 11 min ~770 g114): a sixth steam block found no feasible position at any region radius: the
+// lake's straight shore was taken and the rest curves. The capture predates `anchor.wet` (the pump column may stand in
+// water), so the test adds it as the generator now does.
+test("M7c.8: a steam block fits the curved shore of a used lake", () => {
+  const fx = load("m7c-11-power6-nofit")
+  for (const m of fx.request.modules) if (m.def.generator === "steam-block" && m.def.anchor !== undefined) m.def.anchor.wet = [{ x: 0, y: 0, w: 1, h: 11 }, { x: 0, y: 12, w: 1, h: 2 }]
+  const job = newPlanJob(fx.request, tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0], fx.base, fx.tiers)
+  startTrace()
+  runJob(job, fixtureView(fx), F, fx.policy, 2000000)
+  const failures: string[] = []
+  for (const [k, v] of pairs(job.failures)) failures.push(`${k as string}: ${v}`)
+  const m = findModule(job.layout, "n334")
+  print(`  n334 at ${m?.rect.x},${m?.rect.y} ${m?.rect.w}x${m?.rect.h}; ${job.phase} ${failures.join("; ")}`)
+  finishReplay("m7c-11-power6-wet", job, true)
+  ok(m !== undefined && m.rect.w > 0, `steam block placed (${job.phase}: ${failures.join("; ")})`)
+})
 
 
 
@@ -711,5 +951,48 @@ test("B106: a new mine whose own output the router proves walled in is placed ag
   const mine = findModule(job.layout, "n57")
   ok(mine !== undefined && !(mine.rect.x === 427 && mine.rect.y === -47), `the copper mine moved from its walled-in spot (427,-47): ${mine?.rect.x},${mine?.rect.y}`)
 })
+
+// M7 (seed 11 minute ~226, g51, slow-plan capture from the minute-180 save): a 5-module, 10-connection production plan
+// on the grown base took 27 ms of planner time a tick for ~5 game-minutes (400 work units a tick at ~67 µs each, 27×
+// the usual cost). A sampling profile (REPLAY_PROFILE=1) put 55% of it in the routers' self-crossing check, which
+// walked a state's 24 ancestors once per move; marked once per expansion now, the replay takes 101 s instead of
+// 179 s with the same searches. The plan still fails: its copper feed's goal is sealed in by own ground.
+replay("m7-seed11-g51-slow", { expect: "failed", failureIncludes: "no path" })
+// M7 (seed 11 m7c-cont, minutes 333+): three coal replacements for a dry mine whose fuel taps run between the smelter
+// columns, sealed in by the base. 21-27 ms a tick while it and its retries planned. Merging above a tap (mergeGoals) now
+// feeds labs~6 through its trunk; the labs' own feed, from a mine 530 tiles west, is still sealed off (cheaply: the seal
+// check fails it with 0 expansions).
+// Seed 11 g111 (merge goals share one window, `retargetSearch`): the labs' own feed now finds a merge goal in the window
+// that covers all of them, and the plan routes.
+replay("m7-seed11-g78-slow", { expect: "done" })
+// M7 (seed 11, m7c-cont2 soak, g78 attempt 3 on the router-work build): the old coal tree's fuel taps sit in pockets the
+// base closes with belt bundles wider than an underground, and smelter columns, which undergrounds could not pass
+// under. Every merge goal was sealed; the three replacement feeds failed and stage 3 (blue) never began. B121 lets
+// undergrounds pass under modules without undergrounds of their own; B122 lets the second and third feeds join the
+// first's belt (it merges into the tree above their taps). 5 searches instead of 77, ~0.6M work instead of ~4M.
+replay("m7-seed11-g78-a3", { expect: "done" })
+// M7 (seed 11, m7c-cont3 soak, g104: the blue-pack row and its chain, slow-plan capture): planned for 42+ game minutes.
+// All the row's belt inputs (3) come from the west and south-west through a gap three belts wide; each port alone could
+// leave, so the row was placed there, and its four belts ripped each other up in a cycle (pack output → circuits →
+// sulfur → engine units) until the rip-up limit moved it, twice: 51M work units, 13 rip-ups. Placement now checks that
+// all its belts can leave together within `portEgress` tiles (egress.ts), and a connection that rips the same route
+// again moves a module at once: 2.8M work, no rip-ups, no re-placements.
+replay("m7-seed11-g104-slow", { expect: "done" })
+// M7d.5 (seed 11, m7d5-robots soak, g154: the robot chain after construction robotics): the battery chem row's first
+// solid came in from below a tile inside its own footprint (the fluid manifolds run under the whole row), so every spot
+// read "own-lane-sealed" and all 4 attempts failed "no feasible position". Its first solid now sideloads from the east,
+// and the row places. B146: both oil complexes' water lines then failed "no pipe path": each complex's in-water run
+// counted all its pipes (221 tiles), and the pipe search dropped every path with a pump, so no arrival kept the extent.
+replay("m7-seed11-g154-a1", { regenerate: ["n373"], expect: "done" })
+// B177 (m7-fresh6 seed 222, g126/g127: 8 attempts "no path"): the split advanced-circuit block's copper input stayed two
+// columns inside its buffer head when the head moved the module east, so no route reached it from any placement.
+replay("m7d5-g126-copper-port", { regenerate: ["n146"], expect: "done" })
+// B208 (b204b-44444 g238, 3 attempts "no room for a pole beside the pump at 571,-29"): the pump sat in a one-tile corridor
+// between two modules; the nearest free tiles were 3 away, inside its medium pole's supply area but outside the 2 tiles
+// every pole was searched within.
+replay("m7-b208-g238-pump-pole", { expect: "done" })
+// REPLAY_ADHOC=<file>[,<file>...]: replay soak captures by absolute path, reporting only (with REPLAY_SEARCHES=1, a
+// line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
+for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })
 
 run("plan-replay")

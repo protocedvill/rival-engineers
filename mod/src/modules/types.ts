@@ -38,6 +38,11 @@ export interface ModuleEntity {
   /** Mining drills: the resource the module is built for (informational; the drill mines what is under it). */
   mines?: string
   /**
+   * M7b: a drill on a fluid resource (a pumpjack): what it yields per second at its well (10/s × the well's yield), read
+   * from the well when the module is generated. Overrides the mining-speed rate.
+   */
+  perSecond?: number
+  /**
    * D42 buffer depot: a chest the module fills through an inserter and the crew collects from. Never a demand in the
    * graph or rates; its usable slots are limited when built and blocked in throughput validation (D33).
    */
@@ -56,7 +61,9 @@ export type PortKind = "belt-in" | "belt-out" | "pipe-in" | "pipe-out" | "power"
  * - `power`: `pos` is a small electric pole inside the module that the planner's pole network connects to.
  * - `chest-out`: `pos` is a chest the crew empties (malls). No belt.
  * - `chest-in`: `pos` is a chest the crew fills with `item` (D38 temporary factories). No belt.
- * - `pipe-in`/`pipe-out`: reserved for fluid modules (none in v1: the steam block fuses its pump).
+ * - `pipe-in`/`pipe-out` (M7b): `pos` is the module's fluid tile on the footprint edge (a pipe, or a machine's
+ *   connection) and `dir` the flow direction, like belt ports. A fluid route ends on the tile at `pos - dirVector(dir)`
+ *   (in) or starts on `pos + dirVector(dir)` (out), connecting along `dir`.
  */
 export interface Port {
   /** Stable within a module (e.g. "in-ore", "out", "power"). */
@@ -70,7 +77,8 @@ export interface Port {
   side?: "left" | "right"
 }
 
-export type RateKind = "item" | "power" | "research"
+/** `fluid` (M7b): piped, never on a belt. */
+export type RateKind = "item" | "power" | "research" | "fluid"
 
 export interface Rate {
   /** Item name; "electricity" for power (perSecond in watts); "research-unit" for labs. */
@@ -97,6 +105,8 @@ export interface MachineCount {
  */
 export interface SiteAnchor {
   water?: Rect[]
+  /** M7c.8: footprint tiles that hold no entity and may be water, so a shore module fits a curved coast. */
+  wet?: Rect[]
   miningAreas?: Rect[]
   resource?: string
 }

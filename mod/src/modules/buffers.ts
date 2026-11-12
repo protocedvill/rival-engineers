@@ -54,7 +54,7 @@ export function isBufferAt(surface: string, pos: MapPosition): boolean {
 
 /** Built-entity events: a registered buffer ghost became its chest. */
 export function onBufferBuilt(entity: LuaEntity | undefined): void {
-  if (storage.buffers === undefined || entity === undefined || !entity.valid || entity.type !== "container") return
+  if (storage.buffers === undefined || entity === undefined || !entity.valid || (entity.type !== "container" && entity.type !== "logistic-container")) return
   const e = storage.buffers[key(entity.surface.name, entity.position)]
   if (e === undefined || e.force !== entity.force.name) return
   e.entity = entity

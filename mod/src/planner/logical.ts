@@ -102,6 +102,10 @@ export interface LogicalNode {
   goal?: string
   createdTick: number
   builtTick?: number
+  /** D69: facts the design minted with the role (`strategy/node-facts.ts`); absent on nodes from older saves. */
+  homeCluster?: number
+  family?: string
+  serves?: "power" | "mall"
 }
 
 export type EdgeKind = "belt" | "power" | "crew"
@@ -320,10 +324,36 @@ export function connectModule(g: LogicalGraph, id: string, inLayout: (this: void
  * belt edges are planned to take. For a mine this is real (its drills stand on ore); a smelter's full speed also needs
  * its own feed grown (B65), so callers use it for fuel outposts.
  */
+/**
+ * M7c (user-approved 2026-11-01): what an edge's consumer takes: its planned rate, or the measured rate when that is
+ * higher (a consumer with room takes what it can, not what was planned).
+ */
+export function edgeDraw(e: LogicalEdge): number {
+  return math.max(e.plannedRate, e.measuredRate ?? 0)
+}
+
+/**
+ * B186: an edge probe counts what reaches the consumer's port tile, which every belt edge of the same item into that port
+ * shares (parallel providers merge into one belt). Each edge gets its planned share of the port's flow; before, each got
+ * the whole flow, and the sharing draw summed them (seed 3333: ten green lines read 12/s into labs that take 0.14/s).
+ */
+export function portShare(g: LogicalGraph, edge: LogicalEdge, rate: number): number {
+  let planned = 0
+  let n = 0
+  for (const id of g.edgeOrder) {
+    const o = g.edges[id]
+    if (o === undefined || o.kind !== "belt" || o.to !== edge.to || o.toPort !== edge.toPort || o.item !== edge.item) continue
+    planned += o.plannedRate
+    n++
+  }
+  if (n <= 1) return rate
+  return planned > 0 ? (rate * edge.plannedRate) / planned : rate / n
+}
+
 export function spareCapacity(g: LogicalGraph, id: string): number {
   const n = g.nodes[id]
   if (n === undefined || n.item === undefined) return 0
   let used = 0
-  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += e.plannedRate
+  for (const e of edgesFrom(g, id)) if (e.kind === "belt") used += edgeDraw(e)
   return rateIn(n.capacity.outputs, n.item) - used
 }

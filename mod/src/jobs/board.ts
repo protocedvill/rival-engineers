@@ -185,6 +185,12 @@ export function selectJob<P>(board: Board<P>, from: Pos, tick: number, accept?: 
   return best
 }
 
+/** Whether any active job is ready (`countReady` > 0, stopping at the first). */
+export function anyReady(board: Board<unknown>, tick: number): boolean {
+  for (const id of board.active) if (isReady(board, board.jobs[id], tick)) return true
+  return false
+}
+
 export function countReady(board: Board<unknown>, tick: number): number {
   let n = 0
   for (const id of board.active) if (isReady(board, board.jobs[id], tick)) n++
@@ -231,6 +237,23 @@ export function complete(board: Board<unknown>, id: number, member: number, tick
   board.counters.completions++
   removeActive(board, id)
   logEvent(board, { tick, job: id, member, event: "done" })
+  return true
+}
+
+/**
+ * M7d.5: marks an open job done by someone off the board (a construction robot built its ghost). Its dependents become
+ * ready as after a crew member's completion. Returns false unless the job was open.
+ */
+export function completeOpen(board: Board<unknown>, id: number, tick: number, by: string): boolean {
+  const job: Job<unknown> | undefined = board.jobs[id]
+  if (job === undefined || job.status !== "open") return false
+  job.status = "done"
+  job.doneBy = 0
+  job.reason = by
+  job.finishedTick = tick
+  board.counters.completions++
+  removeActive(board, id)
+  logEvent(board, { tick, job: id, member: 0, event: "done", reason: by })
   return true
 }
 
@@ -433,6 +456,75 @@ export function planBatch<P>(board: Board<P>, anchor: Job<P>, from: Pos, tick: n
     members.pop()
   }
   return { jobs: [anchor.id] }
+}
+
+export interface TourOptions<P> extends BatchOptions<P> {
+  /** Most standing spots (legs); 1 = `planBatch` alone. */
+  maxSpots: number
+  /** A further leg starts at the nearest ready job within this distance of the last leg's spot. */
+  hop: number
+  /** Most jobs over all legs after the first (the member's share of the ready jobs). */
+  maxTotal: number
+  /** Inventory stacks the whole load must fit (with `slotsFor` and `held`); unlimited when undefined. */
+  slots?: number
+  slotsFor?: (this: void, need: ItemCount[]) => number
+  held?: Record<string, number>
+}
+
+/**
+ * User request (in-session, 2026-11-03): a batch walks to several standing spots in a row. The first leg is
+ * `planBatch` unchanged; each further leg starts at the ready job of the anchor's kind nearest the last spot (ties by id)
+ * within `hop`, and is planned from that spot like a batch. Legs are added while the whole load fits `slots`, the jobs
+ * after the first leg stay within `maxTotal`, and every leg finds a standing spot.
+ */
+export function planTour<P>(board: Board<P>, anchor: Job<P>, from: Pos, tick: number, options: TourOptions<P>): Batch[] {
+  const first = planBatch(board, anchor, from, tick, options)
+  const legs: Batch[] = [first]
+  if (first.spot === undefined || options.maxSpots <= 1) return legs
+  const taken: Record<number, boolean> = {}
+  const load: Job<P>[] = []
+  for (const id of first.jobs) {
+    taken[id] = true
+    load.push(board.jobs[id])
+  }
+  const outer = options.accept
+  const accept: JobFilter<P> = (job) => !taken[job.id] && (outer === undefined || outer(job))
+  let extra = 0
+  let at: Pos = first.spot
+  while (legs.length < options.maxSpots && extra < options.maxTotal) {
+    let next: Job<P> | undefined
+    let nextD = 0
+    for (const id of board.active) {
+      const job = board.jobs[id]
+      if (job.kind !== anchor.kind || !isReady(board, job, tick) || !accept(job)) continue
+      const d = distance(job.pos, at)
+      if (d > options.hop) continue
+      if (next === undefined || d < nextD || (d === nextD && job.id < next.id)) {
+        next = job
+        nextD = d
+      }
+    }
+    if (next === undefined) break
+    const leg = planBatch(board, next, at, tick, { ...options, accept, maxJobs: math.min(options.maxJobs, options.maxTotal - extra) })
+    if (leg.spot === undefined) break
+    // Trim the leg (farthest last) until the whole load fits the inventory.
+    const jobs = [...leg.jobs]
+    while (jobs.length > 0 && options.slots !== undefined && options.slotsFor !== undefined) {
+      const all = [...load]
+      for (const id of jobs) all.push(board.jobs[id])
+      if (options.slotsFor(missingMaterials(all, options.held ?? {})) <= options.slots) break
+      jobs.pop()
+    }
+    if (jobs.length === 0) break
+    legs.push({ jobs, spot: leg.spot })
+    for (const id of jobs) {
+      taken[id] = true
+      load.push(board.jobs[id])
+    }
+    extra += jobs.length
+    at = leg.spot
+  }
+  return legs
 }
 
 /**

@@ -73,6 +73,12 @@ export interface Catalog {
   smelts: Record<string, string>
   /** Plate item → its ore. */
   oreOf: Record<string, string>
+  /**
+   * M7c.8: a furnace product left out of `smelts` because it is a building material (stone-brick) → the resource whose
+   * ore makes it. Made on demand by a smelt site added then (`brickSite`), not by the bootstrap's sites. Optional: older
+   * saves have none.
+   */
+  materialSmelts?: Record<string, string>
 }
 
 export interface BrainState {
@@ -119,6 +125,8 @@ export interface BrainState {
   exploreRadius: number
   /** Rescan the explored area at this tick (chunk generation is asynchronous). */
   rescanAt?: number
+  /** B116: no depot spot was free at the last search: search again at this tick. */
+  depotSearchAt?: number
   /** Why the spawn spot is a compromise, if it is. */
   spawnNote?: string
 }

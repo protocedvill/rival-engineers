@@ -4,7 +4,7 @@
 // the planner uses.
 
 import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
-import { CLIFF, FOREIGN, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
+import { boxTiles, CLIFF, FOREIGN, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
 import { findEntities } from "../work"
 
 export interface ChunkScan {
@@ -89,6 +89,23 @@ function enqueue(t: TerrainState, cx: number, cy: number): void {
  * Queues every chunk overlapping `area` (world tiles) that is not scanned yet. D62: with `known`, only the chunks it
  * allows (the rest stay UNKNOWN to the planner).
  */
+/**
+ * M7d.5: scan the ground a remote site and its connection to the plan's centre need. A pumpjack field chosen from the
+ * surface can sit in charted-but-unscanned chunks; the planner then sees UNKNOWN there and refuses a pole line that
+ * exists on the map. Queue a corridor, not the whole bounding box, so the scan cost stays proportional to the route.
+ */
+export function requestCorridor(t: TerrainState | undefined, from: Vec, to: Vec, halfWidth = 48): void {
+  if (t === undefined) return
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const steps = math.max(1, math.ceil(math.max(math.abs(dx), math.abs(dy)) / 32))
+  for (let i = 0; i <= steps; i++) {
+    const x = from.x + (dx * i) / steps
+    const y = from.y + (dy * i) / steps
+    requestArea(t, { x: math.floor(x - halfWidth), y: math.floor(y - halfWidth), w: 2 * halfWidth, h: 2 * halfWidth })
+  }
+}
+
 export function requestArea(t: TerrainState, area: Rect, known?: (this: void, cx: number, cy: number) => boolean): void {
   const cx1 = math.floor(area.x / 32)
   const cy1 = math.floor(area.y / 32)
@@ -111,6 +128,11 @@ function resourceId(t: TerrainState, name: string): number {
     t.resourceIndex[name] = i
   }
   return i
+}
+
+/** M7c.9: whether an entity of `type` is a structure the planner never plans over (OWN or FOREIGN in the scan). */
+export function isStructureType(type: string): boolean {
+  return !IGNORED[type] && type !== "tree" && type !== "simple-entity" && type !== "cliff" && type !== "resource"
 }
 
 function classify(t: TerrainState, e: LuaEntity): number | undefined {
@@ -151,11 +173,8 @@ export function scanChunk(t: TerrainState, surface: LuaSurface, cx: number, cy: 
     const b = classify(t, e)
     if (b === undefined) continue
     const box = e.bounding_box
-    const bx1 = math.floor(box.left_top.x + 0.01)
-    const by1 = math.floor(box.left_top.y + 0.01)
-    const bx2 = math.ceil(box.right_bottom.x - 0.01)
-    const by2 = math.ceil(box.right_bottom.y - 0.01)
-    for (let x = bx1; x < math.max(bx2, bx1 + 1); x++) for (let y = by1; y < math.max(by2, by1 + 1); y++) set(x, y, b)
+    // M7 (seed 11 g113): a diagonal cliff's box is turned (`orientation`): its tiles are the turned rectangle's.
+    for (const p of boxTiles(box.left_top, box.right_bottom, box.orientation)) set(p.x, p.y, b)
   }
   t.chunks[tkey(cx, cy)] = scan
   t.scans++
@@ -172,8 +191,8 @@ export function stepTerrain(t: TerrainState, maxChunks: number): number {
   let tries = t.queue.length
   while (scanned < maxChunks && t.queue.length > 0 && tries-- > 0) {
     const k = t.queue.shift()!
-    const cx = math.floor(k / 2097152) - 1048576
-    const cy = (k % 2097152) - 1048576
+    const cx = keyX(k)
+    const cy = keyY(k)
     if (!surface.is_chunk_generated({ x: cx, y: cy })) {
       surface.request_to_generate_chunks({ x: cx * 32 + 16, y: cy * 32 + 16 }, 0)
       t.queue.push(k)

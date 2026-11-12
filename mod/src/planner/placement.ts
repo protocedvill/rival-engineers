@@ -8,6 +8,8 @@
 // candidate is feasible. Pure: no Factorio globals.
 
 import { moduleId } from "../shared/ids"
+import { planFailure } from "../shared/plan-failure"
+import type { PlanFailure } from "../shared/plan-failure"
 
 import { expandHeadModule, expandModule, expandMoves, expandTail } from "../modules/build"
 import { ProtoFacts } from "../modules/facts"
@@ -15,11 +17,13 @@ import { entityRect, IDENTITY, transformModule, transformPoint, transformRect, T
 import { ModuleDef, ModuleEntity, Port } from "../modules/types"
 import { laneClaimConflict, moduleGrowthClaimConflict, placementClaimConflict } from "./claims"
 import { laneTag } from "./claim-tags"
+import { EgressGround, EgressJob, newEgress, stepEgress } from "./egress"
+import { fluidConflicts, fluidRouteMap } from "./fluids"
 import { CLIFF, DX, DY, FOREIGN, FREE, inflate, keyX, keyY, manhattan, OWN, Rect, rectContains, ROCK, TerrainView, tkey, TREE, UNKNOWN, Vec, WATER } from "./grid"
-import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, layoutMargins, lineKey, markModule, moduleMargin, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
+import { commitModule, findModule, isPoleTag, Route, growthEnd, growthStrip, LayoutState, layoutMargins, lineKey, markModule, PlacedModule, portApproach, portOutside, portTag, portTile, spanConflicts, unmarkModule } from "./layout"
 import { CandidateFeatures, LayoutPolicy, packingScorer, placementTerms } from "./policy"
 import { CandidateTrace, describeTile, newPlacementAcc, noteFeasible, noteReject, PlacementAcc, planTrace, RejectTrace } from "./trace"
-import { beltDrillCap, claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
+import { claimPart, connectedPatch, materializeMinePlan, planWholePatch } from "./mine-plan"
 
 export interface PlacementRequest {
   /** Instance id. */
@@ -59,8 +63,8 @@ export interface SitePatch {
 interface TDef {
   t: Transform
   def: ModuleDef
-  /** Belt ports: local outside tile, outward normal, port id. */
-  ports: { id: string; ox: number; oy: number; nx: number; ny: number }[]
+  /** Belt and pipe ports: local outside tile, outward normal, port id, whether it is a pipe port (and its fluid). */
+  ports: { id: string; ox: number; oy: number; nx: number; ny: number; pipe: boolean; item?: string }[]
 }
 
 export interface PlacementSearch {
@@ -71,6 +75,10 @@ export interface PlacementSearch {
   /** Next point of the current ring (`ringPoint` index): a ring is scanned across ticks under the budget. */
   ringIdx?: number
   target?: Vec
+  /** M7c.8: site targets whose windows found no room (a built-out lake shore); the ring search skips their windows. */
+  deadSites?: Vec[]
+  /** B187: the radius ladder of a module without a site (`wideRadii`), computed once. */
+  radii?: number[]
   /** D57 (mines): the ranked free-ore patches, the next one to try, the one being searched, and those found full. */
   patches?: SitePatch[]
   patchIdx?: number
@@ -87,6 +95,8 @@ export interface PlacementSearch {
   wh: number
   row: number
   sat: Record<string, number[]>
+  /** Layers this search builds: a module only needs the ones its type and policy query (see `startWindow`). */
+  satLayers?: string[]
   /** B26: tiles of the window in the near band of other modules' growth areas (built with the window). */
   band?: Record<number, boolean>
   /** Candidate cursor: transform index and origin offset index (on a grid of `stride`). */
@@ -99,16 +109,31 @@ export interface PlacementSearch {
   ri: number
   best?: { score: number; ti: number; ox: number; oy: number; coverage: number; clear: number }
   work: number
+  /** Best spots whose belt ports could not all leave together (`egressGate`): candidates overlapping them are out. */
+  crowded?: Rect[]
+  /** The egress check of the best spot in progress (`egressStep`), and the last spot that passed it. */
+  egress?: { key: string; job: EgressJob }
+  egressOk?: string
+  /** M7d.5 g198: the fluid carried by each base/planned fluid route tile (a pipe port may not stand beside another). */
+  fluidRoutes?: Record<number, string>
+  /** B157 phase 3: per fluid item, the tiles a pipe of it may not take (other routes and other pipe ports' moats). */
+  fluidConflicts?: Record<string, Record<number, boolean>>
   /** Candidates scored (work counters, SPEC §9). */
   candidates: number
   reason?: string
+  /** D69: the typed failure, when the search knows what kind it is (no patch, no position, no site). */
+  failure?: PlanFailure
   /** Machine-readable certificate explaining why candidates were rejected. */
   rejections?: Record<string, { count: number; sample: Vec }>
   result?: PlacedModule
   /** Decision trace (T1 plan dumps only: set while `planTrace.sink` is on, never in game). */
   trace?: PlacementAcc
-  /** B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate. */
-  openPorts?: { x: number; y: number; out?: number; ok?: boolean; path?: Vec[] }[]
+  /**
+   * B45: other modules' unconnected port lane ends near the window; `ok` once known to lead out without the candidate,
+   * `box` the bounds of that way out, and `sealedBy` whether a candidate footprint (`rectKey`) walls it in (M7: the
+   * transforms of a module share two footprints, and the refine pass revisits origins: each is flooded once).
+   */
+  openPorts?: { x: number; y: number; out?: number; ok?: boolean; path?: Vec[]; box?: Rect; sealedBy?: Record<string, boolean> }[]
 }
 
 const LAYERS = ["hard", "ore", "clear", "water", "mods", "res", "soft", "band", "gblock"]
@@ -121,7 +146,7 @@ function transformsOf(def: ModuleDef): Transform[] {
   return out
 }
 
-function isMining(def: ModuleDef): boolean {
+export function isMining(def: ModuleDef): boolean {
   return def.site === "resource-patch"
 }
 
@@ -148,11 +173,13 @@ function tdefOf(def: ModuleDef, t: Transform): TDef {
   const d = t.rot === 0 && !t.mirror ? def : transformModule(def, t)
   const ports: TDef["ports"] = []
   for (const p of d.ports) {
-    if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+    // M7c.8 (seed 11): pipe ports too. Without them a sulfur chain was placed with both fluid inputs facing a row of
+    // built belts, and its water and crude lines searched the whole region for an entry that did not exist.
+    if (p.kind !== "belt-in" && p.kind !== "belt-out" && p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
     const dx = DX[math.floor(p.dir / 4)]
     const dy = DY[math.floor(p.dir / 4)]
-    const sign = p.kind === "belt-in" ? -1 : 1
-    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy })
+    const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
+    ports.push({ id: p.id, ox: math.floor(p.pos.x) + sign * dx, oy: math.floor(p.pos.y) + sign * dy, nx: sign * dx, ny: sign * dy, pipe: p.kind === "pipe-in" || p.kind === "pipe-out", item: p.item })
   }
   return { t, def: d, ports }
 }
@@ -299,7 +326,9 @@ function nextPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainView,
     return used
   }
   s.phase = "failed"
-  s.reason = list.length === 0 ? `no free ${s.req.def.anchor?.resource ?? "ore"} patch in the region` : `no feasible position (${s.patchesTried ?? 0} of ${list.length} patches tried)`
+  const ore = s.req.def.anchor?.resource
+  s.failure = list.length === 0 ? planFailure("no-patch", `no free ${ore ?? "ore"} patch in the region`, ore) : planFailure("no-position", `no feasible position (${s.patchesTried ?? 0} of ${list.length} patches tried)`, ore)
+  s.reason = s.failure.reason
   if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
   return used
 }
@@ -320,6 +349,17 @@ function noteDeadPatch(s: PlacementSearch, state: LayoutState, terrain: TerrainV
   s.deadFound[p.key] = terrain.stamp(area)
 }
 
+/**
+ * The patch a finished mining placement stands on: its D57 key and the window rect whose terrain stamp identifies it.
+ * A later failure that proves this site useless (its power line cannot reach) remembers it under the same key and the
+ * stamp of the same rect, exactly as `noteDeadPatch` does for a patch with no room.
+ */
+export function placedPatch(s: PlacementSearch): { key: string; area: Rect } | undefined {
+  const p = s.patch
+  if (s.phase !== "done" || p === undefined) return undefined
+  return { key: p.key, area: patchArea(p, maxDim(s)) }
+}
+
 function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): boolean {
   if (def.site === "shore") {
     if (terrain.block(x, y) !== WATER) return false
@@ -337,12 +377,43 @@ function sitePoint(def: ModuleDef, terrain: TerrainView, x: number, y: number): 
  * OUTPOST_FAR_RADIUS (within the plan's region): the ore near the core runs out once several clusters mine it.
  */
 const OUTPOST_FAR_RADIUS = 192
+
+/** M7c.8: site targets (shores) a placement searches around before it fails (agent guess; each is a full window scan). */
+const MAX_SITE_TARGETS = 4
+
+/** M7c.8: whether `p` lies in the window already searched around a dead site target (its largest radius). */
+function inDeadSite(s: PlacementSearch, policy: LayoutPolicy, p: Vec): boolean {
+  if (s.deadSites === undefined) return false
+  let R = 0
+  for (const r of radii(s, policy)) R = math.max(R, r)
+  for (const d of s.deadSites) if (math.abs(p.x - d.x) <= R && math.abs(p.y - d.y) <= R) return true
+  return false
+}
 function radii(s: PlacementSearch, policy: LayoutPolicy): number[] {
   // D57: a mine searches one window over the patch it is trying.
   if (s.patch !== undefined) return [s.patch.r]
+  if (s.req.def.site === undefined) return s.radii ??= wideRadii(policy.searchRadii, s.req.center, s.req.region)
   if (s.req.def.site !== "resource-patch") return policy.searchRadii
   const last = policy.searchRadii[policy.searchRadii.length - 1] ?? 0
   return last >= OUTPOST_FAR_RADIUS ? policy.searchRadii : [...policy.searchRadii, OUTPOST_FAR_RADIUS]
+}
+
+/**
+ * B187 (seed 44444 g212): a module without a site searches past the policy's radii, doubling, until a window covers the
+ * plan region. A goal's retries widen its region (×1.5 an attempt), but the placement stopped at the last policy radius
+ * (96): once the base filled that disc an 85-tile engine cell found no position on any attempt. A wider window is only
+ * scanned when every smaller one had no feasible position, so plans that fit near the centre cost the same.
+ */
+export function wideRadii(base: number[], center: Vec, region: Rect): number[] {
+  const reach = math.max(center.x - region.x, region.x + region.w - center.x, center.y - region.y, region.y + region.h - center.y)
+  const out = [...base]
+  let last = out[out.length - 1] ?? 0
+  if (last <= 0) return out
+  while (last < reach) {
+    last = math.min(last * 2, math.ceil(reach))
+    out.push(last)
+  }
+  return out
 }
 
 function maxDim(s: PlacementSearch): number {
@@ -356,6 +427,23 @@ function ownGrowthLength(def: ModuleDef): number {
   const spec = def.expand
   if (spec === undefined || spec.maxUnits < 1 || isMining(def)) return 0
   return spec.maxUnits * (spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h)
+}
+
+/**
+ * B26 / M7: the length of the growth band `evaluate` scores (`growthBandUnits` units on the end `tryExpand` grows), 0 for
+ * a mine or a module that can't grow. Was the whole band up to `maxUnits`: a blue-pack assembler row (~300 tiles of
+ * growth) made a 711×224 window at the smallest radius, rebuilt for every re-placement.
+ */
+function scoredGrowthLength(def: ModuleDef, policy: LayoutPolicy): number {
+  const spec = def.expand
+  if (spec === undefined || spec.maxUnits < 1 || isMining(def)) return 0
+  const units = math.min(spec.maxUnits, policy.placement.growthBandUnits ?? spec.maxUnits)
+  return units * (spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h)
+}
+
+/** The window's margin around the scanned square: the largest footprint, its corridor ring and its scored growth band. */
+function windowMargin(s: PlacementSearch, policy: LayoutPolicy): number {
+  return maxDim(s) + policy.corridor.preferred + 4 + scoredGrowthLength(s.req.def, policy) + policy.corridor.min
 }
 
 /**
@@ -392,11 +480,14 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
   for (const m of state.modules) {
     if (m.id === except) continue
     for (const p of m.def.ports) {
-      if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
+      const pipe = p.kind === "pipe-in" || p.kind === "pipe-out"
+      if (!pipe && p.kind !== "belt-in" && p.kind !== "belt-out") continue
       const o = portOutside(m, p)
       if (state.routeOcc[tkey(o.x, o.y)] !== undefined) continue
       const a = portLaneEnd(m, p)
-      if (state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
+      // B45/B57: a pipe port's lane must stay open too. A pipe port has no transport-belt lane reservation (the planner
+      // reserves `portTag` for belt lanes), so a pipe counts as open unless its outside tile already feeds a route.
+      if (!pipe && state.reserved[tkey(a.x, a.y)] !== portTag(m.id, p.id)) continue
       if (area !== undefined && !rectContains(area, a.x, a.y)) continue
       out.push(a)
     }
@@ -409,6 +500,17 @@ export function openPortEnds(state: LayoutState, except: string | undefined, are
  * lane walled in by one belt or a short claim is not sealed: the router goes under it.
  */
 export const LANE_HOP = 5
+
+/**
+ * B157 phase 3: a pipe-to-ground span's reach (`max_underground_distance`, vanilla 10). A pipe lane may pass under a
+ * band wider than a belt's 5 tiles; judging it with `LANE_HOP` rejected valid pipe ports.
+ */
+export const PIPE_LANE_HOP = 10
+
+/** Work units per node an egress check searches (a node's residual moves cost about a quarter of a placement unit). */
+const EGRESS_WORK = 0.25
+/** Crowded best spots (`egressGate`) a placement search rescans past before it takes the best unchecked. */
+const EGRESS_RETRIES = 6
 
 /**
  * B57: what a lane's way out may go under (an underground's span): anything but a module or unknown ground; and, as the
@@ -438,11 +540,12 @@ function spanFree(state: LayoutState | undefined, x: number, y: number, ex: numb
  * out, so a far `need` stays cheap, and it only explores a whole pocket when the lane is in one (8 steps let a 112-tile
  * pocket through on seed 555555 and a 221-tile one on seed 11).
  */
-export function laneWayOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): Vec[] | undefined {
+export function laneWayOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec, work?: { n: number }): Vec[] | undefined {
   // B85: states are (tile, heading), as the router's seal check has them: a belt goes on or turns left or right (never
   // back), and an underground runs straight along the heading, from where the belt is. A tile-only flood let a lane turn
   // round in a one-wide dead end, or dive sideways from the lane end, under a belt there (seed 5480563: lab cluster 3's
   // red assembler faced into such a pocket; every lane check passed it, and the router found it sealed).
+  // M7: moves are tried in place (no table per move); `work` counts the states expanded.
   const from: Record<number, number> = {}
   const buckets: number[][] = [[]]
   const k0 = tkey(start.x, start.y)
@@ -457,42 +560,55 @@ export function laneWayOut(start: LaneEnd, free: (this: void, x: number, y: numb
     return out
   }
   let top = 0
+  /** Takes the move from `st` onto (x, y) heading `d` (an underground's exit at (ex, ey) first); the new state, or -1. */
+  const move = (st: number, cx: number, cy: number, x: number, y: number, d: number, ex?: number, ey?: number): number => {
+    const ns = tkey(x, y) * 4 + d
+    if (from[ns] !== undefined || !free(x, y)) return -1
+    if (ex !== undefined && ey !== undefined) {
+      const es = tkey(ex, ey) * 4 + d
+      if (from[es] !== undefined || !free(ex, ey) || !spanFree(hop!.state, cx, cy, ex, ey, d)) return -1
+      from[es] = st
+      from[ns] = es
+    } else from[ns] = st
+    const dist = math.abs(x - start.x) + math.abs(y - start.y)
+    if (dist >= need || (goal !== undefined && math.abs(x - goal.x) + math.abs(y - goal.y) <= 1)) return -2 - ns
+    const bk = buckets[dist]
+    if (bk === undefined) buckets[dist] = [ns]
+    else bk.push(ns)
+    if (dist > top) top = dist
+    return ns
+  }
   while (top >= 0) {
     const st = buckets[top]?.pop()
     if (st === undefined) {
       top--
       continue
     }
+    if (work !== undefined) work.n++
     const h = st % 4
     const cx = keyX(math.floor(st / 4))
     const cy = keyY(math.floor(st / 4))
     // A step on or to either side; then (with `hop`) the undergrounds straight on: the exit 2..max tiles on, over tiles
     // it may go under, and its exit belt feeds the tile straight on.
-    const moves: { x: number; y: number; d: number; ex?: number; ey?: number }[] = []
-    for (const nd of [h, (h + 1) % 4, (h + 3) % 4]) moves.push({ x: cx + DX[nd], y: cy + DY[nd], d: nd })
+    let hops = 0
     if (hop !== undefined) {
       for (let n = 2; n <= hop.max; n++) {
-        const ex = cx + DX[h] * n
-        const ey = cy + DY[h] * n
-        if (!hop.under(ex - DX[h], ey - DY[h])) break
-        moves.push({ x: ex + DX[h], y: ey + DY[h], d: h, ex, ey })
+        if (!hop.under(cx + DX[h] * (n - 1), cy + DY[h] * (n - 1))) break
+        hops = n - 1
       }
     }
-    for (const mv of moves) {
-      const ns = tkey(mv.x, mv.y) * 4 + mv.d
-      if (from[ns] !== undefined || !free(mv.x, mv.y)) continue
-      if (mv.ex !== undefined && mv.ey !== undefined) {
-        const es = tkey(mv.ex, mv.ey) * 4 + mv.d
-        if (from[es] !== undefined || !free(mv.ex, mv.ey) || !spanFree(hop!.state, cx, cy, mv.ex, mv.ey, mv.d)) continue
-        from[es] = st
-        from[ns] = es
-      } else from[ns] = st
-      const dist = math.abs(mv.x - start.x) + math.abs(mv.y - start.y)
-      if (dist >= need || (goal !== undefined && math.abs(mv.x - goal.x) + math.abs(mv.y - goal.y) <= 1)) return path(ns)
-      const b = buckets[dist]
-      if (b === undefined) buckets[dist] = [ns]
-      else b.push(ns)
-      if (dist > top) top = dist
+    for (let j = 0; j < 3 + hops; j++) {
+      let r: number
+      if (j < 3) {
+        const nd = j === 0 ? h : j === 1 ? (h + 1) % 4 : (h + 3) % 4
+        r = move(st, cx, cy, cx + DX[nd], cy + DY[nd], nd)
+      } else {
+        const n = j - 1
+        const ex = cx + DX[h] * n
+        const ey = cy + DY[h] * n
+        r = move(st, cx, cy, ex + DX[h], ey + DY[h], h, ex, ey)
+      }
+      if (r <= -2) return path(-2 - r)
     }
   }
   return undefined
@@ -520,11 +636,14 @@ export function portLaneEnd(m: PlacedModule, p: Port): LaneEnd {
  * B51 / B57: the ground a lane of port `tag` may lead out over in a layout (not a module, route, mine claim or another
  * port's reservation; trees and rocks pass), and what its undergrounds may go under (anything but a module).
  */
-export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
+export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: string, pipe?: { conflicts: Record<number, boolean>; hop: number }): { free: (this: void, x: number, y: number) => boolean; hop: LaneHop } {
   const protectedLane = laneTag(tag)
   const margins = layoutMargins(state)
+  const conflicts = pipe?.conflicts
   const free = (x: number, y: number): boolean => {
     const k = tkey(x, y)
+    // B157: a pipe may not lead out through another fluid's line or port moat, not even on its own port reservation.
+    if (conflicts !== undefined && conflicts[k] === true) return false
     if (laneClaimConflict(state, k, tag, protectedLane) !== undefined) return false
     const r = state.reserved[k]
     if (r === tag || r === protectedLane) return true
@@ -537,7 +656,7 @@ export function layoutLaneGround(state: LayoutState, terrain: TerrainView, tag: 
     const o = state.occ[tkey(x, y)]
     return !(o !== undefined && string.sub(o, 1, 2) === "m:") && terrain.block(x, y) !== UNKNOWN
   }
-  return { free, hop: { under, max: LANE_HOP, state } }
+  return { free, hop: { under, max: pipe?.hop ?? LANE_HOP, state } }
 }
 
 /** B57: the reservation tag of a protected lane's way out (a plan keeps it clear; see plan.ts `guardLanes`). */
@@ -551,16 +670,20 @@ export function sealedInputs(state: LayoutState, terrain: TerrainView, id: strin
   const m = findModule(state, id)
   const out: string[] = []
   if (m === undefined) return out
+  const routes = fluidRouteMap(state)
+  const conflicts: Record<string, Record<number, boolean>> = {}
   for (const p of m.def.ports) {
-    if (p.kind !== "belt-in" || fed[p.id]) continue
-    const g = layoutLaneGround(state, terrain, portTag(m.id, p.id))
+    if ((p.kind !== "belt-in" && p.kind !== "pipe-in") || fed[p.id]) continue
+    let pipe: { conflicts: Record<number, boolean>; hop: number } | undefined
+    if (p.kind === "pipe-in" && p.item !== undefined) pipe = { conflicts: (conflicts[p.item] ??= fluidConflicts(state, p.item, routes)), hop: PIPE_LANE_HOP }
+    const g = layoutLaneGround(state, terrain, portTag(m.id, p.id), pipe)
     if (!laneLeadsOut(portLaneEnd(m, p), g.free, need, g.hop)) out.push(p.id)
   }
   return out
 }
 
-export function laneLeadsOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec): boolean {
-  return laneWayOut(start, free, need, hop, goal) !== undefined
+export function laneLeadsOut(start: LaneEnd, free: (this: void, x: number, y: number) => boolean, need: number, hop?: LaneHop, goal?: Vec, work?: { n: number }): boolean {
+  return laneWayOut(start, free, need, hop, goal, work) !== undefined
 }
 
 /**
@@ -569,23 +692,55 @@ export function laneLeadsOut(start: LaneEnd, free: (this: void, x: number, y: nu
  */
 function sealsPortLane(s: PlacementSearch, state: LayoutState | undefined, blocked: Rect, need: number): boolean {
   const ports = s.openPorts ?? []
-  if (ports.length === 0) return false
-  // B85: placed modules' margin rings are own ground once built.
-  const margins = state !== undefined ? layoutMargins(state) : {}
-  const hardAt = (x: number, y: number): boolean => margins[tkey(x, y)] === true || (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) !== 0
-  const hop: LaneHop = { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of ports) {
-    if (p.ok === undefined) {
-      p.path = laneWayOut(p, (x, y) => !hardAt(x, y), need, hop)
-      p.ok = p.path !== undefined
-    }
-    if (!p.ok) continue
+    if (p.ok === undefined) wayOutWithout(s, state, p, need)
+    if (!p.ok || !rectsOverlap(p.box!, blocked)) continue
     let touches = false
     for (const t of p.path!) if (rectContains(blocked, t.x, t.y)) touches = true
     if (!touches) continue
-    if (!laneLeadsOut(p, (x, y) => !hardAt(x, y) && !rectContains(blocked, x, y), need, { under: (x, y) => hop.under(x, y) && !rectContains(blocked, x, y), max: LANE_HOP, state })) return true
+    p.sealedBy ??= {}
+    const key = `${blocked.x},${blocked.y},${blocked.w},${blocked.h}`
+    let sealed = p.sealedBy[key]
+    if (sealed === undefined) {
+      sealed = laneWayOut(p, laneFree(s, state, blocked), need, laneHop(s, state, blocked)) === undefined
+      p.sealedBy[key] = sealed
+    }
+    if (sealed) return true
   }
   return false
+}
+
+/** B45: a port lane's way out with no candidate in it (`p.path`, `p.ok`, and its bounds `p.box`). */
+function wayOutWithout(s: PlacementSearch, state: LayoutState | undefined, p: NonNullable<PlacementSearch["openPorts"]>[number], need: number): void {
+  p.path = laneWayOut(p, laneFree(s, state), need, laneHop(s, state))
+  p.ok = p.path !== undefined
+  if (p.path === undefined) return
+  let x1 = math.huge
+  let y1 = math.huge
+  let x2 = -math.huge
+  let y2 = -math.huge
+  for (const t of p.path) {
+    x1 = math.min(x1, t.x)
+    y1 = math.min(y1, t.y)
+    x2 = math.max(x2, t.x)
+    y2 = math.max(y2, t.y)
+  }
+  p.box = { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 }
+}
+
+/** B45 / B85: ground a lane may lead out over in the window: not hard, not a placed module's margin ring, not `blocked`. */
+function laneFree(s: PlacementSearch, state: LayoutState | undefined, blocked?: Rect): (this: void, x: number, y: number) => boolean {
+  const margins = state !== undefined ? layoutMargins(state) : {}
+  return (x, y) => margins[tkey(x, y)] !== true && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (blocked === undefined || !rectContains(blocked, x, y))
+}
+
+/** B57: a lane's undergrounds go under anything but a module (or `blocked`). */
+function laneHop(s: PlacementSearch, state: LayoutState | undefined, blocked?: Rect): LaneHop {
+  return { under: (x, y) => (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (blocked === undefined || !rectContains(blocked, x, y)), max: LANE_HOP, state }
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 }
 
 /**
@@ -600,26 +755,137 @@ function ownLanesOut(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   // B85: the candidate's own margin ring and the placed modules' rings are own ground once built: not a way out.
   const ring = inflate(rect, 1)
   const margins = layoutMargins(state)
-  const free = (x: number, y: number): boolean => !rectContains(ring, x, y) && !margins[tkey(x, y)] && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
-  const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: LANE_HOP, state }
   for (const p of td.ports) {
+    // B157 phase 3: a pipe port's lane is judged with the pipe's own rules: no other fluid's route or port moat, and a
+    // pipe-to-ground span of 10, not a belt's 5. The conflicts are built once per fluid item per placement.
+    const pipe = p.pipe
+    let conflicts: Record<number, boolean> | undefined
+    if (pipe && p.item !== undefined) {
+      const cache = (s.fluidConflicts ??= {})
+      conflicts = cache[p.item] ??= fluidConflicts(state, p.item, s.fluidRoutes)
+    }
+    const free = (x: number, y: number): boolean =>
+      !rectContains(ring, x, y) && !margins[tkey(x, y)] && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0 && (conflicts === undefined || conflicts[tkey(x, y)] !== true)
+    const hop: LaneHop = { under: (x, y) => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0, max: pipe ? PIPE_LANE_HOP : LANE_HOP, state }
     // Reaching the port's connection (its target) is enough: the partner may share the pocket.
     if (!laneLeadsOut({ x: ox + p.ox + p.nx, y: oy + p.oy + p.ny, out: stepDir(p.nx, p.ny) }, free, need, hop, s.req.targets[p.id])) return false
   }
   return true
 }
 
+/**
+ * Seed 11 g104: the ground the candidate's belts may leave over: what a route may use (not hard, not the candidate's
+ * footprint). Unlike the lane checks, modules' margin rings count: in a compact cluster they are the corridors the
+ * router lays belts in (with them out, every compact spot read as crowded and the seed 11 production replay failed).
+ */
+function egressGround(s: PlacementSearch, state: LayoutState, td: TDef, ox: number, oy: number): EgressGround {
+  const rect = { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h }
+  const free = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "hard", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  const under = (x: number, y: number): boolean => !rectContains(rect, x, y) && (sum(s, "mods", { x, y, w: 1, h: 1 }) ?? 0) === 0
+  return { free, under, hop: LANE_HOP }
+}
+
 /** B57: `ownLanesOut`, only for a candidate that would become the best (a flood per port is too dear for every one). */
 function sealGate(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy, td: TDef, ox: number, oy: number): boolean {
-  if (ownLanesOut(s, state, policy, td, ox, oy)) return true
-  reject(s, "own-lane-sealed", ox, oy)
+  if (!ownLanesOut(s, state, policy, td, ox, oy)) {
+    reject(s, "own-lane-sealed", ox, oy)
+    return false
+  }
+  // A spot overlapping one whose belts could not all leave together shares its pocket (`egressGate`).
+  for (const c of s.crowded ?? []) {
+    if (rectsOverlap(c, { x: ox, y: oy, w: td.def.footprint.w, h: td.def.footprint.h })) {
+      reject(s, "ports-crowded", ox, oy)
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Seed 11 g104: the scan's best must let all its belt ports leave together, no two belts sharing a tile, to
+ * `portEgress` tiles out or to their connections' targets (`egress.ts`). Dear (a flood of that box per port), so only
+ * the final choice is checked, in budgeted steps (`egressStep`). True: go ahead with the best. False: the check is
+ * running, or the best was crowded and the radius is being scanned again without it. After `EGRESS_RETRIES` crowded
+ * spots the best is taken unchecked (the router's rip-ups and re-placements remain).
+ */
+function egressGate(s: PlacementSearch, policy: LayoutPolicy): boolean {
+  const ring = policy.placement.portEgress ?? 0
+  const best = s.best!
+  if (ring <= 0 || (s.crowded?.length ?? 0) >= EGRESS_RETRIES) return true
+  const td = s.tdefs[best.ti]
+  const key = `${best.ti}:${best.ox},${best.oy}`
+  if (s.egressOk === key) return true
+  const belts = td.ports.filter((p) => !p.pipe)
+  if (belts.length < 2) return true
+  const starts: Vec[] = []
+  const targets: Vec[] = []
+  for (const p of belts) {
+    starts.push({ x: best.ox + p.ox + p.nx, y: best.oy + p.oy + p.ny })
+    const t = s.req.targets[p.id]
+    if (t !== undefined) targets.push(t)
+  }
+  const rect = { x: best.ox, y: best.oy, w: td.def.footprint.w, h: td.def.footprint.h }
+  s.egress = { key, job: newEgress(starts, inflate(rect, ring), targets) }
+  return false
+}
+
+/** Steps the running egress check for about `budget` work units; on its verdict, accepts the best or rescans. */
+function egressStep(s: PlacementSearch, state: LayoutState, budget: number): number {
+  const e = s.egress!
+  const best = s.best!
+  const td = s.tdefs[best.ti]
+  const n = stepEgress(e.job, egressGround(s, state, td, best.ox, best.oy), math.max(1, math.floor(budget / EGRESS_WORK)))
+  if (!e.job.done) return n * EGRESS_WORK
+  s.egress = undefined
+  if (e.job.paths >= e.job.starts.length) {
+    s.egressOk = e.key
+    return n * EGRESS_WORK
+  }
+  reject(s, "ports-crowded", best.ox, best.oy)
+  ;(s.crowded ??= []).push({ x: best.ox, y: best.oy, w: td.def.footprint.w, h: td.def.footprint.h })
+  s.best = undefined
+  s.ti = 0
+  s.ci = 0
+  s.stride = 2
+  s.top = []
+  s.refine = []
+  s.ri = -1
+  return n * EGRESS_WORK
+}
+
+/** M7c.8: whether a pipe port's connection comes from farther than the largest search radius from the target. */
+function remotePipe(s: PlacementSearch, policy: LayoutPolicy): boolean {
+  const rs = radii(s, policy)
+  // B187: measured against the policy's radii, not the wider ones a module without room falls back to.
+  const far = rs[(s.req.def.site === undefined ? math.min(rs.length, policy.searchRadii.length) : rs.length) - 1] ?? 0
+  const t = s.target
+  if (t === undefined) return false
+  for (const td of s.tdefs) {
+    for (const p of td.ports) {
+      const src = p.pipe ? s.req.targets[p.id] : undefined
+      if (src !== undefined && math.abs(src.x - t.x) + math.abs(src.y - t.y) > far) return true
+    }
+    return false
+  }
   return false
 }
 
 function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): void {
+  // M7d.5 g198: a pipe stands on its port's outside tile and joins every neighbour. A fluid route of another kind one
+  // tile beside that tile seals the port (a built crude line beside a new oil complex's water port), so record which
+  // fluid each existing fluid route carries once per placement, not per candidate.
+  if (s.fluidRoutes === undefined) {
+    const fluidRoutes: Record<number, string> = {}
+    for (const rid of state.routeOrder) {
+      const r = state.routes[rid]
+      if (r.fluid === undefined) continue
+      for (const k of r.tiles) fluidRoutes[k] = r.fluid.name
+    }
+    s.fluidRoutes = fluidRoutes
+  }
   const R = radii(s, policy)[s.radiusIdx]
-  // B26: an expandable module's own growth band (and its corridor ring) must fit in the window to be scored.
-  const M = maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
+  // B26: an expandable module's own scored growth band (and its corridor ring) must fit in the window.
+  const M = windowMargin(s, policy)
   const t = s.target!
   s.wx = math.max(t.x - R - M, s.req.region.x)
   s.wy = math.max(t.y - R - M, s.req.region.y)
@@ -629,14 +895,31 @@ function startWindow(s: PlacementSearch, state: LayoutState, policy: LayoutPolic
   s.sat = {}
   s.band = nearBandTiles(s, state, policy)
   s.openPorts = openPortEnds(state, s.req.id, { x: s.wx, y: s.wy, w: s.ww, h: s.wh })
-  for (const l of LAYERS) {
+  // Only the layers this module can query: `sum` reads a missing layer as 0, and every rejection that needs a layer
+  // (mining's ore/res, a shore's water, an expandable module's gblock) gets it here. The window SAT is a big share of
+  // placement work, and a non-mining, non-shore, non-expandable row uses three of the nine.
+  const def = s.req.def
+  const mining = isMining(def)
+  const layers: string[] = ["hard", "clear", "mods", "soft"]
+  if (mining || policy.protectOre) layers.push("ore")
+  if (mining) layers.push("res")
+  if (def.site === "shore" || def.anchor?.wet !== undefined) layers.push("water")
+  if (s.band !== undefined) layers.push("band")
+  if (!mining && def.expand !== undefined && def.expand.maxUnits > 0 && (policy.placement.growthBlocked ?? 0) > 0) layers.push("gblock")
+  s.satLayers = layers
+  for (const l of layers) {
     const a: number[] = []
     for (let i = 0; i < s.ww + 1; i++) a.push(0)
     s.sat[l] = a
   }
   s.ti = 0
   s.ci = 0
-  s.stride = 2
+  // Large windows (a remote module's radius 96 search) coarse-scan at stride 4: the refine pass around the coarse top
+  // covers the immediate neighbourhood, and a coarse pass with nothing feasible falls back to stride 2, then 1. Fluid
+  // modules keep stride 2: their pipe ports need a spot whose side lanes are free, the pocket is narrow, and a coarse
+  // grid can pick a site that later re-placement cannot replace (replay m7-seed11-g154-a1's oil complex).
+  const simple = s.req.def.ports.every((p) => p.kind !== "pipe-in" && p.kind !== "pipe-out")
+  s.stride = simple && R >= 64 ? 4 : 2
   s.top = []
   s.refine = []
   s.ri = -1
@@ -654,7 +937,7 @@ function keepTop(s: PlacementSearch, ti: number, score: number, ox: number, oy: 
   if (list.length > TOP_K) list.pop()
 }
 
-/** Builds one row of the summed-area tables. */
+/** Builds one row of the summed-area tables (only the layers `startWindow` selected). */
 function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
   const y = s.wy + s.row
   const W = s.ww + 1
@@ -677,6 +960,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   // B26: tiles where this module's own growth would be refused (`tryExpand`'s checks), for expandable non-mining modules.
   const ownGrowth = ownGrowthLength(s.req.def) > 0
   const oreBlocks = policy.protectOre && !isMining(s.req.def)
+  const wantOre = aOre !== undefined || aRes !== undefined || (aGblock !== undefined && oreBlocks)
   const treeBlocks = policy.obstacles.trees !== "clear"
   const rockBlocks = policy.obstacles.rocks !== "clear"
   const self = s.req.id
@@ -698,14 +982,14 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
   const base = (s.row + 1) * W
   const prev = base - W
   aHard[base] = 0
-  aOre[base] = 0
   aClear[base] = 0
-  aWater[base] = 0
   aMods[base] = 0
-  aRes[base] = 0
-  aSoft[base] = 0
-  aBand[base] = 0
-  aGblock[base] = 0
+  if (aOre !== undefined) aOre[base] = 0
+  if (aWater !== undefined) aWater[base] = 0
+  if (aRes !== undefined) aRes[base] = 0
+  if (aSoft !== undefined) aSoft[base] = 0
+  if (aBand !== undefined) aBand[base] = 0
+  if (aGblock !== undefined) aGblock[base] = 0
   for (let i = 0; i < s.ww; i++) {
     const x = s.wx + i
     const k = tkey(x, y)
@@ -714,19 +998,20 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const pole = isPoleTag(occ[k])
     const o = pole ? undefined : occ[k]
     if (b >= OWN || (b === TREE && treeHard) || (b === ROCK && rockHard) || o !== undefined || reserved[k] !== undefined || routeOcc[k] !== undefined || (mine[k] !== undefined && mine[k] !== s.req.id)) hard++
-    const ore = terrain.ore(x, y)
+    const ore = wantOre ? terrain.ore(x, y) : undefined
     if (ore !== undefined) {
-      ores++
-      if (ore === resource) res++
+      if (aOre !== undefined) ores++
+      if (aRes !== undefined && ore === resource) res++
     }
     if (b === TREE) clear += clearTree
     else if (b === ROCK) clear += clearRock
     if (pole) clear += clearPole
-    else if (b === WATER) water++
+    else if (aWater !== undefined && b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
-    if (softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
-    if (band[k]) nearBand++
+    if (aSoft !== undefined && softTiles !== undefined && softTiles[k] !== undefined && !exempt[softTiles[k]]) soft++
+    if (aBand !== undefined && band[k]) nearBand++
     if (
+      aGblock !== undefined &&
       ownGrowth &&
       ((b !== FREE && !(b === TREE && !treeBlocks) && !(b === ROCK && !rockBlocks)) ||
         o !== undefined ||
@@ -740,14 +1025,14 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
     const j = base + i + 1
     const p = prev + i + 1
     aHard[j] = aHard[p] + hard
-    aOre[j] = aOre[p] + ores
     aClear[j] = aClear[p] + clear
-    aWater[j] = aWater[p] + water
     aMods[j] = aMods[p] + mods
-    aRes[j] = aRes[p] + res
-    aSoft[j] = aSoft[p] + soft
-    aBand[j] = aBand[p] + nearBand
-    aGblock[j] = aGblock[p] + gblock
+    if (aOre !== undefined) aOre[j] = aOre[p] + ores
+    if (aWater !== undefined) aWater[j] = aWater[p] + water
+    if (aRes !== undefined) aRes[j] = aRes[p] + res
+    if (aSoft !== undefined) aSoft[j] = aSoft[p] + soft
+    if (aBand !== undefined) aBand[j] = aBand[p] + nearBand
+    if (aGblock !== undefined) aGblock[j] = aGblock[p] + gblock
   }
   s.row++
 }
@@ -784,13 +1069,29 @@ export function placementFailureCertificate(s: PlacementSearch): Record<string, 
   return s.rejections ?? {}
 }
 
+/**
+ * M7c.8 (seed 11): whether a shore module's only hard tiles are water on its `anchor.wet` tiles (entity-free tiles
+ * that may stand in water). The lake's straight shore was used up and the rest curves, so a sixth steam block found
+ * no rectangle of land beside a 2x3 strip of water; its pump column may now hang over the water.
+ */
+function wetOnly(s: PlacementSearch, def: ModuleDef, rect: Rect, hard: number | undefined): boolean {
+  const wet = def.anchor?.wet
+  if (wet === undefined || hard === undefined) return false
+  const water = sum(s, "water", rect)
+  if (water !== hard) return false
+  let n = 0
+  for (const w of wet) n += sum(s, "water", { x: rect.x + w.x, y: rect.y + w.y, w: w.w, h: w.h }) ?? 0
+  return n === water
+}
+
 function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number, state: LayoutState): { score: number; coverage: number; clear: number } | undefined {
   const def = td.def
   const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
   if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) {
     return reject(s, "region", ox, oy)
   }
-  if (sum(s, "hard", rect) !== 0) {
+  const hard = sum(s, "hard", rect)
+  if (hard !== 0 && !wetOnly(s, def, rect, hard)) {
     return reject(s, "hard", ox, oy)
   }
   for (const a of s.req.avoid ?? []) {
@@ -799,7 +1100,8 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     }
   }
   const mining = isMining(def)
-  if (policy.protectOre && !mining && sum(s, "ore", rect) !== 0) {
+  // M7b: a module anchored to a resource (a pumpjack field) stands on its own wells.
+  if (policy.protectOre && !mining && def.anchor?.resource === undefined && sum(s, "ore", rect) !== 0) {
     return reject(s, "ore", ox, oy)
   }
   if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) {
@@ -886,10 +1188,25 @@ function evaluate(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number
     if (sum(s, "hard", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0 || sum(s, "mods", { x: x + p.nx, y: y + p.ny, w: 1, h: 1 }) !== 0) {
       return reject(s, "port-lane", ox, oy)
     }
+    // M7d.5 g198: a pipe on the port's outside tile joins all four neighbours, so another fluid's route beside that tile
+    // seals the port. The port tile itself is its own pipe; the other three directions must be another fluid's free.
+    if (p.pipe && s.fluidRoutes !== undefined) {
+      const px = x - p.nx
+      const py = y - p.ny
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d]
+        const ny = y + DY[d]
+        if (nx === px && ny === py) continue
+        const fluid = s.fluidRoutes[tkey(nx, ny)]
+        if (fluid !== undefined && fluid !== p.item) return reject(s, "port-fluid", ox, oy)
+      }
+    }
     if (policy.protectOre && sum(s, "ore", { x, y, w: 1, h: 1 }) !== 0 && !mining) portDist += policy.router.oreTile
     const t = s.req.targets[p.id]
     if (t === undefined) continue
-    portDist += math.abs(t.x - x) + math.abs(t.y - y)
+    // M7c.8: a pipe tile costs `pipePort` belt tiles: a fluid line cannot rip or side-load its way through a built
+    // block, and its undergrounds cannot pass under modules (seed 11: a plastic chain 100 tiles inside the base).
+    portDist += (math.abs(t.x - x) + math.abs(t.y - y)) * (p.pipe ? policy.placement.pipePort ?? 1 : 1)
     if (p.nx * (t.x - x) + p.ny * (t.y - y) < 0) facingAway++
   }
   // B45: nor wall in another module's unconnected port lane (its margin ring reads as own ground to later plans).
@@ -931,164 +1248,233 @@ export function stepPlacement(s: PlacementSearch, state: LayoutState, terrain: T
   while (used < budget && (s.phase === "site" || s.phase === "sat" || s.phase === "scan")) {
     if (s.phase === "site" && isMining(s.req.def)) {
       used += nextPatch(s, state, terrain, policy)
-      continue
-    }
-    if (s.phase === "site") {
-      // Ring by ring around the centre: the nearest shore tile or ore tile of the resource. Only points whose window
-      // (`startWindow`: the target ± the largest radius and margin, clipped to the region) still meets the region count:
-      // the rings are clipped to that box. Half a work unit a tile checked, as `satRow` (B53: r / 2 a ring of 8r tiles
-      // let one planner tick scan ~16× its budget; a region with no water spun at ~50 ms a tick).
-      const c = s.req.center
-      const r = s.ring
-      const reg = s.req.region
-      let reach = 0
-      for (const R of radii(s, policy)) reach = math.max(reach, R)
-      reach += maxDim(s) + policy.corridor.preferred + 4 + ownGrowthLength(s.req.def) + policy.corridor.min
-      const bx1 = reg.x - reach
-      const by1 = reg.y - reach
-      const bx2 = reg.x + reg.w - 1 + reach
-      const by2 = reg.y + reg.h - 1 + reach
-      const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
-      if (r > maxR) {
-        s.phase = "failed"
-        s.reason = `no ${s.req.def.site} site in the region`
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-        break
-      }
-      // Resumes the ring where the last step stopped; half a work unit a point checked.
-      let found: Vec | undefined
-      const n = r === 0 ? 1 : 8 * r
-      let i = s.ringIdx ?? 0
-      while (i < n && found === undefined && used < budget) {
-        const p = ringPoint(c, r, i)
-        i++
-        if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
-        used += 0.5
-        if (sitePoint(s.req.def, terrain, p.x, p.y)) found = p
-      }
-      if (found === undefined && i < n) {
-        s.ringIdx = i
-        break
-      }
-      s.ringIdx = undefined
-      used += 0.5
-      s.ring++
-      if (found !== undefined) {
-        s.target = found
-        startWindow(s, state, policy)
-      }
-      continue
-    }
-    if (s.phase === "sat") {
+    } else if (s.phase === "site") {
+      const r = siteStep(s, state, terrain, policy, budget - used)
+      used += r.used
+      if (r.stop) break
+    } else if (s.phase === "sat") {
       if (s.ww <= 0 && s.row === 0 && s.sat.hard === undefined) startWindow(s, state, policy)
       if (s.row >= s.wh) {
         s.phase = "scan"
         continue
       }
       satRow(s, state, terrain, policy)
-      used += s.ww / 2
-      continue
-    }
-    // Scan: candidates for transform ti, origin index ci over a (2R + 1)² square around the target, every `stride`
-    // tiles; then refine (±1 around the best few per transform of a coarse pass).
-    const R = radii(s, policy)[s.radiusIdx]
-    const side = 2 * R + 1
-    const n = math.floor((side - 1) / s.stride) + 1
-    if (s.ri >= 0) {
-      if (s.ri >= s.refine.length) {
-        s.ti = s.tdefs.length
-        s.ri = -1
-        s.refine = []
-        s.stride = 0
-      } else {
-        const c = s.refine[s.ri]
-        const e = evaluate(s, policy, s.tdefs[c.ti], c.ox, c.oy, state)
-        s.candidates = (s.candidates ?? 0) + 1
-        if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
-        if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, s.tdefs[c.ti], c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
-        s.ri++
-        used++
-        continue
-      }
-    }
-    if (s.ti >= s.tdefs.length) {
-      if (s.stride === 2 && s.best !== undefined) {
-        // Refine around the coarse pass's best candidates.
-        const seen: Record<string, boolean> = {}
-        for (let ti = 0; ti < s.tdefs.length; ti++) {
-          for (const c of s.top[ti] ?? []) {
-            for (let dx = -1; dx <= 1; dx++) {
-              for (let dy = -1; dy <= 1; dy++) {
-                const key = `${ti}:${c.ox + dx},${c.oy + dy}`
-                if ((dx === 0 && dy === 0) || seen[key]) continue
-                seen[key] = true
-                s.refine.push({ ti, ox: c.ox + dx, oy: c.oy + dy })
-              }
-            }
-          }
-        }
-        s.ri = 0
-        continue
-      }
-      if (s.stride === 2) {
-        // Nothing feasible on the coarse grid: scan every origin before widening the radius.
-        s.stride = 1
-        s.ti = 0
-        s.ci = 0
-        continue
-      }
-      if (s.best !== undefined) {
-        const td = s.tdefs[s.best.ti]
-        const m: PlacedModule = {
-          id: moduleId(s.req.id),
-          canonical: s.req.def,
-          def: td.def,
-          transform: td.t,
-          origin: { x: s.best.ox, y: s.best.oy },
-          rect: { x: s.best.ox, y: s.best.oy, w: td.def.footprint.w, h: td.def.footprint.h },
-        }
-        s.result = m
-        s.phase = "done"
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-      } else if (s.radiusIdx + 1 < radii(s, policy).length) {
-        s.radiusIdx++
-        startWindow(s, state, policy)
-      } else if (s.patch !== undefined) {
-        // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
-        noteDeadPatch(s, state, terrain)
-        s.patch = undefined
-        s.target = undefined
-        s.radiusIdx = 0
-        s.phase = "site"
-      } else {
-        s.phase = "failed"
-        s.reason = "no feasible position"
-        if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
-      }
-      continue
-    }
-    const td = s.tdefs[s.ti]
-    const t = s.target!
-    const cx = (s.ci % n) * s.stride
-    const cy = math.floor(s.ci / n) * s.stride
-    const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
-    const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
-    const e = evaluate(s, policy, td, ox, oy, state)
-    s.candidates = (s.candidates ?? 0) + 1
-    if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
-    if (e !== undefined) {
-      if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
-      if (s.stride === 2) keepTop(s, s.ti, e.score, ox, oy)
-    }
-    used++
-    s.ci++
-    if (s.ci >= n * n) {
-      s.ci = 0
-      s.ti++
-    }
+      used += (s.ww * (s.satLayers?.length ?? LAYERS.length)) / (2 * LAYERS.length)
+    } else if (s.egress !== undefined) used += egressStep(s, state, budget - used)
+    else if (s.ri >= 0) used += refineStep(s, state, policy)
+    else if (s.ti >= s.tdefs.length) passEnd(s, state, terrain, policy)
+    else used += scanStep(s, state, policy)
   }
   s.work += used
   return used
+}
+
+/**
+ * The site phase of a non-mining module: ring by ring around the centre, the nearest shore tile or ore tile of the
+ * resource. Only points whose window (`startWindow`: the target ± the largest radius and margin, clipped to the region)
+ * still meets the region count: the rings are clipped to that box. Half a work unit a tile checked, as `satRow` (B53:
+ * r / 2 a ring of 8r tiles let one planner tick scan ~16× its budget; a region with no water spun at ~50 ms a tick).
+ * `stop`: the step ends here (the search failed, or the budget ran out mid-ring).
+ */
+function siteStep(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, budget: number): { used: number; stop: boolean } {
+  let used = 0
+  const c = s.req.center
+  const r = s.ring
+  const reg = s.req.region
+  let reach = 0
+  for (const R of radii(s, policy)) reach = math.max(reach, R)
+  reach += windowMargin(s, policy)
+  const bx1 = reg.x - reach
+  const by1 = reg.y - reach
+  const bx2 = reg.x + reg.w - 1 + reach
+  const by2 = reg.y + reg.h - 1 + reach
+  const maxR = math.min(math.max(reg.w, reg.h), math.max(c.x - bx1, bx2 - c.x, c.y - by1, by2 - c.y))
+  if (r > maxR) {
+    s.phase = "failed"
+    s.failure = planFailure("no-site", `no ${s.req.def.site} site in the region`, s.req.def.site)
+    s.reason = s.failure.reason
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+    return { used, stop: true }
+  }
+  // Resumes the ring where the last step stopped; half a work unit a point checked.
+  let found: Vec | undefined
+  const n = r === 0 ? 1 : 8 * r
+  let i = s.ringIdx ?? 0
+  while (i < n && found === undefined && used < budget) {
+    const p = ringPoint(c, r, i)
+    i++
+    if (p.x < bx1 || p.x > bx2 || p.y < by1 || p.y > by2) continue
+    used += 0.5
+    if (sitePoint(s.req.def, terrain, p.x, p.y) && !inDeadSite(s, policy, p)) found = p
+  }
+  if (found === undefined && i < n) {
+    s.ringIdx = i
+    return { used, stop: true }
+  }
+  s.ringIdx = undefined
+  used += 0.5
+  s.ring++
+  if (found !== undefined) {
+    s.target = found
+    startWindow(s, state, policy)
+  }
+  return { used, stop: false }
+}
+
+/** The square of origins scanned at the current radius: its side in candidates, and the radius. */
+function scanSide(s: PlacementSearch, policy: LayoutPolicy): { n: number; R: number } {
+  const R = radii(s, policy)[s.radiusIdx]
+  return { n: math.floor((2 * R + 1 - 1) / s.stride) + 1, R }
+}
+
+/** Scores the next candidate of the scan: transform `ti`, origin `ci` every `stride` tiles around the target. */
+/**
+ * The cheap first checks of `evaluate` (region, hard/wet, avoid, ore, corridor). `scanStep`/`refineStep` run them before
+ * the full evaluation: in a dense plan most candidates die here (96% of one 213k-candidate module), and the ports,
+ * coverage and growth checks afterwards are not cheap.
+ */
+function precheck(s: PlacementSearch, policy: LayoutPolicy, td: TDef, ox: number, oy: number): string | undefined {
+  const def = td.def
+  const rect = { x: ox, y: oy, w: def.footprint.w, h: def.footprint.h }
+  if (!rectContains(s.req.region, rect.x, rect.y) || !rectContains(s.req.region, rect.x + rect.w - 1, rect.y + rect.h - 1)) return "region"
+  const hard = sum(s, "hard", rect)
+  if (hard !== 0 && !wetOnly(s, def, rect, hard)) return "hard"
+  for (const a of s.req.avoid ?? []) {
+    if (rect.x < a.x + a.w && a.x < rect.x + rect.w && rect.y < a.y + a.h && a.y < rect.y + rect.h) return "avoid"
+  }
+  if (policy.protectOre && !isMining(def) && def.anchor?.resource === undefined && sum(s, "ore", rect) !== 0) return "ore"
+  if (sum(s, "mods", inflate(rect, policy.corridor.min)) !== 0) return "corridor"
+  return undefined
+}
+
+function scanStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
+  const { n, R } = scanSide(s, policy)
+  const td = s.tdefs[s.ti]
+  const t = s.target!
+  const cx = (s.ci % n) * s.stride
+  const cy = math.floor(s.ci / n) * s.stride
+  const ox = t.x - R + cx - math.floor(td.def.footprint.w / 2)
+  const oy = t.y - R + cy - math.floor(td.def.footprint.h / 2)
+  const why = precheck(s, policy, td, ox, oy)
+  const e = why !== undefined ? reject(s, why, ox, oy) : evaluate(s, policy, td, ox, oy, state)
+  s.candidates = (s.candidates ?? 0) + 1
+  if (s.trace !== undefined) traceCandidate(s, s.ti, ox, oy, e?.score)
+  if (e !== undefined) {
+    if ((s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, ox, oy)) s.best = { score: e.score, ti: s.ti, ox, oy, coverage: e.coverage, clear: e.clear }
+    if (s.stride >= 2) keepTop(s, s.ti, e.score, ox, oy)
+  }
+  s.ci++
+  if (s.ci >= n * n) {
+    s.ci = 0
+    s.ti++
+  }
+  return 1
+}
+
+
+/** Scores the next refine candidate (±1 around the coarse pass's best); past the last, ends the pass. */
+function refineStep(s: PlacementSearch, state: LayoutState, policy: LayoutPolicy): number {
+  if (s.ri >= s.refine.length) {
+    s.ti = s.tdefs.length
+    s.ri = -1
+    s.refine = []
+    s.stride = 0
+    return 0
+  }
+  const c = s.refine[s.ri]
+  const td = s.tdefs[c.ti]
+  const why = precheck(s, policy, td, c.ox, c.oy)
+  const e = why !== undefined ? reject(s, why, c.ox, c.oy) : evaluate(s, policy, td, c.ox, c.oy, state)
+  s.candidates = (s.candidates ?? 0) + 1
+  if (s.trace !== undefined) traceCandidate(s, c.ti, c.ox, c.oy, e?.score)
+  if (e !== undefined && (s.best === undefined || e.score < s.best.score - 1e-9) && sealGate(s, state, policy, td, c.ox, c.oy)) s.best = { score: e.score, ti: c.ti, ox: c.ox, oy: c.oy, coverage: e.coverage, clear: e.clear }
+  s.ri++
+  return 1
+}
+
+/**
+ * Every transform scanned: refine around the coarse pass's best, or scan every origin when the coarse grid had nothing
+ * feasible; then place the best, or widen the radius, or try the next patch, or fail.
+ */
+function passEnd(s: PlacementSearch, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): void {
+  if (s.stride >= 2 && s.best !== undefined) {
+    // Refine around the coarse top: ±1 from a stride-2 pass, ±(stride-1) from a stride-4 one, so the true best inside
+    // the coarse cell is still seen.
+    const seen: Record<string, boolean> = {}
+    const dmax = s.stride - 1
+    for (let ti = 0; ti < s.tdefs.length; ti++) {
+      for (const c of s.top[ti] ?? []) {
+        for (let dx = -dmax; dx <= dmax; dx++) {
+          for (let dy = -dmax; dy <= dmax; dy++) {
+            const key = `${ti}:${c.ox + dx},${c.oy + dy}`
+            if ((dx === 0 && dy === 0) || seen[key]) continue
+            seen[key] = true
+            s.refine.push({ ti, ox: c.ox + dx, oy: c.oy + dy })
+          }
+        }
+      }
+    }
+    s.ri = 0
+    return
+  }
+  if (s.stride > 2) {
+    // Nothing feasible on the coarse grid: try the finer grid before scanning every origin.
+    s.stride = 2
+    s.ti = 0
+    s.ci = 0
+    return
+  }
+  if (s.stride === 2) {
+    // Still nothing feasible on the stride-2 grid: scan every origin before widening the radius.
+    s.stride = 1
+    s.ti = 0
+    s.ci = 0
+    return
+  }
+  if (s.best !== undefined && s.radiusIdx + 1 < math.min(radii(s, policy).length, policy.searchRadii.length) && remotePipe(s, policy)) {
+    // M7c.8: a pipe port fed from beyond every search radius (a remote oil field) looks at every radius: the nearest
+    // room is often deep in a built block, and `pipePort` prefers the base edge facing the source. Only the policy's
+    // radii: B187's wider ones are for a module with no room at all.
+    s.radiusIdx++
+    startWindow(s, state, policy)
+  } else if (s.best !== undefined) {
+    if (!egressGate(s, policy)) return
+    const td = s.tdefs[s.best.ti]
+    s.result = {
+      id: moduleId(s.req.id),
+      canonical: s.req.def,
+      def: td.def,
+      transform: td.t,
+      origin: { x: s.best.ox, y: s.best.oy },
+      rect: { x: s.best.ox, y: s.best.oy, w: td.def.footprint.w, h: td.def.footprint.h },
+    }
+    s.phase = "done"
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+  } else if (s.radiusIdx + 1 < radii(s, policy).length) {
+    s.radiusIdx++
+    startWindow(s, state, policy)
+  } else if (s.patch === undefined && s.req.def.site !== undefined && s.req.def.site !== "resource-patch" && (s.deadSites?.length ?? 0) + 1 < MAX_SITE_TARGETS) {
+    // M7c.8: no room around the nearest site (seed 11: the base lake's shore was built out by six steam blocks, and
+    // power#7 failed 8 plans "no feasible position" with other lakes in the region). The ring search goes on past the
+    // windows already searched, to the next site point.
+    s.deadSites ??= []
+    s.deadSites.push(s.target!)
+    s.target = undefined
+    s.radiusIdx = 0
+    s.phase = "site"
+  } else if (s.patch !== undefined) {
+    // B50 / D57: no room on this patch (seed 3333: the home field was built out): remember it, try the next one.
+    noteDeadPatch(s, state, terrain)
+    s.patch = undefined
+    s.target = undefined
+    s.radiusIdx = 0
+    s.phase = "site"
+  } else {
+    s.phase = "failed"
+    s.failure = planFailure("no-position", "no feasible position", s.req.def.anchor?.resource)
+    s.reason = s.failure.reason
+    if (s.trace !== undefined) finishTrace(s, state, terrain, policy)
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1142,6 +1528,22 @@ function rejectBlocker(s: PlacementSearch, state: LayoutState, terrain: TerrainV
       if (hard(x, y) || (reason === "port-lane" && isMod(x, y))) return `port ${p.id} ${reason === "port-lane" ? "lane" : "outside tile"} at ${x},${y}: ${describeTile(state, terrain, x, y)}`
     }
   }
+  if (reason === "port-fluid") {
+    for (const p of td.ports) {
+      if (!p.pipe) continue
+      const x = ox + p.ox
+      const y = oy + p.oy
+      const px = x - p.nx
+      const py = y - p.ny
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d]
+        const ny = y + DY[d]
+        if (nx === px && ny === py) continue
+        const fluid = s.fluidRoutes?.[tkey(nx, ny)]
+        if (fluid !== undefined && fluid !== p.item) return `port ${p.id} outside tile ${x},${y} is beside a ${fluid} route at ${nx},${ny}`
+      }
+    }
+  }
   return reason
 }
 
@@ -1186,13 +1588,43 @@ function finishTrace(s: PlacementSearch, state: LayoutState, terrain: TerrainVie
 }
 
 /** Places synchronously (tests, tools). */
+/**
+ * M7b: a module generated for one spot (a pumpjack field on its wells) is placed exactly at `origin` if every footprint
+ * tile is placeable and unclaimed, without a search. Returns the module, or the reason it cannot go there.
+ */
+export function placeFixed(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, id: string, def: ModuleDef, origin: Vec, facts: ProtoFacts): PlacedModule | string {
+  const td = tdefOf(def, IDENTITY)
+  // B119: the module is generated around what stands there (a pumpjack field's pipes go around cliffs): only its
+  // entities' tiles need placeable ground; elsewhere in the box only other structures block.
+  const under: Record<number, boolean> = {}
+  for (const e of def.entities) {
+    const r = entityRect(e, facts)
+    for (let x = r.x; x < r.x + r.w; x++) for (let y = r.y; y < r.y + r.h; y++) under[tkey(origin.x + x, origin.y + y)] = true
+  }
+  for (let x = origin.x; x < origin.x + def.footprint.w; x++) {
+    for (let y = origin.y; y < origin.y + def.footprint.h; y++) {
+      const b = terrain.block(x, y)
+      if (!under[tkey(x, y)]) {
+        if (b === OWN || b === FOREIGN) return `structure at ${x},${y}`
+      } else {
+        if (b === TREE && policy.obstacles.trees !== "clear") return `tree at ${x},${y}`
+        if (b === ROCK && policy.obstacles.rocks !== "clear") return `rock at ${x},${y}`
+        if (b !== FREE && b !== TREE && b !== ROCK) return `blocked (${describeTile(state, terrain, x, y)}) at ${x},${y}`
+      }
+      const c = placementClaimConflict(state, tkey(x, y), id)
+      if (c !== undefined) return `${c.code} at ${x},${y}`
+    }
+  }
+  return { id: moduleId(id), canonical: def, def: td.def, transform: IDENTITY, origin: { x: origin.x, y: origin.y }, rect: { x: origin.x, y: origin.y, w: def.footprint.w, h: def.footprint.h } }
+}
+
 export function placeNow(req: PlacementRequest, state: LayoutState, terrain: TerrainView, policy: LayoutPolicy): PlacementSearch {
   const s = newPlacement(req)
   while (s.phase !== "done" && s.phase !== "failed") stepPlacement(s, state, terrain, policy, 1e9)
   return s
 }
 
-function drillCount(def: ModuleDef, facts: ProtoFacts): number {
+export function drillCount(def: ModuleDef, facts: ProtoFacts): number {
   let n = 0
   for (const e of def.entities) if (facts.entity(e.name)?.type === "mining-drill") n++
   return n
@@ -1228,138 +1660,6 @@ export function stripOreUnits(m: PlacedModule, terrain: TerrainView, facts: Prot
     n++
   }
   return n
-}
-
-/**
- * Replaces the small linear placement template with its immutable, fixed-port whole-patch mine plan (D52), in every
- * topology (B33: point-to-point mines were left as strips whose growth ran off the patch). The plan covers the part of
- * the patch one output belt can carry (`claimPart`) and avoids ground other modules, routes, claims and reservations of
- * `state` already hold. When the plan does not fit (its entities on unbuildable or taken ground), the mine stays the
- * strip it was placed as and its growth is clipped to its ore (`stripOreUnits`).
- */
-export function prepareWholePatchPlacement(m: PlacedModule, terrain: TerrainView, facts: ProtoFacts, region: Rect, policy: LayoutPolicy, state?: LayoutState, splitters = false): void {
-  if (!isMining(m.canonical) || m.minePlan !== undefined) return
-  const strip = (): void => {
-    if (m.canonical.expand !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
-  }
-  const resource = m.canonical.anchor?.resource
-  const drillName = m.canonical.params?.drill
-  const belt = m.canonical.params?.belt
-  if (resource === undefined || typeof drillName !== "string" || typeof belt !== "string") return strip()
-  const drill = facts.entity(drillName)
-  if (drill === undefined) return strip()
-  // Ground the layout already gives to someone else reads as own structures: no planned drill, belt or pole there.
-  const taken = (x: number, y: number): boolean => {
-    if (state === undefined) return false
-    return moduleGrowthClaimConflict(state, tkey(x, y), m.id) !== undefined
-  }
-  const view: TerrainView = {
-    block: (x, y) => (taken(x, y) ? OWN : terrain.block(x, y)),
-    ore: (x, y) => terrain.ore(x, y),
-  }
-  const seeds: Vec[] = []
-  for (const a of m.def.anchor?.miningAreas ?? []) {
-    for (let x = m.origin.x + a.x; x < m.origin.x + a.x + a.w; x++) {
-      for (let y = m.origin.y + a.y; y < m.origin.y + a.y + a.h; y++) if (terrain.ore(x, y) === resource) seeds.push({ x, y })
-    }
-  }
-  const patch = connectedPatch(terrain, resource, seeds, region)
-  if (patch === undefined) return strip()
-  // Preserve the routing intent of the accepted small placement. Its output was oriented toward the consumer;
-  // using that outside tile as the materializer's target chooses the matching edge of the whole-patch plan.
-  const oldOut = m.def.ports.find((p) => p.id === "out")
-  const near = oldOut !== undefined ? portOutside(m, oldOut) : { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
-  // The part it claims: a shared (splitter-tap) mine one full output belt over as many lanes as that takes; a
-  // point-to-point mine, which only ever feeds its one consumer, one lane of the patch's grid (the strip it was placed
-  // as, on the full-coverage grid and only over ore) holding at most as many drills as its template could grow to, so
-  // the rest of the field stays free for the next consumer's own mine (the seed 11 / 3333 replays: two coal outposts
-  // on one small field).
-  let cap = beltDrillCap(facts, belt, drill, resource)
-  let maxLanes = math.huge
-  const spec = m.canonical.expand
-  // P44 (b) (user, 2026-10-28: "Splitters, cap before"): rows past the first join the collector through splitters; with
-  // none researched, the mine is one row (its two drill columns fill the two lanes of its belt, no side-load).
-  if (!splitters) maxLanes = 1
-  if (policy.topology !== "splitter-tap") {
-    maxLanes = 1
-    if (spec !== undefined) {
-      let perUnit = 0
-      for (const e of spec.unit.entities) if (facts.entity(e.name)?.type === "mining-drill") perUnit++
-      cap = math.min(cap, drillCount(m.canonical, facts) + spec.maxUnits * perUnit)
-    }
-  }
-  // B45: the plan, its claim and its margin must not wall in another module's unconnected port lane: when they do, the
-  // patch is planned again around each such lane's way out (and a tile either side of it, the margin), once.
-  const escape = state !== undefined ? (policy.placement.portEscape ?? 0) : 0
-  const ground = (x: number, y: number): boolean => {
-    const b = terrain.block(x, y)
-    return !taken(x, y) && (b === FREE || b === TREE || b === ROCK)
-  }
-  // B57: undergrounds may go under anything but a module (here: nor the planned mine and its margin).
-  const under = (x: number, y: number): boolean => {
-    const o = state?.occ[tkey(x, y)]
-    return !(o !== undefined && string.sub(o, 1, 2) === "m:" && o !== `m:${m.id}`) && terrain.block(x, y) !== UNKNOWN
-  }
-  const hop: LaneHop = { under, max: LANE_HOP, state }
-  const lanes = escape > 0 ? openPortEnds(state!, m.id).filter((a) => laneLeadsOut(a, ground, escape, hop)) : []
-  const keepOut: Record<number, boolean> = {}
-  const planView: TerrainView = { block: (x, y) => (keepOut[tkey(x, y)] ? FOREIGN : view.block(x, y)), ore: view.ore }
-  let built: ReturnType<typeof materializeMinePlan>
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const plan = claimPart(planWholePatch(planView, patch, drill), planView, drill, near, cap, maxLanes)
-    built = materializeMinePlan(m.canonical, plan, facts, near, policy.minOreCoverage, maxLanes > 1 ? "splitter" : undefined)
-    if (built === undefined) return strip()
-    const margin: Record<number, boolean> = {}
-    for (const k of moduleMargin({ ...m, minePlan: { full: built.full, claim: built.claim, occupied: built.occupied, complete: false } })) margin[k] = true
-    let sealed = false
-    for (const a of lanes) {
-      if (laneLeadsOut(a, (x, y) => ground(x, y) && !margin[tkey(x, y)], escape, { under: (x, y) => under(x, y) && !margin[tkey(x, y)], max: LANE_HOP, state })) continue
-      sealed = true
-      for (const t of laneWayOut(a, ground, escape, hop)!) for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) keepOut[tkey(t.x + dx, t.y + dy)] = true
-    }
-    if (!sealed) break
-    if (attempt === 1) return strip()
-  }
-  if (built === undefined) return strip()
-  // B33: the whole plan must fit: every claimed tile buildable (trees and rocks as the policy clears them, own
-  // structures the layout doesn't hold as D51 evicts them), in the region, untaken, and off other non-mine modules' corridor ring; its output port must have a usable outside tile.
-  const ownRect = { x: built.origin.x, y: built.origin.y, w: built.full.footprint.w, h: built.full.footprint.h }
-  for (const k of built.claim) {
-    const x = keyX(k)
-    const y = keyY(k)
-    // Own structures the layout doesn't know (bootstrap sites on the patch) are fine: adoption evicts them (D51 (3)).
-    const b = terrain.block(x, y)
-    if (!rectContains(region, x, y) || taken(x, y)) return strip()
-    if (b !== FREE && b !== OWN && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return strip()
-  }
-  if (state !== undefined) {
-    const ring = inflate(ownRect, policy.corridor.min)
-    for (let x = ring.x; x < ring.x + ring.w; x++) {
-      for (let y = ring.y; y < ring.y + ring.h; y++) {
-        const o = state.occ[tkey(x, y)]
-        if (o === undefined || string.sub(o, 1, 2) !== "m:" || o === `m:${m.id}`) continue
-        const other = findModule(state, string.sub(o, 3))
-        if (other === undefined || !isMining(other.canonical)) return strip()
-      }
-    }
-  }
-  const out = built.initial.ports.find((p) => p.id === "out")
-  if (out !== undefined) {
-    const probe: PlacedModule = { ...m, canonical: built.initial, def: built.initial, transform: IDENTITY, origin: built.origin, rect: ownRect }
-    // The route starts on the outside tile and leaves over the approach tile: both must be ground the router can use
-    // (own structures there are not evicted for a route; the seed 3333 replay's iron mine faced into its base).
-    for (const o of [portOutside(probe, out), portApproach(probe, out)]) {
-      const b = terrain.block(o.x, o.y)
-      if (taken(o.x, o.y) || (b !== FREE && b !== TREE && b !== ROCK)) return strip()
-    }
-  }
-  m.canonical = built.initial
-  m.def = built.initial
-  m.transform = IDENTITY
-  m.origin = built.origin
-  m.rect = ownRect
-  m.oreUnits = undefined
-  m.minePlan = { full: built.full, claim: built.claim, occupied: built.occupied, complete: false }
 }
 
 export function commitPlacement(state: LayoutState, m: PlacedModule, facts: ProtoFacts, policy: LayoutPolicy): void {
@@ -1509,58 +1809,21 @@ function fromMine(state: LayoutState, rid: string, mine: string): boolean {
   return false
 }
 
+/**
+ * Grows module `id` in place by `k` units at `end` (or completes a whole-patch mine's plan, or with `reclaim` re-plans
+ * its patch). Each check is a `...Blocker` returning why the growth is refused; nothing changes unless all pass.
+ */
 export function tryExpand(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, id: string, k: number, end: "auto" | "head" | "tail" = "auto", reclaim = false): ExpansionResult {
   const m = findModule(state, id)
-  if (m === undefined) return { ok: false, reason: "unknown module", movedPorts: [], moved: [] }
+  if (m === undefined) return refused("unknown module")
   if (reclaim) {
     const why = reclaimWholePatch(state, terrain, facts, policy, m)
-    return why === undefined ? { ok: true, movedPorts: [], moved: [] } : { ok: false, reason: why, movedPorts: [], moved: [] }
+    return why === undefined ? { ok: true, movedPorts: [], moved: [] } : refused(why)
   }
   if (m.minePlan !== undefined) {
-    if (m.minePlan.complete || k < 1) return { ok: false, reason: "whole-patch mine is already complete", movedPorts: [], moved: [] }
-    const current: Record<string, boolean> = {}
-    for (const e of m.def.entities) current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)] = true
-    // B23: completion re-checks geometry (terrain, other modules, routes) but not ore: the patch was validated whole
-    // at planning time, and between planning and completion the terrain can only lose ore (mining) — a drill over
-    // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
-    // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
-    // would be stricter than the planning-time one that accepted them.)
-    // B55: the tile its output route starts on is never the mine's, whatever B25 lets give way (a full plan made
-    // before the fix could put a pole there).
-    const fullOut = m.minePlan.full.ports.find((p) => p.id === "out")
-    const outside = fullOut !== undefined ? portOutside(m, fullOut) : undefined
-    for (const e of m.minePlan.full.entities) {
-      if (current[string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)]) continue
-      const er = entityRect(e, facts)
-      if (outside !== undefined && outside.x >= m.origin.x + er.x && outside.x < m.origin.x + er.x + er.w && outside.y >= m.origin.y + er.y && outside.y < m.origin.y + er.y + er.h)
-        return { ok: false, reason: `planned mine covers its output at ${outside.x},${outside.y}`, movedPorts: [], moved: [] }
-      for (let x = m.origin.x + er.x; x < m.origin.x + er.x + er.w; x++) {
-        for (let y = m.origin.y + er.y; y < m.origin.y + er.y + er.h; y++) {
-          const kk = tkey(x, y)
-          const b = terrain.block(x, y)
-          // B24: the mine's own D52 footprint is reserved — the adoption reserves the whole rect plus 1 ring and the
-          // plan's claim is the mine's own — so those tiles read as OWN for a later request, but they are exactly
-          // what the completion builds. Only a ground someone else reserved (or raw obstacles) still blocks.
-          const own = state.mine?.[kk] === m.id || rectContains(m.rect, x, y)
-          if (b !== FREE && b !== TREE && b !== ROCK && !(b === OWN && own)) return { ok: false, reason: `planned mine blocked at ${x},${y}`, movedPorts: [], moved: [] }
-          const o = state.occ[kk]
-          // B25: pole lines placed before the mine's claim, and the faction's own earlier routes, can stand on its
-          // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
-          // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
-          // the rip breaks, so neither blocks a completion.
-          // B37: pole lines anywhere on the new ground give way (markModule evicts them; the plan re-poles).
-          if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return { ok: false, reason: `planned mine occupied at ${x},${y}`, movedPorts: [], moved: [] }
-          // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
-          // belts up and reconcile re-routes the broken edge).
-          const rid = state.routeOcc[kk]
-          if (rid !== undefined && !own) return { ok: false, reason: `planned mine route at ${x},${y}`, movedPorts: [], moved: [] }
-          // B74 (soak vps-d67 seed 7718665): B55 for the whole output route, not just its first tile. The mine's own
-          // output belt ran west along its unbuilt top row; the completion put a pole on its second tile and picked the
-          // belt up. With the mine backed up nothing measured the break, and three science clusters starved 150 min.
-          if (rid !== undefined && fromMine(state, rid, m.id)) return { ok: false, reason: `planned mine covers its own output route at ${x},${y}`, movedPorts: [], moved: [] }
-        }
-      }
-    }
+    if (m.minePlan.complete || k < 1) return refused("whole-patch mine is already complete")
+    const why = minePlanBlocker(state, terrain, facts, m)
+    if (why !== undefined) return refused(why)
     unmarkModule(state, m, facts)
     m.canonical = m.minePlan.full
     m.def = m.minePlan.full
@@ -1571,9 +1834,113 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
   }
   const canon = m.canonical
   const spec = canon.expand
-  if (spec === undefined || k < 1 || k > spec.maxUnits) return { ok: false, reason: "cannot expand by that much", movedPorts: [], moved: [] }
+  if (spec === undefined || k < 1 || k > spec.maxUnits) return refused("cannot expand by that much")
+  const g = grownGeometry(m, k, end, facts)
+  if (typeof g === "string") return refused(g)
+  const why = newGroundBlocker(state, terrain, policy, m, g.rect) ?? growthOreBlocker(terrain, facts, m, g, k, end) ?? growthRingBlocker(state, m, g.rect, policy.corridor.min) ?? grownPortBlocker(state, terrain, m, g)
+  if (why !== undefined) return refused(why)
+  const before: Record<string, Vec> = {}
+  for (const p of m.def.ports) before[p.id] = portTile(m, p)
+  unmarkModule(state, m, facts)
+  m.canonical = g.grown
+  m.def = g.placed
+  m.origin = g.origin
+  m.rect = g.rect
+  // B33: a strip mine's growth claim keeps stopping where its ore ends.
+  if (isMining(canon) && m.oreUnits !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
+  markModule(state, m, facts, policy.corridor.preferred)
+  const movedPorts: string[] = []
+  for (const p of m.def.ports) {
+    const now = portTile(m, p)
+    const was = before[p.id]
+    if (was === undefined || was.x !== now.x || was.y !== now.y) movedPorts.push(p.id)
+  }
+  // Forced head growth keeps every existing entity in place; forced tail growth moves the canonical tail. Auto keeps
+  // the original minimum-movement behaviour.
+  const moved = end === "auto" ? expandMoves(canon, k).moved : end === "head" ? [] : expandTail(canon)
+  return { ok: true, movedPorts, moved }
+}
+
+function refused(reason: string): ExpansionResult {
+  return { ok: false, reason, movedPorts: [], moved: [] }
+}
+
+function entityKey(e: ModuleEntity): string {
+  return string.format("%s@%g,%g:%g", e.name, e.x, e.y, e.dir ?? 0)
+}
+
+/** Why a whole-patch mine's full plan cannot be completed now (undefined: it can). */
+function minePlanBlocker(state: LayoutState, terrain: TerrainView, facts: ProtoFacts, m: PlacedModule): string | undefined {
+  const plan = m.minePlan!
+  const current: Record<string, boolean> = {}
+  for (const e of m.def.entities) current[entityKey(e)] = true
+  // B23: completion re-checks geometry (terrain, other modules, routes) but not ore: the patch was validated whole
+  // at planning time, and between planning and completion the terrain can only lose ore (mining) — a drill over
+  // depleted ground idles and the mine's depletion handling deals with it. (The captured g10 full plan even
+  // contains drills whose mining rect touches the adjacent coal and copper patches, so a completion-time B6 check
+  // would be stricter than the planning-time one that accepted them.)
+  // B55: the tile its output route starts on is never the mine's, whatever B25 lets give way (a full plan made
+  // before the fix could put a pole there).
+  const fullOut = plan.full.ports.find((p) => p.id === "out")
+  const outside = fullOut !== undefined ? portOutside(m, fullOut) : undefined
+  for (const e of plan.full.entities) {
+    if (current[entityKey(e)]) continue
+    const er = entityRect(e, facts)
+    const r = { x: m.origin.x + er.x, y: m.origin.y + er.y, w: er.w, h: er.h }
+    if (outside !== undefined && rectContains(r, outside.x, outside.y)) return `planned mine covers its output at ${outside.x},${outside.y}`
+    for (let x = r.x; x < r.x + r.w; x++) {
+      for (let y = r.y; y < r.y + r.h; y++) {
+        const why = mineTileBlocker(state, terrain, m, x, y)
+        if (why !== undefined) return why
+      }
+    }
+  }
+  return undefined
+}
+
+/** One tile of a whole-patch mine's unbuilt plan: what keeps the completion off it. */
+function mineTileBlocker(state: LayoutState, terrain: TerrainView, m: PlacedModule, x: number, y: number): string | undefined {
+  const kk = tkey(x, y)
+  const b = terrain.block(x, y)
+  // B24: the mine's own D52 footprint is reserved — the adoption reserves the whole rect plus 1 ring and the
+  // plan's claim is the mine's own — so those tiles read as OWN for a later request, but they are exactly
+  // what the completion builds. Only a ground someone else reserved (or raw obstacles) still blocks.
+  const own = state.mine?.[kk] === m.id || rectContains(m.rect, x, y)
+  if (b !== FREE && b !== TREE && b !== ROCK && !(b === OWN && own)) return `planned mine blocked at ${x},${y}`
+  const o = state.occ[kk]
+  // B25: pole lines placed before the mine's claim, and the faction's own earlier routes, can stand on its
+  // still unbuilt plan tiles (the plan is authored on a fixed grid and the claim only reserves free tiles).
+  // The completion build picks those own structures up first and the reconcile layer re-routes the edge that
+  // the rip breaks, so neither blocks a completion.
+  // B37: pole lines anywhere on the new ground give way (markModule evicts them; the plan re-poles).
+  if (o !== undefined && o !== `m:${m.id}` && o !== `x:${m.id}` && !isPoleTag(o) && !(own && string.sub(o as string, 1, 6) === "route:")) return `planned mine occupied at ${x},${y}`
+  // B25: own earlier routes on the mine's own unbuilt tiles give way (the completion build picks their
+  // belts up and reconcile re-routes the broken edge).
+  const rid = state.routeOcc[kk]
+  if (rid !== undefined && !own) return `planned mine route at ${x},${y}`
+  // B74 (soak vps-d67 seed 7718665): B55 for the whole output route, not just its first tile. The mine's own
+  // output belt ran west along its unbuilt top row; the completion put a pole on its second tile and picked the
+  // belt up. With the mine backed up nothing measured the break, and three science clusters starved 150 min.
+  if (rid !== undefined && fromMine(state, rid, m.id)) return `planned mine covers its own output route at ${x},${y}`
+  return undefined
+}
+
+/** A module grown by k units: its canonical and placed defs and where it then stands. */
+interface GrownGeometry {
+  grown: ModuleDef
+  placed: ModuleDef
+  origin: Vec
+  rect: Rect
+  /** Unit length along the growth axis. */
+  size: number
+}
+
+/** Where module `m` stands grown by k units at `end`, keeping its fixed end in place; or why it cannot grow. */
+function grownGeometry(m: PlacedModule, k: number, end: "auto" | "head" | "tail", facts: ProtoFacts): GrownGeometry | string {
+  const canon = m.canonical
+  const spec = canon.expand!
   const grown = end === "head" ? expandHeadModule(canon, k, facts) : expandModule(canon, k, facts)
-  if (grown === undefined) return { ok: false, reason: HEAD_GROWTH_OPENS_BELT, movedPorts: [], moved: [] }
+  if (grown === undefined) return HEAD_GROWTH_OPENS_BELT
   const size = spec.axis === "x" ? spec.unit.footprint.w : spec.unit.footprint.h
   // Which end stays put. "head" growth keeps the far end (largest coordinate) in place; otherwise `expandMoves` decides.
   let headMoves: boolean
@@ -1593,101 +1960,100 @@ export function tryExpand(state: LayoutState, terrain: TerrainView, facts: Proto
       if (tail === headMoves) { anchor = e; break }
     }
   }
-  if (anchor === undefined) return { ok: false, reason: "no fixed entity", movedPorts: [], moved: [] }
+  if (anchor === undefined) return "no fixed entity"
   const grownAnchor = headMoves ? (spec.axis === "x" ? { x: anchor.x + k * size, y: anchor.y } : { x: anchor.x, y: anchor.y + k * size }) : anchor
   const pOld = transformPoint(anchor, canon.footprint.w, canon.footprint.h, m.transform)
   const pNew = transformPoint(grownAnchor, grown.footprint.w, grown.footprint.h, m.transform)
   const placed = m.transform.rot === 0 && !m.transform.mirror ? grown : transformModule(grown, m.transform)
   const origin = { x: m.origin.x + pOld.x - pNew.x, y: m.origin.y + pOld.y - pNew.y }
-  const rect = { x: origin.x, y: origin.y, w: placed.footprint.w, h: placed.footprint.h }
-  const mining = isMining(canon)
-  const ownTags: Record<string, boolean> = { [`m:${m.id}`]: true, [`x:${m.id}`]: true }
+  return { grown, placed, origin, rect: { x: origin.x, y: origin.y, w: placed.footprint.w, h: placed.footprint.h }, size }
+}
+
+/** The ground a growth adds: buildable terrain, no other claim, no ore under a non-mine (`protectOre`). */
+function newGroundBlocker(state: LayoutState, terrain: TerrainView, policy: LayoutPolicy, m: PlacedModule, rect: Rect): string | undefined {
+  const mining = isMining(m.canonical)
   for (let x = rect.x; x < rect.x + rect.w; x++) {
     for (let y = rect.y; y < rect.y + rect.h; y++) {
       if (rectContains(m.rect, x, y)) continue
       const kk = tkey(x, y)
       const b = terrain.block(x, y)
-      if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return { ok: false, reason: `blocked at ${x},${y}`, movedPorts: [], moved: [] }
+      if (b !== FREE && !(b === TREE && policy.obstacles.trees === "clear") && !(b === ROCK && policy.obstacles.rocks === "clear")) return `blocked at ${x},${y}`
       const c = moduleGrowthClaimConflict(state, kk, m.id)
       // B37: a pole line on the new ground gives way (markModule evicts it; the growth re-poles).
       if (c !== undefined) {
         const why = c.code === "occupied" ? "occupied" : c.code === "routed" ? "route" : c.code === "mine-claimed" ? `mine claim of ${c.claim.owner}` : "reserved"
-        return { ok: false, reason: `${why} at ${x},${y}`, movedPorts: [], moved: [] }
+        return `${why} at ${x},${y}`
       }
-      if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return { ok: false, reason: `ore at ${x},${y}`, movedPorts: [], moved: [] }
+      if (policy.protectOre && !mining && terrain.ore(x, y) !== undefined) return `ore at ${x},${y}`
     }
   }
-  if (mining) {
-    // B6: every grown drill's mining area must not reach a second ore (or another faction's field, D46).
-    const resource = canon.anchor?.resource
-    for (const a of placed.anchor?.miningAreas ?? []) {
-      for (let x = origin.x + a.x; x < origin.x + a.x + a.w; x++) {
-        for (let y = origin.y + a.y; y < origin.y + a.y + a.h; y++) {
-          const ore = terrain.ore(x, y)
-          if (ore !== undefined && ore !== resource) return { ok: false, reason: `foreign ore ${ore} at ${x},${y}`, movedPorts: [], moved: [] }
-        }
-      }
-    }
-    // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
-    // need resource; otherwise depletion could never be remedied in place (M6a.2, seed 222). B33: under the drill
-    // itself (the whole-patch plan's test), not just somewhere in its mining area: a strip growing on a drill that
-    // only grazes the patch edge is growth off the patch.
-    for (let i = 0; i < k; i++) {
-      for (const e of spec.unit.entities) {
-        const f = facts.entity(e.name)
-        if (f?.type !== "mining-drill") continue
-        const offset = end === "head" ? i * size : spec.insertAt + i * size
-        const er = entityRect(e, facts)
-        const local = spec.axis === "x" ? { x: er.x + offset, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + offset, w: er.w, h: er.h }
-        const r = transformRect(local, grown.footprint.w, grown.footprint.h, m.transform)
-        const x1 = origin.x + r.x
-        const y1 = origin.y + r.y
-        let mine = false
-        for (let x = x1; x < x1 + r.w; x++) for (let y = y1; y < y1 + r.h; y++) if (terrain.ore(x, y) === resource) mine = true
-        if (!mine) return { ok: false, reason: `no ${resource} under a drill at ${x1},${y1}`, movedPorts: [], moved: [] }
+  return undefined
+}
+
+/** A growing mine: no foreign ore in any drill's mining area (B6, D46), and its own ore under each added drill. */
+function growthOreBlocker(terrain: TerrainView, facts: ProtoFacts, m: PlacedModule, g: GrownGeometry, k: number, end: "auto" | "head" | "tail"): string | undefined {
+  const canon = m.canonical
+  if (!isMining(canon)) return undefined
+  const spec = canon.expand!
+  // B6: every grown drill's mining area must not reach a second ore (or another faction's field, D46).
+  const resource = canon.anchor?.resource
+  for (const a of g.placed.anchor?.miningAreas ?? []) {
+    for (let x = g.origin.x + a.x; x < g.origin.x + a.x + a.w; x++) {
+      for (let y = g.origin.y + a.y; y < g.origin.y + a.y + a.h; y++) {
+        const ore = terrain.ore(x, y)
+        if (ore !== undefined && ore !== resource) return `foreign ore ${ore} at ${x},${y}`
       }
     }
   }
-  const ring = inflate(rect, policy.corridor.min)
+  // A depleted outpost is expected to have old drills on worked-out ground. Only the drills added by this growth
+  // need resource; otherwise depletion could never be remedied in place (M6a.2, seed 222). B33: under the drill
+  // itself (the whole-patch plan's test), not just somewhere in its mining area: a strip growing on a drill that
+  // only grazes the patch edge is growth off the patch.
+  for (let i = 0; i < k; i++) {
+    for (const e of spec.unit.entities) {
+      const f = facts.entity(e.name)
+      if (f?.type !== "mining-drill") continue
+      const offset = end === "head" ? i * g.size : spec.insertAt + i * g.size
+      const er = entityRect(e, facts)
+      const local = spec.axis === "x" ? { x: er.x + offset, y: er.y, w: er.w, h: er.h } : { x: er.x, y: er.y + offset, w: er.w, h: er.h }
+      const r = transformRect(local, g.grown.footprint.w, g.grown.footprint.h, m.transform)
+      const x1 = g.origin.x + r.x
+      const y1 = g.origin.y + r.y
+      let mine = false
+      for (let x = x1; x < x1 + r.w; x++) for (let y = y1; y < y1 + r.h; y++) if (terrain.ore(x, y) === resource) mine = true
+      if (!mine) return `no ${resource} under a drill at ${x1},${y1}`
+    }
+  }
+  return undefined
+}
+
+/** The grown module's corridor ring holds no other module (mines on one patch may touch each other's rings). */
+function growthRingBlocker(state: LayoutState, m: PlacedModule, rect: Rect, corridor: number): string | undefined {
+  const mining = isMining(m.canonical)
+  const ring = inflate(rect, corridor)
   for (let x = ring.x; x < ring.x + ring.w; x++) {
     for (let y = ring.y; y < ring.y + ring.h; y++) {
       const o = state.occ[tkey(x, y)]
-      if (o !== undefined && string.sub(o, 1, 2) === "m:" && !ownTags[o]) {
-        const other = findModule(state, string.sub(o, 3))
-        // Mining outposts intentionally cluster on one patch. Their footprints still cannot overlap (checked above),
-        // but a mine's corridor ring may touch another mine while it fills the preplanned patch footprint.
-        if (!mining || other === undefined || !isMining(other.canonical)) return { ok: false, reason: `too close to ${o}`, movedPorts: [], moved: [] }
-      }
+      if (o === undefined || string.sub(o, 1, 2) !== "m:" || o === `m:${m.id}` || o === `x:${m.id}`) continue
+      const other = findModule(state, string.sub(o, 3))
+      // Mining outposts intentionally cluster on one patch. Their footprints still cannot overlap (checked above),
+      // but a mine's corridor ring may touch another mine while it fills the preplanned patch footprint.
+      if (!mining || other === undefined || !isMining(other.canonical)) return `too close to ${o}`
     }
   }
-  const before: Record<string, Vec> = {}
-  for (const p of m.def.ports) before[p.id] = portTile(m, p)
-  const grownPlaced: PlacedModule = { ...m, canonical: grown, def: placed, origin, rect }
-  // New port outside tiles must be usable.
-  for (const p of placed.ports) {
+  return undefined
+}
+
+/** New port outside tiles must be usable. */
+function grownPortBlocker(state: LayoutState, terrain: TerrainView, m: PlacedModule, g: GrownGeometry): string | undefined {
+  const grownPlaced: PlacedModule = { ...m, canonical: g.grown, def: g.placed, origin: g.origin, rect: g.rect }
+  for (const p of g.placed.ports) {
     if (p.kind !== "belt-in" && p.kind !== "belt-out") continue
     const o = portOutside(grownPlaced, p)
     const occ = state.occ[tkey(o.x, o.y)]
-    if (occ !== undefined && !ownTags[occ] && !isPoleTag(occ)) return { ok: false, reason: `port ${p.id} outside tile occupied`, movedPorts: [], moved: [] }
+    if (occ !== undefined && occ !== `m:${m.id}` && occ !== `x:${m.id}` && !isPoleTag(occ)) return `port ${p.id} outside tile occupied`
     const b = terrain.block(o.x, o.y)
-    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return { ok: false, reason: `port ${p.id} outside tile blocked`, movedPorts: [], moved: [] }
+    if (b === WATER || b === CLIFF || b === UNKNOWN || b === OWN || b === FOREIGN) return `port ${p.id} outside tile ${o.x},${o.y} blocked (terrain ${b})`
   }
-  unmarkModule(state, m, facts)
-  m.canonical = grown
-  m.def = placed
-  m.origin = origin
-  m.rect = rect
-  // B33: a strip mine's growth claim keeps stopping where its ore ends.
-  if (mining && m.oreUnits !== undefined) m.oreUnits = stripOreUnits(m, terrain, facts)
-  markModule(state, m, facts, policy.corridor.preferred)
-  const movedPorts: string[] = []
-  for (const p of m.def.ports) {
-    const now = portTile(m, p)
-    const was = before[p.id]
-    if (was === undefined || was.x !== now.x || was.y !== now.y) movedPorts.push(p.id)
-  }
-  // Forced head growth keeps every existing entity in place; forced tail growth moves the canonical tail. Auto keeps
-  // the original minimum-movement behaviour.
-  const moved = end === "auto" ? expandMoves(canon, k).moved : end === "head" ? [] : expandTail(canon)
-  return { ok: true, movedPorts, moved }
+  return undefined
 }

@@ -41,19 +41,39 @@ export interface Rect {
   h: number
 }
 
-// Tile keys: one number per tile, exact in doubles (|x|, |y| < 2^20).
+// Tile keys: one number per tile, exact in doubles. The active area uses a **small** encoding because Factorio's Lua
+// 5.2 hashes large numeric keys very slowly (a microbenchmark: ~27x slower at 2e12 than at 1e6; see
+// tools/harness/lua-bench). The old full-map encoding is kept for far coordinates (as a negative number) and for
+// decoding pre-schema-2 saves; `storage-schema` migrates those keys once.
 const OFF = 1048576
 const SPAN = 2097152
+/** The local fast box: |x|, |y| < 32768 tiles. Keys are < 2^32, where Factorio's Lua stays fast. */
+const LOCAL_OFF = 32768
+const LOCAL_SPAN = 65536
+const LOCAL_MAX = LOCAL_SPAN * LOCAL_SPAN - 1
 
+/** Tile key. Near the origin it is small; farther out it is the negative full-map encoding (unique, no collision). */
 export function tkey(x: number, y: number): number {
-  return (x + OFF) * SPAN + (y + OFF)
+  if (x >= -LOCAL_OFF && x < LOCAL_OFF && y >= -LOCAL_OFF && y < LOCAL_OFF) {
+    return (x + LOCAL_OFF) * LOCAL_SPAN + (y + LOCAL_OFF)
+  }
+  return -((x + OFF) * SPAN + (y + OFF)) - 1
 }
 
+/**
+ * Tile x of a key: a negative key is a far tile, a key up to `LOCAL_MAX` is the local encoding, and a larger positive
+ * key is a pre-schema-2 key (fixtures and old saves before `rekeyStorage`).
+ */
 export function keyX(k: number): number {
+  if (k < 0) return math.floor((-k - 1) / SPAN) - OFF
+  if (k <= LOCAL_MAX) return math.floor(k / LOCAL_SPAN) - LOCAL_OFF
   return math.floor(k / SPAN) - OFF
 }
 
+/** Tile y of a key; see `keyX` for the three forms. */
 export function keyY(k: number): number {
+  if (k < 0) return ((-k - 1) % SPAN) - OFF
+  if (k <= LOCAL_MAX) return (k % LOCAL_SPAN) - LOCAL_OFF
   return (k % SPAN) - OFF
 }
 
@@ -127,4 +147,56 @@ export function rectContains(r: Rect, x: number, y: number): boolean {
 
 export function manhattan(a: Vec, b: Vec): number {
   return math.abs(a.x - b.x) + math.abs(a.y - b.y)
+}
+
+/**
+ * M7 (seed 11 g113): the tiles a collision box covers. A box with an `orientation` (a diagonal cliff: 0.125 turns) is
+ * that rectangle turned clockwise about its centre; the tiles are those it overlaps by more than `eps` (separating
+ * axes), not its unturned corners: an underground entrance was planned on a tile a turned cliff reached ~0.4 into,
+ * and its ghost could never be placed.
+ */
+export function boxTiles(lt: { x: number; y: number }, rb: { x: number; y: number }, orientation?: number, eps = 0.01): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = []
+  const o = orientation ?? 0
+  if (o === 0 || o === 0.5) {
+    const x1 = math.floor(lt.x + eps)
+    const y1 = math.floor(lt.y + eps)
+    const x2 = math.max(math.ceil(rb.x - eps), x1 + 1)
+    const y2 = math.max(math.ceil(rb.y - eps), y1 + 1)
+    for (let x = x1; x < x2; x++) for (let y = y1; y < y2; y++) out.push({ x, y })
+    return out
+  }
+  const cx = (lt.x + rb.x) / 2
+  const cy = (lt.y + rb.y) / 2
+  const hx = (rb.x - lt.x) / 2
+  const hy = (rb.y - lt.y) / 2
+  const th = o * 2 * math.pi
+  // Clockwise on the map (y grows south): the box's own x axis is u, its y axis v.
+  const ux = math.cos(th)
+  const uy = math.sin(th)
+  const vx = -uy
+  const vy = ux
+  const ex = math.abs(hx * ux) + math.abs(hy * vx)
+  const ey = math.abs(hx * uy) + math.abs(hy * vy)
+  const cu = cx * ux + cy * uy
+  const cv = cx * vx + cy * vy
+  for (let x = math.floor(cx - ex + eps); x < math.ceil(cx + ex - eps); x++) {
+    for (let y = math.floor(cy - ey + eps); y < math.ceil(cy + ey - eps); y++) {
+      // The tile square against the box's own axes (its x and y axes hold by the envelope above).
+      let minU = math.huge
+      let maxU = -math.huge
+      let minV = math.huge
+      let maxV = -math.huge
+      for (const [px, py] of [[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]]) {
+        const pu = px * ux + py * uy
+        const pv = px * vx + py * vy
+        minU = math.min(minU, pu)
+        maxU = math.max(maxU, pu)
+        minV = math.min(minV, pv)
+        maxV = math.max(maxV, pv)
+      }
+      if (maxU > cu - hx + eps && minU < cu + hx - eps && maxV > cv - hy + eps && minV < cv + hy - eps) out.push({ x, y })
+    }
+  }
+  return out
 }

@@ -4,21 +4,28 @@
 // table tile is 1/2), so the runtime spreads it over ticks. The job is plain data and lives in `storage`; the policy
 // is looked up by id each step. Pure: no Factorio globals.
 
+import { isPlanFailure, planFailure } from "../shared/plan-failure"
+import type { PlanFailure } from "../shared/plan-failure"
 import { ProtoFacts } from "../modules/facts"
 import { BeltTier, tierByBelt } from "./capacity"
-import { releaseLaneReservation, reserveFreeTile } from "./claims"
-import { dirIndex, manhattan, Rect, TerrainView, tkey, Vec } from "./grid"
+import { claimPoleTile, releaseLaneReservation, reserveFreeTile } from "./claims"
+import { dirIndex, DX, DY, FREE, keyX, keyY, manhattan, Rect, TerrainView, tkey, UNKNOWN, Vec } from "./grid"
 import { mergeGoals } from "./merge"
+import { tunnelRoute, tunnelSite } from "./tunnel"
 import type { MergeGoal } from "./merge"
-import { commitRoute, fillSoftUnits, findModule, findPort, LayoutState, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, ripRoute, Route, routeDangles, tapTree, unmarkModule } from "./layout"
-import { commitPlacement, expansionCandidate, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, prepareWholePatchPlacement, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
+import { commitRoute, dependentRoutes, fillSoftUnits, findModule, findPort, LayoutState, PlacedModule, layoutMargins, layoutRevision, newLayout, portOutside, PortRef, portTag, portTile, pumpPoleLine, rerootTap, ripRoute, Route, landsDownstream, pointFeeds, routeDangles, RouteStep, tapTree, unmarkModule } from "./layout"
+import { newWholePatchPrep, stepWholePatch, WholePatchPrep } from "./whole-patch"
+import { commitPlacement, expansionCandidate, placedPatch, placeFixed, laneTag, laneWayOut, layoutLaneGround, portLaneEnd, newPlacement, placementFailureCertificate, PlacementSearch, stepPlacement, tryExpand, wholePatchCandidate } from "./placement"
 import { LayoutPolicy } from "./policy"
-import { newPoleJob, PoleJob, stepPoles } from "./power"
-import { newSearch, RouteRequest, Search, searchResult, stepSearch, tileCost } from "./router"
+import { BuiltPole, newPoleJob, PoleJob, stepPoles } from "./power"
+import { minTileCost, newSearch, proveBeltSeal, retargetSearch, RouteRequest, Search, searchResult, stepSearch, tileCost, underPassable } from "./router"
+import { newPipeSearch, pipeFailureNotes, provePipeSeal, proveStartEnclosed, stepPipeSearch } from "./pipe-router"
+import type { PipeCallbacks, PipeSearch, PipeStep } from "./pipe-router"
+import type { RouteFailure } from "./route-failure"
 import { planTrace, traceEvent, traceRouteFailure } from "./trace"
-import { ModuleDef } from "../modules/types"
-import { moduleId, routeId } from "../shared/ids"
-import type { ConnectionId, RouteId } from "../shared/ids"
+import { ModuleDef, Port } from "../modules/types"
+import { moduleId, poleId, routeId } from "../shared/ids"
+import type { ConnectionId, PoleId, RouteId } from "../shared/ids"
 
 export interface ModuleRequest {
   id: string
@@ -31,6 +38,11 @@ export interface ModuleRequest {
    * and resource) by this many units, if there is room, instead of placing a new one.
    */
   expandUnits?: number
+  /**
+   * M7b: place exactly here (module origin), or fail: a module generated for one spot of the world (a pumpjack field on
+   * its wells). It is never moved by a re-placement.
+   */
+  at?: Vec
 }
 
 export interface ConnectionRequest {
@@ -48,6 +60,11 @@ export interface ConnectionRequest {
    * routing a second belt into the input port.
    */
   merge?: boolean
+  /**
+   * M7b: a fluid connection (`pipe-out` → `pipe-in`), routed with pipes by `planner/pipe-router.ts`. The caller reads
+   * the entities and limits from the prototypes (the planner stays pure).
+   */
+  fluid?: { name: string; pipe: string; underground: string; pump: string; maxUnderground: number; extent: number; pole?: string; verifiedFree?: Record<number, boolean> }
 }
 
 export interface PlanRequest {
@@ -64,6 +81,8 @@ export interface PlanRequest {
   splitters?: boolean
   /** Plan a pole network joining every consumer module to a generator module (this pole entity), after routing. */
   poles?: string
+  /** B210: the faction's built poles by tile key, with their electric network and copper wires (`PoleJob.built`). */
+  builtPoles?: Record<number, BuiltPole>
   /**
    * D36 / B2: after routing, route the same placement again with what an unresearched technology would allow, and
    * report how much shorter it is (the strategy researches it first when the saving is big enough).
@@ -75,6 +94,11 @@ export interface PlanRequest {
   deadPatches?: Record<string, string>
   /** B63: multiply every route window's margin (1 = policy default; 3 for a plan feeding a boxed-in consumer). */
   windowScale?: number
+  /**
+   * Tunnel crossings: base routes another goal is still building (its ghosts already stand for their current tiles).
+   * They may not be crossed by a tunnel, which would rebuild them.
+   */
+  busyRoutes?: string[]
 }
 
 /** What the comparison routes (SPEC D36, backlog B2). */
@@ -125,6 +149,8 @@ export interface PlanStats {
   /** Modules taken out and placed again because a connection could not be routed. */
   replacements: number
   maxStepWork: number
+  /** Tunnel crossings made (`tunnel.ts`): other routes' runs turned into underground pairs. */
+  tunnels?: number
 }
 
 export type PlanEvidence =
@@ -136,6 +162,8 @@ export type PlanEvidence =
       rip: boolean
       windowScale: number
       expansions: number
+      /** Which router failed (B157): `wideJoin` only widens a belt window, so pipes are not offered it. */
+      mode?: "belt" | "pipe"
       /**
        * B57/B63: the seal check ran out at this end: its port, resolved. `edge` says the window boundary cut the flood,
        * i.e. the proof is only "no path *inside this window*".
@@ -162,14 +190,43 @@ export interface PlanJob {
   ordered?: boolean
   placeIdx: number
   placement?: PlacementSearch
+  /** M7: the placed mine's whole-patch plan being prepared (`placement` is done; committed once this is). */
+  wholePatch?: WholePatchPrep
   /** Request id → placed module id (an expanded module answers for the request). */
   alias: Record<string, string>
   /** D57 (c): patches this plan's mines found no room on (the strategy remembers them for later plans). */
   deadPatches?: Record<string, string>
+  /** Module id → the patch its mining placement stands on (D57 key and stamp rect), for a later dead-site mark. */
+  sitePatches?: Record<string, { key: string; area: Rect }>
   queue: string[]
   ripCount: Record<string, number>
-  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number }
+  /**
+   * Rip-up loop guard (seed 11 g104): `conn>victim` pairs ripped since the last re-placement. A connection ripping the
+   * same route again means the routes are taking turns through a gap too narrow for all of them (four belts ripped
+   * each other round after round, ~12M work units a round, until the rip-up limit moved the module).
+   */
+  ripPairs?: Record<string, boolean>
+  /**
+   * Window scale each connection last needed (seed 11 g108): a connection routed again after a rip-up or re-placement
+   * starts there instead of failing the narrow windows again (a 400-tile coal tap paid ~2M units at window 1 every
+   * round before widening). Only a hint: the ladder still widens from it.
+   */
+  winMemo?: Record<string, number>
+  /** With `winMemo`: the connection was found in rip mode there (it starts in rip mode). */
+  ripMemo?: Record<string, boolean>
+  /**
+   * M7 (B, seed 11 g111): merge connections that need no route of their own: a route from the same source port already
+   * joins a belt that lands at their port (a trunk above their tap). Connection → that route's connection.
+   */
+  covered?: Record<string, string>
+  /** M7 (B): merge connections put back once behind a sibling from the same source after their goals all failed. */
+  deferred?: Record<string, number>
+  /** M7: the fluid connection being routed (its search runs over several steps). */
+  pipe?: PipeJob
+  current?: { conn: string; search: Search; rip: boolean; avoid: Record<number, boolean>; noSplit?: Record<number, boolean>; retries: number; winScale?: number; mergeGoals?: NonNullable<RouteRequest["mergeGoals"]>; mergeTry?: number; work?: number }
   failures: Record<string, string>
+  /** D69: the same failures, typed (the factory decides from `kind`, never from the text). */
+  failed?: Record<string, PlanFailure>
   /** Structured failed attempts. Unlike `failures`, this preserves evidence from retries that later recover. */
   evidence?: PlanEvidence[]
   /** Expansions done instead of placements: request id → module id and the ports that moved. */
@@ -365,15 +422,35 @@ function placementEvidence(job: PlanJob, id: string, search: PlacementSearch): v
 }
 
 function routeEvidence(job: PlanJob, conn: string, search: Search, rip: boolean, windowScale?: number, reason?: string): void {
+  const sealed = search.sealed
+  const failure: RouteFailure = { kind: sealed !== undefined && !sealed.edge ? "sealed" : "no-path", reason: reason ?? search.reason ?? "route failed", work: search.expansions, sealed }
+  pushRouteEvidence(job, conn, failure, "belt", rip, windowScale)
+}
+
+/** B157: one evidence shape for both transports: the failure, its work, and a proved seal (if any). */
+function pushRouteEvidence(job: PlanJob, conn: string, failure: RouteFailure, mode: "belt" | "pipe", rip: boolean, windowScale?: number): void {
   job.evidence ??= []
-  const sl = search.sealed
   let sealed: { side: "start" | "goal"; port: PortRef; edge?: boolean } | undefined
-  if (sl !== undefined) {
+  const proof = failure.sealed
+  if (proof !== undefined) {
     const c = connection(job, conn)
-    const ref = sl.side === "goal" ? c.to : c.from
-    if (ref !== undefined) sealed = { side: sl.side, port: resolve(job, ref), edge: sl.edge }
+    const ref = proof.side === "goal" ? c.to : c.from
+    if (ref !== undefined) sealed = { side: proof.side, port: resolve(job, ref), edge: proof.edge }
   }
-  job.evidence.push({ kind: "route", subject: conn, reason: reason ?? search.reason ?? "route failed", rip, windowScale: windowScale ?? 1, expansions: search.expansions, sealed })
+  job.evidence.push({ kind: "route", subject: conn, reason: failure.reason, mode, rip, windowScale: windowScale ?? 1, expansions: failure.work, sealed })
+}
+
+/** B156/B157: a failed fluid route's evidence, including the goal seal its flood proved (`provePipeSeal`). */
+function pipeEvidence(job: PlanJob, conn: string, s: PipeSearch): RouteFailure {
+  const proof = s.sealed
+  const failure: RouteFailure =
+    proof !== undefined && !proof.edge
+      ? { kind: "sealed", reason: s.reason ?? "no pipe path", work: s.work, sealed: proof }
+      : s.reason === "budget exhausted"
+        ? { kind: "budget", reason: s.reason, work: s.work, sealed: proof }
+        : { kind: "no-path", reason: s.reason ?? "no pipe path", work: s.work, sealed: proof }
+  pushRouteEvidence(job, conn, failure, "pipe", false)
+  return failure
 }
 
 export function resolve(job: PlanJob, ref: PortRef): PortRef {
@@ -417,8 +494,13 @@ function startRouting(job: PlanJob): void {
     return manhattan({ x: ma.rect.x, y: ma.rect.y }, { x: mb.rect.x, y: mb.rect.y })
   }
   // Short connections first (they have the fewest alternatives); ids break ties. B75: a provider-group merge goes
-  // after every plain connection: it ends on another route's belt, which must be routed first.
+  // after every plain connection: it ends on another route's belt, which must be routed first. M7c.8: fluid lines go
+  // before belts: a pipe cannot rip up, side-load or pass under a module, and on seed 11 the belts routed first boxed in
+  // a remote crude line's last tile.
   conns.sort((a, b) => {
+    const fa = a.fluid !== undefined ? 0 : 1
+    const fb = b.fluid !== undefined ? 0 : 1
+    if (fa !== fb) return fa - fb
     const ma = a.merge === true ? 1 : 0
     const mb = b.merge === true ? 1 : 0
     if (ma !== mb) return ma - mb
@@ -428,6 +510,8 @@ function startRouting(job: PlanJob): void {
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
   })
   job.queue = conns.map((c) => c.id)
+  job.covered = undefined
+  job.deferred = undefined
   job.phase = "route"
 }
 
@@ -464,45 +548,593 @@ export function portFedByOther(layout: LayoutState, to: PortRef, conn: string): 
   for (const rid of layout.routeOrder) {
     const r = layout.routes[rid]
     if (r === undefined || r.external === true || r.to.module !== to.module || r.to.port !== to.port || routeDangles(layout, rid)) continue
-    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. A route a handover kept
-    // (D55/D67 adoption) carries the replacement connection's name but is a feed the replacement joins; skipping it by
-    // name routed the replacement into the port it holds ("no path" every plan).
+    // B93 (sweep 3e1c4d7 seed 1376111): only the connection's own route (its id) is not a feed. (Route adoption, removed
+    // by D76, kept routes under the replacement connection's name with an id of their own; skipping them by name routed
+    // the replacement into the port they held.)
     if (rid !== `route:${conn}`) return true
   }
   return false
 }
 
-function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number): RouteRequest | string {
+/** M7: a fluid connection being routed: its search (stepped under the plan's budget) and what finishing it needs. */
+export interface PipeJob {
+  conn: string
+  search: PipeSearch
+  /** Plain pipes of the same fluid's lines from this source, by tile (B120 tap). */
+  trunk: Record<number, string>
+  /** Tiles of other fluids (other routes, other pipe ports). */
+  fluids: Record<number, boolean>
+  /** B149: the line of this fluid already feeding the target port that the route ends beside (its goal), if any. */
+  joins?: string
+  costReq: RouteRequest
+  /** Work so far (only kept while `planTrace.searches` is set). */
+  work?: number
+  /** B157: a `budget exhausted` search was resumed once with a larger budget. */
+  retried?: boolean
+}
+
+/** The pump's tile and the pipe tiles immediately before and after it: its pole may not stand on the line it powers. */
+function pumpLineTiles(x: number, y: number, dir: number): Record<number, boolean> {
+  const out: Record<number, boolean> = {}
+  out[tkey(x, y)] = true
+  out[tkey(x - DX[dir], y - DY[dir])] = true
+  out[tkey(x + DX[dir], y + DY[dir])] = true
+  return out
+}
+
+/** The pipe search's view of the layout and terrain (rebuilt every step: callbacks never go in `storage`). */
+function pipeCallbacks(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, pj: PipeJob): PipeCallbacks {
+  const f = connection(job, pj.conn).fluid!
+  const routeTerrain = pipeTerrain(terrain, f)
+  const reach = pumpPoleReach(facts, f.pole)
+  return {
+    cost: (x, y) => tileCost(job.layout, routeTerrain, policy, pj.costReq, false, x, y),
+    under: (x, y, axis) => underPassable(job.layout, terrain, policy, x, y, "pipe") && pipeSpanAt(job.layout, x, y, axis) === undefined,
+    fluidNear: (x, y) => pj.fluids[tkey(x, y)] === true,
+    pole: (x, y, dir) => pumpPoleSpot(job.layout, terrain, policy, pj.costReq, { kind: "pump", x, y, dir }, pumpLineTiles(x, y, dir), reach) !== undefined,
+  }
+}
+
+/**
+ * A built source's exit and its immediate neighbours can retain an OWN terrain/claim mark after an entity is gone. The
+ * runtime verifies each tile can actually take a pipe before marking it free; layout collisions still apply.
+ */
+function pipeTerrain(terrain: TerrainView, f: NonNullable<ConnectionRequest["fluid"]>): TerrainView {
+  if (f.verifiedFree === undefined) return terrain
+  return {
+    block: (x, y) => f.verifiedFree?.[tkey(x, y)] === true ? FREE : terrain.block(x, y),
+    ore: (x, y) => terrain.ore(x, y),
+  }
+}
+
+/**
+ * M7b: starts routing a fluid connection (`pipe-router.ts`): the search runs under the step budget (`pipeStep`) and is
+ * bounded by `PIPE_BUDGET` work units. Returns undefined (and records the failure) when the ports are missing.
+ */
+function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): PipeJob | undefined {
+  const f = c.fluid!
+  const fromRef = c.from !== undefined ? resolve(job, c.from) : undefined
+  const toRef = resolve(job, c.to)
+  const fm = fromRef !== undefined ? findModule(job.layout, fromRef.module) : undefined
+  const fp = fm !== undefined && fromRef !== undefined ? findPort(fm, fromRef.port) : undefined
+  const tm = findModule(job.layout, toRef.module)
+  const tp = tm !== undefined ? findPort(tm, toRef.port) : undefined
+  if (fm === undefined || fp === undefined || fp.kind !== "pipe-out" || tm === undefined || tp === undefined || tp.kind !== "pipe-in") {
+    fail(job, c.id, `no pipe ports ${fromRef?.module}.${fromRef?.port} → ${toRef.module}.${toRef.port}`)
+    return undefined
+  }
+  const start = portOutside(fm, fp)
+  const goal = portOutside(tm, tp)
+  const id = `route:${c.id}`
+  const own: Record<string, boolean> = { [portTag(fm.id, fp.id)]: true, [portTag(tm.id, tp.id)]: true }
+  const costReq = { id, conn: c.id, item: f.name, from: fromRef, to: toRef, goal: { x: goal.x, y: goal.y, dir: 0 }, tier: job.tier, own } as RouteRequest
+  // B120: a line of this fluid already leaves the source port (a second consumer of one pumpjack field): tap it. The
+  // route starts beside any plain pipe of that line (a pipe joins every neighbouring pipe), not at the port.
+  const trunk: Record<number, string> = {}
+  const starts: { x: number; y: number; dir: number; run: number }[] = []
+  if (fromRef !== undefined) {
+    const lines = sameSource(job, fromRef, c.id).filter((rid) => job.layout.routes[rid].fluid?.name === f.name)
+    for (const rid of lines) for (const k of job.layout.routes[rid].tiles) trunk[k] = rid
+    for (const rid of lines) {
+      const route = job.layout.routes[rid]
+      // M7c.8: a tap joins the trunk's segment there: it starts with that whole segment's length counted (seed 11: a
+      // sulfur tap from beside the field merged 600 tiles into the first segment, which then carried nothing).
+      const seg = segmentLengths(route.steps, moduleFluidRun(fm, fp))
+      for (let i = 0; i < route.steps.length; i++) {
+        const st = route.steps[i]
+        if (st.kind !== "pipe") continue
+        for (let d = 0; d < 4; d++) {
+          const k = tkey(st.x + DX[d], st.y + DY[d])
+          if (trunk[k] === undefined) starts.push({ x: st.x + DX[d], y: st.y + DY[d], dir: d, run: seg[i] })
+        }
+      }
+    }
+  }
+  // Other fluids: other fluid routes' tiles, every other pipe port of a module, and module pipes on its edge.
+  const fluids: Record<number, boolean> = {}
+  for (const rid of job.layout.routeOrder) {
+    const r = job.layout.routes[rid]
+    if (r.fluid !== undefined && rid !== id) for (const k of r.tiles) if (trunk[k] === undefined) fluids[k] = true
+  }
+  for (const m of job.layout.modules) {
+    for (const p of m.def.ports) {
+      if ((p.kind !== "pipe-in" && p.kind !== "pipe-out") || (m.id === fm.id && p.id === fp.id) || (m.id === tm.id && p.id === tp.id)) continue
+      const t = portTile(m, p)
+      fluids[tkey(t.x, t.y)] = true
+      // M7c.8: and, for another fluid, the tile its own pipe will take outside the port: a pipe beside it would join
+      // that line (seed 11: a sulfur chain's water line ran past its crude port's outside tile, two tiles away).
+      if (p.item !== f.name) {
+        const o = portOutside(m, p)
+        const ko = tkey(o.x, o.y)
+        if (trunk[ko] === undefined) fluids[ko] = true
+        // M7d.5 g198: a plain pipe joins every neighbour, so a pipe on the *side* of another fluid's outside tile seals
+        // that port (a petroleum line one tile east of an oil complex's water port). Keep one tile clear around it.
+        for (let d = 0; d < 4; d++) {
+          const nx = o.x + DX[d]
+          const ny = o.y + DY[d]
+          if (nx === t.x && ny === t.y) continue
+          const kn = tkey(nx, ny)
+          if (trunk[kn] === undefined) fluids[kn] = true
+        }
+      }
+    }
+  }
+  // B147 (seed 11 g154): and every pipe on a module's edge, but the ones in this route's own ports' segments. A plain
+  // pipe joins every neighbour: a crude line laid along an oil complex's top edge joined its water manifold, the crude
+  // flowed down the new water line, and its last pipe could never be placed (Factorio refuses to mix fluids).
+  for (const m of job.layout.modules) {
+    const own: Record<number, boolean> = {}
+    if (m.id === fm.id) for (const [k] of pairs(portSegment(m, fp).tiles)) own[k] = true
+    if (m.id === tm.id) for (const [k] of pairs(portSegment(m, tp).tiles)) own[k] = true
+    const { w: mw, h: mh } = m.def.footprint
+    for (const e of m.def.entities) {
+      if (e.name !== "pipe" && string.find(e.name, "pipe-to-ground", 1, true)[0] === undefined) continue
+      const lx = math.floor(e.x)
+      const ly = math.floor(e.y)
+      if ((lx > 0 && ly > 0 && lx < mw - 1 && ly < mh - 1) || own[tkey(lx, ly)]) continue
+      fluids[tkey(m.origin.x + lx, m.origin.y + ly)] = true
+    }
+  }
+  // B149 (seed 11 g198): a line of this fluid from another provider already feeds the target port and holds its outside
+  // tile: the route ends beside one of its plain pipes instead (the nearest free tile to the start), and joins it there.
+  let goalAt = { x: goal.x, y: goal.y, dir: math.floor(tp.dir / 4) }
+  let goalRun = moduleFluidRun(tm, tp)
+  let joins: string | undefined
+  const fed = feedingLines(job, toRef, f.name, id)
+  if (fed.length > 0) {
+    let best: { x: number; y: number; dir: number; run: number; line: string; d: number } | undefined
+    // B190 (seed 44444 g65): the nearest spot sat on a segment already at the pump-free extent (312/312), so every
+    // arrival there was refused and the search spent its whole budget. A spot whose segment has room comes first.
+    const extent = f.extent - PIPE_EXTENT_MARGIN
+    const better = (run: number, dist: number): boolean => {
+      if (best === undefined) return true
+      const room = run < extent
+      const bestRoom = best.run < extent
+      if (room !== bestRoom) return room
+      return dist < best.d
+    }
+    for (const rid of fed) {
+      const route = job.layout.routes[rid]
+      const tiles: Record<number, boolean> = {}
+      for (const k of route.tiles) tiles[k] = true
+      const seg = segmentLengths(route.steps, route.from !== undefined ? fluidRunOf(job, route.from) : 0)
+      for (let i = 0; i < route.steps.length; i++) {
+        const st = route.steps[i]
+        if (st.kind !== "pipe") continue
+        for (let d = 0; d < 4; d++) {
+          const x = st.x + DX[d]
+          const y = st.y + DY[d]
+          const k = tkey(x, y)
+          if (tiles[k] || fluids[k] || trunk[k] !== undefined || job.layout.occ[k] !== undefined || job.layout.routeOcc[k] !== undefined) continue
+          // Its other neighbours must not be another fluid's (the arrival allows only the joined pipe).
+          let clear = true
+          for (let e = 0; e < 4 && clear; e++) if (e !== opposite4(d) && fluids[tkey(x + DX[e], y + DY[e])]) clear = false
+          if (!clear) continue
+          const dist = math.abs(x - start.x) + math.abs(y - start.y)
+          if (better(seg[i], dist)) best = { x, y, dir: opposite4(d), run: seg[i], line: rid, d: dist }
+        }
+      }
+    }
+    if (best !== undefined) {
+      goalAt = { x: best.x, y: best.y, dir: best.dir }
+      goalRun = best.run
+      joins = best.line
+    }
+  }
+  const w = policy.router
+  const search = newPipeSearch({
+    start: { x: start.x, y: start.y, dir: math.floor(fp.dir / 4) },
+    starts: starts.length > 0 ? starts : undefined,
+    goal: goalAt,
+    maxUnderground: f.maxUnderground,
+    extent: f.extent - PIPE_EXTENT_MARGIN,
+    startRun: starts.length > 0 ? 0 : moduleFluidRun(fm, fp),
+    goalRun,
+    minCost: minTileCost(policy),
+    ugCost: w.pipeUnderground ?? 2,
+    pumpCost: w.pump ?? 10,
+    budget: PIPE_BUDGET,
+    cell: w.coarseCell,
+    longRoute: w.longRoute,
+    corridorCells: w.corridorCells,
+  })
+  return { conn: c.id, search, trunk, fluids, costReq, joins }
+}
+
+/** B149: lines of fluid `fluid` (not connection `id`'s own, not dangling) that already feed port `to`. */
+function feedingLines(job: PlanJob, to: PortRef, fluid: string, id: string): string[] {
+  const out: string[] = []
+  for (const rid of job.layout.routeOrder) {
+    const r = job.layout.routes[rid]
+    if (r === undefined || rid === id || r.fluid?.name !== fluid || r.to.module !== to.module || r.to.port !== to.port) continue
+    if (!routeDangles(job.layout, rid)) out.push(rid)
+  }
+  return out
+}
+
+/** The in-module run of a route's source port (0 when the module or port is gone). */
+function fluidRunOf(job: PlanJob, from: PortRef): number {
+  const m = findModule(job.layout, from.module)
+  const p = m !== undefined ? findPort(m, from.port) : undefined
+  return m !== undefined && p !== undefined ? moduleFluidRun(m, p) : 0
+}
+
+/**
+ * M7c.8: for each step of a fluid route, the length of the segment (between pumps) it belongs to, the first segment
+ * starting with `first` tiles inside the source module; a pipe-to-ground pair counts its span.
+ */
+function segmentLengths(steps: RouteStep[], first: number): number[] {
+  const segOf: number[] = []
+  const len: number[] = [first]
+  let seg = 0
+  for (let i = 0; i < steps.length; i++) {
+    const st = steps[i]
+    if (st.kind === "pump") {
+      seg++
+      len[seg] = 0
+      segOf.push(-1)
+      continue
+    }
+    segOf.push(seg)
+    const prev = steps[i - 1]
+    len[seg] += st.kind === "pipe-ug-out" && prev !== undefined ? math.abs(st.x - prev.x) + math.abs(st.y - prev.y) : 1
+  }
+  return segOf.map((s) => (s < 0 ? 0 : len[s]))
+}
+
+/**
+ * M7c.8: an upper bound on the path a module's fluid takes inside it toward port `p`: the module's pipe tiles that
+ * join the port's tile (pipe-to-ground pairs count their span, as the engine does). B146 (seed 11 g154): this counted
+ * every pipe of the module, so an oil complex's water port read 221 tiles (crude, gas, oil and lube lines with it) and
+ * left 91 of the 312-tile extent for its water line, which no route from the lake could keep. A 2.0 segment is pipes
+ * only (a machine's fluid box starts its own), so a port on a machine reads 0. A pipe-to-ground end joins on its
+ * open side (its direction) and through its partner (the nearest end behind it facing the other way).
+ */
+export function moduleFluidRun(m: PlacedModule, p: Port): number {
+  return portSegment(m, p).run
+}
+
+/** The pipes of module `m` in port `p`'s segment (module-local tile keys) and their run (see `moduleFluidRun`). */
+function portSegment(m: PlacedModule, p: Port): { run: number; tiles: Record<number, boolean> } {
+  const pipes: Record<number, boolean> = {}
+  // Pipe-to-ground ends by tile: their open side (the entity's direction, as the generators place them).
+  const ug: Record<number, number> = {}
+  for (const e of m.def.entities) {
+    const k = tkey(math.floor(e.x), math.floor(e.y))
+    if (e.name === "pipe") pipes[k] = true
+    else if (string.find(e.name, "pipe-to-ground", 1, true)[0] !== undefined) ug[k] = math.floor((e.dir ?? 0) / 4) % 4
+  }
+  // An end's partner: the nearest end behind it facing the other way (span: tiles between, both ends included).
+  const partner = (x: number, y: number, d: number): { x: number; y: number; span: number } | undefined => {
+    for (let k = 1; k <= UG_PARTNER_REACH; k++) {
+      const bx = x - DX[d] * k
+      const by = y - DY[d] * k
+      if (ug[tkey(bx, by)] === opposite4(d)) return { x: bx, y: by, span: k + 1 }
+    }
+    return undefined
+  }
+  let n = 0
+  const seen: Record<number, boolean> = {}
+  // Entries: a tile and the tile it is entered from (undefined for the port's own tile).
+  const queue: { x: number; y: number; from?: number }[] = [{ x: math.floor(p.pos.x), y: math.floor(p.pos.y) }]
+  while (queue.length > 0) {
+    const t = queue.pop()!
+    const k = tkey(t.x, t.y)
+    if (seen[k]) continue
+    const d = ug[k]
+    if (d !== undefined) {
+      const open = tkey(t.x + DX[d], t.y + DY[d])
+      const b = partner(t.x, t.y, d)
+      // An end joins above ground on its open side only (or through its partner).
+      if (t.from !== undefined && t.from !== open && (b === undefined || t.from !== tkey(b.x, b.y))) continue
+      seen[k] = true
+      queue.push({ x: t.x + DX[d], y: t.y + DY[d], from: k })
+      if (b !== undefined) {
+        // Each end counts half the pair's span, as the engine counts the whole span.
+        n += b.span / 2
+        queue.push({ x: b.x, y: b.y, from: k })
+      } else n += 1
+      continue
+    }
+    if (!pipes[k]) continue
+    seen[k] = true
+    n++
+    for (let i = 0; i < 4; i++) queue.push({ x: t.x + DX[i], y: t.y + DY[i], from: k })
+  }
+  return { run: math.ceil(n), tiles: seen }
+}
+
+/** How far behind a pipe-to-ground end its partner may be (vanilla pipe-to-ground reach is 10 tiles between). */
+const UG_PARTNER_REACH = 11
+
+function opposite4(d: number): number {
+  return (d + 2) % 4
+}
+
+/** Steps the running fluid connection (`job.pipe`); commits its route or records the failure when the search ends. */
+function pipeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const pj = job.pipe!
+  const s = pj.search
+  const used = stepPipeSearch(s, pipeCallbacks(job, terrain, facts, policy, pj), budget)
+  job.stats.routeWork += used
+  job.stats.expansions += used
+  if (planTrace.searches !== undefined) {
+    pj.work = (pj.work ?? 0) + used
+    if (s.status !== "running") planTrace.searches(`pipe ${pj.conn} ${s.status} work=${math.floor(pj.work)}`)
+  }
+  if (s.status === "running") return used
+  const c = connection(job, pj.conn)
+  const f = c.fluid!
+  if (s.status === "failed") {
+    const cb = pipeCallbacks(job, terrain, facts, policy, pj)
+    // B156: prove the seal first. It is bounded (`sealCheck` states) and decisive: a sealed port is not helped by a
+    // bigger search budget, and the proof is what re-placement/relocation consumes.
+    if (s.sealed === undefined && (policy.router.sealCheck ?? 0) > 0) {
+      const seal = provePipeSeal(s, cb, s.p.starts ?? [s.p.start], policy.router.sealCheck!)
+      if (seal.proof !== undefined) {
+        s.sealed = seal.proof
+        if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: seal ${seal.proof.side} ${seal.proof.tiles} tiles (${seal.visited} states)`)
+      } else if (planTrace.searches !== undefined) {
+        planTrace.searches(`pipe ${pj.conn}: seal flood ${seal.inconclusive ? "hit its cap" : "reached the start side"} (${seal.visited} states)`)
+      }
+      // B188: the goal side is open, but the search itself explored everything the start can reach.
+      if (s.sealed === undefined) {
+        const enclosed = proveStartEnclosed(s, (x, y) => terrain.block(x, y) === UNKNOWN)
+        if (enclosed !== undefined && !enclosed.edge) s.sealed = enclosed
+        if (enclosed !== undefined && planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: start side ${enclosed.edge ? "reached unknown ground" : "enclosed"} (${enclosed.tiles} tiles)`)
+      }
+    }
+    // B157 phase 2: only a reachable-but-expensive goal gets the one budget retry; a sealed one goes to the remedies.
+    if (s.sealed === undefined && s.reason === "budget exhausted" && pj.retried !== true) {
+      pj.retried = true
+      s.p.budget *= PIPE_BUDGET_RETRY
+      s.status = "running"
+      s.reason = undefined
+      if (planTrace.searches !== undefined) planTrace.searches(`pipe ${pj.conn}: budget exhausted, retrying at ${s.p.budget}`)
+      return used
+    }
+  }
+  job.pipe = undefined
+  if (s.status === "failed") {
+    const cb = pipeCallbacks(job, terrain, facts, policy, pj)
+    const failure = pipeEvidence(job, pj.conn, s)
+    if (failure.sealed !== undefined && !failure.sealed.edge && tryReplace(job, c, facts, policy, failure.sealed)) return used
+    const st = s.p.start
+    const routeTerrain = pipeTerrain(terrain, f)
+    const k = tkey(st.x, st.y)
+    const g = s.p.goal
+    fail(job, c.id, `no pipe path (${failure.reason}, ${failure.work} expansions; start ${st.x},${st.y} raw block ${terrain.block(st.x, st.y)} routed block ${routeTerrain.block(st.x, st.y)} cost ${tileCost(job.layout, routeTerrain, policy, pj.costReq, false, st.x, st.y)} occ ${job.layout.occ[k] ?? "-"} reserve ${job.layout.reserved[k] ?? "-"} route ${job.layout.routeOcc[k] ?? "-"}, goal ${g.x},${g.y}, taps ${s.p.starts?.length ?? 0}${failure.sealed !== undefined ? `, sealed ${failure.sealed.side} ${failure.sealed.tiles} tiles` : ""}; ${pipeFailureNotes(s, cb)})`)
+    return used
+  }
+  const r = s.result!
+  const id = pj.costReq.id
+  const first = r.steps[0]
+  let tapOf: string | undefined
+  if (s.p.starts !== undefined && first !== undefined) for (let d = 0; d < 4 && tapOf === undefined; d++) tapOf = pj.trunk[tkey(first.x + DX[d], first.y + DY[d])]
+  const route = pipeRoute(id, c, f, r.steps, r.cost)
+  if (tapOf !== undefined) route.tapOf = routeId(tapOf)
+  if (pj.joins !== undefined) route.joins = routeId(pj.joins)
+  commitRoute(job.layout, route)
+  // Each pump needs power: a pole on a free tile beside it, as a pole line the pole step joins to the network.
+  const poles: PoleId[] = []
+  const line = pumpPoleLine(id)
+  const routeTiles: Record<number, boolean> = {}
+  for (const st of r.steps) routeTiles[tkey(st.x, st.y)] = true
+  for (let i = 0; i < r.steps.length; i++) {
+    const st = r.steps[i]
+    if (st.kind !== "pump") continue
+    const spot = pumpPoleSpot(job.layout, terrain, policy, pj.costReq, st, routeTiles, pumpPoleReach(facts, f.pole))
+    if (spot === undefined) {
+      fail(job, c.id, `no room for a pole beside the pump at ${st.x},${st.y}`)
+      return used
+    }
+    const pid = poleId(`${line}:${i}`)
+    job.layout.poles = [...(job.layout.poles ?? []), { id: pid, name: f.pole ?? "small-electric-pole", x: spot.x, y: spot.y, line }]
+    claimPoleTile(job.layout, tkey(spot.x, spot.y), line)
+    poles.push(pid)
+  }
+  if (poles.length > 0) job.layout.poleLines = [...(job.layout.poleLines ?? []), { id: line, to: moduleId(id), from: "pump", poles }]
+  return used
+}
+
+/** Whether (x, y) can hold a pump's pole: free, not on the route, and buildable. */
+function poleSpotFree(
+  layout: LayoutState,
+  terrain: TerrainView,
+  policy: LayoutPolicy,
+  req: RouteRequest,
+  x: number,
+  y: number,
+  forbid: Record<number, boolean> | undefined,
+): boolean {
+  const k = tkey(x, y)
+  if (forbid !== undefined && forbid[k] === true) return false
+  if (layout.occ[k] !== undefined || layout.routeOcc[k] !== undefined) return false
+  return tileCost(layout, terrain, policy, req, false, x, y) >= 0
+}
+
+/**
+ * B208: how many tiles from a pump its pole may stand: the pole's supply area (2 for a small pole, 3 for a medium one).
+ * It was 2 for every pole; with medium poles (B205) a pump in a one-tile corridor between two modules, free tiles 3 away,
+ * failed its plan 3 times (`b204b-44444` g238).
+ */
+export function pumpPoleReach(facts: ProtoFacts, pole: string | undefined): number {
+  return math.max(1, math.floor(facts.entity(pole ?? "small-electric-pole")?.supplyDistance ?? 2.5))
+}
+
+/** A free tile beside a pump for its pole, within the pole's supply area (`reach` tiles). */
+export function pumpPoleSpot(
+  layout: LayoutState,
+  terrain: TerrainView,
+  policy: LayoutPolicy,
+  req: RouteRequest,
+  st: PipeStep,
+  forbid?: Record<number, boolean>,
+  reach = 2,
+): Vec | undefined {
+  // The router asks this for every pump candidate, and the old pattern's two sides plus the two diagonal-ahead tiles
+  // are free in almost every case: check them first so the common path never pays for the full square. A small
+  // electric pole's 5×5 supply area covers a pump two tiles off (including diagonally), so a crowded pump falls back to
+  // the full square (B159: oil complex, "no room for a pole beside the pump at 412,35" with free tiles two away).
+  const side = [(st.dir + 1) % 4, (st.dir + 3) % 4]
+  for (let along = 0; along < 2; along++) {
+    for (const d of side) {
+      const x = st.x + DX[st.dir] * along + DX[d]
+      const y = st.y + DY[st.dir] * along + DY[d]
+      if (poleSpotFree(layout, terrain, policy, req, x, y, forbid)) return { x, y }
+    }
+  }
+  let best: Vec | undefined
+  let bestD = 99
+  for (let dx = -reach; dx <= reach; dx++) {
+    for (let dy = -reach; dy <= reach; dy++) {
+      if (dx === 0 && dy === 0) continue
+      const x = st.x + dx
+      const y = st.y + dy
+      if (!poleSpotFree(layout, terrain, policy, req, x, y, forbid)) continue
+      const d = math.abs(dx) + math.abs(dy)
+      if (d < bestD) {
+        bestD = d
+        best = { x, y }
+      }
+    }
+  }
+  return best
+}
+
+/**
+ * M7c.8: tiles kept free of each fluid segment's extent. Seed 11: a segment the router made 320 tiles long (pump to
+ * pump) carried nothing; the engine counts a little more than the router's path (the pumps' own tiles at least). 8: an
+ * agent guess, at most one extra pump on a long line.
+ */
+const PIPE_EXTENT_MARGIN = 8
+
+/** Expansions one fluid route may take (agent guess; a 600-tile line needs a few thousand). */
+const PIPE_BUDGET = 200000
+/** B157: multiplier for the one resumed search after `budget exhausted` (a 2× budget; one retry only). */
+const PIPE_BUDGET_RETRY = 2
+
+/** The line key of pipe-to-ground spans (apart from belt undergrounds: the two never connect). */
+function pipeLine(x: number, y: number, axis: number): string {
+  return `p${axis === 1 ? `h${y}` : `v${x}`}`
+}
+
+/** The fluid route whose pipe-to-ground span on `axis` covers (x, y), if any. */
+function pipeSpanAt(layout: LayoutState, x: number, y: number, axis: number): string | undefined {
+  const c = axis === 1 ? x : y
+  for (const sp of layout.spans[pipeLine(x, y, axis)] ?? []) if (sp.a <= c && c <= sp.b) return sp.route
+  return undefined
+}
+
+function pipeRoute(id: string, c: ConnectionRequest, f: NonNullable<ConnectionRequest["fluid"]>, steps: PipeStep[], cost: number): Route {
+  const out: RouteStep[] = []
+  const tiles: number[] = []
+  const spans: Route["spans"] = []
+  let ugs = 0
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]
+    const kind = s.kind === "ug-in" ? "pipe-ug-in" : s.kind === "ug-out" ? "pipe-ug-out" : s.kind
+    out.push({ kind, x: s.x, y: s.y, dir: s.dir })
+    tiles.push(tkey(s.x, s.y))
+    if (s.kind === "pump") tiles.push(tkey(s.x + DX[s.dir], s.y + DY[s.dir]))
+    if (s.kind === "ug-in") {
+      const e = steps[i + 1]
+      const axis = s.dir % 2
+      spans.push({ line: pipeLine(s.x, s.y, axis), span: { a: axis === 1 ? math.min(s.x, e.x) : math.min(s.y, e.y), b: axis === 1 ? math.max(s.x, e.x) : math.max(s.y, e.y), route: id } })
+      ugs++
+    }
+  }
+  return {
+    id: routeId(id),
+    conn: c.id,
+    item: f.name,
+    from: c.from,
+    to: c.to,
+    steps: out,
+    tiles,
+    spans,
+    belt: "",
+    underground: "",
+    splitter: "",
+    length: steps.length,
+    undergrounds: ugs,
+    cost,
+    ripped: 0,
+    fluid: { name: f.name, pipe: f.pipe, underground: f.underground, pump: f.pump, maxUnderground: f.maxUnderground, extent: f.extent, pole: f.pole },
+  }
+}
+
+/** Tunnel crossings for this job's searches (`tunnel.ts`): the policy's cost, and the base routes others still build. */
+function tunnelOption(job: PlanJob, policy: LayoutPolicy, maxUnderground: number): RouteRequest["tunnel"] {
+  const cost = policy.router.tunnel ?? 0
+  // Span 2: the crossed run needs undergrounds of at least that reach (none before their technology).
+  if (cost <= 0 || maxUnderground < 2) return undefined
+  const busy: Record<string, boolean> = {}
+  for (const id of job.request.busyRoutes ?? []) busy[id] = true
+  return { cost, busy }
+}
+
+/** Records a failure of `key` (a connection, `module:<id>` or `power:<owner>`): its text and, D69, its kind. */
+function fail(job: PlanJob, key: string, failure: PlanFailure | string): void {
+  const f = typeof failure === "string" ? planFailure("other", failure) : failure
+  job.failures[key] = f.reason
+  ;(job.failed ??= {})[key] = f
+}
+
+function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, avoid: Record<number, boolean>, winScale?: number, noSplit?: Record<number, boolean>): RouteRequest | PlanFailure {
   const to = resolve(job, c.to)
   const tm = findModule(job.layout, to.module)
   const tp = tm ? findPort(tm, to.port) : undefined
-  if (!tm || !tp || tp.kind !== "belt-in") return `no belt-in port ${to.module}.${to.port}`
+  if (!tm || !tp || tp.kind !== "belt-in") return planFailure("other", `no belt-in port ${to.module}.${to.port}`)
   const goalTile = portTile(tm, tp)
   const own: Record<string, boolean> = { [portTag(tm.id, tp.id)]: true, [laneTag(portTag(tm.id, tp.id))]: true }
+  const tier = (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier
   const req: RouteRequest = {
     id: `route:${c.id}`,
     conn: c.id,
     item: tp.item ?? "",
     to,
     goal: { x: goalTile.x, y: goalTile.y, dir: dirIndex(tp.dir), side: tp.side },
-    tier: (c.belt !== undefined && job.tiers !== undefined ? tierByBelt(job.tiers, c.belt) : undefined) ?? job.tier,
+    tier,
     own,
     avoid,
     windowMargin: winScale,
+    tunnel: tunnelOption(job, policy, tier.maxUnderground),
   }
   if (c.from !== undefined) {
     const from = resolve(job, c.from)
     const fm = findModule(job.layout, from.module)
     const fp = fm ? findPort(fm, from.port) : undefined
-    if (!fm || !fp || fp.kind !== "belt-out") return `no belt-out port ${from.module}.${from.port}`
-    if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return `item mismatch ${fp.item} → ${tp.item}`
+    if (!fm || !fp || fp.kind !== "belt-out") return planFailure("other", `no belt-out port ${from.module}.${from.port}`)
+    if (fp.item !== undefined && tp.item !== undefined && fp.item !== tp.item) return planFailure("other", `item mismatch ${fp.item} → ${tp.item}`)
     req.from = from
     own[portTag(fm.id, fp.id)] = true
     own[laneTag(portTag(fm.id, fp.id))] = true
     const taps = sameSource(job, from, c.id)
     if (taps.length > 0) {
-      if (policy.topology !== "splitter-tap") return `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`
+      if (policy.topology !== "splitter-tap") return planFailure("other", `port ${from.module}.${from.port} already feeds a route (point-to-point topology; use splitter-tap)`)
       req.taps = taps
+      req.noSplit = noSplit
     } else {
       const o = portOutside(fm, fp)
       req.start = { x: o.x, y: o.y, dir: dirIndex(fp.dir) }
@@ -513,11 +1145,11 @@ function routeRequest(job: PlanJob, c: ConnectionRequest, policy: LayoutPolicy, 
   // feeds); it joins that route like a provider-group merge (B60).
   if (c.merge === true || portFedByOther(job.layout, to, c.id)) {
     const share = policy.router.sideLoadLaneShare
-    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined)
+    const goals = mergeGoals(job.layout, to, c.from, share !== undefined ? { capacity: req.tier.laneCapacity, share } : undefined, siblingScore(job, c))
     if (goals.length > 0) {
       req.mergeGoals = goals
       applyMergeGoal(req, goals[0])
-    } else if (portFedByOther(job.layout, to, c.id)) return `no merge target for ${to.module}.${to.port}`
+    } else if (portFedByOther(job.layout, to, c.id)) return planFailure("no-merge-target", `no merge target for ${to.module}.${to.port}`)
     // B89 (vps-b88b-r1264816-m60): a merge whose trunk is gone (ripped, or never landing) has nothing to join; the port
     // is free, so it routes there itself (the B88 in-place reroute of power's coal trunk failed "no merge target").
   }
@@ -567,6 +1199,32 @@ function externalStub(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, 
   }
 }
 
+/** Steps a module's placement search (none once it is done: its whole-patch plan may still be preparing). */
+function searchPlacement(job: PlanJob, s: PlacementSearch, terrain: TerrainView, policy: LayoutPolicy, budget: number): number {
+  if (s.phase === "done") return 0
+  const c0 = s.candidates ?? 0
+  const used = stepPlacement(s, job.layout, terrain, policy, budget)
+  keepDeadPatches(job, s)
+  job.stats.placeWork += used
+  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  return used
+}
+
+/**
+ * M7: a placed mine's whole-patch plan (`stepWholePatch`), prepared under the step's budget before the module is
+ * committed (`job.wholePatch` is cleared once it is ready). Work counts as placement work.
+ */
+function wholePatchStep(job: PlanJob, s: PlacementSearch, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const p = (job.wholePatch ??= newWholePatchPrep())
+  let used = 0
+  if (budget > 0 || p.stage === "done") {
+    used = stepWholePatch(p, s.result!, { terrain, facts, region: s.req.region, policy, state: job.layout, splitters: job.request.splitters === true }, budget)
+    job.stats.placeWork += used
+  }
+  if (p.stage === "done") job.wholePatch = undefined
+  return used
+}
+
 function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
   const id = moduleId(job.replaceQueue[0])
   if (job.placement === undefined) {
@@ -574,19 +1232,18 @@ function replaceStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
     job.placement = newPlacement({ id, def: mreq.def, targets: targetsFor(job, id), center: job.request.center, region: job.request.region, avoid: [...(job.avoid[id] ?? []), ...(job.request.avoid ?? [])], softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
-  const c0 = s.candidates ?? 0
-  const used = stepPlacement(s, job.layout, terrain, policy, budget)
-  keepDeadPatches(job, s)
-  job.stats.placeWork += used
-  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  let used = searchPlacement(job, s, terrain, policy, budget)
+  if (s.phase === "done") {
+    used += wholePatchStep(job, s, terrain, facts, policy, budget - used)
+    if (job.wholePatch !== undefined) return used
+  }
   if (s.phase === "done" || s.phase === "failed") {
     if (s.phase === "done") {
-      prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
       commitPlacement(job.layout, s.result!, facts, policy)
-    }
-    else {
+      notePlacedPatch(job, id, s)
+    } else {
       placementEvidence(job, id, s)
-      job.failures[`module:${id}`] = `re-placement: ${s.reason ?? "failed"}`
+      fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason: `re-placement: ${s.reason ?? "failed"}`, what: s.failure?.what })
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: re-placement failed: ${s.reason ?? "failed"}`)
     }
     job.placement = undefined
@@ -606,37 +1263,110 @@ export function replacementAvoid(rect: Rect, margin: number): Rect {
 }
 
 /**
+ * B158: removes every plan route touching module `mid`, keeping `rerootTap`'s trunk prefix where it can, and takes the
+ * **merge joins** on that route's belt with it (the B91 rule growth uses). A merge join is not a tap: re-rooting/routing
+ * only the touching route left it pointing at a tile the re-rooted tap now owned, and the completed layout failed
+ * `checkLayoutIndexes`. Routes the plan does not own (base/fixed, or a connection not in its request) are left alone.
+ * Returns the removed route ids; their connections must be routed again after the module moves.
+ */
+export function ripForReplace(layout: LayoutState, mid: string, requested: Record<string, boolean>): RouteId[] {
+  const handled: Record<RouteId, boolean> = {}
+  const removed: RouteId[] = []
+  const take = (id: RouteId): void => {
+    if (handled[id] === true) return
+    handled[id] = true
+    removed.push(id)
+  }
+  for (const rid of [...layout.routeOrder]) {
+    if (handled[rid] === true) continue
+    const r = layout.routes[rid]
+    if (r === undefined || r.fixed === true || requested[r.conn] !== true || (r.to.module !== mid && r.from?.module !== mid)) continue
+    let root: RouteId = rid
+    while (layout.routes[root]?.tapOf !== undefined) root = layout.routes[root]!.tapOf!
+    // Snapshot the routes that hang off the group before `rerootTap` moves the trunk's prefix (and its tiles) onto the
+    // tap: a provider-group merge stands on one of the trunk's belts, and a fluid `joins` line ends beside one of its
+    // pipes; both are routed again with the group.
+    const dependents: RouteId[] = []
+    for (const gid of dependentRoutes(layout, [root])) {
+      const gr = layout.routes[gid]
+      if (gr === undefined || gr.fixed === true || requested[gr.conn] !== true || gid === rid) continue
+      if (gr.tapOf === undefined && (gr.merge !== undefined || gr.mergeSplitter !== undefined)) dependents.push(gid)
+      // B149/B158: a joining line's end is only a connection while the joined line's pipe is there.
+      else if (gr.joins !== undefined) dependents.push(gid)
+    }
+    for (const id of rerootOrRip(layout, rid, mid)) take(id)
+    for (const gid of dependents) {
+      if (handled[gid] === true || layout.routes[gid] === undefined) continue
+      for (const id of ripRoute(layout, gid)) take(id)
+    }
+  }
+  return removed
+}
+
+/**
+ * Takes out route `rid` for module `mid` moving. A trunk whose consumer moves (its source stays) keeps its longest tap
+ * that does not touch `mid` (`rerootTap`); otherwise it goes with all its taps (`ripRoute`).
+ */
+function rerootOrRip(layout: LayoutState, rid: RouteId, mid: string): RouteId[] {
+  const r = layout.routes[rid]
+  if (r !== undefined && r.from !== undefined && r.from.module !== mid) {
+    const at: Record<number, number> = {}
+    for (let i = 0; i < r.steps.length; i++) at[tkey(r.steps[i].x, r.steps[i].y)] = i
+    let best: RouteId | undefined
+    let bestLen = 0
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      const s0 = t.steps[0]
+      if (t.tapOf !== rid || t.to.module === mid || s0?.kind !== "splitter") continue
+      const i = at[tkey(s0.x, s0.y)]
+      if (i === undefined || i + t.length <= bestLen) continue
+      best = id
+      bestLen = i + t.length
+    }
+    if (best !== undefined) {
+      const removed = rerootTap(layout, rid, best)
+      if (removed !== undefined) {
+        if (planTrace.sink !== undefined) traceEvent(`route ${best}: keeps its belt and ${rid}'s first part (that route's consumer ${mid} moves)`)
+        return removed
+      }
+    }
+  }
+  return ripRoute(layout, rid)
+}
+
+/**
  * A connection that rip-up could not route: take out one of its modules (the consumer first, or the producer when the
  * seal check proved the start walled in; never a site-anchored, built or expanded one, at most twice each) with every
  * route touching it, and place it again away from its old footprint. Returns false if no module can move.
  */
-function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, search?: Search): boolean {
+function tryReplace(job: PlanJob, c: ConnectionRequest, facts: ProtoFacts, policy: LayoutPolicy, sealed?: { side: "start" | "goal"; edge?: boolean }): boolean {
   const ids = [c.to.module]
   if (c.from !== undefined) ids.push(c.from.module)
   // B57 (seed 11): the seal check proved the start walled in: moving the consumer can't help, move the producer first.
-  if (search?.sealed !== undefined && !search.sealed.edge && search.sealed.side === "start" && c.from !== undefined) ids.reverse()
+  if (sealed !== undefined && !sealed.edge && sealed.side === "start" && c.from !== undefined) ids.reverse()
   for (const mid of ids) {
     if (job.alias[mid] !== undefined) continue
     const m = findModule(job.layout, mid)
     // A module on a site (a mine on its patch, a steam block on its shore) keeps its place, unless the router proved its
     // own port walled in (B106, 5387208: a new copper mine placed in a pocket of trees and built ground; every attempt
     // put it back there and the plan failed 8 times): then it is placed again away from that spot like any module.
-    const provenSealed = search?.sealed !== undefined && !search.sealed.edge && (search.sealed.side === "start" ? c.from?.module : c.to.module) === mid
+    const provenSealed = sealed !== undefined && !sealed.edge && (sealed.side === "start" ? c.from?.module : c.to.module) === mid
     if (m === undefined || m.fixed || (m.canonical.site !== undefined && !provenSealed) || (job.replaced[mid] ?? 0) >= 2) continue
-    for (const rid of [...job.layout.routeOrder]) {
-      const r = job.layout.routes[rid]
-      if (r === undefined || (r.to.module !== mid && r.from?.module !== mid)) continue
-      for (const removed of ripRoute(job.layout, rid)) {
-        const conn = removed.substring("route:".length)
-        if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
-      }
+    if (job.request.modules.some((r) => r.id === mid && r.at !== undefined)) continue
+    const requested: Record<string, boolean> = {}
+    for (const x of job.request.connections) requested[x.id] = true
+    for (const removed of ripForReplace(job.layout, mid, requested)) {
+      const conn = removed.substring("route:".length)
+      if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
     }
     unmarkModule(job.layout, m, facts)
     job.layout.modules = job.layout.modules.filter((x) => x.id !== mid)
     job.replaced[mid] = (job.replaced[mid] ?? 0) + 1
+    // New geometry: earlier rip-ups say nothing about loops around the new spot.
+    job.ripPairs = undefined
     // B28: only a sealed end needs the wider exclusion. Ordinary congestion keeps the old, tight rectangle: padding
     // every replacement by the route margin pushed a dense comparison plan into failure (seed3333-production-ok).
-    const pad = search?.sealed !== undefined ? policy.router.margin : 0
+    const pad = sealed !== undefined ? policy.router.margin : 0
     job.avoid[mid] = [...(job.avoid[mid] ?? []), replacementAvoid(m.rect, pad)]
     job.replaceQueue.push(mid)
     if (planTrace.sink !== undefined) traceEvent(`module ${mid}: taken out to be placed again (connection ${c.id} unroutable; old rect ${m.rect.x},${m.rect.y} ${m.rect.w}x${m.rect.h})`)
@@ -660,6 +1390,18 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
   }
   const id = moduleId(job.order[job.placeIdx])
   const mreq = moduleRequest(job, id)
+  // M7b: a module generated for one spot goes exactly there, or the plan fails.
+  if (mreq.at !== undefined) {
+    const m = placeFixed(job.layout, terrain, policy, id, mreq.def, mreq.at, facts)
+    if (typeof m === "string") {
+      fail(job, `module:${id}`, planFailure("no-position", `no room at its fixed spot: ${m}`))
+      job.phase = "failed"
+    } else {
+      commitPlacement(job.layout, m, facts, policy)
+      job.placeIdx++
+    }
+    return 1
+  }
   if (job.placement === undefined) {
     // D52: a second request on the same field completes and shares the already planned 2D mine instead of trying to
     // squeeze another independent strip into its reserved footprint. B23: a built (fixed) mine that is not complete
@@ -710,15 +1452,13 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     job.placement = newPlacement({ id, def: mreq.def, targets, center, region: job.request.region, avoid: job.request.avoid, softExempt: partnersOf(job, id), dead: job.request.deadPatches })
   }
   const s = job.placement
-  const c0 = s.candidates ?? 0
-  const used = stepPlacement(s, job.layout, terrain, policy, budget)
-  keepDeadPatches(job, s)
-  job.stats.placeWork += used
-  job.stats.candidates = (job.stats.candidates ?? 0) + (s.candidates ?? 0) - c0
+  let used = searchPlacement(job, s, terrain, policy, budget)
   if (s.phase === "done") {
+    used += wholePatchStep(job, s, terrain, facts, policy, budget - used)
+    if (job.wholePatch !== undefined) return used
     delete (job.wholeFail ?? {})[id]
-    prepareWholePatchPlacement(s.result!, terrain, facts, s.req.region, policy, job.layout, job.request.splitters === true)
     commitPlacement(job.layout, s.result!, facts, policy)
+    notePlacedPatch(job, id, s)
     job.placement = undefined
     job.placeIdx++
   } else if (s.phase === "failed") {
@@ -736,7 +1476,8 @@ function placeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       placementEvidence(job, id, s)
       // B23: a request that wanted the shared mine says so in its failure.
       const wf = job.wholeFail?.[id]
-      job.failures[`module:${id}`] = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      const reason = wf !== undefined ? `${s.reason ?? "placement failed"} (shared mine ${wf})` : (s.reason ?? "placement failed")
+      fail(job, `module:${id}`, { kind: s.failure?.kind ?? "other", reason, what: s.failure?.what })
       if (planTrace.sink !== undefined) traceEvent(`module ${id}: ${job.failures[`module:${id}`]}`)
       job.phase = "failed"
     }
@@ -807,11 +1548,15 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.ordered = undefined
   job.placeIdx = 0
   job.placement = undefined
+  job.wholePatch = undefined
   job.alias = {}
   job.queue = []
   job.ripCount = {}
+  job.ripPairs = undefined
   job.current = undefined
+  job.pipe = undefined
   job.failures = {}
+  job.failed = undefined
   job.expanded = {}
   job.wholeFail = undefined
   job.replaceQueue = []
@@ -822,6 +1567,8 @@ function guardLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): b
   job.stats = stats
   job.evidence = evidence
   job.deadPatches = dead
+  // Every module is placed again: the earlier placements' patches no longer describe this plan.
+  job.sitePatches = undefined
   job.laneKeep = keep
   job.newLaneTried = undefined
   job.newLaneKeep = undefined
@@ -901,111 +1648,259 @@ function guardNewLanes(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy)
 }
 
 function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  if (job.pipe !== undefined) return pipeStep(job, terrain, facts, policy, budget)
   if (job.current === undefined) {
-    const id = job.queue.shift()
-    if (id === undefined) {
-      let failed = false
-      for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
-      // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
-      if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
-      else if (guardLanes(job, terrain, policy)) return 1
-      else if (guardNewLanes(job, terrain, policy)) return 1
-      else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
-      if (failed) job.routingFailed = true
-      return 0
-    }
-    const c = connection(job, id)
-    const req = routeRequest(job, c, policy, {})
-    if (typeof req === "string") {
-      job.failures[id] = req
-      traceRouteFailure(job.layout, terrain, policy, id, req, job.compareProbe ? "compare" : "plan")
-      return 1
-    }
-    if (c.from === undefined) {
-      const stub = externalStub(job, terrain, policy, c, req)
-      if (typeof stub === "string") {
-        job.failures[id] = stub
-        traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
-      } else commitRoute(job.layout, stub)
-      return 1
-    }
-    job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, false), rip: false, avoid: {}, retries: 0, mergeGoals: req.mergeGoals, mergeTry: 0 }
-    job.stats.searches++
+    const used = startConnection(job, terrain, facts, policy, budget)
+    // A new belt search runs in the same call; anything else (a pipe, a stub, a failure, the end) is done.
+    if (job.current === undefined) return used
   }
   const cur = job.current
   const used = stepSearch(cur.search, job.layout, terrain, policy, budget)
   job.stats.routeWork += used
   job.stats.expansions += used
   const st = cur.search.status
+  if (planTrace.searches !== undefined) {
+    cur.work = (cur.work ?? 0) + used
+    if (st !== "running") {
+      planTrace.searches(`belt ${cur.conn} ${st} rip=${cur.rip} win=${cur.winScale ?? 1} work=${math.floor(cur.work)} ${cur.search.reason ?? ""} seal=${cur.search.sealSteps ?? "-"}${cur.search.sealFull === true ? "F" : ""}${cur.search.sealed !== undefined ? `:${cur.search.sealed.side}${cur.search.sealed.edge ? "/edge" : ""}` : ""}${cur.search.widened === true ? " widened" : ""}${cur.search.coarse !== undefined || cur.search.corridor !== undefined ? " corridor" : ""} box=${cur.search.w}x${cur.search.h} merge=${cur.mergeTry ?? 0}/${cur.mergeGoals?.length ?? 0}`)
+      cur.work = 0
+    }
+  }
   if (st === "running") return used
+  if (st === "failed") searchFailed(job, terrain, facts, policy, cur)
+  else searchFound(job, terrain, facts, policy, cur)
+  return used
+}
+
+type CurrentRoute = NonNullable<PlanJob["current"]>
+
+/**
+ * The next queued connection: its search (`job.current`, stepped by the caller), a pipe search, an external stub, or a
+ * recorded failure. With the queue empty, routing ends: the lane guards, then the next phase.
+ */
+function startConnection(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
+  const id = job.queue.shift()
+  if (id === undefined) return endRouting(job, terrain, policy)
+  const c = connection(job, id)
+  if (c.fluid !== undefined) {
+    job.pipe = newPipeJob(job, policy, c)
+    if (job.pipe === undefined) return 1
+    return pipeStep(job, terrain, facts, policy, budget)
+  }
+  const via = coveredBy(job, c)
+  if (via !== undefined) {
+    ;(job.covered ??= {})[id] = via
+    if (planTrace.searches !== undefined) planTrace.searches(`belt ${id} covered by ${via}`)
+    return 1
+  }
+  const winScale = job.winMemo?.[id]
+  const req = routeRequest(job, c, policy, {}, winScale)
+  if (isPlanFailure(req)) {
+    fail(job, id, req)
+    traceRouteFailure(job.layout, terrain, policy, id, req.reason, job.compareProbe ? "compare" : "plan")
+    return 1
+  }
+  if (c.from === undefined) {
+    const stub = externalStub(job, terrain, policy, c, req)
+    if (typeof stub === "string") {
+      fail(job, id, stub)
+      traceRouteFailure(job.layout, terrain, policy, id, stub, job.compareProbe ? "compare" : "plan")
+    } else commitRoute(job.layout, stub)
+    return 1
+  }
+  // A connection that last needed rip mode starts in it (g91a2: two belts found only by rip searches at window 3 each
+  // failed a ~420k non-rip search there first, every round).
+  const rip = job.winMemo?.[id] !== undefined && job.ripMemo?.[id] === true
+  job.current = { conn: id, search: newSearch(job.layout, terrain, policy, req, rip), rip, avoid: {}, retries: 0, winScale, mergeGoals: req.mergeGoals, mergeTry: 0 }
+  job.stats.searches++
+  return 0
+}
+
+/**
+ * M7 (B, user request in-session 2026-11-03; seed 11 g111): the connection (a merge) of a route from the same source port
+ * that already lands at `c`'s port: its join sits on a trunk above `c`'s tap, so `c`'s items arrive without a belt of
+ * its own. A heir mine of a retiring coal mine joined its tap tree once for one smelter; each other smelter's merge
+ * searched a 200×585 window for its own way into a sealed fuel line.
+ */
+function coveredBy(job: PlanJob, c: ConnectionRequest): string | undefined {
+  if (c.merge !== true || c.from === undefined || c.fluid !== undefined) return undefined
+  const to = resolve(job, c.to)
+  for (const rid of sameSource(job, resolve(job, c.from), c.id)) {
+    const r = job.layout.routes[rid as RouteId]
+    if (r !== undefined && !routeDangles(job.layout, rid) && landsDownstream(job.layout, rid, to)) return r.conn
+  }
+  return undefined
+}
+
+/**
+ * M7 (B, user request in-session 2026-11-03): scores a merge goal by how many sibling merges (same source, not routed or
+ * covered yet) a join there would feed too (`mergeGoals` puts such points first; P44's splitters-first order holds per
+ * kind). One heir mine of a retiring coal mine then joins its tap tree above every smelter it replaces, and the others
+ * are covered (seed 11 g111: the tree's root ran 27 tiles from the old mine, its first tap 3 tiles in).
+ */
+function siblingScore(job: PlanJob, c: ConnectionRequest): ((this: void, x: number, y: number) => number) | undefined {
+  if (c.merge !== true || c.from === undefined) return undefined
+  const from = resolve(job, c.from)
+  const ports: PortRef[] = []
+  for (const o of job.request.connections) {
+    if (o.id === c.id || o.merge !== true || o.from === undefined || job.covered?.[o.id] !== undefined) continue
+    if (job.layout.routes[routeId(`route:${o.id}`)] !== undefined) continue
+    const f = resolve(job, o.from)
+    if (f.module === from.module && f.port === from.port) ports.push(resolve(job, o.to))
+  }
+  if (ports.length === 0) return undefined
+  const layout = job.layout
+  return (x, y) => {
+    let n = 0
+    for (const p of ports) if (pointFeeds(layout, x, y, p)) n++
+    return n
+  }
+}
+
+/** M7 (B): a queued merge connection from the same source as `c` (it may join a trunk above `c`'s port). */
+function siblingQueued(job: PlanJob, c: ConnectionRequest): boolean {
+  if (c.from === undefined) return false
+  const from = resolve(job, c.from)
+  for (const id of job.queue) {
+    const o = connection(job, id)
+    if (o.merge !== true || o.from === undefined) continue
+    const f = resolve(job, o.from)
+    if (f.module === from.module && f.port === from.port) return true
+  }
+  return false
+}
+
+/** Every connection routed or failed: guard the lanes (B57, B85), then compare, poles, done or failed. */
+function endRouting(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy): number {
+  // M7 (B): a covering route ripped or re-routed since: its covered connections route again (twice at most each).
+  for (const [id] of pairs(job.covered ?? {})) {
+    const c = connection(job, id as string)
+    if (coveredBy(job, c) !== undefined) continue
+    delete job.covered![id as string]
+    const n = (job.deferred ??= {})[id as string] ?? 0
+    if (n >= 2) {
+      fail(job, id as string, "no path (its covering route is gone)")
+      continue
+    }
+    job.deferred[id as string] = n + 1
+    job.queue.push(id as string)
+  }
+  if (job.queue.length > 0) return 1
+  let failed = false
+  for (const [k] of pairs(job.failures)) if (k !== undefined) failed = true
+  // D36: a plan that can't route without undergrounds still tries the same placement with them (the infinite case).
+  if (failed) job.phase = job.request.compare?.undergrounds !== undefined && job.routingFailed === undefined ? "compare" : "failed"
+  else if (guardLanes(job, terrain, policy)) return 1
+  else if (guardNewLanes(job, terrain, policy)) return 1
+  else job.phase = job.request.compare !== undefined ? "compare" : job.request.poles !== undefined ? "poles" : "done"
+  if (failed) job.routingFailed = true
+  return 0
+}
+
+/** Searches the current connection again (`rip` mode, `retry` after "no path"), or fails it if its request can't be made. */
+function restartRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur: CurrentRoute, rip: boolean, retry = false): void {
   const c = connection(job, cur.conn)
-  const restart = (rip: boolean, retry = false): void => {
-    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-    if (typeof req === "string") {
-      job.failures[cur.conn] = req
-      traceRouteFailure(job.layout, terrain, policy, cur.conn, req, job.compareProbe ? "compare" : "plan")
-      job.current = undefined
+  const req = routeRequest(job, c, policy, cur.avoid, cur.winScale, cur.noSplit)
+  if (isPlanFailure(req)) {
+    fail(job, cur.conn, req)
+    traceRouteFailure(job.layout, terrain, policy, cur.conn, req.reason, job.compareProbe ? "compare" : "plan")
+    job.current = undefined
+    return
+  }
+  cur.rip = rip
+  cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
+  job.stats.searches++
+}
+
+/** Gives up on the current connection with `reason` (traced). */
+function failRoute(job: PlanJob, terrain: TerrainView, policy: LayoutPolicy, cur: CurrentRoute, reason: string): void {
+  fail(job, cur.conn, reason)
+  traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
+  job.current = undefined
+}
+
+/** The current connection's search found no path: other merge goals (B60), a wider window (B28), rip mode, re-placement. */
+function searchFailed(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, cur: CurrentRoute): void {
+  const c = connection(job, cur.conn)
+  // B157: the same reverse-goal flood the pipe uses, over the belt's real moves. `stepSeal` usually has an answer by
+  // now; this covers a failure it left unpriced (a cap, or a search that stopped before the seal finished).
+  if (cur.search.sealed === undefined && (policy.router.sealCheck ?? 0) > 0) {
+    const proof = proveBeltSeal(cur.search, job.layout, terrain, policy, policy.router.sealCheck!)
+    if (proof.proof !== undefined) cur.search.sealed = proof.proof
+  }
+  routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
+  // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
+  // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
+  if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
+    cur.mergeTry = (cur.mergeTry ?? 0) + 1
+    // Seed 11 g111: a search that ran to the end already knows every route from the producer; the next goal reuses it.
+    if (!cur.rip && policy.router.mergeReuse === true) {
+      applyMergeGoal(cur.search.req, cur.mergeGoals[cur.mergeTry])
+      if (retargetSearch(cur.search)) {
+        job.stats.searches++
+        return
+      }
+    }
+    const req = routeRequest(job, c, policy, cur.avoid, cur.winScale, cur.noSplit)
+    if (!isPlanFailure(req) && req.mergeGoals !== undefined) {
+      applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
+      cur.rip = false
+      cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+      job.stats.searches++
       return
     }
-    cur.rip = rip
-    cur.search = newSearch(job.layout, terrain, policy, req, rip, retry)
-    job.stats.searches++
   }
-  if (st === "failed") {
-    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale)
-    // B60: the nearest merge point may be inside the built factory. Try the other free sides of the existing route
-    // before the general rip/widen retries (a new coal mine can approach a different part of the same trunk).
-    if (cur.mergeGoals !== undefined && (cur.mergeTry ?? 0) + 1 < cur.mergeGoals.length) {
-      cur.mergeTry = (cur.mergeTry ?? 0) + 1
-      const req = routeRequest(job, c, policy, cur.avoid, cur.winScale)
-      if (typeof req !== "string" && req.mergeGoals !== undefined) {
-        applyMergeGoal(req, cur.mergeGoals[cur.mergeTry])
-        cur.rip = false
-        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
-        job.stats.searches++
-        return used
-      }
+  // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
+  // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
+  // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
+  // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
+  // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
+  const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
+  if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
+    cur.winScale = (cur.winScale ?? 1) * 3
+    cur.rip = false
+    const req = routeRequest(job, c, policy, {}, cur.winScale)
+    if (!isPlanFailure(req)) {
+      cur.search = newSearch(job.layout, terrain, policy, req, false, true)
+      job.stats.searches++
+      return
     }
-    // B28: the window is endpoints ± margin; dense infrastructure (or a mine's D52 claim) between them can wall
-    // the direct band off, while a detour just past it exists. The rip retries come first (they stay cheap), and
-    // only after the rip pass fails too does the window widen (×3, then ×9): region retries widen placement, never
-    // these route windows. Comparison branches probe cheap: their work is capped against the real plan's.
-    // Seal check: an end boxed in well inside the window stays boxed in a wider one (only rip mode can open it).
-    const sealedInside = cur.search.sealed !== undefined && !cur.search.sealed.edge
-    if (cur.search.reason === "no path" && !job.compareProbe && cur.rip && (cur.winScale ?? 1) < 9 && !sealedInside) {
-      cur.winScale = (cur.winScale ?? 1) * 3
-      cur.rip = false
-      const req = routeRequest(job, c, policy, {}, cur.winScale)
-      if (typeof req !== "string") {
-        cur.search = newSearch(job.layout, terrain, policy, req, false, true)
-        job.stats.searches++
-        return used
-      }
-    }
-    if (!cur.rip) restart(true, cur.search.reason === "no path")
-    else {
-      const reason = cur.search.reason ?? "no path"
-      // Traced before tryReplace changes the layout; a re-placement only retries the connection.
-      const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
-      if (!tryReplace(job, c, facts, policy, cur.search)) job.failures[cur.conn] = reason
-      else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
-      job.current = undefined
-    }
-    return used
   }
+  // M7 (B): every merge goal failed, and a sibling from the same source is still queued: it may join a trunk above this
+  // port, which then covers this one. Try that first (once), before rip mode.
+  if (!cur.rip && c.merge === true && (job.deferred?.[cur.conn] ?? 0) === 0 && siblingQueued(job, c)) {
+    ;(job.deferred ??= {})[cur.conn] = 1
+    job.queue.push(cur.conn)
+    job.current = undefined
+    return
+  }
+  if (!cur.rip) restartRoute(job, terrain, policy, cur, true, cur.search.reason === "no path")
+  else {
+    const reason = cur.search.reason ?? "no path"
+    // Traced before tryReplace changes the layout; a re-placement only retries the connection.
+    const t = traceRouteFailure(job.layout, terrain, policy, cur.conn, reason, job.compareProbe ? "compare" : "plan", cur.search)
+    if (!tryReplace(job, c, facts, policy, cur.search.sealed)) fail(job, cur.conn, reason)
+    else if (t !== undefined) t.reason = `${reason} (a module is placed again, then the connection retried)`
+    job.current = undefined
+  }
+}
+
+/** The current connection's search found a route: checked (self-crossing, B58, rip-up limit), then committed. */
+function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, cur: CurrentRoute): void {
+  const c = connection(job, cur.conn)
   const res = searchResult(cur.search, job.layout, policy)
   if (res.selfCross !== undefined) {
     routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `route crosses itself at ${res.selfCross}`)
     if (cur.retries < 3) {
       cur.retries++
       cur.avoid[res.selfCross] = true
-      restart(cur.rip)
+      restartRoute(job, terrain, policy, cur, cur.rip)
     } else {
-      job.failures[cur.conn] = "route crosses itself"
+      fail(job, cur.conn, "route crosses itself")
       traceRouteFailure(job.layout, terrain, policy, cur.conn, "route crosses itself", job.compareProbe ? "compare" : "plan")
       job.current = undefined
     }
-    return used
+    return
   }
   const route = res.route!
   // B58: a splitter tap that would rip up its own trunk is not a valid branch. The tap search saw the old trunk,
@@ -1018,28 +1913,70 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
     if (cur.retries < 3) {
       cur.retries++
       for (const k of route.tiles) cur.avoid[k] = true
-      restart(cur.rip)
-    } else {
-      job.failures[cur.conn] = "splitter tap would rip its own route"
-      traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
-      job.current = undefined
+      restartRoute(job, terrain, policy, cur, cur.rip)
+    } else failRoute(job, terrain, policy, cur, "splitter tap would rip its own route")
+    return
+  }
+  // B172 (m7-benchLayers14 g227): a tap that tunnels under its own trunk next to its splitter would put the tunnel's
+  // underground end on the splitter's tile; the splitter replaces it and cuts the trunk. The search can't see it (its
+  // states don't carry their tap start), so retry with no splitter on that run: the crossing itself stays allowed.
+  const s0 = route.steps[0]
+  const ownSplit = route.tapOf !== undefined && s0?.kind === "splitter" ? tkey(s0.x, s0.y) : undefined
+  if (ownSplit !== undefined) {
+    for (const t of res.tunnels ?? []) {
+      if (job.layout.routeOcc[tkey(t.x, t.y)] !== route.tapOf) continue
+      const site = tunnelSite(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy)
+      if (site === undefined || tunnelSite(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy, ownSplit) !== undefined) continue
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `tunnel at ${t.x},${t.y} runs over the tap's own splitter at ${s0!.x},${s0!.y}`)
+      if (cur.retries < 3) {
+        cur.retries++
+        cur.noSplit ??= {}
+        for (let j = -2; j <= 2; j++) cur.noSplit[tkey(t.x + DX[site.dir] * j, t.y + DY[site.dir] * j)] = true
+        restartRoute(job, terrain, policy, cur, cur.rip)
+      } else failRoute(job, terrain, policy, cur, "tunnel crossing runs over the tap's splitter")
+      return
     }
-    return used
+  }
+  // Tunnel crossings: every crossed run must still allow its tunnel, and two on one route need 3 steps between them
+  // (each rebuilds steps i-2..i+2). Checked before anything changes; a bad one is avoided on a retry.
+  const bad = badTunnel(job.layout, res.tunnels ?? [], route.id, cur.search.req.tunnel?.busy, ownSplit)
+  if (bad !== undefined) {
+    routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `tunnel at ${keyX(bad)},${keyY(bad)} no longer possible`)
+    if (cur.retries < 3) {
+      cur.retries++
+      cur.avoid[bad] = true
+      restartRoute(job, terrain, policy, cur, cur.rip)
+    } else failRoute(job, terrain, policy, cur, "tunnel crossing not possible")
+    return
   }
   for (const v of res.victims) {
     const vr = job.layout.routes[v]
     if (vr === undefined) continue
     const n = job.ripCount[vr.conn] ?? 0
+    // A loop moves a module now; if none can move, ripping goes on up to the limit as before.
+    if ((policy.router.ripLoop ?? 0) > 0 && n < policy.router.maxRipups && job.ripPairs?.[`${cur.conn}>${vr.conn}`] === true) {
+      routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `rip-up loop: ripped ${vr.conn} for this connection before`)
+      if (tryReplace(job, c, facts, policy)) {
+        job.current = undefined
+        return
+      }
+      continue
+    }
     if (n >= policy.router.maxRipups) {
       routeEvidence(job, cur.conn, cur.search, cur.rip, cur.winScale, `blocked by ${vr.conn} after ${n} ripups`)
       if (!tryReplace(job, c, facts, policy)) {
-        job.failures[cur.conn] = `blocked by ${vr.conn} (ripped ${n} times already)`
+        fail(job, cur.conn, `blocked by ${vr.conn} (ripped ${n} times already)`)
         traceRouteFailure(job.layout, terrain, policy, cur.conn, job.failures[cur.conn], job.compareProbe ? "compare" : "plan")
       }
       job.current = undefined
-      return used
+      return
     }
   }
+  for (const v of res.victims) {
+    const vr = job.layout.routes[v]
+    if (vr !== undefined) (job.ripPairs ??= {})[`${cur.conn}>${vr.conn}`] = true
+  }
+  if (planTrace.searches !== undefined && res.victims.length > 0) planTrace.searches(`  rips ${res.victims.join(" ")}`)
   for (const v of res.victims) {
     for (const removed of ripRoute(job.layout, routeId(v))) {
       const conn = removed.substring("route:".length)
@@ -1048,9 +1985,35 @@ function routeStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy
       if (job.queue.indexOf(conn) < 0) job.queue.push(conn)
     }
   }
+  // The crossed runs become underground pairs, freeing the tiles this route takes (a ripped run needs none).
+  for (const t of res.tunnels ?? []) {
+    const on = job.layout.routeOcc[tkey(t.x, t.y)]
+    if (on !== undefined && tunnelRoute(job.layout, t.x, t.y, t.dir, route.id, cur.search.req.tunnel?.busy, ownSplit) === undefined) {
+      fail(job, cur.conn, `tunnel at ${t.x},${t.y} failed after its check`)
+      job.current = undefined
+      return
+    }
+  }
+  if ((res.tunnels?.length ?? 0) > 0) job.stats.tunnels = (job.stats.tunnels ?? 0) + res.tunnels!.length
   commitRoute(job.layout, route)
+  if ((cur.winScale ?? 1) > 1 && !job.compareProbe) {
+    ;(job.winMemo ??= {})[cur.conn] = cur.winScale!
+    ;(job.ripMemo ??= {})[cur.conn] = cur.rip
+  }
   job.current = undefined
-  return used
+}
+
+/** The first tunnel of `tunnels` that cannot be made (see `searchFound`), as a tile key; undefined when all can. */
+function badTunnel(layout: LayoutState, tunnels: { x: number; y: number; dir: number }[], self: string, busy?: Record<string, boolean>, ownSplit?: number): number | undefined {
+  const seen: Record<string, number[]> = {}
+  for (const t of tunnels) {
+    const site = tunnelSite(layout, t.x, t.y, t.dir, self, busy, ownSplit)
+    if (site === undefined) return tkey(t.x, t.y)
+    const list = (seen[site.route] ??= [])
+    for (const i of list) if (math.abs(i - site.i) < 3) return tkey(t.x, t.y)
+    list.push(site.i)
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1080,6 +2043,14 @@ function unroutedCopy(job: PlanJob): LayoutState {
 function portItem(job: PlanJob, ref: PortRef): string | undefined {
   const m = findModule(job.layout, resolve(job, ref).module)
   return m !== undefined ? findPort(m, ref.port)?.item : undefined
+}
+
+/** The patch a mining module was placed on (absent for every other module). */
+function notePlacedPatch(job: PlanJob, id: string, s: PlacementSearch): void {
+  const site = placedPatch(s)
+  if (site === undefined) return
+  job.sitePatches ??= {}
+  job.sitePatches[id] = site
 }
 
 /** D57 (c): the patches a placement found no room on, for the strategy to remember. */
@@ -1300,12 +2271,15 @@ export function logisticsFirst(results: CompareResult[], minUnderground: number,
 
 /** The pole network phase: joins every consumer module to a generator module. Unreachable modules are failures. */
 function poleStep(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, policy: LayoutPolicy, budget: number): number {
-  job.poleJob ??= newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
+  if (job.poleJob === undefined) {
+    job.poleJob = newPoleJob(`poles:${job.stats.steps}:`, job.request.poles!, facts)
+    job.poleJob.built = job.request.builtPoles
+  }
   const before = job.poleJob.work
   if (stepPoles(job.poleJob, job.layout, terrain, facts, policy, budget)) {
     let failed = false
     for (const [owner, why] of pairs(job.poleJob.failures)) {
-      job.failures[`power:${owner}`] = why as string
+      fail(job, `power:${owner}`, why as string)
       failed = true
     }
     job.phase = failed ? "failed" : "done"

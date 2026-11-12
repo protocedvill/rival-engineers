@@ -23,6 +23,7 @@ const P: ReconcileParams = {
   edgeFull: 0.9,
   portFull: 0.5,
   arrivedShare: 0.75,
+  probeTicks: 600,
   probeMaxAge: 3600,
   maxRemedies: 2,
   cooldownTicks: 1000,

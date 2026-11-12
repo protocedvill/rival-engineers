@@ -18,6 +18,12 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 ## Traps that invalidate results
 
 - T2 filters are Lua patterns: `-` must be escaped as `%-`, and `|` is not alternation. Pass several filters instead.
+- **Two build directories, and `--no-build` never rebuilds either.** T1 (`npm run test:unit`) compiles to
+  `mod/build-unit`; T2 (`test-parallel`, `npm test`), soaks and the game load `mod/build`. A change tested with T1 and
+  then run with `--no-build` T2/soak silently exercises the **old** mod (2026-11-07: a benchmark run reproduced an
+  already-fixed `no room for a pole beside the pump` failure because only `build-unit` had been rebuilt). After any
+  `mod/src` change, run `npm run build` (or omit `--no-build`), and trust a soak/benchmark only when
+  `npm run doctor` prints `OK Build: present and newer than TypeScript sources`.
 - Parallel shards are separate Factorio games. A test may only consume state created in its own shard unit. Configure
   intentional grouping in `tools/test-shards.json`.
 - Do not run the full T2 suite as one shard (`TEST_JOBS=1`): every file then shares one game, the tests' factions pass
@@ -27,6 +33,11 @@ Run `npm run doctor` first. `npx factorio-test run` does **not** rebuild; use `n
 - factorio-test normally prints `log()` output only for failures. Use `out/test-results.json` to find the shard and
   read `.factorio-test/shards/N/factorio-current.log`.
 - T2’s bundled save is lab tile, not Nauvis. A terrain test must create its own surface.
+- T2 now defaults to one shard per core (capped at 8). The full suite is CPU-bound: six shards on six cores cut the
+  wall time from 445 s to 162 s solo. Do not read that as a test-time reduction: shard time still adds up, and three
+  concurrent soaks inflate the wall time again.
+- The module lab’s steady-state check uses a `0.5/sqrt(expected items)` tolerance floor. A low-rate module (0.15/s)
+  makes 8 or 10 items per window; a flat 3% tolerance never passed and both engine tests ran to the 60-minute cap.
 - Concurrent Factorio instances distort wall time and AI ms/tick. Quote performance only from `-j 1`; deterministic
   work counters are the concurrency-independent comparison.
 - A scorecard written while seeds remain is partial. Check `run.json` and do not treat absent seeds as passes.
@@ -47,17 +58,58 @@ If the process crashed, open `seed-N/failure.json` before either log: it contain
 diagnostics, and paths to the newest frame/graph/plan artifact.
 
 - Use fail-fast rules to stop known-dead runs.
+- **Reaching a late milestone quickly:** `tools/harness/m7-bench.toml` is a parity-breaking benchmark mode for exactly
+  this, never for acceptance or performance numbers. The crew teleports along its already-found path
+  (`benchmarkWalkTiles`, tiles per tick; 0 = walking) and hand-crafts at `benchmarkCraftingMultiplier` (1 = parity),
+  both force-wide; e.g. `soak.py -c tools/harness/m7-bench.toml --from-save <snapshot.zip> --seeds 11 --hours 1 -j 1`.
+  A huge `character_running_speed_modifier` cannot be used instead: the walker advances a waypoint only within 0.3
+  tiles, so a body moving farther per tick skips waypoints and turns back. T2 `controller` pins both.
 - Use `--snapshots N`, then `--from-save`, for bugs that appear late. `--benchmark` cannot save.
+- For work past a milestone (M7: blue science after red/green), keep a save library: `--save-at stage-3
+  --stop-after-saves` files one save per seed in `out/saves/<config>/seed-N/`, and `--resume-from stage-3` starts every
+  seed there. Rebuild the library when the storage layout or anything before the milestone changes, or after a fix whose
+  bad state the saves already hold (a resume cannot show such a fix). Acceptance runs start fresh. Game-time caps and
+  `--stop-after-saves` read the log, which Factorio flushes late: a sped-up server overshoots by a few game-minutes.
+- This cloud box (4 vCPU Xeon, 15 GB): a 20-game-min early run took ~54 s alone and 28-34 s each with three at once
+  (plus a fourth long run): run soaks with `-j 3` or `-j 4` here; the default (half the cores) is 2.
 - Failed plans already emit `.input.lua`; copy a minimal reproducer into `mod/unit/fixtures/` and replay it.
 - If the factory chooses the wrong next goal, call the remote probe `goal_selection_snapshot(faction)`. It returns
   only plain data: paste the `specs` and `state` into a `goal-selection` T1 regression, then change the pure policy.
   Do not try to load a `LuaEntity` or an entire save into a unit test.
 - Use helper probes or `npm run diagnose -- <run> [seed] [faction]` to connect the current factory goal to planner and
   Job Board blockers before reading thousands of log lines.
+- For a Job Board backlog (many jobs, a busy crew), run the soak with `--helper-lua tools/harness/probes/board.lua`:
+  every 5 game-minutes it logs the active jobs grouped by key prefix, kind, item and target, with how many are claimed,
+  waiting, backing off or ready, and whether the crew could take a ready job's materials now. A large group with no key
+  prefix (`-`) whose producer uses keys means the keys were overwritten (M7c.7: orphaned temp-cell refills).
 - In the live inspector, enable **Growth reserves and mine claims** before changing expansion logic. The green box is
   the built footprint, orange is non-mine growth room, and blue is the whole-patch mine claim; the label includes the
   latest failed growth reason. Looking only at entities hides the reservation that often caused the failure.
 - Preserve the failing artifact until its regression exists. A new full soak is confirmation, not the first debugger.
+
+## Performance work: prove "no behaviour change" cheaply
+
+- **T1 runs Lua 5.4; Factorio runs Lua 5.2.** The same microbenchmark (`tools/harness/lua-bench`) gives 1.6× for
+  function calls, 3.3× for small integer table keys, and **27×** for the planner's `tkey` values (~2×10^12); arithmetic
+  is 1×. The planner's hot maps (`occ`, `reserved`, `routeOcc`, terrain chunks, claims) are keyed by `tkey`, so T1
+  timings are a lower bound for key-heavy work and optimisations that look flat in T1 can matter in game. The engine
+  is not the cause: in the min-1191 profile `terrain` is ~0.02 ms/tick against `planner` ~11.6 ms/tick (the rest of
+  the wall is the engine/GC, ~1.4 ms/tick). Use the in-game `[re-profile]` table or `lua-bench` for key-heavy changes;
+  schema 2 now keeps the active area's tile keys small (a local box with a negative full-map fallback); migrations rekey
+  every persisted map once, so T1's Lua 5.4 result is still only a lower bound for far-away or pre-migration data.
+- **Find the cost before changing code.** Replay a captured plan in plain Lua at the in-game budget (400 units a step)
+  and time each `stepPlan` call: a single step far over the budget is uncounted work (M7: one pipe route took 7.2 s in
+  one step while counting as "expansions"). For per-tick runtime cost, wrap suspects in temporary `LuaProfiler`s logged
+  once a game minute in a 45-game-minute `soak.py -j 1` run; the soak's per-subsystem table only names the subsystem.
+- **Pure refactors:** log every result of the function over the whole T1 suite (a temporary hook appending a sorted
+  serialisation to a file named by an env var), refactor, rerun, `cmp` the files (M7: 5,241 `computeRates` results,
+  458 `tryExpand` calls). Remove the hook before committing.
+- **Planner speedups:** every replay's `REPLAY {json}` line (candidates, work, outcome, failures) must stay identical;
+  compare against a `--out` build of the previous commit.
+- **Runtime speedups:** two same-seed soaks of the same config must play out identically (telemetry goals, counters,
+  crew stats and work totals equal). A change that alters only the *amount* of planner work is not identical in play:
+  plans finish earlier under the same budget and the game drifts, so compare those on replays, not soaks.
+- A cache kept outside `storage` must be derived only (rebuilt after a load), or saves and multiplayer desync.
 
 ## Test placement
 

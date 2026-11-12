@@ -1,15 +1,20 @@
 import { LuaEntity, LuaSurface } from "factorio:runtime"
 import { clearConfigOverrides } from "../config"
-import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag } from "../shared/ids"
-import { createFaction, destroyFaction } from "../jobs/faction"
+import { moduleId, connectionId, poleId, poleLineId, layoutClaimTag, routeId } from "../shared/ids"
+import { addPlaceJob, createFaction, destroyFaction } from "../jobs/faction"
 import { generatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { allParts } from "../planner/build-list"
+import { allParts, partEntities } from "../planner/build-list"
 import { beltTiers } from "../planner/capacity"
 import { tkey, Vec } from "../planner/grid"
 import { planGrowth } from "../planner/grow"
 import { commitModule, findModule, newLayout, PlacedModule } from "../planner/layout"
-import { dropPlannedPoles, getFactory, startFactory } from "../strategy/factory"
+import { dropPlannedPoles, FactoryGoal, getFactory, rework, startFactory } from "../strategy/factory"
+import { dropEvictedPoleGhosts } from "../strategy/ghost-adopt"
+import { restoreLifted } from "../strategy/lifted"
+import { placePendingGhosts } from "../jobs/crew"
+import { getConfig } from "../config"
+import { adoptPlannedPoles } from "../strategy/ghost-adopt"
 import { startBootstrap } from "../strategy/bootstrap"
 import { goalId } from "../shared/ids"
 import { recentDiagnosticBuckets } from "../diagnostic-events"
@@ -17,7 +22,9 @@ import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { claimView, layoutEntityKeys, stampParts, strayUnder } from "../planner/runtime"
+import { claimView, layoutEntityKeys, PlannerEntry, stampParts, startBuild, stepBuild, strayUnder } from "../planner/runtime"
+import { claim, complete, getJob } from "../jobs/board"
+import { clearJobFor } from "../jobs/faction"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
 import { at, createLab, Lab } from "./lab"
@@ -380,6 +387,82 @@ describe("M5a power and growth", () => {
     assert(overlaid.length === 0, "no impossible ghost is stamped over the live pole")
   })
 
+  test("D71 (b): a build that evicts a pole line places its new poles before the old ones are picked up", () => {
+    const lab = createLab(16)
+    const f = createFaction("d71b", { position: at(lab, 0, 0), crew: 0 })
+    const s = lab.surface
+    const layout = newLayout()
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    // The plan's new line: one pole on open ground, one where an old entity is still to be picked up.
+    layout.poles = [
+      { id: poleId("new"), name: "small-electric-pole", x: x + 3, y, line: poleLineId("poles:d71:0") },
+      { id: poleId("late"), name: "small-electric-pole", x: x + 6, y, line: poleLineId("poles:d71:0") },
+    ]
+    layout.poleLines = [{ id: poleLineId("poles:d71:0"), from: "power", to: moduleId("consumer"), poles: [poleId("new"), poleId("late")] }]
+    const old = s.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })!
+    const site = s.create_entity({ name: "wooden-chest", position: { x: x + 6.5, y: y + 0.5 }, force: f.force })!
+    const parts = { modules: [], routes: [], poles: [poleId("new"), poleId("late")] }
+    const entry = { id: "d71b", surface: s.name, force: f.force, faction: f.name, terrain: "", phase: "done", request: {}, belt: "transport-belt", job: { layout }, startTick: 0, scanTicks: 0, planTicks: 0 } as never as PlannerEntry
+    const b = startBuild(entry, { parts, clear: [site], breakAfter: [old], priority: 90 })
+    assert(b.phase === "poles", `the build starts with the new poles (${b.phase})`)
+    assert(clearJobFor(f, old) === undefined, "the evicted pole is not picked up yet")
+    assert(clearJobFor(f, site) !== undefined, "other clearing starts at once")
+    const ghosts = s.find_entities_filtered({ ghost_name: "small-electric-pole", force: f.force })
+    assert(ghosts.length === 1 && ghosts[0].position.x === x + 3.5, `only the pole on open ground is ghosted ahead (${ghosts.length})`)
+    stepBuild(entry)
+    assert(b.phase === "poles" && clearJobFor(f, old) === undefined, "waits while the new pole is not placed")
+    ghosts[0].revive({ raise_revive: true })
+    for (const id of b.poleJobs ?? []) {
+      claim(f.board, [id], 1, game.tick)
+      complete(f.board, id, 1, game.tick)
+    }
+    stepBuild(entry)
+    assert(b.phase === "clear", `then the clearing (${b.phase})`)
+    assert(clearJobFor(f, old) !== undefined, "the evicted pole is picked up once its replacement stands")
+    // Without an eviction the build is unchanged: clearing first.
+    const plain = startBuild({ ...(entry as object), build: undefined } as never as PlannerEntry, { parts, priority: 90 })
+    assert(plain.phase === "clear", `no eviction: no poles phase (${plain.phase})`)
+    destroyFaction("d71b")
+  })
+
+  test("B207: an evicted pole on a new pole's tile of another kind is cleared before the ghosts", () => {
+    // b205-222: a medium pole replaced a small one on its tile. Make-before-break (D71 b) waited for the medium pole,
+    // whose ghost over the live small pole could never be revived, and the crew could not pick the small pole up under
+    // the ghost: 10 rounds, then the goal gave up its location. The adoption now passes such a pole as `clear`.
+    const lab = createLab(16)
+    const f = createFaction("b207", { position: at(lab, 0, 0), crew: 0 })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    const old = s.create_entity({ name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })!
+    const probe = s.create_entity({ name: "entity-ghost", inner_name: "medium-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: f.force })
+    if (probe !== undefined) {
+      const [revived] = probe.revive()
+      assert(revived === undefined, "engine: a medium-pole ghost over a live small pole can't be revived")
+      if (probe.valid) probe.destroy()
+    }
+    const layout = newLayout()
+    layout.poles = [{ id: poleId("medium"), name: "medium-electric-pole", x, y, line: poleLineId("poles:b207:0") }]
+    layout.poleLines = [{ id: poleLineId("poles:b207:0"), from: "power", to: moduleId("consumer"), poles: [poleId("medium")] }]
+    const parts = { modules: [], routes: [], poles: [poleId("medium")] }
+    const entry = { id: "b207", surface: s.name, force: f.force, faction: f.name, terrain: "", phase: "done", request: {}, belt: "transport-belt", job: { layout }, startTick: 0, scanTicks: 0, planTicks: 0 } as never as PlannerEntry
+    const b = startBuild(entry, { parts, clear: [old], priority: 90 })
+    assert(b.phase === "clear" && clearJobFor(f, old) !== undefined, `the small pole is picked up first (${b.phase})`)
+    assert(s.find_entities_filtered({ ghost_name: "medium-electric-pole", force: f.force }).length === 0, "no ghost over it yet")
+    old.destroy()
+    for (const id of b.clearJobs) {
+      claim(f.board, [id], 1, game.tick)
+      complete(f.board, id, 1, game.tick)
+    }
+    stepBuild(entry)
+    const ghosts = s.find_entities_filtered({ ghost_name: "medium-electric-pole", force: f.force })
+    assert(ghosts.length === 1, `then the medium pole is ghosted (${ghosts.length}, phase ${b.phase})`)
+    const [placed] = ghosts[0].revive()
+    assert(placed !== undefined, "and its ghost can be placed")
+    destroyFaction("b207")
+  })
+
   test("B46: poles another plan evicted leave a building goal's own plan: its ghost stamp no longer creates them", () => {
     const lab = createLab(16)
     const force = labForce()
@@ -396,15 +479,74 @@ describe("M5a power and growth", () => {
     layout.occ[tkey(x + 6, y)] = layoutClaimTag("x:poles:b46:0")
     const parts = { modules: [], routes: [], poles: [poleId("evicted"), poleId("kept")] }
     // A later plan's route took the first pole's tile (B37) before this goal stamped its ghosts.
-    const n = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
-    assert(n === 1, `one pole dropped (${n})`)
+    const dropped = dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true })
+    assert(dropped.length === 1, `one pole dropped (${dropped.length})`)
     assert(parts.poles.length === 1 && parts.poles[0] === "kept", `parts keep the other pole (${parts.poles.join(",")})`)
     assert(layout.occ[tkey(x, y)] === undefined && layout.occ[tkey(x + 6, y)] === "x:poles:b46:0", "its tile is no longer the goal's")
+    assert(layout.poleLines?.[0]?.poles.join(",") === "kept", `the line drops the removed pole (${layout.poleLines?.[0]?.poles.join(",")})`)
     const r = stampParts(s, force.name, layout, parts, true)
     assert(r.failed.length === 0, r.failed.join("; "))
     assert(r.entities.length === 1 && r.entities[0].position.x === x + 6.5, `only the kept pole is ghosted (${r.entities.length})`)
     assert(s.find_entities_filtered({ ghost_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 } }).length === 0, "no ghost where the other plan's belt goes")
-    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }) === 0, "idempotent")
+    assert(dropPlannedPoles(layout, parts, { [`small-electric-pole@${x},${y}`]: true }).length === 0, "idempotent")
+  })
+
+  test("B158: dropping an evicted pole also removes its stamped ghost and place job", () => {
+    // B46 removes the pole from the building goal's plan. If the goal had already stamped its ghost, the world kept a
+    // ghost no plan owned and no job built: the power graph said "powered", the world was an island.
+    const lab = createLab(16)
+    const faction = createFaction(`b158-drop-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x)
+    const y = math.floor(lab.origin.y)
+    const gh = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: x + 0.5, y: y + 0.5 }, force: faction.force })!
+    const unit = gh.unit_number!
+    const job = addPlaceJob(faction, gh, { priority: 90 })!
+    assert(job !== undefined && faction.ghostJobs[unit] === job, "the ghost has a place job")
+    const placeJobs = [job]
+    const n = dropEvictedPoleGhosts(s, faction, [{ id: poleId("evicted"), name: "small-electric-pole", x, y, line: poleLineId("l") }], placeJobs)
+    assert(n === 1, `one stamped ghost removed (${n})`)
+    assert(!gh.valid, "the ghost is gone")
+    assert(faction.ghostJobs[unit] === undefined, "its job mapping is gone")
+    assert(placeJobs.length === 0, "the build no longer waits on it")
+  })
+
+  test("B158: a lifted ghost comes back only while its plan part still exists", () => {
+    const lab = createLab(16)
+    const faction = createFaction(`b158-lift-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x) + 0.5
+    const y = math.floor(lab.origin.y) + 0.5
+    const lift = { name: "small-electric-pole", position: { x, y }, direction: 0 as defines.direction, surface: s.name, clear: 0 }
+    const owner = { id: "g158", lifted: [lift] }
+    const ghosts: LuaEntity[] = []
+    assert(restoreLifted(owner, faction, ghosts, () => ({})) === false, "nothing waits")
+    assert(ghosts.length === 0 && owner.lifted === undefined, "the unplanned lift is dropped, not restored")
+    const planned: Record<string, boolean> = { [string.format("small-electric-pole@%g,%g", x, y)]: true }
+    const owner2 = { id: "g158b", lifted: [lift] }
+    assert(restoreLifted(owner2, faction, ghosts, () => planned) === false, "nothing waits after restoring")
+    assert(ghosts.length === 1 && ghosts[0].valid && ghosts[0].name === "entity-ghost", "the planned lift is restored")
+    destroyFaction(faction.name)
+  })
+
+  test("B158: a pending ghost whose kept route is gone is dropped instead of created", () => {
+    const lab = createLab(16)
+    const faction = createFaction(`b158-pending-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const x = math.floor(lab.origin.x) + 0.5
+    const y = math.floor(lab.origin.y) + 0.5
+    // The jobs layer reads the running factory's layout; install a minimal one for the test.
+    storage.factories ??= {}
+    storage.factories[faction.name] = { layout: newLayout() } as never
+    faction.pendingGhosts = [{ name: "transport-belt", x, y, dir: 0, after: [], priority: 90, owner: "route:missing" }]
+    placePendingGhosts()
+    assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: { x, y }, force: faction.force }).length === 0, "no unplanned ghost")
+    assert((faction.pendingGhosts ?? []).length === 0, "the entry is gone")
+    // A legacy entry (no owner) keeps the old path.
+    faction.pendingGhosts = [{ name: "transport-belt", x, y, dir: 0, after: [], priority: 90 }]
+    placePendingGhosts()
+    assert(s.find_entities_filtered({ ghost_name: "transport-belt", position: { x, y }, force: faction.force }).length === 1, "the legacy entry is restored")
+    destroyFaction(faction.name)
   })
 
   test("B42: an own entity the layout does not plan under a leftover ghost is a stray to pick up; planned ones are not", () => {
@@ -434,5 +576,142 @@ describe("M5a power and growth", () => {
     assert(strays.length === 1 && strays[0] === belt, `the belt is the one stray (${strays.length})`)
     assert(strayUnder(s, force.name, planned, overBuilt).length === 0, "a built planned pole under its own ghost is not a stray")
     assert(strayUnder(s, force.name, planned, overPlanned).length === 0, "a planned pole under another ghost is not a stray")
+  })
+
+  test("B152: a reroute's partial add retries instead of leaving its successful ghosts jobless", () => {
+    // The splitter at 350,-41.5: `applyDiff` is two-phase, so one failed add left every successful add jobless, and
+    // `rework` cleared itself and moved on. It must keep the add list and retry.
+    const lab = createLab(32)
+    const faction = createFaction(`rework-retry-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const good = { name: "transport-belt", x: ox + 2.5, y: oy + 0.5, dir: 0, owner: "route:r" }
+    const bad = { name: "transport-belt", x: ox + 4.5, y: oy + 0.5, dir: 0, owner: "route:r" }
+    const stale = s.create_entity({ name: "underground-belt", type: "input", position: { x: bad.x, y: bad.y }, direction: defines.direction.north, force: faction.force })!
+    const g: FactoryGoal = {
+      id: goalId("g-rework"),
+      kind: "production",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 0,
+      createdTick: game.tick,
+      placed: 0,
+      rounds: 0,
+      rework: { clearJobs: [], add: [good, bad] },
+    }
+    const b = { phase: "place", faction: faction.name, clearJobs: [], placeJobs: [], failed: [], ghosts: [] } as never
+    const ctx = { faction, f, config: getConfig(), surface: s, tick: game.tick, entities: {} } as never
+    assert(rework(ctx, g, b) === false, "the partial add waits")
+    assert(g.rework !== undefined, "the add list is kept for a retry")
+    assert((b as unknown as { placeJobs: number[] }).placeJobs.length === 0, "no job while a ghost of the list is missing")
+    stale.destroy()
+    ;(ctx as unknown as { tick: number }).tick += 2000
+    ;(b as unknown as { retryAt?: number }).retryAt = undefined
+    assert(rework(ctx, g, b) === true, "the retry completes")
+    assert(g.rework === undefined && (b as unknown as { phase: string }).phase === "place", "the reroute proceeds")
+    assert((b as unknown as { placeJobs: number[] }).placeJobs.length === 2, "both successful ghosts got jobs")
+  })
+
+  test("B152: a retried stamp adopts an existing pole ghost instead of skipping its job", () => {
+    // This was the upstream path: a partial stamp created pole ghosts but no jobs; the retry found each existing pole
+    // ghost and `continue`d, so the ghost never entered the job loop and stayed jobless for good.
+    const lab = createLab(32)
+    const faction = createFaction(`stamp-adopt-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const layout = newLayout()
+    layout.poles = [{ id: poleId("p"), name: "small-electric-pole", x: ox, y: oy, line: poleLineId("l") }]
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 0.5, y: oy + 0.5 }, force: faction.force })!
+    const r = stampParts(s, faction.force, layout, { modules: [], routes: [], poles: [poleId("p")] }, true)
+    assert(r.failed.length === 0, r.failed.join("; "))
+    assert(r.entities.length === 1 && r.entities[0] === ghost, "the existing pole ghost is part of the stamp")
+  })
+
+  test("M7d.5: a planned pole ghost with no job is adopted; an unplanned or already-jobbed one is not", () => {
+    // The robot block's connecting pole ghosts had job=none, so the layout's power graph said "powered" while the
+    // built networks were islands and no power repair ran.
+    const lab = createLab(32)
+    const faction = createFaction(`adopt-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    const layout = newLayout()
+    layout.poles = [
+      { id: poleId("planned"), name: "small-electric-pole", x: ox, y: oy, line: poleLineId("l") },
+      { id: poleId("planned2"), name: "small-electric-pole", x: ox + 8, y: oy, line: poleLineId("l") },
+    ]
+    const planned = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 0.5, y: oy + 0.5 }, force: faction.force })!
+    const unplanned = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 4.5, y: oy + 0.5 }, force: faction.force })!
+    assert(planned !== undefined && unplanned !== undefined, "ghosts placed")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 1, "one planned orphan adopted")
+    const id = faction.ghostJobs[planned.unit_number!]
+    assert(id !== undefined, "the planned ghost got a job")
+    assert(getJob(faction.board, id!)!.status !== "failed", "the job is open")
+    assert(faction.ghostJobs[unplanned.unit_number!] === undefined, "the unplanned ghost was left alone")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 0, "a live job is not duplicated")
+  })
+
+  test("B144: a repair goal (growBuild without growth) survives a hard ghost blocker", () => {
+    // The m7d5-robotsB run crashed at minute 1044: a repair goal reuses `growBuild` but has no `growth`, and the hard
+    // blocker branch dereferenced `g.growth.node`. A repair goal with two pieces on one tile is enough to reach it.
+    const lab = createLab(64)
+    const faction = createFaction(`b144-repair-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    brain.milestones["first-electricity-materials"] = game.tick
+    const f = startFactory(faction)
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    for (let x = -20; x < 0; x++) for (let y = 30; y < 50; y++) s.create_entity({ name: "iron-ore", position: at(lab, x + 0.5, y + 0.5), amount: 100000 })
+    const layout = newLayout()
+    place(layout, "b144-src", "mining-outpost", { resource: "iron-ore", rows: 4, sides: 2 }, { x: ox - 15, y: oy + 30 })
+    place(layout, "b144-dst", "smelter-column", { recipe: "iron-plate", furnaces: 4 }, { x: ox - 5, y: oy - 30 })
+    const t = scan(lab, `b144-${game.tick}`, faction.force)
+    const job = runJob(newRoutingJob({
+      modules: [],
+      connections: [{ id: connectionId("b144"), from: { module: moduleId("b144-src"), port: "out" }, to: { module: moduleId("b144-dst"), port: "in-ore" } }],
+      center: { x: ox, y: oy },
+      region: { x: ox - 64, y: oy - 64, w: 128, h: 128 },
+    }, beltTiers(prototypeFacts)[0], layout), terrainView(t), prototypeFacts, selectPolicy("early-compact", {}))
+    assert(job.phase === "done", `the test route plans: ${job.phase}`)
+    f.layout = job.layout
+    const parts = { modules: [], routes: [routeId("route:b144")], poles: [] }
+    const stamped = stampParts(s, faction.force, job.layout, parts, true)
+    assert(stamped.failed.length === 0, stamped.failed.join("; "))
+    let belt
+    for (const e of partEntities(job.layout, parts)) if (belt === undefined && e.name === "transport-belt") belt = e
+    assert(belt !== undefined, "a route belt")
+    const clash = { name: "underground-belt", x: belt!.x, y: belt!.y, dir: belt!.dir, ioType: "input" as const, owner: "route:b144" }
+    const g: FactoryGoal = {
+      id: goalId("g144"),
+      kind: "repair",
+      status: "building",
+      nodes: [],
+      edges: [],
+      techs: [],
+      attempts: 1,
+      radius: 64,
+      createdTick: game.tick,
+      placed: 0,
+      rounds: 0,
+      growBuild: { phase: "clear", clearJobs: [], add: [belt!, clash], ghosts: [], placeJobs: [] },
+    }
+    f.goals = [g]
+    async(300)
+    on_tick(() => {
+      if (g.status !== "failed") return
+      done()
+      return false
+    })
   })
 })

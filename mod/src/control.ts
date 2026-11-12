@@ -19,6 +19,8 @@ script.on_init(() => {
   initStorage()
   storage.autoSpawnPending = true
 })
+// Schema migrations run here. Factorio only fires this on a load when the mod version (or set) changed, so a storage
+// schema change must bump `static/info.json`: on_load must never modify `storage` (Factorio's save-stability check).
 script.on_configuration_changed(() => {
   invalidateConfig()
   initStorage()
@@ -44,7 +46,8 @@ for (const ev of [
     const entity = (e as { entity?: LuaEntity }).entity
     onEntityChanged(entity)
     // D42: a buffer chest built from its ghost gets its slot limit.
-    if (ev === defines.events.script_raised_revive || ev === defines.events.script_raised_built || ev === defines.events.on_built_entity) onBufferBuilt(entity)
+    // M7d.5: construction robots build buffer chests too.
+    if (ev === defines.events.script_raised_revive || ev === defines.events.script_raised_built || ev === defines.events.on_built_entity || ev === defines.events.on_robot_built_entity) onBufferBuilt(entity)
   })
 }
 registerRemoteInterface()

@@ -13,6 +13,14 @@ import type { FactoryGoal, FactoryState } from "./factory"
 // The knowledge-failure classifier lives in `shared/` (pure, T1-tested); re-exported here so the factory keeps using
 // one namespace and its Lua main chunk does not gain a local (it is close to the 200 limit).
 export { exhausted } from "../shared/exhausted"
+// M7d.5: the roboport network, through the same namespace for the same reason.
+export { robotHub, robotsStep, robotsUpkeep } from "./robots"
+export { bufferChest, upgradeOutputChests } from "./provider-chests"
+// B144: the bad-build tile ledger, through the same namespace (the factory is close to Lua's local limit).
+export { badBuildRects, recordBadBuild } from "../planner/bad-build"
+export { hardGhostFailure } from "../planner/conflicts"
+// M7d.5/B67: planned pole ghosts whose place jobs were lost, through the same namespace for the factory local budget.
+export { adoptPlannedPoles, dropEvictedPoleGhosts } from "./ghost-adopt"
 import { exploreNeed, ExploreNeed, Producer } from "../shared/explore-need"
 
 /** D56: radar goals that may fail before the faction stops trying. */
@@ -65,7 +73,8 @@ export function planRegion(ctx: ExploreCtx, g: FactoryGoal, r: number): Rect {
   if (g.site !== undefined) return Arms.rectUnion(region, g.site.strip)
   if (f.arms === undefined) return region
   let mine = false
-  for (const n of g.nodes) if (n.generator === "mining-outpost") mine = true
+  // B115: a pumpjack field mines a fluid resource: it searches the explored ground too.
+  for (const n of g.nodes) if (n.generator === "mining-outpost" || n.generator === "pumpjack-field") mine = true
   if (!mine) return region
   const reach = radarReach(ctx).sector
   region = Arms.rectUnion(region, Arms.homeRect(c, homeRadius(ctx)))
@@ -79,6 +88,24 @@ export function knownGround(ctx: ExploreCtx, g: FactoryGoal): Arms.KnownGround {
   const explored = [...(ctx.f.arms?.strips ?? [])]
   if (g.site !== undefined) explored.push(g.site.strip)
   return { home: Arms.homeRect(ctx.f.center, homeRadius(ctx)), explored, scanned: ctx.f.radarChunks }
+}
+
+/**
+ * A pumpjack field chosen from wells the faction has seen becomes known ground under its whole footprint (agent design,
+ * proposed): its box reaches past the wells, and on seed 11 the explored square ended at chunk row 0 while the box went
+ * on to y = 32, so its fixed-spot check read "terrain unknown" on every attempt. Recorded with the radar-scanned chunks.
+ */
+export function knowRect(f: FactoryState, r: Rect): void {
+  f.radarChunks ??= {}
+  for (let cy = math.floor(r.y / 32); cy <= math.floor((r.y + r.h - 1) / 32); cy++) {
+    for (let cx = math.floor(r.x / 32); cx <= math.floor((r.x + r.w - 1) / 32); cx++) f.radarChunks[tkey(cx, cy)] = true
+  }
+}
+
+/** B115: whether goal `g`'s plan may read chunk (cx, cy) (the planner's rule, for searches outside the planner). */
+export function chunkKnownFor(ctx: ExploreCtx, g: FactoryGoal): (this: void, cx: number, cy: number) => boolean {
+  const known = knownGround(ctx, g)
+  return (cx, cy) => Arms.chunkKnown(cx, cy, known, (x, y) => ctx.force.is_chunk_charted(ctx.surface, { x, y }))
 }
 
 /**
@@ -142,6 +169,9 @@ export function exploreFor(ctx: ExploreCtx, g: FactoryGoal, ore: string): void {
   // An outpost is being built or scanned already: this failure waits for it like the others.
   if (ex.phase !== "retry") return
   ex.resource = ore
+  // B195 (`m7-b193` seed 3333): the goal kind too. A crude search that took over a power goal's coal search kept
+  // `kind: "power"`: only a power plan could end it, and the production goals it was for were never held for an outpost.
+  ex.kind = g.kind
   ex.phase = "outpost"
   ex.goal = undefined
   // D70: the search now wants something the factory can't run without: from here it counts as required.
@@ -206,6 +236,14 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
     for (const x of f.goals) if (x.id === ex.goal) g = x
     if (g === undefined || g.status === "failed") {
       log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): outpost goal ${ex.goal} failed (${g?.reason ?? "gone"}); trying the next arm`)
+      // M7c.8: no pole path from the base (seed 11: lakes 90-300 tiles wide across arms E and S). Every later outpost on
+      // that arm needs a line through the same water, so the arm is skipped from then on.
+      const arm = g?.site?.arm
+      if (arm !== undefined && f.arms !== undefined && string.find(g?.reason ?? "", "no pole path", 1, true)[0] !== undefined) {
+        f.arms.cut ??= [false, false, false, false]
+        f.arms.cut[arm] = true
+        log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORING (D62): arm ${Arms.ARM_NAMES[arm]} is cut off (no pole path from the base); skipped from now on`)
+      }
       ex.goal = undefined
       return
     }
@@ -233,7 +271,18 @@ export function exploreStep(ctx: ExploreCtx, hooks: ExploreHooks): void {
   }
   f.arms ??= { next: 0, steps: [0, 0, 0, 0], strips: [], outposts: [] }
   const arms = f.arms
-  const arm = arms.next
+  const arm = Arms.nextArm(arms.next, arms.cut)
+  if (arm === undefined) {
+    // M7c.8: no outpost can be powered any more. The search ends (waiting in "outpost" would hold its kind's goals for
+    // good), and B53's pause keeps the failed goal from re-planning into a new search at once.
+    log(`[rival-engineers] faction ${ctx.faction.name}: EXPLORE (D62) over: every arm is cut off (no pole path from the base) after ${ex.outposts} radar outposts, ${math.floor((ctx.tick - ex.since) / 3600)} game-min exploring for ${ex.resource}`)
+    if (ctx.config.factorySiteRetryMinutes > 0) {
+      f.siteRetry ??= {}
+      f.siteRetry[ex.kind] = ctx.tick + ctx.config.factorySiteRetryMinutes * 3600
+    }
+    f.explore = undefined
+    return
+  }
   const step = arms.steps[arm]
   arms.next = (arm + 1) % 4
   arms.steps[arm] = step + 1

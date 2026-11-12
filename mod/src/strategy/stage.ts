@@ -1,13 +1,19 @@
-import { LuaForce, LuaSurface } from "factorio:runtime"
+import { LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
 import { curatedIds, curatedModule } from "../modules/library"
 import { prototypeFacts } from "../modules/prototype-facts"
-import { nodeByRole, rateIn, spareCapacity } from "../planner/logical"
+import { edgeDraw, nodeByRole, rateIn, spareCapacity } from "../planner/logical"
+import type { LogicalNode } from "../planner/logical"
 import { findModule } from "../planner/layout"
 import { tiers } from "../planner/runtime"
+import { factionSurface, getFaction } from "../jobs/faction"
+import * as OIL from "./oil"
 import { maxUnitTime, meanUnitTime, researchGoal } from "./research-queue"
 import type { FactoryState } from "./factory"
+import * as CS from "./constraints"
+import type { Patch } from "../world/resources"
+import * as PC from "./power-choice"
 
 // M6 stage helpers (split out of factory.ts, whose main chunk hit Lua's 200-local limit): stage targets, lab sizing per
 // stage, the design's curated fallbacks, shared fuel and a second steam block, and the science-throughput sampling that
@@ -21,6 +27,18 @@ export const TEMP_PREFIX = "temp:"
 
 export function isTempRole(role: string): boolean {
   return string.sub(role, 1, TEMP_PREFIX.length) === TEMP_PREFIX
+}
+
+/** Science packs the first two stages use; a later pack (chemical, production, ...) starts the blue-and-beyond era. */
+const EARLY_PACKS = ["automation-science-pack", "logistic-science-pack"]
+
+/** The first stage whose target uses a pack beyond red/green (0-based), or -1. */
+export function firstLateStage(config: Config): number {
+  const stages = parseStages(config.factoryTargets)
+  for (let i = 0; i < stages.length; i++) {
+    for (const t of stages[i]) if (EARLY_PACKS.indexOf(t.item) < 0) return i
+  }
+  return -1
 }
 
 /** Stages of `factory-targets`: per stage, item → packs per minute. */
@@ -76,11 +94,29 @@ export function hasCapacity(f: FactoryState, id: string, item: string): boolean 
   return spareCapacity(f.graph, id) > 1e-6 || growableInPlace(f, id, item) > 0
 }
 
-export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean> } | undefined {
+/**
+ * What a built provider can still deliver of its item at the current plan. For every other provider this is the plan's
+ * `planned` output (B65: an under-fed mine's nameplate is not spare), but a **pumpjack field's feed is its own wells**:
+ * its capacity is the real well yield, while `planned` is only what it was sized for. Using `planned` there made a field
+ * producing ~210 crude/s look full at its 42/s plan, so the design added another field for demand that did not exist.
+ */
+export function spareForNode(p: LogicalNode, used: number, potential?: number): number {
+  if (p.item === undefined) return 0
+  const planned = rateIn(p.planned.outputs, p.item)
+  // A pumpjack field's feed is its wells (potential, not production); a water pump's feed is the lake (its full pump
+  // capacity). Neither has an upstream supply that `planned` would protect. Everything else keeps the planned rule.
+  let room = planned
+  if (p.generator === "pumpjack-field") room = potential ?? rateIn(p.capacity.outputs, p.item)
+  else if (p.generator === "water-pump") room = rateIn(p.capacity.outputs, p.item)
+  return room - used
+}
+
+export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryState | undefined, stage: number, force = false): { keep: Record<string, string>; spare: Record<string, Record<string, number>>; fallback?: Record<string, string[]>; split?: Record<string, boolean>; blocked?: Record<string, boolean>; draw?: Record<string, number> } | undefined {
   const from = ctx.config.factorySharedProviders
   if (from <= 0 || stage + 1 < from || (!force && !splittersEnabled(ctx.force))) return undefined
   const keep: Record<string, string> = {}
   const spare: Record<string, Record<string, number>> = {}
+  const draw: Record<string, number> = {}
   if (f !== undefined) {
     const out: Record<string, number> = {}
     for (const id of f.graph.edgeOrder) {
@@ -94,15 +130,35 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       // Keep the older role-level key for callers that do not distinguish ports. `blocked` below is authoritative:
       // expandShared checks the exact provider→consumer feed after either exact or legacy lookup.
       keep[`${e.item}@${c.role}`] = p.role
-      out[p.id] = (out[p.id] ?? 0) + e.plannedRate
+      // M7c (user-approved 2026-11-01): a consumer takes what it can, not what was planned: its draw counts at the
+      // measured rate when that is higher.
+      const used = edgeDraw(e)
+      out[p.id] = (out[p.id] ?? 0) + used
+      if (used > e.plannedRate) draw[key] = (draw[key] ?? 0) + used
+    }
+    // Review fix (M7d.5 Layers14): a built provider with no belt edge at all is idle capacity, not absent. Since D84's
+    // layer split builds a raw provider one goal before the consumer route it was made for, a consumer goal that fails
+    // leaves it built and unconnected. Leaving it out of `spare` made every later design fork another provider for the
+    // same consumer (`parallelRole` skips built roles): 96 unconnected coal mines for one steel smelter.
+    for (const id of f.graph.nodeOrder) {
+      const p = f.graph.nodes[id]
+      if (out[id] !== undefined || p.lifecycle !== "built" || p.item === undefined) continue
+      if (p.kind !== "module" && p.kind !== "outpost") continue
+      out[id] = 0
     }
     for (const [id, used] of pairs(out)) {
       const p = f.graph.nodes[id as string]
-      if (p.item === undefined || f.noTap?.[p.role] || f.providerShort?.[p.role] || f.handover?.[p.role] !== undefined) continue
+      if (p.item === undefined || !tappable(f, p.role)) continue
       // B65: spare is what the plan sized this provider to deliver (`planned`), not its nameplate capacity. A 4-wide
       // smelter running on a 0.183/s ore feed looks like it has 1.07/s spare by capacity; tapping that spare starves
       // the new consumer, because the plan never grew the feed (see `supplyGaps`).
-      const room = rateIn(p.planned.outputs, p.item) - (used as number)
+      let potential: number | undefined
+      if (p.generator === "pumpjack-field" && p.item !== undefined) {
+        const faction = getFaction(f.faction)
+        const m = findModule(f.layout, (p.alias ?? p.id) as never)
+        if (faction !== undefined && m !== undefined) potential = OIL.fieldPotential(factionSurface(faction), faction.force, m, p.item)
+      }
+      const room = spareForNode(p, used as number, potential)
       // B65: when the plan has no freed capacity, the provider can still take the consumer if it can GROW IN PLACE:
       // the consumer joins its role, the design node's `need` rises to the total, and `diffDesign` asks the built
       // module for expansion units (and, through `supplyPass`, its feed chain for the ore). Forking a whole new chain
@@ -113,34 +169,75 @@ export function sharing(ctx: { config: Config; force: LuaForce }, f: FactoryStat
       spare[p.item][p.role] = room + grow
     }
   }
-  return { keep, spare, fallback: fallbackProducers(f), split: f?.providerSplit, blocked: f?.providerNoTap }
+  return { keep, spare, fallback: fallbackProducers(f), split: CS.flags(f?.constraints, "providerSplit"), blocked: CS.flags(f?.constraints, "providerNoTap"), draw }
+}
+
+/** D69: whether new consumers may tap provider `role` (not marked no-tap or short, not retiring, not running out). */
+function tappable(f: FactoryState, role: string): boolean {
+  return !CS.has(f.constraints, "noTap", role) && !CS.has(f.constraints, "providerShort", role) && f.retiring?.[role] === undefined && !oreRunsOut(f, role)
+}
+
+/** M7c: steps per item/s of over-planned measured draw in the design cache key (agent guess: a quarter item/s). */
+const DRAW_KEY_STEPS = 4
+
+/**
+ * M7c: the design cache key's part for this session's signals: mines about to run out (`oreRunsOut`, no new taps) and
+ * consumers measured drawing more than planned (user-approved 2026-11-01), in quarter item/s steps so measurement noise
+ * does not redesign every think.
+ */
+export function designSignals(f: FactoryState): string {
+  const runningOut: string[] = []
+  for (const [role] of pairs(f.oreLeft ?? {})) if (oreRunsOut(f, role as string)) runningOut.push(role as string)
+  runningOut.sort()
+  const draws: string[] = []
+  for (const id of f.graph.edgeOrder) {
+    const e = f.graph.edges[id]
+    if (e.kind === "belt" && (e.measuredRate ?? 0) > e.plannedRate) draws.push(`${id}:${math.floor((e.measuredRate! - e.plannedRate) * DRAW_KEY_STEPS)}`)
+  }
+  return `${runningOut.join(";")}|${draws.join(";")}`
 }
 
 /**
- * P36 (b, proposed): for each item whose new producer could not be placed (`FactoryState.fallback`), the built producers
- * of it new consumers tap instead, nearest the hub first (growable ones before those whose growth keeps failing). Never
- * one that is not tapped again (`noTap`).
+ * M7c (seed 11): a mine whose ore at full output lasts less than its `minMinutes`. Full output, not the planned draw:
+ * consumers with room take all a mine makes (two 4-furnace columns planned at 0.47/s drew its whole 1/s), so the planned
+ * spare was never there and the mine ran out ~40 game-min after the blue line tapped it.
  */
-export function fallbackProducers(f: FactoryState | undefined): Record<string, string[]> | undefined {
-  if (f?.fallback === undefined) return undefined
+export function oreRunsOut(f: FactoryState, role: string): boolean {
+  const o = f.oreLeft?.[role]
+  if (o === undefined) return false
+  const n = nodeByRole(f.graph, role)
+  if (n === undefined || n.item === undefined) return false
+  const rate = rateIn(n.capacity.outputs, n.item)
+  return rate > 0 && o.amount / rate / 60 < o.minMinutes
+}
+
+/**
+ * P36 (b, proposed): for each item whose new producer could not be placed (the `fallback` constraint, plus `extra`), the
+ * built producers of it new consumers tap instead, nearest the hub first (growable ones before those whose growth keeps
+ * failing). Never one that is not tapped again (`noTap`).
+ */
+export function fallbackProducers(f: FactoryState | undefined, extra: string[] = []): Record<string, string[]> | undefined {
+  if (f === undefined) return undefined
+  const items = [...CS.keys(f.constraints, "fallback"), ...extra]
+  if (items.length === 0) return undefined
   let out: Record<string, string[]> | undefined
-  for (const [item] of pairs(f.fallback)) {
+  for (const item of items) {
     const list: { role: string; key: number }[] = []
     for (const id of f.graph.nodeOrder) {
       const n = f.graph.nodes[id]
-      if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || f.noTap?.[n.role] || f.providerShort?.[n.role] || f.handover?.[n.role] !== undefined) continue
-      if (!hasCapacity(f, id, item as string)) continue
+      if (n.item !== item || (n.kind !== "module" && n.kind !== "outpost") || n.lifecycle !== "built" || !tappable(f, n.role)) continue
+      if (!hasCapacity(f, id, item)) continue
       const m = findModule(f.layout, id)
       if (m === undefined) continue
       const dx = m.rect.x + m.rect.w / 2 - f.center.x
       const dy = m.rect.y + m.rect.h / 2 - f.center.y
-      const blocked = (f.growFails?.[n.role] ?? 0) >= GROW_MAX_FAILS ? 1e9 : 0
+      const blocked = (CS.value(f.constraints, "growFails", n.role) ?? 0) >= GROW_MAX_FAILS ? 1e9 : 0
       list.push({ role: n.role, key: blocked + dx * dx + dy * dy })
     }
     list.sort((a, b) => (a.key !== b.key ? a.key - b.key : a.role < b.role ? -1 : 1))
     if (list.length === 0) continue
     out ??= {}
-    out[item as string] = list.map((x) => x.role)
+    out[item] = list.map((x) => x.role)
   }
   return out
 }
@@ -151,7 +248,7 @@ export function fallbackProducers(f: FactoryState | undefined): Record<string, s
  */
 export function cluster1Max(f: FactoryState | undefined): number | undefined {
   let out: number | undefined
-  for (const [, v] of pairs(f?.cluster1Caps ?? {})) out = math.min(out ?? 1, v as number)
+  for (const [, v] of pairs(CS.values(f?.constraints, "cluster1Caps") ?? {})) out = math.min(out ?? 1, v)
   return out
 }
 
@@ -168,11 +265,68 @@ export function powerCaps(f: FactoryState | undefined): { role: string; capacity
   for (let i = 1; ; i++) {
     const role = i === 1 ? "power" : `power#${i}`
     const n = nodeByRole(f.graph, role)
-    if (n === undefined || (f.growFails?.[role] ?? 0) < GROW_MAX_FAILS) break
+    if (n === undefined || (CS.value(f.constraints, "growFails", role) ?? 0) < GROW_MAX_FAILS) break
     out.push({ role, capacity: rateIn(n.capacity.outputs, "electricity") })
   }
   return out.length > 0 ? out : undefined
 }
+
+/**
+ * B185: in solar mode every built steam block (`power`, `power#2`... up to the first that is not a built steam block)
+ * keeps its capacity; the rest of the power is solar. Undefined without a built `power` steam block.
+ */
+export function builtSteamCaps(f: FactoryState | undefined): { role: string; capacity: number }[] | undefined {
+  if (f === undefined) return undefined
+  const out: { role: string; capacity: number }[] = []
+  for (let i = 1; ; i++) {
+    const role = i === 1 ? "power" : `power#${i}`
+    const n = nodeByRole(f.graph, role)
+    if (n === undefined || n.lifecycle !== "built" || n.generator !== "steam-block") break
+    out.push({ role, capacity: rateIn(n.capacity.outputs, "electricity") })
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * B191 (`m7-b186` seed 3333, min ~300): in solar mode a built steam block counts only for what its built fuel supply
+ * can burn: the planned rate of its fuel edges from built providers that are not retiring and whose ore is not running
+ * out, at the fuel's energy (2.0 boilers turn all of it into steam). At its full built capacity the design kept asking
+ * for coal the home patches no longer had, and placed the replacement mine thousands of tiles out (a 5760-tile plan
+ * region, "no path" for its belt home, 8 failed plans).
+ */
+export function fuelledSteamCaps(f: FactoryState | undefined, fuel: string): { role: string; capacity: number }[] | undefined {
+  const built = builtSteamCaps(f)
+  if (f === undefined || built === undefined) return built
+  const fuelJ = prototypeFacts.fuelValue(fuel)
+  if (fuelJ <= 0) return built
+  const retiring = retiringRoles(f)
+  const out: { role: string; capacity: number }[] = []
+  for (const b of built) {
+    const n = nodeByRole(f.graph, b.role)!
+    let supply = 0
+    for (const id of f.graph.edgeOrder) {
+      const e = f.graph.edges[id]
+      if (e === undefined || e.to !== n.id || e.item !== fuel || e.from === undefined) continue
+      const from = f.graph.nodes[e.from]
+      if (from === undefined || from.lifecycle !== "built" || retiring?.[from.role] === true || oreRunsOut(f, from.role)) continue
+      supply += e.plannedRate
+    }
+    out.push({ role: b.role, capacity: math.min(b.capacity, supply * fuelJ) })
+  }
+  return out
+}
+
+/** B185: power must come from solar fields (`PC.noCoal`). */
+export function noCoal(f: FactoryState | undefined, patches: Patch[]): boolean {
+  return PC.noCoal(f?.constraints, patches)
+}
+
+/** B185: tiles to the nearest free coal patch (`PC.coalDistance`). */
+export function coalDistance(f: FactoryState | undefined, patches: Patch[], from: MapPosition, fuel: string): number {
+  return PC.coalDistance(f?.layout.modules ?? [], patches, from, fuel)
+}
+
+export const patchCount = PC.patchCount
 
 /** Actual output capacity of built provider roles, for the B60 provider-group split. */
 export function providerCaps(f: FactoryState | undefined): Record<string, number> {
@@ -183,6 +337,17 @@ export function providerCaps(f: FactoryState | undefined): Record<string, number
     if (n.lifecycle !== "built" || n.item === undefined) continue
     const cap = rateIn(n.capacity.outputs, n.item)
     if (cap > 0) out[n.role] = math.max(out[n.role] ?? 0, cap)
+  }
+  return out
+}
+
+/** M7d.4: the generator of every role in the factory graph (any lifecycle), for `DesignContext.builtGenerators`. */
+export function builtGenerators(f: FactoryState | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (f === undefined) return out
+  for (const id of f.graph.nodeOrder) {
+    const n = f.graph.nodes[id]
+    if (n.generator !== undefined) out[n.role] = n.generator
   }
   return out
 }
@@ -202,18 +367,13 @@ export function providerFeeds(f: FactoryState | undefined): Record<string, Recor
   return out
 }
 
-/** B60: roles the design must not grow or tap for new consumers. */
-export function providerShort(f: FactoryState | undefined): Record<string, boolean> | undefined {
-  return f?.providerShort
-}
-
 /**
- * Goalpost 1: provider roles being handed over. Their consumers need a replacement planned under a distinct parallel
- * role, and their spare capacity must not be offered to new consumers (the provider is going away).
+ * D76: provider roles being retired. Their consumers need a replacement planned under a distinct parallel role, and
+ * their spare capacity must not be offered to new consumers (the provider is going away).
  */
-export function handoverRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
+export function retiringRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
   let out: Record<string, boolean> | undefined
-  for (const [role] of pairs(f?.handover ?? {})) {
+  for (const [role] of pairs(f?.retiring ?? {})) {
     out ??= {}
     out[role as string] = true
   }

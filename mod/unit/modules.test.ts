@@ -1,5 +1,5 @@
 import { expandHeadModule, expandModule, expandMoves, expandTail, finalizeModule } from "../src/modules/build"
-import { assemblerRow, chestCell, circuitBlock, labArray, miningOutpost, radarCell, redLine, smelterColumn, steamBlock } from "../src/modules/generators"
+import { assemblerRow, chemRow, chestCell, circuitBlock, labArray, miningOutpost, oilComplex, radarCell, redLine, roboportCell, smelterColumn, steamBlock } from "../src/modules/generators"
 import { beltLeaks, occupancy, transformDir, transformModule, transformPoint } from "../src/modules/geometry"
 import { placePoles, powerCheck } from "../src/modules/poles"
 import { INSERTER_EFFICIENCY_FROM_BELT, INSERTER_EFFICIENCY_FROM_MACHINE, rateOf } from "../src/modules/rates"
@@ -202,36 +202,106 @@ test("radar cell (D56): one radar and its pole, 4 × 3, powered, no belts", () =
   eq(m.entities.filter((e) => e.name === "radar").length, 1, "one radar")
 })
 
+test("M7d.5: roboport cell: one roboport and its pole, 5 × 4; the hub holds two storage chests", () => {
+  const m = roboportCell(F, {})
+  eq(m.footprint.w * 10 + m.footprint.h, 54, "5 × 4")
+  eq(m.ports.length, 1, "one port")
+  eq(m.ports[0].kind, "power", "the power port")
+  near(inp(m, "electricity"), 50000, 1e-6, "50 kW")
+  eq(m.entities.filter((e) => e.name === "roboport").length, 1, "one roboport")
+  eq(m.entities.filter((e) => e.name === "storage-chest").length, 0, "no chests")
+  const hub = roboportCell(F, { chests: 2 })
+  eq(hub.footprint.w * 10 + hub.footprint.h, 54, "same footprint")
+  eq(hub.entities.filter((e) => e.name === "storage-chest").length, 2, "two storage chests")
+  ok(hub.id !== m.id, "distinct ids")
+})
+
+test("M7d.5: a passive-provider buffer head is a chest like an iron one: same rates and buffer flag", () => {
+  const iron = assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" })
+  const prov = assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "passive-provider-chest" })
+  near(rateOf(prov.rates.outputs, "iron-gear-wheel"), rateOf(iron.rates.outputs, "iron-gear-wheel"), 1e-9, "same output")
+  const b = prov.entities.filter((e) => e.buffer === true)
+  eq(b.length, 1, "one buffer")
+  eq(b[0].name, "passive-provider-chest", "the provider")
+})
+
+test("M7d.5 (user request in-session 2026-11-04): a roboport head puts the row's robots into a roboport, the rest into the supply chest", () => {
+  const plain = assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest" })
+  const hub = assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storageChest: "storage-chest", storage: 2 })
+  near(rateOf(hub.rates.outputs, "construction-robot"), rateOf(plain.rates.outputs, "construction-robot"), 1e-9, "same output")
+  eq(hub.footprint.w - plain.footprint.w, 4, "four columns wider than a buffer head")
+  eq(hub.footprint.h, plain.footprint.h, "same height")
+  const ports = hub.entities.filter((e) => e.name === "roboport")
+  eq(ports.length, 1, "one roboport")
+  eq(hub.entities.filter((e) => e.name === "storage-chest").length, 2, "two storage chests")
+  const b = hub.entities.filter((e) => e.buffer === true)
+  eq(b.length, 1, "one buffer (the supply chest)")
+  eq(b[0].name, "passive-provider-chest", "the provider")
+  // Each head inserter (facing north) picks from the output belt above it and drops on the tile below.
+  const r = ports[0]
+  const drops = hub.entities.filter((e) => e.name === "inserter" && e.y === 1.5 && e.x < 6).map((e) => ({ x: e.x, y: e.y + 1 }))
+  eq(drops.length, 2, "two head inserters")
+  ok(drops.some((d) => math.abs(d.x - r.x) < 2 && math.abs(d.y - r.y) < 2), "one drops into the roboport")
+  ok(drops.some((d) => d.x === b[0].x && d.y === b[0].y), "one drops into the supply chest")
+  const out = hub.ports.find((p) => p.kind === "belt-out")!
+  eq(`${out.pos.x},${out.pos.y}`, "0.5,0.5", "the belt runs on to the west edge")
+  ok(hub.id !== plain.id, "distinct ids")
+  // Without a buffer chest (or an electric inserter) the head is left out.
+  const none = assemblerRow(F, { recipe: "construction-robot", count: 2, roboport: "roboport", storage: 2 })
+  eq(none.entities.filter((e) => e.name === "roboport").length, 0, "no buffer: no roboport head")
+})
+
 // --- Layout invariants -------------------------------------------------------------------------------------
 
-function allGenerated(): ModuleDef[] {
+/** B205: `pole` sets every generator's pole (medium once researched). */
+function allGenerated(pole?: string): ModuleDef[] {
   return [
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 4 }),
-    smelterColumn(F, { recipe: "copper-plate", furnaces: 24 }),
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter" }),
-    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest" }),
-    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest" }),
-    miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2 }),
-    miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1 }),
-    miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill" }),
-    steamBlock(F, { boilers: 1 }),
-    steamBlock(F, { boilers: 4 }),
-    assemblerRow(F, { recipe: "iron-gear-wheel", count: 2 }),
-    assemblerRow(F, { recipe: "transport-belt", count: 6 }),
-    assemblerRow(F, { recipe: "pipe", count: 2 }),
-    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest" }),
-    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest" }),
-    circuitBlock(F, { units: 2, buffer: "iron-chest" }),
-    radarCell(F, {}),
-    redLine(F, { units: 3 }),
-    circuitBlock(F, { units: 2 }),
-    labArray(F, { labs: 6, packs: ["automation-science-pack"] }),
-    labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"] }),
-    chestCell(F, { recipe: "iron-gear-wheel" }),
-    chestCell(F, { recipe: "transport-belt" }),
-    chestCell(F, { recipe: "automation-science-pack" }),
+    roboportCell(F, { chests: 2, pole }),
+    assemblerRow(F, { recipe: "construction-robot", count: 2, buffer: "passive-provider-chest", roboport: "roboport", storage: 2, pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, pole }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 24, pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 8, inserter: "burner-inserter", pole }),
+    smelterColumn(F, { recipe: "iron-plate", furnaces: 4, buffer: "iron-chest", pole }),
+    smelterColumn(F, { recipe: "copper-plate", furnaces: 12, buffer: "iron-chest", pole }),
+    miningOutpost(F, { resource: "iron-ore", rows: 6, sides: 2, pole }),
+    miningOutpost(F, { resource: "copper-ore", rows: 2, sides: 1, pole }),
+    miningOutpost(F, { resource: "stone", rows: 5, sides: 2, drill: "burner-mining-drill", pole }),
+    steamBlock(F, { boilers: 1, pole }),
+    steamBlock(F, { boilers: 4, pole }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 2, pole }),
+    assemblerRow(F, { recipe: "transport-belt", count: 6, pole }),
+    assemblerRow(F, { recipe: "pipe", count: 2, pole }),
+    assemblerRow(F, { recipe: "iron-gear-wheel", count: 4, buffer: "iron-chest", pole }),
+    assemblerRow(F, { recipe: "transport-belt", count: 2, buffer: "iron-chest", pole }),
+    circuitBlock(F, { units: 2, buffer: "iron-chest", pole }),
+    radarCell(F, { pole }),
+    redLine(F, { units: 3, pole }),
+    circuitBlock(F, { units: 2, pole }),
+    labArray(F, { labs: 6, packs: ["automation-science-pack"], pole }),
+    labArray(F, { labs: 10, packs: ["automation-science-pack", "logistic-science-pack"], pole }),
+    chestCell(F, { recipe: "iron-gear-wheel", pole }),
+    chestCell(F, { recipe: "transport-belt", pole }),
+    chestCell(F, { recipe: "automation-science-pack", pole }),
   ]
 }
+
+test("M7d.5 (seed 11 g154): every belt and pipe port is fed from (or leads to) a tile outside its module", () => {
+  const defs = [...allGenerated()]
+  for (const recipe of ["battery", "plastic-bar", "sulfur", "sulfuric-acid"]) for (const c of [1, 2, 4]) defs.push(chemRow(F, { recipe, chemPlants: c }))
+  defs.push(assemblerRow(F, { recipe: "flying-robot-frame", count: 2 }), assemblerRow(F, { recipe: "electric-engine-unit", count: 2 }))
+  defs.push(oilComplex(F, { refineries: 2, lubePlants: 1 }))
+  const D = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+  for (const def of defs) {
+    for (const p of def.ports) {
+      if (p.kind !== "belt-in" && p.kind !== "belt-out" && p.kind !== "pipe-in" && p.kind !== "pipe-out") continue
+      const [dx, dy] = D[math.floor(p.dir / 4)]
+      const sign = p.kind === "belt-in" || p.kind === "pipe-in" ? -1 : 1
+      const x = math.floor(p.pos.x) + sign * dx
+      const y = math.floor(p.pos.y) + sign * dy
+      ok(x < 0 || y < 0 || x >= def.footprint.w || y >= def.footprint.h, `${def.id} port ${p.id}: its outside tile ${x},${y} is inside the ${def.footprint.w}x${def.footprint.h} footprint`)
+    }
+  }
+})
 
 test("every generated module: no overlaps, inside its footprint, all powered on one pole network", () => {
   for (const def of allGenerated()) {
@@ -251,6 +321,17 @@ test("every generated module: no overlaps, inside its footprint, all powered on 
       }
     }
     ok(powerPort === pc.networks > 0, `${def.id} power port iff it has poles`)
+  }
+})
+
+test("B205 (user, 2026-11-12): with medium poles every generated module is still powered on one network, no overlaps", () => {
+  for (const def of allGenerated("medium-electric-pole")) {
+    occupancy(def.entities, F)
+    const pc = powerCheck(def.entities, F)
+    eq(pc.unpowered.length, 0, `${def.id} unpowered ${pc.unpowered.join(" ")}`)
+    ok(pc.networks <= 1, `${def.id} has ${pc.networks} pole networks`)
+    ok(def.entities.some((e) => e.name === "medium-electric-pole") === pc.networks > 0, `${def.id}: its poles are medium poles`)
+    ok(!def.entities.some((e) => e.name === "small-electric-pole"), `${def.id}: no small pole left`)
   }
 })
 

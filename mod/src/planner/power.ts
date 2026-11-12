@@ -23,6 +23,12 @@ interface PoleNode {
   reach: number
 }
 
+/** B210: a built pole as the game has it. */
+export interface BuiltPole {
+  net: number
+  wires: number
+}
+
 export interface PoleJob {
   /** Pole entity to place. */
   pole: string
@@ -32,6 +38,20 @@ export interface PoleJob {
   prefix: string
   nodes: PoleNode[]
   parent: number[]
+  /**
+   * M7: per node, the other nodes within wire reach (`wireDegree`), kept by `addNode`. Was counted over every node at
+   * each look: O(poles²) per owner when `startNext` picks the next module on a large base. Absent in saves from before.
+   */
+  degree?: number[]
+  /**
+   * B210: built poles by tile key (`tkey` of the pole's tile): their electric network and copper wires in the game. Set
+   * from the plan request before the job starts; absent in tests and older saves (every pole estimated by reach).
+   */
+  built?: Record<number, BuiltPole>
+  /** B210: the first node of each built electric network. */
+  nets?: Record<number, number>
+  /** B210: per node, its copper wires counted exactly (a built pole, plus the wires this job gives it), or -1. */
+  wires?: number[]
   /** Component root → powered. */
   powered: Record<number, boolean>
   /** Owners (module ids) that still need joining, nearest first when picked. */
@@ -64,6 +84,10 @@ interface PoleSearch {
   hs: number[]
   hf: number[]
   from: Record<number, string>
+  /** B206: a source pole's wire reach by tile: its first hop reaches no farther (a small pole under a medium line). */
+  fromReach?: Record<number, number>
+  /** M7: `poleCost` by window tile, for the search's life (each tile is a neighbour of every pole in wire reach). */
+  tc?: Record<number, number>
   found?: number
   status: "running" | "found" | "failed"
   expansions: number
@@ -119,15 +143,43 @@ function union(job: PoleJob, a: number, b: number): void {
 }
 
 function addNode(job: PoleJob, n: PoleNode): number {
+  if (job.degree === undefined || job.degree.length !== job.nodes.length) job.degree = degrees(job.nodes)
+  const deg = job.degree
   const i = job.nodes.length
   job.nodes.push(n)
   job.parent.push(i)
+  deg.push(0)
+  // B210: a built pole joins the poles of its electric network, whatever their distance, and no other built pole: the
+  // game, not the reach, says which built poles are wired (m7-b208 seed 222: a steel column's poles stood 5 tiles from
+  // the grid, an island, while the plan counted it powered). Between a built pole and one still to be built, the wire
+  // exists only while the built pole has a free connection.
+  const built = job.built !== undefined ? job.built[tkey(math.floor(n.x), math.floor(n.y))] : undefined
+  if (job.built !== undefined) {
+    job.wires ??= []
+    while (job.wires.length < i) job.wires.push(-1)
+    job.wires.push(built !== undefined ? built.wires : -1)
+    if (built !== undefined) {
+      job.nets ??= {}
+      const first = job.nets[built.net]
+      if (first !== undefined) union(job, i, first)
+      else job.nets[built.net] = i
+    }
+  }
+  const wires = job.wires
   for (let j = 0; j < i; j++) {
-    const o = job.nodes[j]
-    const dx = o.x - n.x
-    const dy = o.y - n.y
-    const r = math.min(o.reach, n.reach)
-    if (dx * dx + dy * dy <= r * r + 1e-9) union(job, i, j)
+    if (!inWireReach(job.nodes[j], n)) continue
+    if (wires !== undefined) {
+      const wj = wires[j] ?? -1
+      if (built !== undefined && wj >= 0) continue
+      const exact = built !== undefined ? i : wj >= 0 ? j : -1
+      if (exact >= 0) {
+        if (wires[exact] >= MAX_WIRE_CONNECTIONS) continue
+        wires[exact]++
+      }
+    }
+    union(job, i, j)
+    deg[i]++
+    deg[j]++
   }
   return i
 }
@@ -135,19 +187,47 @@ function addNode(job: PoleJob, n: PoleNode): number {
 /** Factorio electric poles have five copper-wire connections. The API exposes wire reach but not this count. */
 const MAX_WIRE_CONNECTIONS = 5
 
-/** Existing copper wires a pole can still take (geometric neighbour count, conservative). */
+/**
+ * Existing copper wires a pole can still take (geometric neighbour count, conservative). B206: an upper bound only. The
+ * game skips redundant wires: a medium-pole assembler row's poles have 5 others within reach but 2-3 wires (engine
+ * test "B206 finding"), so callers fall back to "full" poles when nothing else is left.
+ */
 function wireDegree(job: PoleJob, i: number): number {
-  let n = 0
-  const a = job.nodes[i]
-  for (let j = 0; j < job.nodes.length; j++) {
-    if (j === i) continue
-    const b = job.nodes[j]
-    const dx = a.x - b.x
-    const dy = a.y - b.y
-    const r = math.min(a.reach, b.reach)
-    if (dx * dx + dy * dy <= r * r + 1e-9) n++
+  const exact = job.wires?.[i] ?? -1
+  if (exact >= 0) return exact
+  if (job.degree === undefined || job.degree.length !== job.nodes.length) job.degree = degrees(job.nodes)
+  return job.degree[i]
+}
+
+/** Whether pole `i` can take no new wire: B210 exactly for a built pole; by the estimate only when `strict` (B206). */
+function saturated(job: PoleJob, i: number, strict: boolean): boolean {
+  if ((job.wires?.[i] ?? -1) >= 0) return wireDegree(job, i) >= MAX_WIRE_CONNECTIONS
+  return strict && wireDegree(job, i) >= MAX_WIRE_CONNECTIONS
+}
+
+/** Each node's count of other nodes within wire reach (a job saved before `degree` existed). */
+function degrees(nodes: PoleNode[]): number[] {
+  const out: number[] = []
+  for (let i = 0; i < nodes.length; i++) out.push(0)
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (!inWireReach(nodes[i], nodes[j])) continue
+      out[i]++
+      out[j]++
+    }
   }
-  return n
+  return out
+}
+
+function inWireReach(a: PoleNode, b: PoleNode): boolean {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  const r = math.min(a.reach, b.reach)
+  return dx * dx + dy * dy <= r * r + 1e-9
+}
+
+function isPumpLine(line: string): boolean {
+  return string.sub(line, 1, 5) === "pump:"
 }
 
 /** Every pole of the layout (module poles and planned line poles), with what owns it. */
@@ -165,7 +245,10 @@ function layoutPoles(layout: LayoutState, facts: ProtoFacts, dropped?: Record<nu
   }
   for (const p of layout.poles ?? []) {
     if (dropped !== undefined && dropped[tkey(p.x, p.y)] === true) continue
-    out.push({ owner: p.line, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
+    // M7c.8: each pump pole is its own consumer: one pump's pole beside the network does not power a pump 300 tiles
+    // down the same line (seed 11: the far pump of a 900-tile crude line stood unpowered).
+    const owner = isPumpLine(p.line) ? p.id : p.line
+    out.push({ owner, x: p.x + 0.5, y: p.y + 0.5, reach: facts.entity(p.name)?.wireReach ?? 7.5 })
   }
   return out
 }
@@ -182,6 +265,8 @@ export function powerRoles(layout: LayoutState, facts: ProtoFacts): { sources: M
     if (gen) sources.push(m.id)
     else if (port) consumers.push(m.id)
   }
+  // M7b: fluid route pumps, each with a pole beside it (`pumpPoleLine`): joined like a module.
+  for (const l of layout.poleLines ?? []) if (l.from === "pump") for (const id of l.poles) consumers.push(id as unknown as ModuleId)
   return { sources, consumers }
 }
 
@@ -193,6 +278,7 @@ export function newPoleJob(prefix: string, pole: string, facts: ProtoFacts): Pol
     prefix,
     nodes: [],
     parent: [],
+    degree: [],
     powered: {},
     pending: [],
     added: [],
@@ -251,8 +337,12 @@ function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolic
   return c
 }
 
-/** Window margins tried in turn (detours around lakes need room). */
-const MARGINS = [16, 48, 112]
+/**
+ * Window margins tried in turn (detours around lakes need room). The 240/480 steps are agent guesses (M7d.5,
+ * 2026-11-07): a power block on the far side of a lake arm had no pole path at 112, and the search window, not the
+ * ground, bounded it.
+ */
+const MARGINS = [16, 48, 112, 240, 480]
 
 /** Picks the pending owner nearest the powered set and starts a search for it. */
 function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): boolean {
@@ -268,19 +358,33 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
       continue
     }
     keep.push(owner)
-    for (let i = 0; i < job.nodes.length; i++) {
-      const a = job.nodes[i]
-      if (a.owner !== owner) continue
-      for (let j = 0; j < job.nodes.length; j++) {
-        if (!job.powered[find(job, j)] || wireDegree(job, j) >= MAX_WIRE_CONNECTIONS) continue
-        const b = job.nodes[j]
-        const d2 = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)
-        if (best === undefined || d2 < best.d2 || (d2 === best.d2 && owner < best.owner)) best = { owner, d2, src: b }
+    // B206: saturated sources first are skipped; when every powered pole counts as full, the count is only an upper
+    // bound (the game wires fewer, see `wireDegree`), so they are tried anyway.
+    for (const strict of [true, false]) {
+      if (!strict && best !== undefined) break
+      for (let i = 0; i < job.nodes.length; i++) {
+        const a = job.nodes[i]
+        if (a.owner !== owner) continue
+        for (let j = 0; j < job.nodes.length; j++) {
+          if (!job.powered[find(job, j)] || saturated(job, j, strict)) continue
+          const b = job.nodes[j]
+          const d2 = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)
+          if (best === undefined || d2 < best.d2 || (d2 === best.d2 && owner < best.owner)) best = { owner, d2, src: b }
+        }
       }
     }
   }
   if (retry === undefined) job.pending = keep
-  if (best === undefined) return false
+  if (best === undefined) {
+    // B210: every powered pole is a built pole with five wires: nothing can join these owners.
+    let powered = false
+    for (let j = 0; j < job.nodes.length && !powered; j++) if (job.powered[find(job, j)]) powered = true
+    if (powered) {
+      for (const owner of keep) job.failures[owner] = "every pole has all wire connections in use"
+      if (retry === undefined) job.pending = []
+    }
+    return false
+  }
   job.pending = job.pending.filter((o) => o !== best!.owner)
   // The target: every pole of the owner's component(s). B43: that includes line poles joined to it, e.g. a line to a
   // mine whose trunk line a plan evicted (B37): the mine's own pole may sit where no new pole can reach it.
@@ -291,15 +395,19 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
   let gy1 = math.huge
   let gx2 = -math.huge
   let gy2 = -math.huge
-  for (let i = 0; i < job.nodes.length; i++) {
-    const n = job.nodes[i]
-    // A saturated pole cannot accept the new wire; choose another pole in the target component.
-    if (!roots[find(job, i)] || wireDegree(job, i) >= MAX_WIRE_CONNECTIONS) continue
-    goals.push(n)
-    gx1 = math.min(gx1, n.x)
-    gy1 = math.min(gy1, n.y)
-    gx2 = math.max(gx2, n.x)
-    gy2 = math.max(gy2, n.y)
+  // A saturated pole cannot accept the new wire; choose another pole in the target component. B206: when every pole
+  // counts as saturated, the count overstates (the game wires fewer): all of them are targets.
+  for (const strict of [true, false]) {
+    if (!strict && goals.length > 0) break
+    for (let i = 0; i < job.nodes.length; i++) {
+      const n = job.nodes[i]
+      if (!roots[find(job, i)] || saturated(job, i, strict)) continue
+      goals.push(n)
+      gx1 = math.min(gx1, n.x)
+      gy1 = math.min(gy1, n.y)
+      gx2 = math.max(gx2, n.x)
+      gy2 = math.max(gy2, n.y)
+    }
   }
   if (goals.length === 0) {
     job.failures[best.owner] = "every pole has all wire connections in use"
@@ -331,9 +439,9 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
     status: "running",
     expansions: 0,
   }
-  // Sources: powered poles inside the window (they exist already: g = 0).
+  // Sources: powered poles inside the window (they exist already: g = 0). B210: not a built pole with no free wire.
   for (let j = 0; j < job.nodes.length; j++) {
-    if (!job.powered[find(job, j)]) continue
+    if (!job.powered[find(job, j)] || saturated(job, j, false)) continue
     const n = job.nodes[j]
     const tx = math.floor(n.x)
     const ty = math.floor(n.y)
@@ -342,6 +450,8 @@ function startNext(job: PoleJob, retry?: { owner: ModuleId; margin: number }): b
     if (s.g[st] !== undefined) continue
     s.g[st] = 0
     s.from[st] = n.owner
+    s.fromReach ??= {}
+    s.fromReach[st] = n.reach
     push(s, job, st, 0, tx, ty)
   }
   job.current = s
@@ -418,6 +528,8 @@ function stepSearch(job: PoleJob, layout: LayoutState, terrain: TerrainView, pol
   const s = job.current!
   const offs = offsetsFor(job.reach)
   const unit = 1 + offs.length / 40
+  s.tc ??= {}
+  const tc = s.tc
   let used = 0
   while (s.status === "running" && used < budget) {
     if (s.hs.length === 0) {
@@ -438,13 +550,18 @@ function stepSearch(job: PoleJob, layout: LayoutState, terrain: TerrainView, pol
       break
     }
     const g = s.g[cur]
-    for (const o of offs) {
+    const srcReach = s.fromReach?.[cur]
+    for (const o of srcReach !== undefined && srcReach < job.reach ? offsetsFor(srcReach) : offs) {
       const nx = x + o.dx
       const ny = y + o.dy
       if (nx < s.x0 || ny < s.y0 || nx >= s.x0 + s.w || ny >= s.y0 + s.h) continue
       const nst = (ny - s.y0) * s.w + (nx - s.x0)
       if (s.closed[nst]) continue
-      const c = poleCost(layout, terrain, policy, nx, ny)
+      let c = tc[nst]
+      if (c === undefined) {
+        c = poleCost(layout, terrain, policy, nx, ny)
+        tc[nst] = c
+      }
       if (c < 0) continue
       const ng = g + c
       const old = s.g[nst]

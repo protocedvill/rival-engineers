@@ -6,8 +6,23 @@ export interface RecipeFacts {
   /** Seconds at crafting speed 1. */
   energy: number
   category: string
-  ingredients: { name: string; amount: number }[]
-  products: { name: string; amount: number }[]
+  /**
+   * M7b: `fluid` marks a fluid (piped, never carried by an inserter); `box` is its `fluidbox_index` (1-based among the
+   * machine's input or output fluid boxes), when the recipe pins one.
+   */
+  ingredients: { name: string; amount: number; fluid?: boolean; box?: number }[]
+  products: { name: string; amount: number; fluid?: boolean; box?: number }[]
+}
+
+/** M7b: one fluid box of a north-facing entity: its kind and the tiles it connects to (offset from the centre). */
+export interface FluidBoxFacts {
+  production: "input" | "output" | "input-output" | "none"
+  /**
+   * Each connection: the entity tile it is on (offset from the centre) and the direction it points (index 0..3), facing
+   * north. `positions`: the tile for each facing (N, E, S, W), when the prototype lists them; they need not be rotations
+   * of the north one (a pumpjack's output is at (1,-1) facing north or east and (-1,1) facing south or west).
+   */
+  connections: { x: number; y: number; dir: number; positions?: { x: number; y: number }[] }[]
 }
 
 export interface EntityFacts {
@@ -46,6 +61,17 @@ export interface EntityFacts {
   fluidPerTick?: number
   /** Offshore pumps: fluid per tick. */
   pumpingPerTick?: number
+  /** B185: solar panels: peak output in J/tick (full daylight). */
+  productionPerTick?: number
+  /** B185: accumulators: stored energy in J. */
+  bufferJ?: number
+  /** M7b: fluid boxes (north-facing), in prototype order. */
+  fluidBoxes?: FluidBoxFacts[]
+  /** Pipe-to-ground: the farthest an exit may be from its entrance. */
+  maxPipeUnderground?: number
+  /** M7d.5: roboports: half-widths of the logistic and construction areas. */
+  logisticRadius?: number
+  constructionRadius?: number
 }
 
 export interface ProtoFacts {
@@ -63,4 +89,8 @@ export interface ProtoFacts {
   recipeForItem(item: string): string | undefined
   /** The item that places an entity. */
   itemToPlace(entity: string): string | undefined
+  /** M7c: whether a name is a fluid (piped). Absent: nothing is. */
+  isFluid?(name: string): boolean
+  /** B178: the crafting categories a character can hand-craft. Absent: "crafting" only. */
+  handCategories?(): Record<string, boolean>
 }

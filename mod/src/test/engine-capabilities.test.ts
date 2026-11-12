@@ -1,9 +1,13 @@
-import { LuaEntity, LuaForce, MapPosition } from "factorio:runtime"
+import { LuaEntity, LuaForce, LuaSurface, MapPosition } from "factorio:runtime"
 import { PathfinderWaypoint } from "factorio:runtime"
-import { forgetPathRequest, getPathRequest, requestCharacterPath } from "../character/pathing"
+import { forgetPathRequest, getPathRequest, requestCharacterPath, spotInPocket } from "../character/pathing"
 import { tkey } from "../planner/grid"
 import { chunkKnown } from "../strategy/arms"
 import { onSectorScanned } from "../strategy/explore"
+import { encodeWells } from "../modules/generators"
+import { generatedModule } from "../modules/library"
+import { rateOf } from "../modules/rates"
+import { stampModule } from "../modules/stamp"
 import { at, createLab, everyTickFor, itemCount, spawnEngineer } from "./lab"
 
 // M0 spike: can a character entity with NO attached player perform every player action the crew
@@ -204,6 +208,88 @@ describe("player-less character", () => {
       assert(!researched, "the engine fired the trigger: the crew's emulation (strategy/factory.ts) is no longer needed")
     })
   })
+  // M7d (P48: "engine tests first: robots and personal roboports must work for a force with no players (radars do not,
+  // D62)"). Each test sets the same scene up for a script-created force and for the player force, and logs both.
+  test("M7d (P48): a roboport network builds ghosts and removes trees for a force with no players", () => {
+    const lab = createLab(48)
+    const npf = game.forces["m7d-net"] ?? game.create_force("m7d-net")
+    const scene = (f: LuaForce, ox: number): { ghosts: LuaEntity[]; tree: LuaEntity } => {
+      const p = (dx: number, dy: number): MapPosition => at(lab, ox + dx, dy)
+      const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: p(-6, 0), force: f })!
+      eei.electric_buffer_size = 1e9
+      eei.power_production = 1e7
+      lab.surface.create_entity({ name: "medium-electric-pole", position: p(-4, 2), force: f })
+      const port = lab.surface.create_entity({ name: "roboport", position: p(0, 0), force: f })!
+      port.get_inventory(defines.inventory.roboport_robot)!.insert({ name: "construction-robot", count: 10 })
+      const chest = lab.surface.create_entity({ name: "storage-chest", position: p(3.5, 3.5), force: f })!
+      chest.insert({ name: "transport-belt", count: 20 })
+      chest.insert({ name: "iron-chest", count: 2 })
+      const ghosts: LuaEntity[] = []
+      for (let x = -5; x < 5; x++) ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: p(x + 0.5, 10.5), force: f })!)
+      ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "iron-chest", position: p(6.5, 12.5), force: f })!)
+      const tree = lab.surface.create_entity({ name: "tree-01", position: p(-8, 14) })!
+      tree.order_deconstruction(f)
+      return { ghosts, tree }
+    }
+    const np = scene(npf, -22)
+    const pl = scene(game.forces.player, 22)
+    const count = (sc: { ghosts: LuaEntity[] }): number => sc.ghosts.filter((g) => !g.valid).length
+    async(3600 * 2)
+    const start = game.tick
+    on_tick(() => {
+      const t = game.tick - start
+      if (t % 600 === 0) log(`[m7d-net] ${t / 60}s: player-less built ${count(np)}/11 tree ${np.tree.valid ? "standing" : "gone"}; player built ${count(pl)}/11 tree ${pl.tree.valid ? "standing" : "gone"}`)
+      const finished = count(np) === 11 && !np.tree.valid
+      if (!finished && t < 3600 * 2 - 10) return
+      assert(count(pl) === 11 && !pl.tree.valid, `the scene works for the player force (${count(pl)}/11, tree ${pl.tree.valid})`)
+      assert(finished, `player-less force: robots built ${count(np)}/11 ghosts, tree ${np.tree.valid ? "standing" : "gone"}`)
+      done()
+      return false
+    })
+  })
+
+  test("M7d (P48): a player-less character's personal roboport builds ghosts from its inventory", () => {
+    const lab = createLab(48)
+    const npf = game.forces["m7d-personal"] ?? game.create_force("m7d-personal")
+    const scene = (f: LuaForce, ox: number): { ghosts: LuaEntity[]; ch: LuaEntity; tree: LuaEntity } => {
+      const p = (dx: number, dy: number): MapPosition => at(lab, ox + dx, dy)
+      const ch = lab.surface.create_entity({ name: "character", position: p(0, 0), force: f })!
+      const armor = ch.get_inventory(defines.inventory.character_armor)!
+      armor.insert({ name: "modular-armor" })
+      const grid = armor[0].grid!
+      grid.put({ name: "personal-roboport-equipment" })
+      grid.put({ name: "battery-equipment" })
+      ch.get_main_inventory()!.insert({ name: "construction-robot", count: 10 })
+      ch.get_main_inventory()!.insert({ name: "transport-belt", count: 20 })
+      const ghosts: LuaEntity[] = []
+      for (let x = -4; x < 4; x++) ghosts.push(lab.surface.create_entity({ name: "entity-ghost", inner_name: "transport-belt", position: p(x + 0.5, 6.5), force: f })!)
+      const tree = lab.surface.create_entity({ name: "tree-01", position: p(-6, -6) })!
+      tree.order_deconstruction(f)
+      return { ghosts, ch, tree }
+    }
+    const np = scene(npf, -22)
+    const pl = scene(game.forces.player, 22)
+    const charge = (ch: LuaEntity): void => {
+      const grid = ch.get_inventory(defines.inventory.character_armor)![0].grid!
+      for (const e of grid.equipment) e.energy = e.max_energy
+    }
+    const count = (sc: { ghosts: LuaEntity[] }): number => sc.ghosts.filter((g) => !g.valid).length
+    async(3600 * 2)
+    const start = game.tick
+    on_tick(() => {
+      const t = game.tick - start
+      charge(np.ch)
+      charge(pl.ch)
+      if (t % 600 === 0) log(`[m7d-personal] ${t / 60}s: player-less built ${count(np)}/8 tree ${np.tree.valid ? "standing" : "gone"} robots in inventory ${np.ch.get_main_inventory()!.get_item_count("construction-robot")}; player built ${count(pl)}/8 tree ${pl.tree.valid ? "standing" : "gone"}`)
+      const finished = count(np) === 8 && !np.tree.valid
+      if (!finished && t < 3600 * 2 - 10) return
+      assert(count(pl) === 8 && !pl.tree.valid, `the scene works for the player force (${count(pl)}/8, tree ${pl.tree.valid})`)
+      assert(finished, `player-less character: personal robots built ${count(np)}/8 ghosts, tree ${np.tree.valid ? "standing" : "gone"}`)
+      done()
+      return false
+    })
+  })
+
   test("D62 finding: a player-less force's radar still sector-scans (events fire) but charts and generates nothing, even through force.chart", () => {
     async(3600 * 4)
     const surface = game.create_surface("d62-diag", { seed: 4242, autoplace_controls: { "enemy-base": { frequency: 0, size: 0, richness: 0 } } } as never)
@@ -343,6 +429,257 @@ describe("player-less character", () => {
       // D62 depends on this: if it changes, faction radars chart by themselves and the emulation is not needed.
       assert(q === 0, `a player-less force's radar charted ${q}/49: the engine charts for it now`)
       game.delete_surface(surface)
+    })
+  })
+})
+
+// M7b (D73: crude is piped home from an oil field outside the starting area). How much a long 2.0 pipeline of
+// pipe-to-ground pairs delivers, so the planner knows when a pump is needed. An offshore pump pushes water in at one end
+// (flow does not depend on the fluid) and a storage tank at the other end, emptied every tick, counts what arrives.
+describe("fluids", () => {
+  function pipeline(surface: LuaSurface, y: number, length: number, pumpEvery = 0): { tank: LuaEntity; source: LuaEntity } {
+    const tiles = []
+    for (let x = -8; x <= length + 6; x++) for (let dy = -2; dy <= 2; dy++) tiles.push({ name: x < -1 ? "water" : "lab-dark-1", position: { x, y: y + dy } })
+    surface.set_tiles(tiles)
+    // An offshore pump pushes water like pumpjacks push crude (an infinity pipe sets its whole segment instead).
+    const source = surface.create_entity({ name: "offshore-pump", position: { x: -1.5, y: y + 0.5 }, direction: defines.direction.west, force: "player" })!
+    surface.create_entity({ name: "pipe", position: { x: -0.5, y: y + 0.5 }, force: "player" })
+    surface.create_entity({ name: "pipe", position: { x: 0.5, y: y + 0.5 }, force: "player" })
+    // Pairs: an entrance facing back toward the source, an exit 10 tiles on facing onward, then the next entrance.
+    let x = 1
+    let sincePump = 0
+    while (x + 10 <= length) {
+      if (pumpEvery > 0 && sincePump >= pumpEvery) {
+        surface.create_entity({ name: "pump", position: { x: x + 1, y: y + 0.5 }, direction: defines.direction.east, force: "player" })
+        const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: x + 0.5, y: y - 2.5 }, force: "player" })!
+        eei.electric_buffer_size = 1e7
+        eei.power_production = 1e6
+        surface.create_entity({ name: "small-electric-pole", position: { x: x + 1.5, y: y - 0.5 }, force: "player" })
+        x += 2
+        sincePump = 0
+      }
+      surface.create_entity({ name: "pipe-to-ground", position: { x: x + 0.5, y: y + 0.5 }, direction: defines.direction.west, force: "player" })
+      surface.create_entity({ name: "pipe-to-ground", position: { x: x + 10.5, y: y + 0.5 }, direction: defines.direction.east, force: "player" })
+      sincePump += 11
+      x += 11
+    }
+    const tank = surface.create_entity({ name: "storage-tank", position: { x: x + 1, y: y + 1 }, force: "player" })!
+    return { tank, source }
+  }
+
+  function crude(tank: LuaEntity): number {
+    return tank.get_fluid_contents()["water"] ?? 0
+  }
+
+  test("M7b: a generated pumpjack field on real wells delivers its declared crude at its pipe-out port", () => {
+    async(3600 * 2)
+    const surface = game.create_surface("m7b-field", { seed: 2, width: 200, height: 200, autoplace_controls: {} } as never)
+    surface.request_to_generate_chunks({ x: 0, y: 0 }, 2)
+    surface.force_generate_chunk_requests()
+    const tiles = []
+    for (let x = -40; x < 40; x++) for (let y = -40; y < 40; y++) tiles.push({ name: "lab-dark-1", position: { x, y } })
+    surface.set_tiles(tiles)
+    // Wells at 100% (the prototype's normal amount): 10 crude/s each.
+    const normal = prototypes.entity["crude-oil"].normal_resource_amount
+    const wells = [
+      { x: -10, y: -10 },
+      { x: -4, y: -9 },
+      { x: -8, y: -3 },
+    ]
+    for (const w of wells) surface.create_entity({ name: "crude-oil", position: { x: w.x + 0.5, y: w.y + 0.5 }, amount: normal })
+    const def = generatedModule("pumpjack-field", { wells: encodeWells(wells.map((w) => ({ ...w, perSecond: 10 }))) })
+    const ox = -10 - 3
+    const oy = -10 - 3
+    const placed = stampModule(surface, "player", def, { x: ox, y: oy })
+    let missing = 0
+    for (let i = 0; i < def.entities.length; i++) if (placed[i] === undefined) missing++
+    assert(missing === 0, `${missing} entities could not be placed`)
+    const port = def.ports.find((p) => p.kind === "pipe-out")!
+    // A pump on the port's outside tiles starts a separate segment; the pipe after it is drained and counted every tick.
+    const px = ox + math.floor(port.pos.x)
+    const py = oy + math.floor(port.pos.y)
+    surface.create_entity({ name: "pump", position: { x: px + 2, y: py + 0.5 }, direction: defines.direction.east, force: "player" })
+    const tank = surface.create_entity({ name: "pipe", position: { x: px + 3.5, y: py + 0.5 }, force: "player" })!
+    surface.create_entity({ name: "small-electric-pole", position: { x: px + 1.5, y: py - 0.5 }, force: "player" })
+    const eei2 = surface.create_entity({ name: "electric-energy-interface", position: { x: px + 1, y: py - 2 }, force: "player" })!
+    eei2.electric_buffer_size = 1e7
+    eei2.power_production = 1e6
+    const powerPort = def.ports.find((p) => p.kind === "power")!
+    const eei = surface.create_entity({ name: "electric-energy-interface", position: { x: ox + powerPort.pos.x, y: oy - 3 }, force: "player" })!
+    eei.electric_buffer_size = 1e8
+    eei.power_production = 1e7
+    surface.create_entity({ name: "small-electric-pole", position: { x: ox + powerPort.pos.x, y: oy - 1.5 }, force: "player" })
+    const start = game.tick
+    let got = 0
+    on_tick(() => {
+      const t = game.tick - start
+      if (t > 600) got += tank.get_fluid_contents()["crude-oil"] ?? 0
+      tank.clear_fluid_inside()
+      if (t < 1800) return true
+      const rate = got / 20
+      const declared = rateOf(def.rates.outputs, "crude-oil")
+      log(`[m7b] pumpjack field: ${string.format("%.2f", rate)} crude/s measured, ${declared} declared`)
+      assert(rate >= 0.9 * declared, `pumpjack field delivers ${rate}/s of ${declared}/s`)
+      game.delete_surface(surface)
+      done()
+      return false
+    })
+  })
+
+  test("M7b finding: fluid flow through a long pipe-to-ground pipeline (pumps, tank at the end)", () => {
+    async(3600 * 2)
+    const surface = game.create_surface("m7b-pipes", { seed: 1, width: 4000, height: 400, autoplace_controls: {} } as never)
+    surface.request_to_generate_chunks({ x: 0, y: 0 }, 1)
+    surface.force_generate_chunk_requests()
+    const lengths = [22, 110, 308, 330, 1100, 2200]
+    const runs: { length: number; pump: boolean; tank: LuaEntity }[] = []
+    let row = 0
+    for (const length of lengths) {
+      for (const pump of [false, true]) {
+        if (pump && length < 300) continue
+        for (let cx = 0; cx * 32 < length + 40; cx++) surface.request_to_generate_chunks({ x: cx * 32, y: row * 8 }, 0)
+        surface.force_generate_chunk_requests()
+        runs.push({ length, pump, tank: pipeline(surface, row * 8, length, pump ? 220 : 0).tank })
+        row++
+      }
+    }
+    const start = game.tick
+    // The tank is emptied every tick and what arrived is counted (a full tank would read as no flow).
+    const got: number[] = runs.map(() => 0)
+    on_tick(() => {
+      const t = game.tick - start
+      for (let i = 0; i < runs.length; i++) {
+        if (t > 600) got[i] += crude(runs[i].tank)
+        runs[i].tank.clear_fluid_inside()
+      }
+      if (t < 900) return true
+      const lines: string[] = []
+      const rates: number[] = []
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i]
+        rates.push(got[i] / 5)
+        lines.push(`${r.length} tiles${r.pump ? " (pump every 220)" : ""}: ${string.format("%.1f", got[i] / 5)}/s`)
+      }
+      log(`[m7b] fluid through pipe-to-ground pipelines (offshore pump source): ${lines.join("; ")}`)
+      // 2.0 fluid segments longer than the pipeline extent (utility constant `default_pipeline_extent`, 320) carry
+      // nothing; a pump starts a new segment. So a long crude line needs a pump at least every extent. The blue chain
+      // needs about 42 crude/s (3 refineries on basic oil processing).
+      const extent = (prototypes.utility_constants as unknown as { default_pipeline_extent?: number }).default_pipeline_extent
+      log(`[m7b] default_pipeline_extent ${extent}`)
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i]
+        if (r.pump || r.length <= (extent ?? 320)) assert(rates[i] > 42, `a pipeline within the extent (or pumped) carries the blue chain's crude (${lines[i]})`)
+        else assert(rates[i] === 0, `a segment longer than the extent carries nothing (${lines[i]}): the engine changed`)
+      }
+      game.delete_surface(surface)
+      done()
+      return false
+    })
+  })
+})
+
+describe("ghosts", () => {
+  // B173 (m7-benchLayers15 g216): unlike a pole (B41/B66), a belt ghost is refused on its live twin, and on a belt facing
+  // another way. A route piece that already stands as planned must be reused, not ghosted (`stampParts`).
+  test("B173 finding: a belt ghost is refused on a live belt, its twin included; a pole ghost is accepted", () => {
+    const lab = createLab(16)
+    const s = lab.surface
+    const ghostOn = (x: number, live: string, liveDir: defines.direction, ghostDir: defines.direction): boolean => {
+      const pos = at(lab, x + 0.5, 0.5)
+      s.create_entity({ name: live, position: pos, direction: liveDir, force: "player" })
+      return s.create_entity({ name: "entity-ghost", inner_name: live, position: pos, direction: ghostDir, force: "player" }) !== undefined
+    }
+    assert(!ghostOn(0, "transport-belt", defines.direction.west, defines.direction.west), "a belt ghost on its live twin is refused")
+    assert(!ghostOn(2, "transport-belt", defines.direction.north, defines.direction.west), "a belt ghost on a belt facing another way is refused")
+    assert(ghostOn(4, "small-electric-pole", defines.direction.north, defines.direction.north), "a pole ghost on its live pole is accepted")
+  })
+})
+
+describe("pole wires", () => {
+  // B206 finding: revived poles skip redundant copper wires, so counting the poles within wire reach overstates a pole's
+  // wires (planner/power.ts `wireDegree`), and a later pole still connects to a module whose poles "look" full.
+  test("B206 finding: a medium-pole module's poles take fewer wires than poles in reach; a new pole still connects", () => {
+    const lab = createLab(48)
+    const def = generatedModule("assembler-row", { recipe: "iron-gear-wheel", count: 8, pole: "medium-electric-pole" })
+    const origin = at(lab, -20, -10)
+    const poles: LuaEntity[] = []
+    for (const e of def.entities) {
+      if (e.name !== "medium-electric-pole") continue
+      const g = lab.surface.create_entity({ name: "entity-ghost", inner_name: e.name, position: { x: origin.x + e.x, y: origin.y + e.y }, force: "player" })!
+      const [, built] = g.revive()
+      poles.push(built!)
+    }
+    const counts: string[] = []
+    let max = 0
+    let geo = 0
+    for (const p of poles) {
+      const n = p.get_wire_connector(defines.wire_connector_id.pole_copper, true)!.connection_count
+      counts.push(tostring(n))
+      max = math.max(max, n)
+      let near = 0
+      for (const q of poles) if (q !== p && (q.position.x - p.position.x) ** 2 + (q.position.y - p.position.y) ** 2 <= 81) near++
+      geo = math.max(geo, near)
+    }
+    log(`[pole-probe] ${poles.length} poles, copper wires ${counts.join(",")}, max ${max}, most poles within reach ${geo}`)
+    // A new pole 8 tiles left of the first pole.
+    const first = poles[0]
+    const extra = lab.surface.create_entity({ name: "entity-ghost", inner_name: "medium-electric-pole", position: { x: first.position.x - 8, y: first.position.y }, force: "player" })!
+    const [, x] = extra.revive()
+    const xn = x!.get_wire_connector(defines.wire_connector_id.pole_copper, true)!.connection_count
+    log(`[pole-probe] new pole wires ${xn}, same network ${tostring(x!.electric_network_id === first.electric_network_id)}`)
+    assert(geo >= 5, `some pole has 5 others within reach (${geo})`)
+    assert(max < geo, `fewer wires than poles in reach (${max} < ${geo})`)
+    assert(xn >= 1 && x!.electric_network_id === first.electric_network_id, "the new pole joins the module's network")
+  })
+})
+
+describe("pathfinder pockets", () => {
+  // m7-fresh4 seed 11: the crew's walk to the standing spot 447.0,55.0 found no path 23 times. The spot is in the
+  // one-tile corridor between two steam-engine columns, where a small pole stands every 5 tiles: a character fits
+  // beside a pole (0.6 tiles), and `can_place_entity` says every spot here is free. The pathfinder reaches the corridor
+  // up to the first pole and nothing past it, and `spotInPocket` (jobs/pockets.ts) must agree on each spot.
+  // The test asks one path at a time, as a crew member's walk does: two requests of one character on the same tick,
+  // one of them unreachable, both failed (another character's request that tick was found).
+  test("B176 finding: the pathfinder does not pass beside a pole in a steam block's corridor; spotInPocket agrees", () => {
+    const lab = createLab()
+    // Local x 0 = world 447 (the failing spot), y 0 = world 54.
+    for (const y of [0.5, 5.5]) {
+      for (const x of [-2.5, 1.5]) lab.surface.create_entity({ name: "steam-engine", position: at(lab, x, y), direction: defines.direction.north, force: "player" })
+      lab.surface.create_entity({ name: "small-electric-pole", position: at(lab, -0.5, y), force: "player" })
+    }
+    const character = spawnEngineer(lab, -0.5, -12)
+    const goals: [string, number, number, boolean][] = [
+      ["open ground", 6, -6, true],
+      ["corridor mouth", -0.5, -4, true],
+      ["corridor before the first pole", -0.5, -2.5, true],
+      ["the spot beside the pole", 0, 1, false],
+      ["corridor between the poles", -0.5, 3, false],
+      ["tile centre beside the pole", 0, 3, false],
+    ]
+    // Spots close to a machine on open ground (an assembler east of the block) are reached: no pocket.
+    lab.surface.create_entity({ name: "assembling-machine-1", position: at(lab, 9.5, -6.5), force: "player" })
+    goals.push(["0.3 from an assembler", 8, -6.5, true], ["0.25 above an engine, on open ground", 1.5, -2.1, true])
+    for (const [name, x, y] of goals) assert(lab.surface.can_place_entity({ name: "character", position: at(lab, x, y) }), `${name}: a character fits`)
+    let i = 0
+    let id: number | undefined
+    async(6000)
+    on_tick(() => {
+      if (id !== undefined) {
+        const req = getPathRequest(id)!
+        if (req.status === "pending") return
+        const [name, x, y, reach] = goals[i]
+        forgetPathRequest(id)
+        id = undefined
+        i++
+        assert((req.status === "found") === reach, `${name}: path ${req.status}, expected ${reach ? "found" : "failed"}`)
+        assert(spotInPocket(lab.surface, at(lab, x, y)) === !reach, `${name}: spotInPocket says ${!reach ? "open" : "pocket"}`)
+      }
+      if (i < goals.length) {
+        const [, x, y] = goals[i]
+        id = requestCharacterPath(character, at(lab, x, y), 0.3)
+        return
+      }
+      done()
     })
   })
 })

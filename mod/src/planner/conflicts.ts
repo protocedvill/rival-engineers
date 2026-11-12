@@ -10,14 +10,16 @@ import { getJob } from "../jobs/board"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { registerBuffer } from "../modules/buffers"
+import { ownGhostAt } from "../modules/stamp"
 import { foreignEntitiesOn } from "../world/claims"
-import { BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
+import { allParts, BuildParts, entityDiff, EntitySpec, partEntities, partTiles, routeEntities } from "./build-list"
 import type { JobId, RouteId } from "../shared/ids"
-import { keyX, keyY, tkey, Vec } from "./grid"
-import { findModule, findPort, LayoutState, portTile, removeModule, ripRoute } from "./layout"
+import { ccw, DX, DY, keyX, keyY, tkey, Vec } from "./grid"
+import { dependentRoutes, findModule, findPort, LayoutState, portTile, pumpPoleLine, removeModule, ripRoute } from "./layout"
 import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
+import { recordDiagnostic } from "../diagnostic-events"
 
 export interface PartConflict {
   kind: "route" | "module" | "pole"
@@ -49,9 +51,25 @@ export interface BuildCheck {
    * route's underground between a new pair's ends; 2/s of ore made, none arriving, "nothing missing"). Pick them up.
    */
   intruders: LuaEntity[]
+  /** M7c.8: with a faction given, the `missing` entities that stand as its ghost with no job to build it. */
+  orphans: EntitySpec[]
+}
+
+/** True when `ghost` has a place job that can still build it (not failed, done or gone). */
+function ghostHasJob(faction: FactionState, ghost: LuaEntity): boolean {
+  const id = faction.ghostJobs[ghost.unit_number!]
+  if (id === undefined) return false
+  const j = getJob(faction.board, id)
+  return j !== undefined && j.status !== "failed" && j.status !== "done"
 }
 
 const BELT_TYPES = ["transport-belt", "underground-belt", "splitter"]
+/**
+ * M7c.8: route pieces that block a planned piece on their tile like a stale belt does: pipes too (seed 11, minute 780:
+ * an older copy of a water route left a pipe-to-ground facing west where the new route's exit goes; the new entrance
+ * connected to nothing and the sulfur plant had no water for an hour, "nothing missing").
+ */
+const ROUTE_TYPES = [...BELT_TYPES, "pipe", "pipe-to-ground", "pump"]
 
 /**
  * B56: the faction's own belts, undergrounds and splitters on `e`'s tiles that are not `e` itself (seed 3333: a reroute
@@ -64,7 +82,7 @@ export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpe
   for (const k of specTiles(e)) {
     const x = keyX(k)
     const y = keyY(k)
-    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: BELT_TYPES, force })) {
+    for (const b of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: ROUTE_TYPES, force })) {
       if (b.unit_number === undefined || seen[b.unit_number]) continue
       seen[b.unit_number] = true
       // The planned piece itself (B52's misdirected check handles a wrong direction of the same name).
@@ -75,8 +93,11 @@ export function staleBeltsUnder(surface: LuaSurface, force: string, e: EntitySpe
   return out
 }
 
-/** Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side). */
-const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true }
+/**
+ * Entity types whose direction carries the plan (a belt's flow, an inserter's pickup side; M7c.8: the side a
+ * pipe-to-ground goes underground, a pump's flow).
+ */
+const DIRECTED: Record<string, boolean> = { "transport-belt": true, "underground-belt": true, splitter: true, inserter: true, loader: true, "loader-1x1": true, "pipe-to-ground": true, pump: true }
 
 /** B52: an own entity of `e`'s name at its position that faces another way (or is the other underground end). */
 function ownMisdirected(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
@@ -105,13 +126,263 @@ function ownBuilt(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity 
 }
 
 function ownGhost(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
+  // B150/B144: a ghost of the same entity facing another way is an orphan, not the planned piece. Matching only the
+  // name adopted it and its place job built a belt that carried nothing to the port.
+  return ownGhostAt(surface, force, e.name, { x: e.x, y: e.y }, e.dir)
+}
+
+/** Any own ghost of the entity's name at its tile, whatever it faces (removing a piece). */
+function ownGhostAny(surface: LuaSurface, force: string, e: EntitySpec): LuaEntity | undefined {
   return findEntities(surface, { ghost_name: e.name, position: { x: e.x, y: e.y }, force, limit: 1 })[0]
+}
+
+/**
+ * The direction a key names: 0 for an entity that cannot face any way. B179 (m7-fresh6 seeds 11 and 44444): a rotated
+ * module's poles are specs facing east or south, but a pole ghost reads back facing north, so every pole ghost of such a
+ * module missed its own planned key. The next build stamping its tile reported it "ORPHAN GHOST", deleted it and placed
+ * the same pole again.
+ */
+function keyDir(name: string, dir: number | undefined): number {
+  return prototypes.entity[name]?.supports_direction === false ? 0 : (dir ?? 0)
+}
+
+/** Key of a planned entity: name, tile and direction (and underground end). */
+export function specKey(e: EntitySpec): string {
+  // Tile coordinates, like `ghostKey`: an entity spec is centred on .5, a ghost reads back with the same centre but
+  // `position.x` is a float; both keys must name the tile.
+  return `${e.name}@${math.floor(e.x)},${math.floor(e.y)}@${keyDir(e.name, e.dir)}@${e.ioType ?? ""}`
+}
+
+/** The tile key part a ghost would have as a planned spec (its direction and underground end included). */
+function ghostKey(gh: LuaEntity): string {
+  // `belt_to_ground_type` errors on any entity that is not an underground belt.
+  const io = gh.ghost_name === "underground-belt" ? gh.belt_to_ground_type : undefined
+  const name = gh.ghost_name ?? gh.name
+  return `${name}@${math.floor(gh.position.x)},${math.floor(gh.position.y)}@${keyDir(name, gh.direction)}@${io === "input" || io === "output" ? io : ""}`
+}
+
+/** Every entity the live layout plans, keyed by `specKey`. */
+export function plannedSpecKeys(layout: LayoutState): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const e of partEntities(layout, allParts(layout))) out[specKey(e)] = true
+  return out
+}
+
+/**
+ * Review fix (risk 8): what *any* live plan of the faction plans, not only the layout a caller holds. A plan job's
+ * layout is a copy of the base taken when it was planned; a goal adopted later (or a growth/repair that changed the
+ * faction layout directly) is missing from it, and its ghosts on this plan's tiles would read as orphans. The union of
+ * `layout`, the faction's persistent layout and every live plan entry's layout is what "planned" means.
+ */
+export function livePlannedKeys(faction: FactionState, layout: LayoutState): Record<string, boolean> {
+  const layouts: LayoutState[] = [layout]
+  const base = storage.factories?.[faction.name]?.layout
+  if (base !== undefined && layouts.indexOf(base) < 0) layouts.push(base)
+  const planner = storage.planner
+  if (planner !== undefined) {
+    for (const id of planner.order) {
+      const entry = planner.entries[id]
+      const l = entry?.job?.layout
+      if (entry === undefined || l === undefined || entry.faction !== faction.name || layouts.indexOf(l) >= 0) continue
+      layouts.push(l)
+    }
+  }
+  const out: Record<string, boolean> = {}
+  for (const l of layouts) for (const [k] of pairs(plannedSpecKeys(l))) out[k as string] = true
+  return out
+}
+
+/** The planned-key map, built on first use (most stamps meet no foreign ghost and never need it). */
+function lazyPlanned(faction: FactionState, layout: LayoutState): (this: void) => Record<string, boolean> {
+  let planned: Record<string, boolean> | undefined
+  return () => (planned ??= livePlannedKeys(faction, layout))
+}
+
+/** Own ghosts whose bounding box covers tile `k` (a multi-tile ghost centred on another tile included). */
+function ghostsOnTile(surface: LuaSurface, force: string, k: number): LuaEntity[] {
+  const x = keyX(k)
+  const y = keyY(k)
+  return findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: "entity-ghost", force })
+}
+
+/**
+ * Review fix (the user: orphans must not be swept silently): an own ghost no live plan owns is removed **and reported**.
+ * The build cannot stamp over it (creating a ghost over another removes it), so it must go, but each one is a leak
+ * somewhere upstream: an abandoned part whose world piece was not taken with it. The alert names the ghost and where it
+ * was found, and a `planner` diagnostic (`orphan-ghost`) counts them for telemetry.
+ */
+function removeOrphanGhost(faction: FactionState, gh: LuaEntity, where: string): void {
+  const unit = gh.unit_number
+  const name = gh.ghost_name ?? gh.name
+  const x = gh.position.x
+  const y = gh.position.y
+  const job = unit !== undefined ? faction.ghostJobs[unit] : undefined
+  log(`[rival-engineers] ORPHAN GHOST faction ${faction.name}: ${name} at ${x},${y} (dir ${gh.direction}${job !== undefined ? `, job ${job}` : ", no job"}) on ${where}: no live plan owns it; removed. This is a leak: a removed plan part left its ghost behind.`)
+  recordDiagnostic(faction, { tick: game.tick, kind: "planner", decision: "orphan-ghost", reason: where, data: { name, x, y, job } })
+  destroyEntity(gh)
+  if (unit !== undefined) delete faction.ghostJobs[unit]
+}
+
+/** B144: remove (and report) the faction's own ghosts on `specs`' tiles that no live plan owns (a failed add's retry). */
+export function sweepOrphanGhostsAt(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[], where = "a build's tiles"): number {
+  const planned = lazyPlanned(faction, layout)
+  const seen: Record<number, boolean> = {}
+  let swept = 0
+  for (const e of specs) {
+    const want = specKey(e)
+    for (const k of specTiles(e)) {
+      for (const gh of ghostsOnTile(surface, faction.force, k)) {
+        if (gh.unit_number === undefined || seen[gh.unit_number]) continue
+        const gkey = ghostKey(gh)
+        if (gkey === want || planned()[gkey] === true) continue
+        seen[gh.unit_number] = true
+        removeOrphanGhost(faction, gh, where)
+        swept++
+      }
+    }
+  }
+  return swept
+}
+
+/** Two planned entities of different kinds/directions on one tile (a plan that cannot stand as written). */
+export function overlappingSpecs(specs: EntitySpec[]): { a: EntitySpec; b: EntitySpec; tile: Vec }[] {
+  const owner: Record<number, EntitySpec> = {}
+  const out: { a: EntitySpec; b: EntitySpec; tile: Vec }[] = []
+  for (const e of specs) {
+    const key = specKey(e)
+    let clash = false
+    for (const k of specTiles(e)) {
+      const prev = owner[k]
+      if (prev !== undefined && specKey(prev) !== key) clash = true
+      else if (prev === undefined) owner[k] = e
+    }
+    if (clash) {
+      // Report against the first tile's owner (the caller only needs one tile and the two specs).
+      for (const k of specTiles(e)) if (owner[k] !== undefined && specKey(owner[k]) !== key) {
+        out.push({ a: owner[k], b: e, tile: { x: keyX(k), y: keyY(k) } })
+        break
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * B144 preflight, before any ghost is created: a script-created ghost on a tile **removes** the ghost already there
+ * (CLAUDE.md), so a different ghost must be found first, not after a failed create.
+ *
+ * - two planned pieces on one tile (`overlappingSpecs`) block the later one;
+ * - an own ghost that a live plan owns (another goal's piece) blocks this spec: creating over it would delete it;
+ * - an own ghost no live plan owns is an orphan: removed and reported (`removeOrphanGhost`).
+ *
+ * Every ghost whose box covers a spec tile counts (review fix, risk 7: a multi-tile ghost centred on a neighbouring
+ * tile was skipped and then deleted by the create). Built entities are not checked here (`ghostBlockerKind` does).
+ */
+export function preflightSpecs(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[], where = "a build's tiles"): { blocked: Record<string, { reason: string; at: Vec }>; swept: number } {
+  const planned = lazyPlanned(faction, layout)
+  const blocked: Record<string, { reason: string; at: Vec }> = {}
+  const overlaps = overlappingSpecs(specs)
+  for (const o of overlaps) blocked[specKey(o.b)] = { reason: `overlap with ${o.a.name} at ${o.tile.x},${o.tile.y}`, at: o.tile }
+  let swept = 0
+  const gone: Record<number, boolean> = {}
+  for (const e of specs) {
+    const key = specKey(e)
+    if (blocked[key] !== undefined) continue
+    for (const k of specTiles(e)) {
+      for (const gh of ghostsOnTile(surface, faction.force, k)) {
+        if (gh.unit_number === undefined || gone[gh.unit_number]) continue
+        const gkey = ghostKey(gh)
+        if (gkey === key) continue
+        if (planned()[gkey] === true) {
+          blocked[key] = { reason: `${gh.ghost_name} ghost is another planned piece at ${keyX(k)},${keyY(k)}`, at: { x: keyX(k), y: keyY(k) } }
+          break
+        }
+        gone[gh.unit_number] = true
+        removeOrphanGhost(faction, gh, where)
+        swept++
+      }
+      if (blocked[key] !== undefined) break
+    }
+  }
+  return { blocked, swept }
+}
+
+export type GhostBlockerKind = "orphan" | "stale" | "planned" | "foreign" | "structure" | "none"
+
+/**
+ * B144: what stands on a failed spec's tiles. `orphan` (an own ghost no live plan owns) and `stale` (an own belt
+ * piece the plan does not want there) can be removed locally and the spec retried. `planned` (another planned piece
+ * already stands there: an overlap inside the plan's own add list), `foreign` (another force) and `structure` (an own
+ * module or machine) cannot: the plan itself is wrong for this ground. `plannedKeys` may be passed in (one lazily built
+ * map for many specs: review fix, risk 6); it defaults to every live plan's keys, built only if a blocker is found.
+ */
+export function ghostBlockerKind(surface: LuaSurface, faction: FactionState, layout: LayoutState, e: EntitySpec, plannedKeys?: (this: void) => Record<string, boolean>): { kind: GhostBlockerKind; at: Vec; blocker?: string } {
+  const planned = plannedKeys ?? lazyPlanned(faction, layout)
+  const want = specKey(e)
+  for (const k of specTiles(e)) {
+    const x = keyX(k)
+    const y = keyY(k)
+    const area = { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }
+    for (const gh of ghostsOnTile(surface, faction.force, k)) {
+      const key = ghostKey(gh)
+      if (key === want) continue
+      return planned()[key] === true
+        ? { kind: "planned", at: { x, y }, blocker: `${gh.ghost_name} ghost` }
+        : { kind: "orphan", at: { x, y }, blocker: `${gh.ghost_name} ghost` }
+    }
+    const foreign = foreignEntitiesOn(surface, faction.force, [k])
+    if (foreign.length > 0) return { kind: "foreign", at: { x, y }, blocker: `${foreign[0].name} of ${foreign[0].force.name}` }
+    for (const b of findEntities(surface, { area, force: faction.force })) {
+      if (b.type === "entity-ghost" || b.type === "character" || b.type === "item-entity" || b.type === "item-request-proxy") continue
+      // Keyed by the entity's own centre tile (a multi-tile machine covering this tile from a neighbour counts too).
+      const bx = math.floor(b.position.x)
+      const by = math.floor(b.position.y)
+      if (planned()[`${b.name}@${bx},${by}@${keyDir(b.name, b.direction)}@${b.type === "underground-belt" ? b.belt_to_ground_type : ""}`] === true) continue
+      return { kind: ROUTE_TYPES.indexOf(b.type) >= 0 ? "stale" : "structure", at: { x, y }, blocker: b.name }
+    }
+  }
+  return { kind: "none", at: { x: math.floor(e.x), y: math.floor(e.y) } }
+}
+
+/**
+ * B144: whether failed ghosts include a blocker a retry cannot clear. `orphan`/`stale` are retryable (the sweep or the
+ * crew's clear jobs remove them); everything else means this plan is wrong for the ground and should be rejected.
+ */
+export function hardGhostFailure(surface: LuaSurface, faction: FactionState, layout: LayoutState, specs: EntitySpec[]): { reason: string; tiles: Vec[] } | undefined {
+  const tiles: Vec[] = []
+  const reasons: string[] = []
+  let hard = false
+  // Review fix (risk 6): one planned-key map for every failed spec (it was rebuilt over the whole layout per spec).
+  const planned = lazyPlanned(faction, layout)
+  for (const e of specs) {
+    const b = ghostBlockerKind(surface, faction, layout, e, planned)
+    if (b.kind === "orphan" || b.kind === "stale") continue
+    // A route piece with no blocker the engine names is not a bad site: B142 reroutes those routes around the failing
+    // tiles (g192: 2 route belts with no blocker rejected a 21-module plan and dropped its 45 routes).
+    if (b.kind === "none" && layout.routes[e.owner] !== undefined) continue
+    hard = true
+    tiles.push(b.at)
+    reasons.push(b.kind === "none" ? `no blocker found at ${b.at.x},${b.at.y} (terrain?)` : `${b.kind} ${b.blocker ?? "blocked"} at ${b.at.x},${b.at.y}`)
+  }
+  return hard ? { reason: reasons.slice(0, 4).join("; "), tiles } : undefined
 }
 
 function partKind(layout: LayoutState, owner: string): PartConflict["kind"] {
   if (layout.routes[owner] !== undefined) return "route"
   if (findModule(layout, owner) !== undefined) return "module"
   return "pole"
+}
+
+/** B144: every own belt piece under `specs` that the plan does not want there (stale route pieces on any tile). */
+export function staleUnderSpecs(surface: LuaSurface, force: string, specs: EntitySpec[]): LuaEntity[] {
+  const out: LuaEntity[] = []
+  const seen: Record<number, boolean> = {}
+  for (const e of specs) for (const b of staleBeltsUnder(surface, force, e)) {
+    if (b.unit_number === undefined || seen[b.unit_number]) continue
+    seen[b.unit_number] = true
+    out.push(b)
+  }
+  return out
 }
 
 /**
@@ -137,13 +408,42 @@ export function staleUnderRoutes(surface: LuaSurface, force: string, layout: Lay
   return out
 }
 
-/** Checks `parts` of `layout` against the world (see the file comment). */
-export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean): BuildCheck {
+/**
+ * M7c.8 (seed 11): what to check for a belt edge's routes: those routes, plus the pieces other routes stand on their
+ * tiles (the splitters of taps off them and of merges onto them), which carry the edge's items too. A merge splitter
+ * onto an ore branch stood unbuilt over the branch's old belt; the branch's own pieces all stood, so its repair found
+ * "nothing missing" while only the merge route's check (never run: its edge looked fine) saw the stale belt.
+ */
+export function routeCheck(layout: LayoutState, routes: RouteId[]): { routes: RouteId[]; only?: (this: void, e: EntitySpec) => boolean } {
+  const deps = dependentRoutes(layout, routes)
+  if (deps.length <= routes.length) return { routes }
+  const own: Record<string, boolean> = {}
+  const tiles: Record<number, boolean> = {}
+  const include = (rid: RouteId): void => {
+    own[rid] = true
+    for (const k of layout.routes[rid]?.tiles ?? []) tiles[k] = true
+  }
+  for (const rid of routes) include(rid)
+  // A provider's taps are part of its own repair tree: their splitter sits on the trunk and their belts hang off it.
+  // Repairing a shared trunk must rebuild them too (M7d.5: a trunk repair left two taps at 0/s). A merge join from
+  // another provider is not included: that edge repairs its own belt (its splitter on our tile is stale instead).
+  for (const rid of deps) if (layout.routes[rid]?.tapOf !== undefined) include(rid)
+  return { routes: deps, only: (e) => own[e.owner] === true || specTiles(e).some((k) => tiles[k] === true) }
+}
+
+/**
+ * Checks `parts` of `layout` against the world (see the file comment). M7c.8 (fixes-360 seed 11, minute 370): with
+ * `faction`, a ghost no job will ever build is missing too (`orphans`). A mine's pole line kept 6 pole ghosts whose
+ * place jobs had failed; a ghost counted as present, so every repair of the mine's power edge said "nothing missing"
+ * while its 24 drills had no power.
+ */
+export function checkBuild(surface: LuaSurface, force: string, layout: LayoutState, parts: BuildParts, only?: (this: void, e: EntitySpec) => boolean, faction?: FactionState): BuildCheck {
   const missing: EntitySpec[] = []
   const conflicts: PartConflict[] = []
   const misdirected: { spec: EntitySpec; entity: LuaEntity }[] = []
   const stale: { spec: EntitySpec; entities: LuaEntity[] }[] = []
   const seen: Record<string, boolean> = {}
+  const orphans: EntitySpec[] = []
   for (const e of partEntities(layout, parts)) {
     if (only !== undefined && !only(e)) continue
     if (ownBuilt(surface, force, e) !== undefined) {
@@ -152,6 +452,10 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
       continue
     }
     const ghost = ownGhost(surface, force, e)
+    if (ghost !== undefined && faction !== undefined && !ghostHasJob(faction, ghost)) {
+      missing.push(e)
+      orphans.push(e)
+    }
     if (ghost === undefined) {
       const under = layout.routes[e.owner] !== undefined ? staleBeltsUnder(surface, force, e) : []
       if (under.length > 0) stale.push({ spec: e, entities: under })
@@ -187,7 +491,7 @@ export function checkBuild(surface: LuaSurface, force: string, layout: LayoutSta
       }
     }
   }
-  return { missing, conflicts, misdirected, stale, intruders }
+  return { missing, conflicts, misdirected, stale, intruders, orphans }
 }
 
 /** Item names on one transport line of a belt entity. */
@@ -203,34 +507,72 @@ function lineItems(e: LuaEntity, line: number): Record<string, boolean> {
  * 1264816: a smelter column grew, its fuel arrived before the new ore side-load belt stood, the merge tile curved and
  * put coal on both lanes; 10 of 12 furnaces never saw ore again and every repair said "nothing missing". Picking the
  * belts up and placing them again empties them.
+ *
+ * B124 (soak m7c-cont8 seed 11, min 720): also belts holding an item that does not belong there at all: on those module
+ * belts, an item that is none of the module's belt inputs (iron plates on an iron smelter's ore belt); on the edge's own
+ * `routes`, any item but the route's (iron ore and iron plates stranded on coal lanes, 4 per lane, no source upstream).
+ * Nothing takes such an item off its lane, so it stops the lane for good: 122 furnaces and 76 drills sat blocked while
+ * their consumers starved, and every repair said "nothing missing".
  */
-export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string): { spec: EntitySpec; entity: LuaEntity }[] {
+export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutState, module: string, port: string, routes: RouteId[] = []): { spec: EntitySpec; entity: LuaEntity }[] {
+  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
+  const seen: Record<number, boolean> = {}
+  const routeSet: Record<string, boolean> = {}
+  const routeTiles: Record<number, boolean> = {}
+  for (const rid of routes) {
+    routeSet[rid] = true
+    for (const k of layout.routes[rid]?.tiles ?? []) routeTiles[k] = true
+  }
+  for (const spec of routeEntities(layout)) {
+    if (BELT_TYPES.indexOf(prototypes.entity[spec.name]?.type ?? "") < 0) continue
+    // B126 (m7c-cont12 seed 11, minute 780): a branch's merge splitter stands on the trunk's tile but belongs to the
+    // branch route. Coal stranded in it could only leave by its branch-side output (B125 filters the trunk item to the
+    // trunk side), which has no belt: it held the trunk's ore lane for good. Pieces on the edge's tiles count too.
+    if (!routeSet[spec.owner] && !specTiles(spec).some((k) => routeTiles[k] === true)) continue
+    const item = spec.carries
+    if (item === undefined) continue
+    for (const e of findEntities(surface, { position: { x: spec.x, y: spec.y }, type: BELT_TYPES, force, limit: 1 })) {
+      if (e.unit_number === undefined || seen[e.unit_number]) continue
+      if (foreignOn(e, (name) => name === item)) {
+        seen[e.unit_number] = true
+        out.push({ spec, entity: e })
+      }
+    }
+  }
   const m = findModule(layout, module)
   const p = m !== undefined ? findPort(m, port) : undefined
-  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return []
+  if (m === undefined || p === undefined || p.kind !== "belt-in" || p.item === undefined) return out
   const others: Record<string, boolean> = {}
-  for (const q of m.def.ports) if (q.kind === "belt-in" && q.item !== undefined && q.item !== p.item) others[q.item] = true
+  const inputs: Record<string, boolean> = {}
+  const outTiles: Record<number, boolean> = {}
+  for (const q of m.def.ports) {
+    if (q.kind === "belt-in" && q.item !== undefined) {
+      inputs[q.item] = true
+      if (q.item !== p.item) others[q.item] = true
+    }
+    if (q.kind === "belt-out") {
+      const ot = portTile(m, q)
+      outTiles[tkey(ot.x, ot.y)] = true
+    }
+  }
   const specs: Record<string, EntitySpec> = {}
   for (const e of partEntities(layout, { modules: [m.id], routes: [], poles: [] })) specs[string.format("%s@%g,%g", e.name, e.x, e.y)] = e
   const inside = (e: LuaEntity): boolean => e.position.x > m.rect.x && e.position.x < m.rect.x + m.rect.w && e.position.y > m.rect.y && e.position.y < m.rect.y + m.rect.h
   const t = portTile(m, p)
-  const out: { spec: EntitySpec; entity: LuaEntity }[] = []
-  const seen: Record<number, boolean> = {}
   let todo = findEntities(surface, { position: { x: t.x + 0.5, y: t.y + 0.5 }, type: BELT_TYPES, force, limit: 1 })
   while (todo.length > 0) {
     const e = todo.pop()!
     if (!e.valid || e.unit_number === undefined || seen[e.unit_number] || !inside(e)) continue
+    // The input belt ends where the module's output starts (a belt-out port): its items belong there.
+    if (outTiles[tkey(math.floor(e.position.x), math.floor(e.position.y))]) continue
     seen[e.unit_number] = true
     const spec = specs[string.format("%s@%g,%g", e.name, e.position.x, e.position.y)]
     if (spec !== undefined) {
       const a = lineItems(e, 1)
       const b = lineItems(e, 2)
-      for (const [item] of pairs(others)) {
-        if (a[item] && b[item]) {
-          out.push({ spec, entity: e })
-          break
-        }
-      }
+      let bad = foreignOn(e, (name) => inputs[name] === true)
+      for (const [item] of pairs(others)) if (a[item] && b[item]) bad = true
+      if (bad) out.push({ spec, entity: e })
     }
     if (e.type === "underground-belt" && e.belt_to_ground_type === "input") {
       const n = e.neighbours as LuaEntity | undefined
@@ -238,6 +580,12 @@ export function cloggedBelts(surface: LuaSurface, force: string, layout: LayoutS
     } else for (const o of e.belt_neighbours.outputs) todo.push(o)
   }
   return out
+}
+
+/** B124: whether any transport line of belt `e` holds an item `belongs` rejects. */
+function foreignOn(e: LuaEntity, belongs: (this: void, name: string) => boolean): boolean {
+  for (let i = 1; i <= e.get_max_transport_line_index(); i++) for (const it of e.get_transport_line(i).get_contents()) if (!belongs(it.name)) return true
+  return false
 }
 
 /**
@@ -271,11 +619,12 @@ export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntit
   return out
 }
 
-export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[] } {
+export function applyDiff(surface: LuaSurface, faction: FactionState, remove: EntitySpec[], add: EntitySpec[], opts: { fuel?: { item: string; count: number }; priority?: number }, layout?: LayoutState): { ghosts: LuaEntity[]; placeJobs: JobId[]; clearJobs: JobId[]; failed: string[]; failedSpecs: EntitySpec[] } {
   const force = faction.force
   const clearJobs: JobId[] = []
   for (const e of remove) {
-    const ghost = ownGhost(surface, force, e)
+    // Removing a piece must find its ghost whatever way it faces (a turned orphan still occupies the tile).
+    const ghost = ownGhostAny(surface, force, e)
     if (ghost !== undefined) destroyEntity(ghost)
     const built = ownBuilt(surface, force, e)
     if (built !== undefined) clearJobs.push(addClearJob(faction, built, opts.priority))
@@ -283,10 +632,42 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
   const ghosts: LuaEntity[] = []
   const placeJobs: JobId[] = []
   const failed: string[] = []
+  const failedSpecs: EntitySpec[] = []
+  // B144: find blockers before creating anything. Creating a ghost over a different ghost deletes that ghost (an engine
+  // fact), so creation must not be the first time we look.
+  const pre = layout !== undefined ? preflightSpecs(surface, faction, layout, add, "an add list's tiles") : undefined
+  // Review fix (risk 6): one planned-key map for the whole add list, built only when a blocker needs it. Each spec
+  // without a ghost used to rebuild the keys of the whole layout.
+  const planned = layout !== undefined ? lazyPlanned(faction, layout) : undefined
   for (const e of add) {
     if (ownBuilt(surface, force, e) !== undefined) continue
-    let gh = ownGhost(surface, force, e)
-    if (gh === undefined) {
+    const key = specKey(e)
+    if (pre !== undefined && pre.blocked[key] !== undefined) {
+      failed.push(`${e.owner}: ${e.name}@${e.x},${e.y}`)
+      failedSpecs.push(e)
+      continue
+    }
+    let gh: LuaEntity | undefined
+    // B144: at most two local rounds. An orphan ghost of a different type on the tile (an abandoned route's, or one
+    // this add list's earlier piece created) is removed; any other blocker is left for the caller's retry or rejection.
+    for (let round = 0; round < 2 && gh === undefined; round++) {
+      gh = ownGhost(surface, force, e)
+      // M7c.8: a ghost whose place job failed or ended keeps no job: forget it so this one places it again.
+      if (gh !== undefined && !ghostHasJob(faction, gh)) delete faction.ghostJobs[gh.unit_number!]
+      if (gh !== undefined) break
+      if (layout !== undefined) {
+        const blocker = ghostBlockerKind(surface, faction, layout, e, planned)
+        if (blocker.kind === "planned" || blocker.kind === "foreign" || blocker.kind === "structure") break
+        if (blocker.kind === "stale") {
+          // Own built belt pieces the plan does not want there: the crew picks them up first (B56). The retry stamps it.
+          for (const b of staleBeltsUnder(surface, force, e)) addClearJob(faction, b, opts.priority)
+          break
+        }
+        if (blocker.kind === "orphan") {
+          if (sweepOrphanGhostsAt(surface, faction, layout, [e], "an add list's tiles") === 0) break
+          continue
+        }
+      }
       const params: Record<string, unknown> = { name: "entity-ghost", inner_name: e.name, position: { x: e.x, y: e.y }, direction: e.dir, force }
       if (e.ioType !== undefined) params.type = e.ioType
       if (e.recipe !== undefined && prototypes.entity[e.name]?.type === "assembling-machine") params.recipe = e.recipe
@@ -295,25 +676,27 @@ export function applyDiff(surface: LuaSurface, faction: FactionState, remove: En
     }
     if (gh === undefined) {
       failed.push(`${e.owner}: ${e.name}@${e.x},${e.y}`)
+      failedSpecs.push(e)
       continue
     }
     ghosts.push(gh)
     markDirty(surface.name, gh.bounding_box.left_top, gh.bounding_box.right_bottom)
+  }
+  // B144: two-phase stamp. No place jobs until every ghost of this add list stands; otherwise a partial stamp would
+  // start the crew building a plan that can never complete, and a later retry would have nothing to re-create. The
+  // successful ghosts stay for the retry (ownGhostAt reuses them).
+  if (failed.length === 0) for (const gh of ghosts) {
     const id = addPlaceJob(faction, gh, opts)
     if (id !== undefined) placeJobs.push(id)
-    else if (faction.ghostJobs[gh.unit_number!] !== undefined) placeJobs.push(faction.ghostJobs[gh.unit_number!])
+    else if (ghostHasJob(faction, gh)) placeJobs.push(faction.ghostJobs[gh.unit_number!])
   }
-  return { ghosts, placeJobs, clearJobs, failed }
+  return { ghosts, placeJobs, clearJobs, failed, failedSpecs }
 }
 
 /**
  * Gives up some parts of a layout (a module location something foreign took): their own ghosts are removed, their
  * built entities get clear jobs (the crew deconstructs them and keeps the items), and they leave the layout, with the
  * routes to and from removed modules and the pole lines of removed poles. Returns the tiles freed and the clear jobs.
- *
- * `adopt` lists routes that survive their module: a provider handover keeps the retiring provider's belt to a consumer
- * because its replacement side-loads into it and adopts it (see `adoptRoute`). Those routes keep their tiles, their
- * entities and their claims; the caller re-homes them to the replacement connection.
  */
 /** B102: kept route pieces a dropped splitter stood on, ghosted once that splitter's clear job is over (`jobs/crew.ts`). */
 function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clearJobs: JobId[], priority?: number): void {
@@ -327,23 +710,34 @@ function restoreUnderSplitters(faction: FactionState, specs: EntitySpec[], clear
       if (e.x > b.left_top.x && e.x < b.right_bottom.x && e.y > b.left_top.y && e.y < b.right_bottom.y) after.push(id)
     }
     faction.pendingGhosts ??= []
-    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority })
+    faction.pendingGhosts.push({ name: e.name, x: e.x, y: e.y, dir: e.dir, ioType: e.ioType, after, priority, owner: e.owner })
   }
 }
 
-export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number, adopt?: RouteId[]): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
+export function abandonParts(surface: LuaSurface, faction: FactionState, layout: LayoutState, parts: BuildParts, priority?: number): { tiles: number[]; clearJobs: JobId[]; routes: RouteId[]; keptPoles: number } {
   const mods: Record<string, boolean> = {}
   for (const id of parts.modules) mods[id] = true
-  const kept: Record<string, boolean> = {}
-  for (const rid of adopt ?? []) kept[rid] = true
-  const routes = [...parts.routes]
+  const touching: RouteId[] = [...parts.routes]
   for (const rid of layout.routeOrder) {
-    if (kept[rid] === true) continue
     const r = layout.routes[rid]
-    if ((mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) && routes.indexOf(rid) < 0) routes.push(rid)
+    if (mods[r.to.module] || (r.from !== undefined && mods[r.from.module])) touching.push(rid)
   }
+  // B158: the routes that hang off these (splitter taps, merge joins, a same-fluid line that `joins` one of them) go
+  // with them. `ripRoute` already took the taps out of the plan, but their world pieces were never in the removal set, so
+  // a tap's ghost/job (or built belt) was left behind the moment its trunk was abandoned.
+  const routes = [...touching]
+  for (const rid of dependentRoutes(layout, touching)) if (routes.indexOf(rid) < 0) routes.push(rid)
   const lineIds: string[] = []
   for (const p of layout.poles ?? []) if (parts.poles.indexOf(p.id) >= 0 && lineIds.indexOf(p.line) < 0) lineIds.push(p.line)
+  // M7b/B158: a fluid route's pump poles are part of its world, not of `parts.poles`. `ripRoute` removes them from the
+  // layout; without adding their line here their ghosts/place jobs stayed in the world as orphans.
+  for (const rid of routes) {
+    const r = layout.routes[rid]
+    if (r !== undefined && r.fluid !== undefined) {
+      const line = pumpPoleLine(rid)
+      if (lineIds.indexOf(line) < 0) lineIds.push(line)
+    }
+  }
   // B63 (bridge rule): a pole that is the only path from a generator to a module that stays is not removed with the
   // abandoned ground. A line passing through it can carry everything behind it (3891760: 91 modules on a 17-tile gap).
   const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules)
@@ -353,7 +747,7 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   const going: EntitySpec[] = []
   for (const e of partEntities(layout, all)) if (keepTiles[tkey(math.floor(e.x), math.floor(e.y))] !== true) going.push(e)
   const tiles = partTiles(layout, all)
-  const { clearJobs } = applyDiff(surface, faction, going, [], { priority })
+  const { clearJobs } = applyDiff(surface, faction, going, [], { priority }, layout)
   // B102 (sweep 628fa29 seed 1264816): a dropped tap's or merge's splitter stood on a kept route's tile in place of its
   // belt. Once the splitter is picked up, that belt goes back (else the kept route has a hole: cluster 2's ore stopped
   // there for 300 game-min).
@@ -367,4 +761,68 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   removePoleLines(layout, bridge.dropLines)
   rehomeKeptPoles(layout, bridge.keepPoles)
   return { tiles, clearJobs, routes, keptPoles: bridge.keepPoles.length }
+}
+
+// B125 (seed 11, soak m7c-cont10): a provider-group merge splitter (`Route.mergeSplitter`) replaces the trunk tile and
+// the branch tile beside it. Its trunk-side output carries the joined flow on; its branch-side output faces whatever
+// stands in front of the branch tile. At (470,-36) that was a coal route: half of the merged iron plates went onto the
+// coal line, stranded there and stopped the iron smelters' fuel (B124 emptied the same 65 belts three times).
+// A player sets such a splitter's filter to the item and its output priority to the trunk side: every item then leaves
+// on the trunk side and waits there when the trunk is full; nothing ever leaves through the branch side.
+
+
+/** The trunk side of a merge splitter facing `dir` (planner directions) with its trunk tile at x,y and branch at x2,y2. */
+export function mergeTrunkSide(ms: { x: number; y: number; dir: number; x2: number; y2: number }): "left" | "right" {
+  const l = ccw(ms.dir)
+  return ms.x - ms.x2 === DX[l] && ms.y - ms.y2 === DY[l] ? "left" : "right"
+}
+
+/** The tile a merge splitter's branch-side output faces (planner tile coordinates). */
+export function mergeBranchOutlet(ms: { dir: number; x2: number; y2: number }): { x: number; y: number } {
+  return { x: ms.x2 + DX[ms.dir], y: ms.y2 + DY[ms.dir] }
+}
+
+function beltOn(surface: LuaSurface, force: string, x: number, y: number): boolean {
+  return findEntities(surface, { position: { x: x + 0.5, y: y + 0.5 }, type: BELT_TYPES, force, limit: 1 }).length > 0
+}
+
+/**
+ * Sets every built merge splitter's filter (its route's item) and output priority (the trunk side). Returns how many it
+ * changed.
+ *
+ * B129 (m7c-cont12 seed 11): a merge splitter whose branch-side outlet has no belt is *meant* to have that outlet back
+ * up, so the splitter sends everything down the trunk. B125's filter breaks that: with a filter, everything that is not
+ * the route's item goes to the *other* (branch-side) output, where it sticks for good (B126 found and emptied it). Only
+ * set the filter when something can actually leave through that side; otherwise clear it and let the dead outlet back up.
+ */
+export function tuneMergeSplitters(surface: LuaSurface, force: string, layout: LayoutState): number {
+  let changed = 0
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const ms = r?.mergeSplitter
+    if (r === undefined || ms === undefined || r.fluid !== undefined) continue
+    const x = (ms.x + ms.x2) / 2 + 0.5
+    const y = (ms.y + ms.y2) / 2 + 0.5
+    const side = mergeTrunkSide(ms)
+    const out = mergeBranchOutlet(ms)
+    const live = beltOn(surface, force, out.x, out.y)
+    for (const e of findEntities(surface, { position: { x, y }, type: "splitter", force, limit: 1 }) as LuaEntity[]) {
+      if (!live) {
+        if (e.splitter_filter === undefined && e.splitter_output_priority === "none") continue
+        e.splitter_filter = undefined as never
+        e.splitter_output_priority = "none"
+        changed++
+        continue
+      }
+      const fl = e.splitter_filter
+      // Read back, the filter's name is a prototype in the typings but a plain string in 2.0.77: accept both.
+      const n = fl === undefined || typeof fl === "string" ? fl : (fl.name as unknown as string | { name: string } | undefined)
+      const have = n === undefined || typeof n === "string" ? n : n.name
+      if (have === r.item && e.splitter_output_priority === side) continue
+      e.splitter_filter = { name: r.item } as never
+      e.splitter_output_priority = side
+      changed++
+    }
+  }
+  return changed
 }
