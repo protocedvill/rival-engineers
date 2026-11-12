@@ -97,7 +97,7 @@ keeps its existing consumers.
 ## Commands to resume
 
 ```bash
-cd /home/louis/Documents/factorio-ai-mod
+cd factorio-ai-mod   # your checkout
 npm run typecheck
 npm run test:unit
 npm run build

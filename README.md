@@ -85,3 +85,10 @@ The AI is tested on four levels. All of them run headless:
 
 Setup, commands and the debugging workflow are in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). Contributors and
 coding agents start with [`AGENTS.md`](AGENTS.md).
+
+## License
+
+MIT, see [`LICENSE`](LICENSE). Two exceptions: the curated modules in `data/modules/` are derived from community
+blueprints whose authors keep their rights (credited in [`data/modules/ATTRIBUTION.md`](data/modules/ATTRIBUTION.md)),
+and `ci/mods/` holds a vendored copy of [factorio-test](https://github.com/GlassBricks/FactorioTest) under its own
+license.
