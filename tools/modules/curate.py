@@ -238,14 +238,16 @@ def write_attribution(new_rows):
                 if line.startswith("| `"):
                     existing[line.split("`")[1]] = line.rstrip("\n")
     for mid, meta in new_rows:
-        existing[mid] = f"| `{mid}` | {meta['title']} | {meta['author']} | {meta['url']} | {meta['licence']} |"
+        existing[mid] = f"| `{mid}` | \"{meta['title']}\" by {meta['author']} | {meta['url']} | {meta['licence']} |"
     with open(path, "w") as f:
         f.write("# Module attribution\n\n")
-        f.write("Curated modules in this directory are derived from community blueprints (SPEC §5.4, D19: attribution is\n")
-        f.write("mandatory). The original blueprint strings are cached in `sources/` as fetched from factorioprints.com's public\n")
-        f.write("API. The site states no licence; the authors keep their rights. Each module was normalised to early-game tech\n")
-        f.write("for Rival Engineers (machine and inserter tiers, recipes, ports); the module's `notes` list every change.\n\n")
-        f.write("| Module | Blueprint | Author | URL | Licence |\n|---|---|---|---|---|\n")
+        f.write("Each curated module in this directory is adapted from a community blueprint, credited below to its original\n")
+        f.write("author (SPEC §5.4, D19: attribution is mandatory). The originals are on factorioprints.com, which states no\n")
+        f.write("licence: the authors keep their rights, and this project's MIT licence does not cover these modules. The\n")
+        f.write("original blueprint strings are cached unchanged in `sources/`. The adaptations bring each blueprint to\n")
+        f.write("early-game tech for Rival Engineers (machine and inserter tiers, recipes) and add the ports the planner\n")
+        f.write("connects to; each module's `notes` list every change from the original.\n\n")
+        f.write("| Module | Adapted from | Original | Licence |\n|---|---|---|---|\n")
         for mid in sorted(existing):
             f.write(existing[mid] + "\n")
 
