@@ -400,6 +400,9 @@ class FailFast:
         self.stalls = 0
         self.plan_failures = 0
         self.tick = 0
+        # The game tick the run started from: 0 for a new map, the save's tick for a resumed one (the telemetry line
+        # comes one 3600-tick window after it). The snapshot-mode cap counts game time from here.
+        self.start_tick = None
         self.exploring_since = None
         self.exploring = False
 
@@ -418,6 +421,8 @@ class FailFast:
             m = TICK_LINE.search(line)
             if m:
                 self.tick = int(m.group(1))
+                if self.start_tick is None:
+                    self.start_tick = max(0, self.tick - 3600)
                 for name, limit in self.deadlines.items():
                     if name not in self.milestones and self.tick > limit:
                         reason = reason or f"no {name} by {limit / TICKS_PER_HOUR:g} game hours"
@@ -504,7 +509,9 @@ def run_seed(cfg, seed, out_dir, port=None, from_save=None, status=None):
             time.sleep(1)
             failed_fast = watch.poll()
             done = run["stop_when_done"] and (script_out / "done.json").exists()
-            capped = snapshots and watch.tick >= ticks
+            # --benchmark-ticks counts from the save; a snapshot server only stops here, so count from the start too
+            # (a resumed save's absolute tick is already past a short run's length: it stopped after one minute).
+            capped = snapshots and watch.start_tick is not None and watch.tick - watch.start_tick >= ticks
             saved = bool(run["save_at"]) and run["stop_after_saves"] and all(
                 stable_file(data / "saves" / f"ms-{m}.zip") for m in run["save_at"])
             done = done or saved
