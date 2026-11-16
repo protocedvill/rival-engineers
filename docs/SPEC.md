@@ -109,6 +109,7 @@ Two layers, by analogy:
 | D83 | M7d scope: cliffs and landfill (2026-11-04, user request in-session) | The user: "add cliff explosives and destroying cliffs and landfill creation to the end of m7". At the end of M7d the faction researches and makes **cliff explosives** and uses them to **destroy cliffs** that block placement or routes, and researches and makes **landfill** to fill water (lake-cut arms, routes and sites blocked by water). When a cliff or a water tile is worth removing (cost against a detour or another site) and how the crew does it are the agent's proposal in the M7 report until the user decides. |
 | D84 | Self-contained blue/robot cells (2026-11-07, user decisions in-session) | From the first blue stage on, every new furnace stack is planned at its maximum feasible size (the input ore lane, rounded to furnace units). Advanced-circuit modules make their copper cable internally; engine-unit modules make their gears and pipes internally; flying-robot-frame and construction-robot production, including the first roboport, are one module. The expansion and growth policy is unchanged: a later stage still grows or forks providers exactly as before. Stage sizing is not changed to the final target (user: "keep as is"). Once the design contains a cell, a production goal is split by dependency layer (raw-ore, raw-coal, raw-oil, raw-water, metals-iron, metals-copper, metals-steel, oil, chemicals, circuits/gears, parts, robot) so each plan carries only its own providers and waits for the previous layer to be built. **Amended 2026-11-09 (user decisions in-session, B175):** the metal layers (iron, copper, steel, other) come before raw-oil and raw-water ("make steel first before hunting for oil": a pumpjack takes steel to craft), and the maximum stack size applies only to stacks smelting ore ("steel doesn't need max size modules"); a steel stack is sized to its need. **Amended 2026-11-10 (user decision in-session, B178, "general rule"):** a `materials` layer before raw-oil holds the providers of build materials the crew cannot hand-craft (worked out from everything the design places, pumps on fluid lines included), when their own unbuilt providers all come from earlier layers: the engine cell, for the crude line's pumps. |
 | D85 | Power is one pool (2026-11-08, user decision in-session) | The user: "obviously it should be one large pool." Electricity from every steam block feeds one grid and is planned as one pool: a cluster's steam block is not asked to grow while the **total installed power capacity** covers the design's total need. A per-cluster block can stay below its own cluster's design estimate (e.g. 9 MW built against 15.1 MW allocated) as long as the other blocks' spare capacity covers it. A real pool shortfall still grows a power block as before. |
+| D86 | Growth-area weights (2026-10-19 values, applied 2026-11-16, user decision in-session) | The values from branch `b37-pole-eviction` (commit `ce4f9fc`, 2026-10-19, "growth weight defaults set by the user"), which never reached `main` (its D53 number went to another decision). The user chose in-session on 2026-11-16 to apply them: `planner-placement-soft-claim` **2** (was 0.5, D50), `planner-placement-growth-band` **8** (was 4), `planner-placement-growth-band-units` **4** (was 2), `planner-placement-growth-blocked` **20** per blocked unit (was 3), `planner-router-soft-claim` **8**. The router value supersedes D59's 10 (D59's decay per growth unit stays). P38's mechanism is unchanged; its values are these. |
 
 ## 3. v1 Definition of Done
 
@@ -463,11 +464,11 @@ Default to configurable (D18). Settings live in three places:
 - **Logistics first (M5c, D36 / B2):** `logistics-underground-min-saving` (50 tiles; 0 = off),
   `logistics-splitter-min-saving` (50; 0 = off), `planner-compare-work-factor` (2: each comparison may use at most twice
   the plan's own routing work).
-- **Planner weights (M5d, D50; D59):** `planner-placement-soft-claim` (0.5), `planner-router-soft-claim` (10, D59; was 0.5),
+- **Planner weights (M5d, D50; D59; D86):** `planner-placement-soft-claim` (2, D86), `planner-router-soft-claim` (8, D86; D59 had 10),
   `planner-router-soft-claim-decay` (0.5 per growth unit, D59),
   `planner-router-bundle-factor` (0.9), `planner-compare-min-work` (5,000), `logistics-splitter-compare` (off).
-  B26 (proposed, P38): `planner-placement-growth-band` (4), `planner-placement-growth-band-units` (2),
-  `planner-placement-growth-blocked` (3).
+  B26 (P38, values D86): `planner-placement-growth-band` (8), `planner-placement-growth-band-units` (4),
+  `planner-placement-growth-blocked` (20).
 - **M6 (v1 target):** `factory-design-margin` (1.1), `factory-lab-sizing` (`mean;max`), `factory-sustain-minutes` (30),
   `factory-shared-providers` (1), `logistics-share-min-modules` (1), `build-stuck-rounds` (10),
   `factory-site-retry-minutes` (5, D60), `factory-power-build-priority` (150, D61).
@@ -870,7 +871,7 @@ M6a proposals (2026-10-16/17, all **proposed**; evidence in `docs/reports/M6-rep
   D52 site check (`firstGrowthCoverage`) still accepts a mine whose only ore-bearing growth unit is at the head.
   Proposed: count the tail only for modules that can't grow at the head. This changes mine placement, so it needs
   replays first. Not implemented (M6 report, M6b.3).
-- **P38, growth bands at placement (proposed, B26; M6 report M6b.6):** (a) a module placed in the **near band** of another
+- **P38, growth bands at placement (mechanism proposed, B26; M6 report M6b.6; values decided → D86: 2, band 8, 4 units, blocked 20, router 8):** (a) a module placed in the **near band** of another
   expandable module (its first `planner-placement-growth-band-units` = **2** growth units, on the end `tryExpand` grows)
   pays `planner-placement-growth-band` = **4** per footprint tile on top of the 0.5 soft claim (D50 unchanged); a direct
   partner stays exempt, as from the soft claim (P28): applying it to partners pushed feeders off the smelter's input side
@@ -1038,6 +1039,7 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
 - v0.43 (2026-11-08, user decision in-session): D85 (electricity is one pool: no per-cluster steam block grows while total installed capacity covers the total design need).
 - v0.44 (2026-11-09, user decisions in-session): D84 amended (B175): metal layers before the oil field and its water; maximum furnace stacks for ore smelters only, steel sized to need.
 - v0.45 (2026-11-10, user decision in-session): D84 amended (B178): providers of build materials the crew cannot hand-craft (engine units for pumps) come before the oil field.
+- v0.46 (2026-11-16, user decisions in-session): P57 widened (M7d.6: every building gets a generated stock row); D86 (the 2026-10-19 growth-area weights from `b37-pole-eviction` applied).
 - v0.38 (2026-10-30, user decisions in-session): D72–D79 (M7: blue science at 30/min, crude piped home, research set without combat-only red/green techs, 16 game-hours, handover removed, construction robots network and personal, advanced oil with cracking, full mall). M7 row; P45–P49 approved in-session.
 - v0.33 (2026-10-28, user decisions in-session): D65 (module power demand scales with utilization) and D66 (crew prefetch for far builds).
 - v0.32 (2026-10-24, user decision in-session): D64 (verified provider handover kept for M6, its necessity or refactor decided in M7; the provider-group rule stays "keep the short provider, add parallel providers").

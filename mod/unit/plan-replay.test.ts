@@ -131,6 +131,8 @@ interface ReplayOptions {
   newSites?: string[]
   /** Modules regenerated from their params with today's generators (the capture holds the generator's old output). */
   regenerate?: string[]
+  /** Weights pinned for this replay (a past decision's values; the test says why), on top of today's defaults. */
+  pin?: { router?: Record<string, number>; placement?: Record<string, number> }
 }
 
 /** REPLAY_DUMP=1: each module's placement, mine plan (B33) or ore-clipped strip, and belt ports. */
@@ -210,6 +212,8 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     const tLoad = os.clock()
     const fx = load(name)
     const tLoaded = os.clock()
+    if (opts.pin?.router !== undefined) fx.policy.router = { ...fx.policy.router, ...opts.pin.router }
+    if (opts.pin?.placement !== undefined) fx.policy.placement = { ...fx.policy.placement, ...opts.pin.placement }
     if (opts.undergrounds) fx.tiers = beltTiers(F)
     for (const m of fx.request.modules) if (opts.newSites !== undefined && opts.newSites.indexOf(m.id) >= 0) m.newSite = true
     for (const m of fx.request.modules) if (opts.regenerate !== undefined && opts.regenerate.indexOf(m.id) >= 0) m.def = generate(F, m.def.generator as GeneratorName, m.def.params ?? {})
@@ -295,7 +299,9 @@ replay("m7-seed11-edge", { expect: "done" })
 // own a (tile, heading) state, so every arrival through it crossed itself. Both routes are found now; the plan then
 // failed on an ordinary rip-up limit (a later attempt re-placed). Since the g104 fixes (all of a module's belts must be
 // able to leave together; a rip-up loop moves a module at once) it plans.
-replay("m7-seed11-g107", { expect: "done" })
+// D86 (2026-11-16): pinned to the weights before D86. Under D86 (and under any one of its five values alone) this dense
+// cluster fails a rip-up loop again (BUGS B224); the replay keeps guarding the search fixes above.
+replay("m7-seed11-g107", { expect: "done", pin: { router: { softClaim: 10 }, placement: { softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3 } } })
 // M7c.9 (seed 11 minute ~930, g160): an ~870-tile crude line into the base. The coarse corridor ran north of a module
 // block into ground closed by belt bands wider than a pipe-to-ground span, and the corridor search took the whole
 // 200000-unit budget there ("budget exhausted, nearest 110 at 415,17"); open ground just south reached the goal. The

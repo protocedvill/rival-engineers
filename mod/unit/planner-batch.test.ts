@@ -178,11 +178,12 @@ test("B9: placement keeps off another module's growth area (a cost, not a block)
   const center = { x: area.x + math.floor(area.w / 2), y: area.y + math.floor(area.h / 2) }
   const req = { id: "o", def: other, targets: {}, center, region: { x: 0, y: 0, w: 120, h: 120 } }
   const overlaps = (r: { x: number; y: number; w: number; h: number }): boolean => r.x < area.x + area.w && area.x < r.x + r.w && r.y < area.y + area.h && area.y < r.y + r.h
-  const without = placeNow(req, state, terrain, policy({}, { softClaim: 0 }))
+  // The soft claim alone (B26's near-band weight off).
+  const without = placeNow(req, state, terrain, policy({}, { softClaim: 0, growthBand: 0 }))
   eq(without.phase, "done", "placed without the weight")
   ok(overlaps(without.result!.rect), "without the weight it sits in the growth area")
   // The mechanism at weight 0.5 (early-compact's default since D50).
-  const withW = placeNow(req, state, terrain, policy({}, { softClaim: 0.5 }))
+  const withW = placeNow(req, state, terrain, policy({}, { softClaim: 0.5, growthBand: 0 }))
   eq(withW.phase, "done", "placed with the weight")
   ok(!overlaps(withW.result!.rect), `with the weight it keeps off (${withW.result!.rect.x},${withW.result!.rect.y})`)
   // A wall of cliffs everywhere but the growth area: the claim does not block.
@@ -216,7 +217,8 @@ test("D50: a module's own partners are exempt from its soft claim at placement (
 // --- B26: growth bands stay clear -------------------------------------------------------------------------------
 
 /** The old (pre-B26) placement: no near-band weight, no own-band check. */
-const OLD_B26 = { growthBand: 0, growthBlocked: 0 }
+// The placement weights before B26 (soft claim at its D50 value then).
+const OLD_B26 = { growthBand: 0, growthBlocked: 0, softClaim: 0.5 }
 
 function overlapsRect(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h

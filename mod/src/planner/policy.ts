@@ -307,7 +307,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     underModules: false,
     tunnel: 12,
     bundleFactor: 0.9,
-    softClaim: 10,
+    softClaim: 8,
     softClaimDecay: 0.5,
     sealCheck: 2000,
     sealRetry: 0,
@@ -317,7 +317,7 @@ export const EARLY_COMPACT: LayoutPolicy = {
     corridorCells: 1,
     corridorWeight: 1.5,
   },
-  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 0.5, growthBand: 4, growthBandUnits: 2, growthBlocked: 3, portEscape: 32, portEgress: 50, newField: 50 },
+  placement: { center: 1, port: 1.5, pipePort: 4, facing: 12, clear: 0.5, adjacent: 0.4, exactGap: 0.2, coverage: 80, growthCoverage: 40, softClaim: 2, growthBand: 8, growthBandUnits: 4, growthBlocked: 20, portEscape: 32, portEgress: 50, newField: 50 },
 }
 registerPolicy(EARLY_COMPACT)
 
