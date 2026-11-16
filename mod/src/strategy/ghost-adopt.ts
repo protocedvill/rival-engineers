@@ -4,7 +4,7 @@
 
 import { LuaSurface } from "factorio:runtime"
 import { getJob } from "../jobs/board"
-import { addPlaceJob } from "../jobs/faction"
+import { addClearJob, addPlaceJob, clearJobFor } from "../jobs/faction"
 import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import type { LayoutState, PlannedPole } from "../planner/layout"
@@ -25,22 +25,38 @@ function plannedPoles(layout: LayoutState): Record<string, boolean> {
   return out
 }
 
-/** Gives a place job back to every planned pole ghost without a live one. Returns how many were adopted. */
-export function adoptPlannedPoles(surface: LuaSurface, faction: FactionState, layout: LayoutState, priority: number): number {
+/**
+ * Gives a place job back to every planned pole ghost without a live one. Returns how many were adopted. B219: run at
+ * every factory upkeep, not only once per save: an orphan still appears whenever a place job fails and is pruned.
+ * Ghosts in `owned` (unit numbers of a running build's ghosts) are left to that build's retry rounds.
+ */
+export function adoptPlannedPoles(surface: LuaSurface, faction: FactionState, layout: LayoutState, priority: number, owned: Record<number, boolean> = {}): number {
   const planned = plannedPoles(layout)
   let adopted = 0
   for (const gh of surface.find_entities_filtered({ type: "entity-ghost", force: faction.force })) {
     const proto = gh.ghost_prototype
     if (proto?.type !== "electric-pole" || gh.unit_number === undefined) continue
     const key = `${gh.ghost_name}@${math.floor(gh.position.x)},${math.floor(gh.position.y)}`
-    if (planned[key] !== true) continue
+    if (planned[key] !== true || owned[gh.unit_number]) continue
     const old = faction.ghostJobs[gh.unit_number]
+    let why = "no job"
     if (old !== undefined) {
       const j = getJob(faction.board, old)
       if (j !== undefined && j.status !== "failed" && j.status !== "done") continue
+      why = j === undefined ? `job ${old} pruned` : `job ${old} ${j.status}${j.reason !== undefined ? `: ${j.reason}` : ""}`
       delete faction.ghostJobs[gh.unit_number]
     }
-    if (addPlaceJob(faction, gh, { priority }) !== undefined) adopted++
+    // B219 (m7-b215 seed 3333): a pole ghost over a big rock lost its place job (the placement never succeeded) and cut
+    // the only line to the oil outposts for hours. Trees and rocks in its footprint are cleared first.
+    const deps: JobId[] = []
+    for (const o of surface.find_entities_filtered({ area: gh.bounding_box, type: ["tree", "simple-entity"] })) {
+      if (!o.valid) continue
+      const existing = clearJobFor(faction, o)
+      deps.push(existing !== undefined ? (existing as JobId) : addClearJob(faction, o, priority))
+    }
+    if (addPlaceJob(faction, gh, { priority, deps: deps.length > 0 ? deps : undefined }) === undefined) continue
+    adopted++
+    log(`[rival-engineers] faction ${faction.name}: adopts ${key} (${why}, ${deps.length} clear job(s)) (B219)`)
   }
   return adopted
 }

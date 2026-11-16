@@ -95,6 +95,8 @@ export interface LogicalNode {
   statusReason?: string
   /** M5b: measured rates. */
   measured?: Measured
+  /** m7-b222: the last measurement that saw the node make its item (a sink's status stays "ok", so B216 reads this). */
+  madeTick?: number
   /** M5b: when the status last changed, and the root cause of a status that is not ok. */
   statusTick?: number
   cause?: RootCause

@@ -2,7 +2,7 @@ import { LuaEntity, LuaProfiler, MapPosition } from "factorio:runtime"
 import { clearConfigOverrides, getConfig, setConfigOverride } from "../config"
 import { Board, CLAIM_LOG_KEPT } from "../jobs/board"
 import { addJob, failJob } from "../jobs/board"
-import { sweepOrders } from "../jobs/robot-orders"
+import { crewFreeStacks, crewInsertable, ROBOT_STORAGE_RESERVE, sweepOrders } from "../jobs/robot-orders"
 import { orderDepotUpgrades } from "../strategy/provider-chests"
 import { bufferChests, registerBuffer } from "../modules/buffers"
 import { addClearJob, addPlaceJob, addStockpile, createFaction, destroyFaction, planGhosts } from "../jobs/faction"
@@ -345,6 +345,26 @@ describe("job board", () => {
     }
     return ids
   }
+
+  test("m7-b222: the crew leaves the robots room in a network's storage chest", () => {
+    // seed 222: the crew filled every storage chest of the network with ore and coal; the robots hovered with their
+    // cargo for hours and built nothing.
+    const lab = createLab(32)
+    const faction = createFaction(newFactionName("reserve"), { position: at(lab, -10, 8), crew: 1 })
+    robotScene(lab, faction)
+    const store = lab.surface.find_entities_filtered({ name: "storage-chest", force: faction.force })[0]
+    const loose = lab.surface.create_entity({ name: "wooden-chest", position: at(lab, -12.5, 12.5), force: faction.force })!
+    const check = (got: number, want: number, what: string): void => {
+      assert(got === want, `${what}: ${got}, want ${want}`)
+    }
+    // One partial stack of belts (20): room for 80 more there, plus the empty stacks the crew may fill.
+    const free = store.get_inventory(defines.inventory.chest)!.length - 1
+    check(crewFreeStacks(store), free - ROBOT_STORAGE_RESERVE, "the crew sees the reserve as taken")
+    check(crewInsertable(store, "coal"), (free - ROBOT_STORAGE_RESERVE) * 50, "coal: only the unreserved empty stacks")
+    check(crewInsertable(store, "transport-belt"), 80 + (free - ROBOT_STORAGE_RESERVE) * 100, "belts top up their own stack too")
+    check(crewFreeStacks(loose), loose.get_inventory(defines.inventory.chest)!.length, "a chest outside the network keeps every slot")
+    destroyFaction(faction.name)
+  })
 
   test("M7d.5: a place job whose ghost a construction robot builds is done (robot-built), not failed", () => {
     // The crew has no belts (they are in the network's storage chest, not a stockpile): only the robots can build.

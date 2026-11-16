@@ -75,6 +75,9 @@ test("robot cell includes the first roboport and still rates its robots", () => 
   eq(cell.entities.filter((e) => e.buffer === true).length, 2, "a buffer chest per robot assembler")
   ok(rateOf(cell.rates.outputs, "construction-robot") > 0, "robots still leave into the buffer chests")
   ok(rateOf(cell.rates.inputs, "electricity") > 0, "the roboport draws power")
+  const hub = robotCell(F, { count: 2, buffer: "iron-chest", roboport: "roboport", storage: 2 })
+  eq(hub.entities.filter((e) => e.name === "storage-chest").length, 2, "P53: the hub cell holds two storage chests")
+  eq(hub.footprint.w, cell.footprint.w, "beside the roboport, in the same footprint")
 })
 
 test("a smelter's maximum is the input lane's ore rate, rounded to furnace units", () => {

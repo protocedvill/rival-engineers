@@ -282,6 +282,9 @@ function allGenerated(pole?: string): ModuleDef[] {
     chestCell(F, { recipe: "iron-gear-wheel", pole }),
     chestCell(F, { recipe: "transport-belt", pole }),
     chestCell(F, { recipe: "automation-science-pack", pole }),
+    // m7-b222: a stock row's buffer head on chemical plant rows (solid products; the battery row has solid inputs).
+    chemRow(F, { recipe: "plastic-bar", chemPlants: 2, buffer: "iron-chest", pole }),
+    chemRow(F, { recipe: "battery", chemPlants: 2, buffer: "iron-chest", pole }),
   ]
 }
 
@@ -489,6 +492,19 @@ test("placePoles covers a row of inserters with connected poles", () => {
   eq(pc.unpowered.length, 0, "unpowered")
   eq(pc.networks, 1, "one network")
   ok(poles.length <= 4, `${poles.length} poles`)
+})
+
+test("m7-b222 (user, 2026-11-14: a plastic supply point): a buffered chem row keeps its pipe input on the west edge", () => {
+  const plain = chemRow(F, { recipe: "plastic-bar", chemPlants: 2 })
+  const row = chemRow(F, { recipe: "plastic-bar", chemPlants: 2, buffer: "passive-provider-chest" })
+  eq(row.footprint.w, plain.footprint.w + 2, "two head columns")
+  eq(row.entities.filter((e) => e.buffer === true && e.name === "passive-provider-chest").length, 1, "one buffer chest")
+  const gas = row.ports.find((p) => p.id === "in-petroleum-gas")!
+  eq(gas.pos.x, 0.5, "the gas port stays on the west edge")
+  eq(row.entities.filter((e) => e.name === "pipe" && e.y === gas.pos.y && e.x < 2).length, 2, "its pipe runs through the head")
+  eq(row.ports.find((p) => p.id === "out-plastic-bar")!.pos.x, 0.5, "the product belt still leaves at the head")
+  // A fluid product has no chest head.
+  eq(chemRow(F, { recipe: "sulfuric-acid", chemPlants: 2, buffer: "iron-chest" }).footprint.w, chemRow(F, { recipe: "sulfuric-acid", chemPlants: 2 }).footprint.w, "no head for a fluid")
 })
 
 run("modules")

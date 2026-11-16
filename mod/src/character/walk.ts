@@ -75,6 +75,9 @@ export function reachSatisfied(character: LuaEntity, reach: ReachGoal): boolean 
   }
 }
 
+/** B219 (agent, proposed): how far inside the mining reach a walk to a tree or rock ends (tiles; was 1.2). */
+const ROCK_REACH_MARGIN = 0.6
+
 /** How close the pathfinder must get to the goal for a reach goal: comfortably inside the reach. */
 export function pathRadiusFor(character: LuaEntity, reach: ReachGoal | undefined, radius: number): number {
   if (!reach) return Math.max(0.3, radius / 2)
@@ -89,7 +92,10 @@ export function pathRadiusFor(character: LuaEntity, reach: ReachGoal | undefined
       if (type === "tree" || type === "simple-entity") {
         const box = reach.entity.bounding_box
         const half = Math.min(box.right_bottom.x - box.left_top.x, box.right_bottom.y - box.left_top.y) / 2
-        return Math.max(0.5, character.resource_reach_distance - 1.2 + half)
+        // B219 (m7-b215 seed 3333): with a 1.2 margin, a big rock deep in a rock field had its free tiles 2.44-2.5 from
+        // its centre against a 2.45 radius, and every clear job failed "no path". The box edge stays at least
+        // ROCK_REACH_MARGIN inside the mining reach from any point of this radius.
+        return Math.max(0.5, character.resource_reach_distance - ROCK_REACH_MARGIN + half)
       }
       return Math.max(1, character.reach_distance - 3)
     }

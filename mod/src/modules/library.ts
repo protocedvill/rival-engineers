@@ -122,6 +122,8 @@ export const V1_CATALOG: CatalogEntry[] = [
   { name: "fluid-chain sulfur 1/1", generator: "fluid-chain", params: { recipe: "sulfur", chemPlants: 1, refineries: 1 } },
   // M7d.3: chemistry rows fed by pipe (petroleum, water, sulfuric acid from infinity pipes; acid leaves by pipe).
   { name: "chem-row plastic 2", generator: "chem-row", params: { recipe: "plastic-bar", chemPlants: 2 } },
+  // m7-b222 (user, 2026-11-14): a plastic stock row's buffer head.
+  { name: "chem-row plastic 2 buffer", generator: "chem-row", params: { recipe: "plastic-bar", chemPlants: 2, buffer: "iron-chest" } },
   { name: "chem-row sulfur 2", generator: "chem-row", params: { recipe: "sulfur", chemPlants: 2 } },
   { name: "chem-row sulfuric-acid 2", generator: "chem-row", params: { recipe: "sulfuric-acid", chemPlants: 2 } },
   { name: "chem-row battery 2", generator: "chem-row", params: { recipe: "battery", chemPlants: 2 }, slow: true },

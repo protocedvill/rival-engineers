@@ -40,7 +40,7 @@ declare global {
 }
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { badSpotRects, recordBadSpot } from "./bad-spots"
-import { orderRemoval, sweepOrders } from "./robot-orders"
+import { crewInsertable, orderRemoval, sweepOrders } from "./robot-orders"
 import { countEntities, countWork, findEntities } from "../work"
 import { tkey } from "../planner/grid"
 
@@ -1208,12 +1208,26 @@ function coveredItems(board: FactionState["board"], held: Record<string, number>
 const KEEP_TYPES: Record<string, boolean> = { gun: true, ammo: true, armor: true }
 
 /**
- * Puts what the member carries into the faction's stockpiles (whatever fits). Returns whether it queued
+ * m7-b222 seed 222: supply chests that already hold `item` (a stock row's or the mall's output, a module's buffer): the
+ * crew may put that item back. Both pockets were full of belts and plates from picked-up routes, every depot was full,
+ * and the storage chest that would have made room could not be crafted without a free slot.
+ */
+function sameItemChests(faction: FactionState, item: string): LuaEntity[] {
+  const out: LuaEntity[] = []
+  for (const p of faction.supplies ?? []) {
+    if (p.inventory !== defines.inventory.chest || !p.entity.valid || (p.item !== undefined && p.item !== item)) continue
+    if (p.entity.get_inventory(defines.inventory.chest)!.get_item_count(item) > 0) out.push(p.entity)
+  }
+  return out
+}
+
+/**
+ * Puts what the member carries into the faction's stockpiles, else a supply chest of the same item (whatever fits). Returns whether it queued
  * anything. Creates a deposit job the member claims for itself, like a haul.
  */
 function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number, keep: Record<string, boolean>): boolean {
   const piles = validStockpiles(faction)
-  if (piles.length === 0) return false
+  if (piles.length === 0 && (faction.supplies ?? []).length === 0) return false
   const names: string[] = []
   for (const item in held) if (held[item] > 0 && !keep[item] && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
   if (names.length === 0) return false
@@ -1224,14 +1238,17 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
     let chest: LuaEntity | undefined
     let bestD = 0
     let fits = 0
-    for (const pile of piles) {
-      const room = pile.get_inventory(defines.inventory.chest)!.get_insertable_count(item)
-      if (room <= 0) continue
-      const d = distance(member.character.position, pile.position)
-      if (chest === undefined || d < bestD) {
-        chest = pile
-        bestD = d
-        fits = room
+    for (const candidates of [piles, sameItemChests(faction, item)]) {
+      if (chest !== undefined) break
+      for (const pile of candidates) {
+        const room = crewInsertable(pile, item)
+        if (room <= 0) continue
+        const d = distance(member.character.position, pile.position)
+        if (chest === undefined || d < bestD) {
+          chest = pile
+          bestD = d
+          fits = room
+        }
       }
     }
     // Only what fits: a member must never keep walking back to a full depot with the same items.

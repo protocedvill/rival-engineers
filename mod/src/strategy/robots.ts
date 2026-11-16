@@ -18,10 +18,13 @@ import * as RG from "./robot-grid"
 /** Storage chests beside the hub roboport (the network's store of building materials; agent guess, proposed). */
 export const HUB_CHESTS = 2
 /**
- * Half-size of the plan region around a grid cell's point (agent guess, proposed): the roboport module (5×4) lands
- * within about 6 tiles of the point, so neighbours stay within spacing + 12 of each other.
+ * Half-size of the plan region of a new grid roboport (agent guess, proposed). B222 (m7-b219 seed 222): at 8 around a
+ * fixed grid point, three cells in a row found no room among belts and poles. The window is now anchored one step from
+ * the built neighbour (`RG.stepAnchor`): 18 lets the roboport land 12–48 tiles from it along the step and ±18 across.
  */
-export const CELL_WINDOW = 8
+export const CELL_WINDOW = 18
+/** B222: tiles the window's far edge keeps inside the farthest two roboports can be apart and still link (agent guess). */
+export const LINK_MARGIN = 2
 /** Half-size of the hub's plan region around the base centre: the hub only fixes the grid's origin (agent guess). */
 export const HUB_WINDOW = 24
 
@@ -118,8 +121,12 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
 }
 
 /** M7d.5: starts the next roboport goal when the network can grow (one goal at a time). */
-/** M7d.5: optional grid cells that can find no site before the network pauses expansion (the hub still works). */
-export const MAX_GRID_FAILURES = 1
+/**
+ * M7d.5: grid cells in a row that find no site before the network pauses expansion (the hub still works). A failed cell
+ * is never tried again either way. m7-b219 seed 222: at 1, one blocked cell stopped the network at two roboports with
+ * two more in a chest and most supply points out of reach (agent value, proposed).
+ */
+export const MAX_GRID_FAILURES = 3
 
 export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   const f = ctx.f
@@ -128,11 +135,15 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   if (ctx.force.recipes[prototypeFacts.recipeForItem(roboport) ?? roboport]?.enabled !== true) return
   if (hooks.busy() !== undefined) return
   const failed: Record<string, boolean> = {}
+  // Failed cells since the last roboport goal that was built.
   let failedCells = 0
   for (const g of f.goals) {
     if (g.kind !== "robots") continue
     if (g.status === "planning" || g.status === "building") return
-    if (g.status !== "failed") continue
+    if (g.status !== "failed") {
+      failedCells = 0
+      continue
+    }
     for (const n of g.nodes) {
       const c = RG.parseCellRole(n.role)
       if (c !== undefined && failed[RG.cellKey(c)] !== true) {
@@ -185,8 +196,38 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
       origin = { x: port.position.x, y: port.position.y }
     }
   }
+  // B222: where each cell's roboport really stands (its plan picked a spot in a window), the hub's at the origin.
+  const placed: Record<string, Vec> = {}
+  for (const c of cells) {
+    if (c.i === 0 && c.j === 0) {
+      placed[RG.cellKey(c)] = origin
+      continue
+    }
+    const node = LG.nodeByRole(f.graph, RG.cellRole(c))
+    const m = node !== undefined ? findModule(f.layout, node.id) : undefined
+    if (m === undefined) continue
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    const port = findEntities(ctx.surface, { type: "roboport", force: ctx.force, area, limit: 1 })[0]
+    placed[RG.cellKey(c)] = port !== undefined && port.valid ? { x: port.position.x, y: port.position.y } : { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
+  }
+  const logisticRadius = prototypeFacts.entity(roboport)?.logisticRadius ?? 0
+  const spacing = ctx.config.factoryRoboportSpacing
+  const pointOf = (c: RG.GridCell): Vec => {
+    const have = placed[RG.cellKey(c)]
+    if (have !== undefined) return have
+    // A candidate: one step from a built neighbour (the first in a fixed order, so the choice is deterministic).
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const from = placed[RG.cellKey({ i: c.i - di, j: c.j - dj })]
+      if (from !== undefined) return RG.stepAnchor(from, di, dj, logisticRadius, CELL_WINDOW, LINK_MARGIN)
+    }
+    return RG.cellPoint(origin, spacing, c)
+  }
   const modules: RG.GridRect[] = []
   for (const m of f.layout.modules) modules.push(m.rect)
+  // The supply points robots fetch from: the faction's passive providers (module outputs, the mall).
+  const supplies: Vec[] = []
+  const provider = ctx.entities["provider-chest"] ?? "passive-provider-chest"
+  for (const e of findEntities(ctx.surface, { name: provider, force: ctx.force })) if (e.valid) supplies.push({ x: e.position.x, y: e.position.y })
   const next = RG.nextCell({
     modules,
     cells,
@@ -194,12 +235,15 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     origin,
     spacing: ctx.config.factoryRoboportSpacing,
     constructionRadius: prototypeFacts.entity(roboport)?.constructionRadius ?? 0,
+    logisticRadius,
+    supplies,
+    pointOf,
     max: ctx.config.factoryRoboportsMax,
     room: cells.length > 0 ? { ...hooks.footprint(), window: CELL_WINDOW } : undefined,
   })
   if (next === undefined) return
   const hubCell = cells.length === 0
-  const anchor = hubCell ? f.center : RG.cellPoint(origin, ctx.config.factoryRoboportSpacing, next)
+  const anchor = hubCell ? f.center : pointOf(next)
   log(`[rival-engineers] faction ${ctx.faction.name}: M7d.5 roboport goal: cell ${RG.cellKey(next)} near (${anchor.x}, ${anchor.y})${hubCell ? `, the hub with ${HUB_CHESTS} storage chests` : ""}; ${cells.length} roboports so far`)
   hooks.start(RG.cellRole(next), anchor, hubCell ? HUB_WINDOW : CELL_WINDOW, hubCell ? HUB_CHESTS : 0)
 }

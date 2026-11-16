@@ -611,7 +611,7 @@ function pipeTerrain(terrain: TerrainView, f: NonNullable<ConnectionRequest["flu
  * M7b: starts routing a fluid connection (`pipe-router.ts`): the search runs under the step budget (`pipeStep`) and is
  * bounded by `PIPE_BUDGET` work units. Returns undefined (and records the failure) when the ports are missing.
  */
-function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): PipeJob | undefined {
+function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest, facts: ProtoFacts): PipeJob | undefined {
   const f = c.fluid!
   const fromRef = c.from !== undefined ? resolve(job, c.from) : undefined
   const toRef = resolve(job, c.to)
@@ -693,6 +693,33 @@ function newPipeJob(job: PlanJob, policy: LayoutPolicy, c: ConnectionRequest): P
       const ly = math.floor(e.y)
       if ((lx > 0 && ly > 0 && lx < mw - 1 && ly < mh - 1) || own[tkey(lx, ly)]) continue
       fluids[tkey(m.origin.x + lx, m.origin.y + ly)] = true
+    }
+  }
+  // B217 (m7-b215 seed 11 g62): and every machine fluid connection that opens outside its module (a steam-engine
+  // column's end). The water route of a steam block ran a plain pipe onto the top engine's steam connection: its last
+  // pieces would mix water into steam, and the crew's placement check refused them for 20 rounds.
+  const fromOut = portOutside(fm, fp)
+  const toOut = portOutside(tm, tp)
+  for (const m of job.layout.modules) {
+    const { w: mw, h: mh } = m.def.footprint
+    for (const e of m.def.entities) {
+      const boxes = facts.entity(e.name)?.fluidBoxes
+      if (boxes === undefined || e.name === "pipe" || string.find(e.name, "pipe-to-ground", 1, true)[0] !== undefined) continue
+      const o = math.floor((e.dir ?? 0) / 4)
+      for (const box of boxes) {
+        for (const c of box.connections) {
+          const q = c.positions?.[o] ?? (o === 0 ? { x: c.x, y: c.y } : o === 1 ? { x: -c.y, y: c.x } : o === 2 ? { x: -c.x, y: -c.y } : { x: c.y, y: -c.x })
+          const d = (c.dir + o) % 4
+          const lx = math.floor(e.x + q.x) + DX[d]
+          const ly = math.floor(e.y + q.y) + DY[d]
+          if (lx >= 0 && ly >= 0 && lx < mw && ly < mh) continue
+          const x = m.origin.x + lx
+          const y = m.origin.y + ly
+          if ((x === fromOut.x && y === fromOut.y) || (x === toOut.x && y === toOut.y)) continue
+          const k = tkey(x, y)
+          if (trunk[k] === undefined) fluids[k] = true
+        }
+      }
     }
   }
   // B149 (seed 11 g198): a line of this fluid from another provider already feeds the target port and holds its outside
@@ -1683,7 +1710,7 @@ function startConnection(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, 
   if (id === undefined) return endRouting(job, terrain, policy)
   const c = connection(job, id)
   if (c.fluid !== undefined) {
-    job.pipe = newPipeJob(job, policy, c)
+    job.pipe = newPipeJob(job, policy, c, facts)
     if (job.pipe === undefined) return 1
     return pipeStep(job, terrain, facts, policy, budget)
   }

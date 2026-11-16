@@ -6,7 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { BUILD_STOCK_MIN, buildMaterials, buildStock, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, powerStock, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { BUILD_STOCK_MIN, buildMaterials, buildStock, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, NO_SOURCE, noteUnsourced, powerStock, producerFor, robotStock, stockRole, stuckRounds, supplyStock } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -1234,6 +1234,8 @@ test("M7d.5: construction robots and roboports stocked: the robot frame chain is
   eq(hubRow.generator, "robot-cell", "still one robot cell")
   eq(hubRow.params.roboport as string, "roboport", "the cell has the roboport")
   eq(hubRow.def.entities.filter((e) => e.name === "roboport").length, 1, "one roboport in it")
+  // m7-b219 seed 222: the cell had no storage chests, so the network had nothing for robots to build from.
+  eq(hubRow.def.entities.filter((e) => e.name === "storage-chest").length, 2, "the hub's two storage chests are in the cell")
   const portRow = hubbed.nodes.find((n) => n.role === stockRole("roboport"))!
   eq(portRow.params.roboport, undefined, "the roboport stock row has none")
 })
@@ -1503,6 +1505,55 @@ test("B205 (user, 2026-11-12): with the mall, buildings the design places in num
     ok(placed >= BUILD_STOCK_MIN, `${st.item}: placed ${placed} times`)
     ok(st.item !== "stone-furnace", "a building already stocked is not stocked twice")
   }
+})
+
+test("B211: each generated stock row plans as its own goal, with the rows only it needs, after every production layer", () => {
+  // m7-b208 seed 44444: the generated stock was one production goal of 12 modules and 21 connections. It planned ~33
+  // game-minutes per attempt, failed on one row's connection, and held up every production goal behind it.
+  const mall = fakeMall(["transport-belt", "inserter", "assembling-machine-1", "electric-mining-drill", "pipe"])
+  const c = ctx({
+    enabled: { ...ELECTRIC, pipe: true, "stone-furnace": true, lab: true, "electronic-circuit": true, "copper-cable": true, inserter: true, "assembling-machine-1": true, boiler: true, "steam-engine": true },
+    rowInputs: 3,
+    make: (gen, params) => (gen === "curated" ? mall : (generate(F, gen as GeneratorName, params) as ModuleDef)),
+  })
+  c.builtGenerators = { "stock:construction-robot": "robot-cell" }
+  const d = design(c, { item: RED, perSecond: 1, mall: { id: "fake-mall", utilization: 0.25 } })
+  ok((d.buildStock ?? []).length >= 2, `generated stock: ${(d.buildStock ?? []).join(",")}`)
+  const prod = goalsFrom(diffDesign(d, newGraph(), () => undefined), {}, undefined, true).filter((g) => g.kind === "production")
+  const phases = prod.map((g) => g.phase ?? "?")
+  let firstStock = -1
+  for (let i = 0; i < prod.length; i++) {
+    const phase = phases[i]
+    if (string.sub(phase, 1, 6) !== "stock:") {
+      ok(firstStock < 0, `no production layer after a stock goal (${phases.join(",")})`)
+      continue
+    }
+    if (firstStock < 0) firstStock = i
+    const item = string.sub(phase, 7)
+    ok((d.buildStock ?? []).indexOf(item) >= 0, `${item} is generated stock`)
+    for (const n of prod[i].nodes) ok(string.sub(n.role, -(item.length + 6)) === `stock:${item}`, `${n.role} is ${item}'s own row`)
+  }
+  for (const item of d.buildStock ?? []) ok(phases.indexOf(`stock:${item}`) >= 0, `a goal for ${item} (${phases.join(",")})`)
+})
+
+test("m7-b222 (user, 2026-11-14): storage chests are stocked, and an item the crew has no source for gets a stock row", () => {
+  const robots = robotStock((t) => t === "construction-robotics", (r) => r === "storage-chest" || r === "roboport")
+  ok(robots.some((st) => st.item === "storage-chest"), "storage chests with the robots' stock")
+  const unsourced: Record<string, number> = {}
+  ok(noteUnsourced(unsourced, { "plastic-bar": { demand: 90, action: NO_SOURCE }, "iron-plate": { demand: 50, action: "gather 50" } }), "plastic noted")
+  eq(unsourced["iron-plate"], undefined, "a gathered item is not")
+  ok(!noteUnsourced(unsourced, { "plastic-bar": { demand: 30, action: NO_SOURCE } }), "a smaller demand changes nothing")
+  eq(unsourced["plastic-bar"], 90, "the largest demand is kept")
+  eq(supplyStock(unsourced, (r) => r === "plastic-bar").map((st) => st.item).join(","), "plastic-bar", "a plastic stock row")
+  eq(supplyStock(unsourced, () => false).length, 0, "none while its recipe is locked")
+  // The design places it as a buffered chemical plant row.
+  const enabled = { ...ELECTRIC, "steel-plate": true, "engine-unit": true, "advanced-circuit": true, "plastic-bar": true, sulfur: true, "chemical-science-pack": true, "basic-oil-processing": true, "advanced-oil-processing": true, lubricant: true, "sulfuric-acid": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone", "crude-oil"], assemblers: ["assembling-machine-1", "assembling-machine-2"], rowInputs: 4, packs: [RED, "logistic-science-pack", "chemical-science-pack"] })
+  const d = design(c, { item: "chemical-science-pack", perSecond: 10 / 60, stock: supplyStock(unsourced, (r) => r === "plastic-bar") })
+  const row = d.nodes.find((n) => n.role === stockRole("plastic-bar"))
+  ok(row !== undefined, "a plastic stock node")
+  eq(row!.generator, "chem-row", "a chemical plant row")
+  ok(row!.def.entities.some((e) => e.buffer === true), "with a buffer chest (the supply point)")
 })
 
 run("design")

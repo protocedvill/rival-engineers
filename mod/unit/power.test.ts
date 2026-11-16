@@ -134,6 +134,22 @@ test("B210: a built pole with five wires is no source and no target", () => {
   eq((layout.poles ?? []).length, 0, "no line from a full pole")
 })
 
+test("B210: built poles on one network but out of reach are not joined (the poles between them may be evicted)", () => {
+  // m7-b213: the first production plan evicted bootstrap pole lines (B37); the grid and the temp factories were still
+  // one game network through them, so the pole step joined them by network and planned no line: every seed lost power.
+  const layout = newLayout()
+  place(layout, "steam", steam, 2, 2)
+  place(layout, "labs", labs, steam.footprint.w + 20, 2)
+  eq(unpoweredModules(layout, F, builtPoles(layout, { steam: 1, labs: 1 }, { steam: 1, labs: 1 })).join(","), "labs", "one game network, nothing in reach: unpowered")
+  const job = newPoleJob("poles:", "small-electric-pole", F)
+  job.built = builtPoles(layout, { steam: 1, labs: 1 }, { steam: 1, labs: 1 })
+  while (!stepPoles(job, layout, terrain(100, 40), F, POLICY, 1000)) {
+    // budgeted steps
+  }
+  eq(job.phase, "done", "done")
+  ok((layout.poles ?? []).length >= 1, `a line joins them (${(layout.poles ?? []).length})`)
+})
+
 test("M7c.8: each pump pole of a fluid route needs its own path to the network, not just one pump of the line", () => {
   const layout = newLayout()
   place(layout, "steam", steam, 2, 2)

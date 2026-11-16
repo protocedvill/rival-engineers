@@ -125,7 +125,7 @@ const ENTITIES: EntityFacts[] = [
   e({ name: "pipe", type: "pipe", tileW: 1, tileH: 1 }),
   e({ name: "offshore-pump", type: "offshore-pump", tileW: 1, tileH: 1, pumpingPerTick: 20 }),
   e({ name: "boiler", type: "boiler", tileW: 3, tileH: 2, energyPerTick: 30000, burner: true }),
-  e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5 }),
+  e({ name: "steam-engine", type: "generator", tileW: 3, tileH: 5, maxPowerPerTick: 15000, fluidPerTick: 0.5, fluidBoxes: [{ production: "input", connections: [{ x: 0, y: -2, dir: 0 }, { x: 0, y: 2, dir: 2 }] }] }),
   e({ name: "assembling-machine-2", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 0.75, craftingCategories: ["advanced-crafting", "basic-crafting", "crafting", "crafting-with-fluid"], energyPerTick: 2500, electric: true, fluidBoxes: ASSEMBLER_BOXES }),
   e({ name: "oil-refinery", type: "assembling-machine", tileW: 5, tileH: 5, craftingSpeed: 1, craftingCategories: ["oil-processing"], energyPerTick: 7000, electric: true, fluidBoxes: REFINERY_BOXES }),
   e({ name: "chemical-plant", type: "assembling-machine", tileW: 3, tileH: 3, craftingSpeed: 1, craftingCategories: ["chemistry"], energyPerTick: 3500, electric: true, fluidBoxes: CHEMICAL_BOXES }),

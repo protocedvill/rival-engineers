@@ -6,7 +6,7 @@ import { addJob, failJob, ItemCount, Job, JobSpec } from "../jobs/board"
 import { craftYield, resetMember } from "../jobs/crew"
 import { addStockpile, applyBenchmarkModifiers, factionForce, factionSurface, tileRect } from "../jobs/faction"
 import { FactionState, JobPayload } from "../jobs/types"
-import { hasNetwork, orderRemoval } from "../jobs/robot-orders"
+import { crewFreeStacks, hasNetwork, orderRemoval, ROBOT_STORAGE_RESERVE, robotStorageRoom } from "../jobs/robot-orders"
 import { bestPatch, exploreNow, Patch, positionDistance, scanPatches } from "../world/resources"
 import { HOME_SCANS } from "./arms"
 import { claimed, claimOreField, otherClaims } from "../world/claims"
@@ -18,6 +18,7 @@ import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
 import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
+import { NO_SOURCE } from "./design"
 import { countEntities, findEntities } from "../work"
 import { destroyEntity, markDirty } from "../planner/terrain"
 
@@ -506,6 +507,8 @@ function findDepotSpot(ctx: Ctx, chest: { entity: string; item: string }): Plann
   const cx = math.floor(hub.x)
   const cy = math.floor(hub.y)
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
+  const proto = prototypes.entity[chest.entity]
+  const storageMode = proto.type === "logistic-container" && proto.logistic_mode === "storage"
   for (let r = 0; r <= DEPOT_SEARCH_RADIUS; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
@@ -521,6 +524,8 @@ function findDepotSpot(ctx: Ctx, chest: { entity: string; item: string }): Plann
         if (countEntities(ctx.surface, { area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
         if (!ctx.surface.can_place_entity({ name: part.entity, position: part.position, force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) continue
         if (!ctx.surface.can_place_entity({ name: "character", position: { x: part.position.x + 1.5, y: part.position.y } })) continue
+        // A storage chest is for the robots too: only inside their network (m7-b222 seed 222).
+        if (storageMode && ctx.force.find_logistic_network_by_position(part.position, ctx.surface) === undefined) continue
         return part
       }
     }
@@ -673,7 +678,7 @@ function pickDepot(ctx: Ctx): LuaEntity | undefined {
   let bestFree = -1
   for (const chest of ctx.faction.stockpiles) {
     if (!chest.valid) continue
-    const free = chest.get_inventory(defines.inventory.chest)!.count_empty_stacks()
+    const free = crewFreeStacks(chest)
     if (free > bestFree) {
       best = chest
       bestFree = free
@@ -717,12 +722,15 @@ function advanceGoals(ctx: Ctx): void {
   // Depot full: add another depot goal in front of the rest.
   if (ctx.depot) {
     let room = 0
-    for (const chest of ctx.faction.stockpiles) if (chest.valid) room += chest.get_inventory(defines.inventory.chest)!.count_empty_stacks()
+    for (const chest of ctx.faction.stockpiles) if (chest.valid) room += crewFreeStacks(chest)
+    // m7-b222 seed 222: robots unload only into the network's storage chests; when they are nearly full, a new depot
+    // (a storage chest once researched, by the hub) gives them room too.
+    const robots = robotStorageRoom(ctx.faction.stockpiles)
     let depotPending = false
     for (const g of brain.goals) if (!g.done && g.kind === "site" && g.site === "depot") depotPending = true
     // B183: room for what the crew carries back too (picked-up belts bring their ore): a depot with no room left
     // for a full pocket deadlocked the crew (m7-nocap seed 222).
-    if (room < 3 + carriedStacks(ctx) && !depotPending) {
+    if ((room < 3 + carriedStacks(ctx) || (robots.has && robots.free < ROBOT_STORAGE_RESERVE)) && !depotPending) {
       let first = 0
       while (first < brain.goals.length && brain.goals[first].done) first++
       brain.goals.splice(first, 0, { kind: "site", site: "depot" })
@@ -735,6 +743,7 @@ function advanceGoals(ctx: Ctx): void {
     active++
     if (goal.kind === "site") {
       let site = siteById(brain, goal.siteId)
+      if (site && site.status === "planned" && site.kind === "depot") depotStuck(ctx, site)
       if (site && site.status === "built") {
         completeGoal(ctx, goal)
         const old = siteById(brain, goal.replaces)
@@ -775,14 +784,39 @@ function completeGoal(ctx: Ctx, goal: Goal): void {
 }
 
 /**
+ * A raw material of `raw` the stock does not cover and that was short last think with no source (m7-b222 seed 222:
+ * plastic for a storage chest). The shortfall sums every demand, so a chest the stock covers is still craftable.
+ */
+function unsourcedRaw(ctx: Ctx, raw: Record<string, number>): string | undefined {
+  for (const item in raw) if ((ctx.stock[item] ?? 0) < raw[item] && ctx.brain.shortfalls?.[item]?.action === NO_SOURCE) return item
+  return undefined
+}
+
+/**
+ * m7-b222 seed 222: a depot planned as a storage chest waited for hours on plastic the crew had no source for, and the
+ * robots had nowhere to unload meanwhile. A planned depot whose chest is not in stock and needs an unsourced material
+ * fails, so its goal plans the next chest the stock covers.
+ */
+function depotStuck(ctx: Ctx, site: Site): void {
+  for (const part of site.parts) {
+    if ((part.built && part.built.valid) || (ctx.stock[part.item] ?? 0) > 0) continue
+    let missing: string | undefined
+    for (const c of depotChests(ctx.force)) if (c.entity === part.entity) missing = unsourcedRaw(ctx, c.raw)
+    if (missing !== undefined) return failSite(ctx, site, `${part.entity} needs ${missing}: no source`)
+  }
+}
+
+/**
  * B183: the depot's next chest: the best one (`depotChests`: passive provider, then most slots) whose materials the
  * faction holds now, else the catalog's (cheapest) chest. m7-nocap seed 222: the depot was full, both pockets were full of ore, and its wooden chest needed wood that no
  * one could gather with a full pocket, while a member carried 814 iron plates.
  */
 function depotChest(ctx: Ctx): { entity: string; item: string } {
   for (const c of depotChests(ctx.force)) {
+    // A chest in stock (a stock row makes storage chests) needs no craft.
     let covered = true
     for (const item in c.raw) if ((ctx.stock[item] ?? 0) < c.raw[item]) covered = false
+    if ((ctx.stock[c.item] ?? 0) > 0) covered = true
     if (covered) return c
   }
   return { entity: ctx.brain.catalog.chest, item: ctx.brain.catalog.chestItem }
@@ -1207,7 +1241,7 @@ function produce(ctx: Ctx, item: string, short: number): void {
     return note("recipe locked")
   }
   gather(ctx, item, short, ctx.depot)
-  note(`gather ${short}`)
+  note(canGather(ctx, item) ? `gather ${short}` : NO_SOURCE)
 }
 
 /**
@@ -1722,7 +1756,20 @@ export function brainReport(faction: FactionState) {
   }
   const timeline: { goal: string; done?: number }[] = []
   for (const g of brain.goals) timeline.push({ goal: goalLabel(g), done: g.doneTick })
+  // Open site goals: their site's status and each part's job (a planned site waits on these).
+  const open: { goal: string; site?: number; status?: string; parts?: string[] }[] = []
+  for (const g of brain.goals) {
+    if (g.done || g.kind !== "site") continue
+    const site = siteById(brain, g.siteId)
+    const parts: string[] = []
+    for (const p of site?.parts ?? []) {
+      const job = p.job !== undefined ? faction.board.jobs[p.job] : undefined
+      parts.push(`${p.entity}@${p.position.x},${p.position.y} built=${p.built?.valid === true} job=${p.job ?? "-"}:${job?.status ?? "gone"}`)
+    }
+    open.push({ goal: goalLabel(g), site: site?.id, status: site?.status, parts })
+  }
   return {
+    open,
     timeline,
     base: brain.base,
     hub: brain.hub,

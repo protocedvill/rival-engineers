@@ -616,15 +616,39 @@ export function placeReplacementPoles(surface: LuaSurface, faction: FactionState
   return out
 }
 
+/** Ticks before a replacement pole whose job failed for want of the item gets a new place job. */
+const POLE_RETRY_TICKS = 1800
+
+/**
+ * D71 (b) make before break: true while a replacement pole is still to stand. m7-b219 seed 3333: a pole job failed
+ * `missing-item` (the poles were still being made) and the phase moved on, picking up the old line before the new one
+ * stood. Such a job gets a new one after POLE_RETRY_TICKS (`poleJobs` is updated in place); other failures end the wait.
+ */
+export function polesPending(faction: FactionState, poleJobs: JobId[], opts: { fuel?: { item: string; count: number }; priority?: number }): boolean {
+  let pending = false
+  for (let i = 0; i < poleJobs.length; i++) {
+    const j = getJob(faction.board, poleJobs[i])
+    if (j === undefined || j.status === "done") continue
+    if (j.status !== "failed") {
+      pending = true
+      continue
+    }
+    const ghost = j.payload.kind === "place" ? j.payload.ghost : undefined
+    if (ghost === undefined || !ghost.valid || j.reason === undefined || string.find(j.reason, "missing-item", 1, true)[0] !== 1) continue
+    pending = true
+    if (game.tick - (j.finishedTick ?? 0) < POLE_RETRY_TICKS) continue
+    const id = addPlaceJob(faction, ghost, opts)
+    if (id !== undefined) poleJobs[i] = id
+  }
+  return pending
+}
+
 export function stepBuild(entry: PlannerEntry): void {
   const b = entry.build!
   const faction = getFaction(b.faction)
   if (faction === undefined) return
   if (b.phase === "poles") {
-    for (const id of b.poleJobs ?? []) {
-      const j = getJob(faction.board, id)
-      if (j !== undefined && j.status !== "done" && j.status !== "failed") return
-    }
+    if (polesPending(faction, (b.poleJobs ??= []), { fuel: b.fuel, priority: b.priority })) return
     // The replacement poles stand: now the evicted ones go (with the rest of the clearing).
     for (const e of b.breakAfter ?? []) if (e.valid && clearJobFor(faction, e) === undefined) b.clearJobs.push(addClearJob(faction, e, b.priority))
     b.breakAfter = undefined

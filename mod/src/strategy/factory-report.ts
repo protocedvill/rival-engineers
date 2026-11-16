@@ -3,7 +3,7 @@ import { getConfig } from "../config"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { Vec } from "../planner/grid"
 import { findModule } from "../planner/layout"
-import { nodesOf, rateIn, supplyGaps } from "../planner/logical"
+import { LogicalNode, nodesOf, rateIn, supplyGaps } from "../planner/logical"
 import { entryPolicy, tiers } from "../planner/runtime"
 import { statusCounts } from "./reconcile"
 import { isTempRole } from "./stage"
@@ -166,8 +166,26 @@ export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEn
 export function stockRowBuilt(factionName: string, item: string): boolean {
   const f = getFactory(factionName)
   if (f === undefined) return false
-  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") return true
-  return false
+  let row: LogicalNode | undefined
+  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") row = n
+  if (row === undefined) return false
+  // B216 (m7-b215 seed 44444, min 288-434): the medium-pole row made nothing for 2.4 game-hours, its steel smelter out
+  // of fuel; the coal growth that fuels it and a production goal both waited for medium poles, which the crew waited
+  // for from the row. A row that made none of its item while a node of its chain has been starved, unfuelled or
+  // unpowered for `stallTicks` holds the crew no longer: the shortfall is hand-crafted.
+  for (const o of row.measured?.outputs ?? []) if (o.item === item && o.perSecond > 0) return true
+  const stall = getConfig().stallTicks
+  // m7-b222 seed 44444: the roboport row had no advanced circuits (its route from a shared provider was never built), so
+  // it made nothing for hours while every node of its own chain read ok or backed-up, and a roboport goal waited on it.
+  // A row that has made none of its item for `stallTicks` since it was built holds the crew no longer either.
+  const since = row.madeTick ?? row.builtTick
+  if (since !== undefined && game.tick - since >= stall) return false
+  const suffix = `>stock:${item}`
+  for (const n of nodesOf(f.graph)) {
+    if (n.lifecycle !== "built" || (n.role !== row.role && string.sub(n.role, -suffix.length) !== suffix)) continue
+    if ((n.status === "starved" || n.status === "unfuelled" || n.status === "unpowered") && game.tick - (n.statusTick ?? game.tick) >= stall) return false
+  }
+  return true
 }
 
 export function moduleAssemblers(factionName: string, buildingOnly = false): LuaEntity[] {

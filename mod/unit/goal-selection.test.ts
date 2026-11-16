@@ -98,6 +98,13 @@ test("B52: a growth waits for any other goal still building (the mall's routes w
   eq(selectGoals([grow], state({ active: { grow: false } })).decisions[0].action, "start", "nothing building")
 })
 
+test("B213: a growth does not wait for a kind whose active goals are all stalled", () => {
+  const grow = spec("grow", { growth: { role: "iron", have: 1, need: 2, units: 1, power: false, failed: 0 } })
+  eq(selectGoals([grow], state({ active: { production: true } })).decisions[0].action, "skip", "production building")
+  eq(selectGoals([grow], state({ active: { production: true }, stalled: { production: true } })).decisions[0].action, "start", "production stalled")
+  eq(selectGoals([grow], state({ active: { production: true, mall: true }, stalled: { production: true } })).decisions[0].waiting, "grow waits for mall", "mall still building")
+})
+
 test("a planning goal freezes new starts", () => {
   const result = selectGoals([spec("power")], state({ planning: true }))
   eq(result.decisions.length, 0)

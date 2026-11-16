@@ -43,3 +43,45 @@ export function sweepOrders(faction: FactionState): void {
   for (const e of ended) if (!kept.some((o) => o.target === e) && e.to_be_deconstructed()) e.cancel_deconstruction(faction.force)
   faction.deconOrders = kept
 }
+
+/**
+ * Empty stacks the crew leaves in a storage chest of a roboport network, for what the robots bring back (agent guess,
+ * proposed). m7-b222 seed 222: the crew's depots were the network's storage chests and it filled them all with ore,
+ * coal and plates from picked-up belts; every robot then hovered holding its cargo and nothing more was built.
+ */
+export const ROBOT_STORAGE_RESERVE = 16
+
+/** Whether `chest` is a storage chest in a roboport network (robots unload there). */
+function robotStorage(chest: LuaEntity): boolean {
+  return chest.type === "logistic-container" && chest.prototype.logistic_mode === "storage" && chest.logistic_network !== undefined
+}
+
+/** How many `item` the crew may put into `chest`: what fits, less the robots' reserved stacks in a network storage chest. */
+export function crewInsertable(chest: LuaEntity, item: string): number {
+  const inv = chest.get_inventory(defines.inventory.chest)!
+  const room = inv.get_insertable_count(item)
+  if (room <= 0 || !robotStorage(chest)) return room
+  const empty = inv.count_empty_stacks()
+  const stack = prototypes.item[item]?.stack_size ?? 1
+  // `room` is the partial stacks' room plus the empty stacks': keep ROBOT_STORAGE_RESERVE of the empty ones.
+  return math.max(0, room - math.min(empty, ROBOT_STORAGE_RESERVE) * stack)
+}
+
+/** Empty stacks the crew may fill in `chest` (its depot room). */
+export function crewFreeStacks(chest: LuaEntity): number {
+  const empty = chest.get_inventory(defines.inventory.chest)!.count_empty_stacks()
+  return robotStorage(chest) ? math.max(0, empty - ROBOT_STORAGE_RESERVE) : empty
+}
+
+/** Empty stacks in the faction's depots that are network storage chests, and whether it has any (robots' room). */
+export function robotStorageRoom(chests: LuaEntity[]): { has: boolean; free: number } {
+  let has = false
+  let free = 0
+  for (const c of chests) {
+    if (!c.valid || !robotStorage(c)) continue
+    has = true
+    free += c.get_inventory(defines.inventory.chest)!.count_empty_stacks()
+  }
+  return { has, free }
+}
+
