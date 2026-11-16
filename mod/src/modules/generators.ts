@@ -453,13 +453,17 @@ function machineSpeed(facts: ProtoFacts, machine: string): number {
  * moved with them and ended `d` tiles inside the footprint, where no route can reach it; its belt now runs on through
  * the head columns to the edge.
  */
-function shiftRowEast(L: Layout, ports: Port[], d: number): void {
+function shiftRowEast(L: Layout, ports: Port[], d: number, pipe?: string): void {
   for (const e of L.entities) e.x += d
   for (const p of ports) {
-    const west = p.kind === "belt-in" && p.dir === EAST && p.pos.x < 1
+    // An input entering at the west edge stays there: its belt (or, m7-b222 chem rows, its pipe) runs on over the head.
+    const west = (p.kind === "belt-in" || (p.kind === "pipe-in" && pipe !== undefined)) && p.dir === EAST && p.pos.x < 1
     p.pos = { x: p.pos.x + d, y: p.pos.y }
     if (!west) continue
-    for (let x = 0; x < d; x++) L.beltAt(x + 0.5, p.pos.y, EAST)
+    for (let x = 0; x < d; x++) {
+      if (p.kind === "pipe-in") L.add(pipe!, x + 0.5, p.pos.y)
+      else L.beltAt(x + 0.5, p.pos.y, EAST)
+    }
     p.pos = { x: 0.5, y: p.pos.y }
   }
 }
@@ -473,9 +477,9 @@ const ROW_BUFFER_W = 2
  * inserter at (1.5, 1.5) picks plates (items) off that belt (it faces north: the side it picks from) into a chest at
  * (1.5, 2.5). A pole at (0.5, 1.5) powers it and reaches the module's own poles. Returns the buffer chest, if added.
  */
-function rowBufferHead(facts: ProtoFacts, L: Layout, ports: Port[], buffer: string | undefined): boolean {
+function rowBufferHead(facts: ProtoFacts, L: Layout, ports: Port[], buffer: string | undefined, pipe?: string): boolean {
   if (buffer === undefined || buffer === "" || facts.entity(L.inserter)?.electric !== true) return false
-  shiftRowEast(L, ports, ROW_BUFFER_W)
+  shiftRowEast(L, ports, ROW_BUFFER_W, pipe)
   L.beltAt(0.5, 0.5, WEST)
   L.beltAt(1.5, 0.5, WEST)
   L.ins(1.5, 1.5, NORTH)
@@ -1036,6 +1040,9 @@ export interface RobotCellParams extends CommonParams {
   buffer?: string
   /** M7d.5 (user, 2026-11-07): the roboport at the head of the cell, which the first buffer chest fills. */
   roboport?: string
+  /** P53: the storage chest entity and how many sit beside the roboport (0–2): with them the cell is the network's hub. */
+  storageChest?: string
+  storage?: number
 }
 
 /**
@@ -1089,6 +1096,9 @@ export function robotCell(facts: ProtoFacts, p: RobotCellParams): ModuleDef {
     // The first buffer chest (row 5) fills the roboport above it.
     L.ins(1.5, 4.5, SOUTH)
     L.poleAt(0.5, 4.5)
+    // P53: the hub's storage chests, east of the roboport (the crew's depot; robots build from what it holds).
+    const storage = math.max(0, math.min(2, p.storage ?? 0))
+    for (let i = 0; i < storage; i++) L.add(p.storageChest ?? "storage-chest", 4.5 + i, 0.5)
   }
   L.poleAt(4.5, 4.5)
   for (let x = 0; x < W; x++) {
@@ -1113,7 +1123,7 @@ export function robotCell(facts: ProtoFacts, p: RobotCellParams): ModuleDef {
     { id: "power", kind: "power", pos: { x: 4.5, y: 4.5 }, dir: NORTH },
   )
   const draft: ModuleDraft = {
-    id: `robot-cell/${p.count}/${machine}/${L.belt}/${L.inserter}${p.buffer !== undefined && p.buffer !== "" ? `/buffer=${p.buffer}` : ""}${robo !== undefined ? `/roboport=${p.roboport}` : ""}`,
+    id: `robot-cell/${p.count}/${machine}/${L.belt}/${L.inserter}${p.buffer !== undefined && p.buffer !== "" ? `/buffer=${p.buffer}` : ""}${robo !== undefined ? `/roboport=${p.roboport}${(p.storage ?? 0) > 0 ? `+${p.storage}` : ""}` : ""}`,
     source: "generated",
     generator: "robot-cell",
     provenance: "generator robot-cell (Rival Engineers)",
@@ -1124,7 +1134,7 @@ export function robotCell(facts: ProtoFacts, p: RobotCellParams): ModuleDef {
     recipe: product.name,
     rotatable: true,
     mirrorable: true,
-    params: { count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: bufferFlag ? bufferName : "", roboport: p.roboport ?? "" },
+    params: { count: p.count, machine, belt: L.belt, inserter: L.inserter, buffer: bufferFlag ? bufferName : "", roboport: p.roboport ?? "", ...(robo !== undefined && (p.storage ?? 0) > 0 ? { storageChest: p.storageChest ?? "storage-chest", storage: p.storage } : {}) },
   }
   // Rows 11 and 16 flow west out of the module without a port: drop their west edge tile.
   draft.entities = dropBelt(draft.entities, L.belt, 0.5, 11.5)
@@ -1468,6 +1478,11 @@ export interface ChemRowParams extends CommonParams {
   pipe?: string
   pipeToGround?: string
   longInserter?: string
+  /**
+   * m7-b222 (user, 2026-11-14: "add a plastic supply point"): a buffer chest at the head for a solid product, as the
+   * assembler rows' (D51); "" or absent: none.
+   */
+  buffer?: string
 }
 
 /**
@@ -1548,18 +1563,19 @@ export function chemRow(facts: ProtoFacts, p: ChemRowParams): ModuleDef {
     for (let x = 1; x < xt; x++) L.beltAt(x + 0.5, T + 1.5, WEST)
     for (const port of rowTail(L, xt, solidsIn.map((i) => i.name), T + 1, 0, true)) ports.push(port)
   }
+  const buffered = !fluidOut && rowBufferHead(facts, L, ports, p.buffer, pipe)
   const draft: ModuleDraft = {
-    id: `chem-row/${p.recipe}/${C}`,
+    id: `chem-row/${p.recipe}/${C}${buffered ? `/buffer=${p.buffer}` : ""}`,
     source: "generated",
     generator: "chem-row",
     provenance: "generator chem-row (Rival Engineers)",
     description: `${C} ${chem} (${p.recipe}) fed by pipe`,
-    footprint: { w: W, h: H },
+    footprint: { w: W + (buffered ? ROW_BUFFER_W : 0), h: H },
     entities: L.entities,
     ports,
     rotatable: true,
     mirrorable: false,
-    params: { recipe: p.recipe, chemPlants: C },
+    params: { recipe: p.recipe, chemPlants: C, ...(buffered ? { buffer: p.buffer! } : {}) },
   }
   return finalizeModule(draft, facts)
 }

@@ -225,15 +225,50 @@ export const ROBOPORT_STOCK = 10
 export const STOCK_FILL_SECONDS = 1800
 
 /**
+ * m7-b222 (user, in-session 2026-11-14: "the solution is build more storage chests"; agent value, proposed): storage
+ * chests stocked for the network's depots (each 48 stacks for what the crew and the robots bring back).
+ */
+export const STORAGE_STOCK = 10
+
+/**
  * M7d.5 (D77, P48): once the technology unlocking construction robots is researched, the faction stocks robots and
- * roboports (each only while its recipe is enabled). `researched` and `enabled` read the force.
+ * roboports (each only while its recipe is enabled), and storage chests (m7-b222). `researched` and `enabled` read the
+ * force.
  */
 export function robotStock(researched: (this: void, tech: string) => boolean, enabled: (this: void, recipe: string) => boolean): { item: string; perSecond: number }[] {
   if (!researched("construction-robotics")) return []
   const out: { item: string; perSecond: number }[] = []
   if (enabled("construction-robot")) out.push({ item: "construction-robot", perSecond: ROBOT_STOCK / STOCK_FILL_SECONDS })
   if (enabled("roboport")) out.push({ item: "roboport", perSecond: ROBOPORT_STOCK / STOCK_FILL_SECONDS })
+  if (enabled("storage-chest")) out.push({ item: "storage-chest", perSecond: STORAGE_STOCK / STOCK_FILL_SECONDS })
   return out
+}
+
+/** The bootstrap's shortfall action for an item it can neither craft, smelt nor mine. */
+export const NO_SOURCE = "no source"
+
+/**
+ * m7-b222 (user, in-session 2026-11-14: "add a plastic supply point"): an item the crew needs and has no source for
+ * (plastic: a chemical plant's product, no patch, no hand recipe) gets a stock row, whose buffer chest is a supply
+ * point. `unsourced` keeps the largest demand seen per item (`noteUnsourced`); the row is sized to make it in
+ * `STOCK_FILL_SECONDS`. Only while the item's recipe is enabled.
+ */
+export function supplyStock(unsourced: Record<string, number> | undefined, enabled: (this: void, recipe: string) => boolean): { item: string; perSecond: number }[] {
+  const out: { item: string; perSecond: number }[] = []
+  for (const [item, demand] of pairs(unsourced ?? {})) if (enabled(item as string)) out.push({ item: item as string, perSecond: (demand as number) / STOCK_FILL_SECONDS })
+  out.sort((a, b) => (a.item < b.item ? -1 : 1))
+  return out
+}
+
+/** Records the bootstrap's no-source shortfalls in `unsourced` (largest demand per item); true when it changed. */
+export function noteUnsourced(unsourced: Record<string, number>, shortfalls: Record<string, { demand: number; action: string }> | undefined): boolean {
+  let changed = false
+  for (const [item, f] of pairs(shortfalls ?? {})) {
+    if (f.action !== NO_SOURCE || f.demand <= (unsourced[item as string] ?? 0)) continue
+    unsourced[item as string] = f.demand
+    changed = true
+  }
+  return changed
 }
 
 /** B205 (agent, proposed): of each building the generated stock makes (`buildStock`), how many the factory keeps. */
@@ -402,6 +437,8 @@ export interface Design {
   overflow: Record<string, string>
   errors: string[]
   solve: SolveResult
+  /** B211: items of the generated build stock (`buildStock`): each plans as its own goal, after the production layers. */
+  buildStock?: string[]
 }
 
 const EPS = 1e-9
@@ -718,15 +755,23 @@ function addStock(ctx: DesignContext, w: Walk, st: StockItem, cluster: number): 
   const stockRoleName = stockRole(st.item)
   const builtStock = ctx.builtGenerators?.[stockRoleName]
   const cell = producerFor(ctx, st.item) === "robot-cell" && (builtStock === undefined || builtStock === "robot-cell")
+  const buffer = ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest"
+  // m7-b222: a pipe-fed product (plastic) is stocked from a chemical plant row with the same buffer head.
+  const chem = !cell && producerFor(ctx, st.item) === "chem-row"
+  const generator = cell ? "robot-cell" : chem ? "chem-row" : "assembler-row"
   const params: Record<string, unknown> = cell
-    ? { count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest", roboport: hub?.roboport ?? "roboport" }
-    : { recipe, count: 2, machine, buffer: ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest" }
-  if (!cell && hub !== undefined) {
+    ? { count: 2, machine, buffer, roboport: hub?.roboport ?? "roboport" }
+    : chem
+      ? { recipe, chemPlants: 2, buffer }
+      : { recipe, count: 2, machine, buffer }
+  // P53: the hub's storage chests go with its roboport, in the row's head or the robot cell (D84 had dropped them from
+  // the cell: m7-b219 seed 222's network had no storage, so robots had nothing to build from).
+  if (hub !== undefined) {
     params.roboport = hub.roboport
     params.storageChest = hub.storageChest
     params.storage = hub.storage
   }
-  const [ok, made] = pcall(ctx.make, cell ? "robot-cell" : "assembler-row", params)
+  const [ok, made] = pcall(ctx.make, generator, params)
   if (!ok) {
     w.errors.push(`stock ${st.item}: ${tostring(made)}`)
     return
@@ -737,7 +782,7 @@ function addStock(ctx: DesignContext, w: Walk, st: StockItem, cluster: number): 
   const utilization = math.min(1, st.perSecond / full)
   const role = stockRole(st.item)
   const inputs = inputPorts(def, utilization)
-  const node: DesignNode = { role, kind: "sink", generator: cell ? "robot-cell" : "assembler-row", params, def, item: st.item, need: utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * utilization, cluster }
+  const node: DesignNode = { role, kind: "sink", generator, params, def, item: st.item, need: utilization, capacity: 1, inputs, powerW: powerOf(def.rates.inputs) * utilization, cluster }
   if (st.generated === true) node.generatedStock = true
   w.nodes.push(node)
   for (const p of inputs) if (p.rate > EPS) w.demands.push({ item: p.item, rate: p.rate, to: role, toPort: p.port })
@@ -1746,8 +1791,12 @@ export function design(ctx: DesignContext, target: DesignTarget): Design {
     }
   }
   // B205: and every building its modules place in numbers (the generated stock); once more with those rows.
-  for (const st of buildStock(ctx, d, target, have)) extra.push(st)
-  return extra.length > 0 ? designOnce(ctx, { ...target, stock: [...(target.stock ?? []), ...extra] }) : d
+  const generated = buildStock(ctx, d, target, have)
+  for (const st of generated) extra.push(st)
+  if (extra.length === 0) return d
+  const out = designOnce(ctx, { ...target, stock: [...(target.stock ?? []), ...extra] })
+  if (generated.length > 0) out.buildStock = generated.map((st) => st.item)
+  return out
 }
 
 function designOnce(ctx: DesignContext, target: DesignTarget): Design {
@@ -1854,6 +1903,8 @@ export interface DesignDiff {
   grow: Growth[]
   /** Design edges with no edge of their role in the graph. */
   missingEdges: DesignEdge[]
+  /** B211: the design's generated build-stock items (`Design.buildStock`). */
+  buildStock?: string[]
 }
 
 /** Units of `def.expand` needed to add `extra` of `item` at full speed. */
@@ -1930,7 +1981,7 @@ export function diffDesign(d: Design, g: LogicalGraph, canonical: (this: void, n
   }
   const missingEdges: DesignEdge[] = []
   for (const e of d.edges) if (edgeByRole(g, e.role) === undefined) missingEdges.push(e)
-  return { missing, grow, missingEdges }
+  return { missing, grow, missingEdges, buildStock: d.buildStock }
 }
 
 /**
@@ -1974,12 +2025,8 @@ export interface GoalSpec {
  * B209 (m7-b208 seed 44444): `restore` comes first and holds only connections between two built modules. It places no
  * module and feeds machines that already stand. Last in the order, the water routes a rebuilt oil complex took with it
  * waited 80+ game-minutes behind a 12-module stock goal that kept failing, and the robot chain stood without acid.
- *
- * M7d.6 (generated mall widened to every building, user in-session 2026-11-16): `stock` comes last and holds the
- * generated stock rows and every missing provider that feeds only them. B205 saw those rows join the robot chain's goal
- * (a 16-module plan that took ~40 game-min); here a failing stock row waits behind everything else instead.
  */
-export const PRODUCTION_LAYERS = ["restore", "raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "materials", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other", "stock"] as const
+export const PRODUCTION_LAYERS = ["restore", "raw-ore", "raw-coal", "metals-iron", "metals-copper", "metals-steel", "metals-other", "materials", "raw-oil", "raw-water", "oil", "chemicals", "circuits", "parts", "robot", "other"] as const
 export type ProductionLayer = typeof PRODUCTION_LAYERS[number]
 
 /** M7d.5 (user, 2026-11-07): the layer of a production provider; smaller layers keep each plan to a handful of modules. */
@@ -2056,63 +2103,7 @@ function materialLayers(diff: DesignDiff, materials: Record<string, boolean>): R
       moved = true
     }
   }
-  for (const [role] of pairs(stockRoots(diff))) if (layers[role as string] !== undefined) layers[role as string] = "stock"
   return layers
-}
-
-/**
- * M7d.6: the missing nodes that exist only for the generated stock: its rows, and providers whose every edge goes to
- * such a node (a provider with no edges at all is not one). In `diff.missing` order.
- */
-export function stockOnly(diff: DesignDiff): string[] {
-  const out: string[] = []
-  for (const [role] of pairs(stockRoots(diff))) out.push(role as string)
-  const index: Record<string, number> = {}
-  for (let i = 0; i < diff.missing.length; i++) index[diff.missing[i].role] = i
-  out.sort((a, b) => index[a] - index[b])
-  return out
-}
-
-/**
- * M7d.6: each stock-only node (`stockOnly`) mapped to the generated row it is built for: the row itself, or the first
- * row (in `diff.missing` order) its feed chain reaches. One goal per row keeps each plan to a row and its feeders.
- */
-export function stockRoots(diff: DesignDiff): Record<string, string> {
-  const only: Record<string, boolean> = {}
-  for (const n of diff.missing) if (n.generatedStock === true) only[n.role] = true
-  let moved = true
-  while (moved) {
-    moved = false
-    for (const n of diff.missing) {
-      if (only[n.role]) continue
-      let any = false
-      let all = true
-      for (const e of diff.missingEdges) {
-        if (e.from !== n.role) continue
-        any = true
-        if (!only[e.to]) all = false
-      }
-      if (any && all) {
-        only[n.role] = true
-        moved = true
-      }
-    }
-  }
-  const root: Record<string, string> = {}
-  for (const n of diff.missing) {
-    if (n.generatedStock !== true) continue
-    root[n.role] = n.role
-    // Upstream from the row, breadth first: each stock-only provider joins the first row that reaches it.
-    const queue = [n.role]
-    for (let i = 0; i < queue.length; i++) {
-      for (const e of diff.missingEdges) {
-        if (e.to !== queue[i] || !only[e.from] || root[e.from] !== undefined) continue
-        root[e.from] = n.role
-        queue.push(e.from)
-      }
-    }
-  }
-  return root
 }
 
 export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false, materials: Record<string, boolean> = {}): GoalSpec[] {
@@ -2120,24 +2111,22 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
   const keys: string[] = []
-  const roots = splitProduction ? stockRoots(diff) : {}
-  const stockKeys: string[] = []
-  const get = (kind: GoalKind, cluster = 1, late = false, layer: ProductionLayer = "other", root?: string): GoalSpec => {
-    // M7d.6: the stock layer is one goal per generated row (`stockRoots`), planned after everything else.
-    const suffix = splitProduction && kind === "production" ? `@${layer}${layer === "stock" && root !== undefined ? `:${root}` : ""}` : ""
+  const get = (kind: GoalKind, cluster = 1, late = false, layer: ProductionLayer = "other", stock?: string): GoalSpec => {
+    const suffix = splitProduction && kind === "production" ? (stock !== undefined ? `@stock:${stock}` : `@${layer}`) : ""
     const key = (kind === "production" || kind === "labs" ? `${kind}#${cluster}` : kind) + suffix + (late ? "~trigger" : "")
     let gs = byKind[key]
     if (gs === undefined) {
       gs = { kind, nodes: [], edges: [], techs: [], key }
       if (kind === "production" || kind === "labs") gs.cluster = cluster
-      if (splitProduction && kind === "production") gs.phase = layer + (late ? "~trigger" : "")
+      if (splitProduction && kind === "production") gs.phase = (stock !== undefined ? `stock:${stock}` : layer) + (late ? "~trigger" : "")
       byKind[key] = gs
       keys.push(key)
-      if (layer === "stock" && root !== undefined) stockKeys.push(key)
     }
     return gs
   }
   const layers = materialLayers(diff, materials)
+  const generated: Record<string, boolean> = {}
+  for (const item of diff.buildStock ?? []) generated[item] = true
   for (const n of diff.missing) {
     const serves = nodeServes(n)
     const kind: GoalKind = n.kind === "labs" ? "labs" : serves === "power" ? "power" : serves === "mall" ? "mall" : "production"
@@ -2147,8 +2136,10 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     let late = false
     // Only goals that wait for their technologies (production, mall): labs and power never did.
     if (waitsOnTrigger !== undefined && (kind === "production" || kind === "mall")) for (const t of n.def.requiresTech) if (!researched[t] && waitsOnTrigger(t)) late = true
-    const layer = kind === "production" ? (layers[n.role] ?? productionLayer(n)) : "other"
-    const gs = get(kind, n.cluster, late, layer, layer === "stock" ? roots[n.role] : undefined)
+    // B211: a generated stock row and the rows feeding only it plan as their own goal (`get` keys it after every layer).
+    const [stock] = string.match(roleFamily(n.role), "stock:([^>]+)$")
+    const apart = kind === "production" && stock !== undefined && generated[stock] === true ? stock : undefined
+    const gs = get(kind, n.cluster, late, kind === "production" ? (layers[n.role] ?? productionLayer(n)) : "other", apart)
     gs.nodes.push(n)
     goalOf[n.role] = gs
     for (const t of n.def.requiresTech) if (!researched[t] && gs.techs.indexOf(t) < 0) gs.techs.push(t)
@@ -2175,7 +2166,8 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     if (c === 1) order.push("mall")
   }
   order.push("mall~trigger")
-  for (const k of stockKeys) order.push(k)
+  // B211: generated stock goals last, in the order the design met them.
+  for (const k of keys) if (string.find(k, "@stock:", 1, true)[0] !== undefined) order.push(k)
   const orderIndex: Record<string, number> = {}
   for (let i = 0; i < order.length; i++) orderIndex[order[i]] = i
   for (const e of diff.missingEdges) {

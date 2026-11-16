@@ -312,4 +312,13 @@ test("pipe router: M7c.9 a band of belts wider than a span is no coarse passage 
   ok(r!.expansions < 20000, `a bounded search (${r!.expansions} expansions)`)
 })
 
+test("pipe router: B217 an underground exit never hands the next piece onto another fluid's tile", () => {
+  // Seed 11 g62: an exit, then a plain pipe on the tile a steam engine's connection opens on; the water route joined
+  // the steam and its last pieces could never be placed. Only one exit reaches past the gap: its next tile is that one.
+  const rows = ["??????????????????????", "...XXXXXXXX...........", "??????????????????????"]
+  const fluids: Record<number, boolean> = { [tkey(12, 1)]: true }
+  const r = routePipe(request(rows, { x: 0, y: 1, dir: 1 }, { x: 21, y: 1, dir: 1 }, { maxUnderground: 9 }, fluids))
+  ok(r === undefined || !r.steps.some((st) => st.x === 12 && st.y === 1), "no piece on the other fluid's tile")
+})
+
 run("pipe-router")

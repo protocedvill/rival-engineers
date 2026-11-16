@@ -159,6 +159,27 @@ test("B147 (seed 11 g154): never runs a plain pipe next to a module's own pipe o
   }
 })
 
+test("B217 (seed 11 g62): never runs a pipe onto a machine's fluid connection outside its module", () => {
+  // A steam block's water route ran a plain pipe onto the top steam engine's steam connection: water would mix into
+  // steam, so the crew's placement check refused the route's last pieces for 20 rounds.
+  const WATER = { ...FLUID, name: "water", maxUnderground: 1 } // plain pipes only: the straight line crosses the engine
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const src = box("src-eng", 1, 1, [{ id: "out", kind: "pipe-out", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "water" }])
+  const dst = box("dst-eng", 1, 1, [{ id: "in", kind: "pipe-in", pos: { x: 0.5, y: 0.5 }, dir: EAST as 0, item: "water" }])
+  // An engine standing north-south on the block's top edge: its north connection opens on the tile above the block.
+  const block = box("block-eng", 3, 8, [])
+  block.entities.push({ name: "steam-engine", x: 1.5, y: 2.5, dir: NORTH })
+  place(state, src, 2, 9)
+  place(state, dst, 36, 9)
+  place(state, block, 18, 10)
+  const open = tkey(19, 9)
+  const c: ConnectionRequest = { id: connectionId("water-eng"), from: { module: "src-eng", port: "out" }, to: { module: "dst-eng", port: "in" }, fluid: WATER }
+  const job = runJob(newRoutingJob(request([src, dst, block], [c], 40, 30), YELLOW, state), terrain, F, policy)
+  eq(job.phase, "done", `phase: ${Object.values(job.failures ?? {}).join("; ")}`)
+  for (const st of job.layout.routes["route:water-eng"].steps) ok(tkey(st.x, st.y) !== open, `a ${st.kind} on the engine's connection at ${st.x},${st.y}`)
+})
+
 test("B149 (seed 11 g198): a second provider's line joins the line already feeding the port", () => {
   // The plastic row's petroleum port was fed by the second oil complex; the design added the third as a parallel provider
   // into the same port. Its line could only aim at the port's outside tile, which the first line holds: "no pipe path".

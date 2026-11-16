@@ -1,4 +1,4 @@
-import { cellHasRoom, cellKey, cellPoint, cellRole, nextCell, parseCellRole } from "../src/strategy/robot-grid"
+import { cellHasRoom, cellKey, cellPoint, cellRole, nextCell, parseCellRole, stepAnchor } from "../src/strategy/robot-grid"
 import { eq, ok, run, test } from "./harness"
 
 const O = { x: 10, y: 20 }
@@ -52,6 +52,37 @@ test("B192: a cell whose window has no room for the roboport among the modules i
   const input = { modules: near, cells: [{ i: 0, j: 0 }], failed: {}, origin: O, spacing: 36, constructionRadius: 55, max: 10 }
   eq(cellKey(nextCell(input)!), "1,0", "without the check: the blocked cell")
   eq(cellKey(nextCell({ ...input, room })!), "0,1", "with it: the next best cell")
+})
+
+test("m7-b219: a cell that brings a passive provider into logistic range comes first", () => {
+  // seed 222: two roboports beside the robot cell; 19 of 21 providers lay outside every logistic area, so robots had
+  // nothing to build from. The hub (10, 20) covers x -45..65 for construction but only -15..35 for logistics.
+  const modules = base([[0, 0, 20, 20], [40, 80, 30, 30], [-40, 10, 10, 10]])
+  const input = { modules, cells: [{ i: 0, j: 0 }], failed: {}, origin: O, spacing: 36, constructionRadius: 55, max: 10, logisticRadius: 25 }
+  // Without supplies: 0,1 (10, 56) reaches the 900-tile module centred at (55, 95).
+  eq(cellKey(nextCell(input)!), "0,1", "most uncovered area")
+  // A provider at (-40, 15) is inside the hub's construction area (no module there is open) but out of its logistic
+  // range; cell -1,0 (-26, 20) reaches it.
+  const supplies = [{ x: -40, y: 15 }]
+  eq(cellKey(nextCell({ ...input, supplies })!), "-1,0", "the supply point first")
+  // With every module covered, an unreached provider still grows the network.
+  const covered = { ...input, modules: base([[0, 0, 20, 20]]), supplies }
+  eq(cellKey(nextCell(covered)!), "-1,0", "a provider alone is reason to grow")
+  eq(nextCell({ ...covered, cells: [{ i: 0, j: 0 }, { i: -1, j: 0 }] }), undefined, "reached: done")
+})
+
+test("B222: a new roboport's window is anchored one link from its built neighbour", () => {
+  // m7-b219 seed 222: ±8 around fixed grid points found no room three times in a row. Logistic radius 25: two
+  // roboports link up to 50 apart; window 18 and margin 2 put the anchor 30 out, so the roboport lands 12..48 out.
+  const a = stepAnchor({ x: 100, y: 200 }, 1, 0, 25, 18, 2)
+  eq(`${a.x},${a.y}`, "130,200", "east")
+  const b = stepAnchor({ x: 100, y: 200 }, 0, -1, 25, 18, 2)
+  eq(`${b.x},${b.y}`, "100,170", "north")
+  // Coverage follows the real positions: a hub that stands 30 tiles east of its grid point covers the module there.
+  const modules = base([[60, 10, 10, 10]])
+  const input = { modules, cells: [{ i: 0, j: 0 }], failed: {}, origin: O, spacing: 36, constructionRadius: 20, max: 10 }
+  ok(nextCell(input) !== undefined, "at the grid point the module (65, 15) is open")
+  eq(nextCell({ ...input, pointOf: () => ({ x: 60, y: 20 }) }), undefined, "at the real spot it is covered")
 })
 
 run("robot-grid")

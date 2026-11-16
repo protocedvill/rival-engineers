@@ -149,29 +149,28 @@ function addNode(job: PoleJob, n: PoleNode): number {
   job.nodes.push(n)
   job.parent.push(i)
   deg.push(0)
-  // B210: a built pole joins the poles of its electric network, whatever their distance, and no other built pole: the
-  // game, not the reach, says which built poles are wired (m7-b208 seed 222: a steel column's poles stood 5 tiles from
-  // the grid, an island, while the plan counted it powered). Between a built pole and one still to be built, the wire
-  // exists only while the built pole has a free connection.
+  // B210: two built poles in reach are wired only if the game put them on one electric network (m7-b208 seed 222: a
+  // steel column's poles stood 5 tiles from the grid, an island, while the plan counted it powered). Not "same network,
+  // whatever the distance": the network may hold together only through poles this plan evicts (B37; m7-b213: every
+  // seed lost power after its first production plan). Between a built pole and one still to be built, the wire exists
+  // only while the built pole has a free connection.
   const built = job.built !== undefined ? job.built[tkey(math.floor(n.x), math.floor(n.y))] : undefined
   if (job.built !== undefined) {
     job.wires ??= []
+    job.nets ??= {}
     while (job.wires.length < i) job.wires.push(-1)
     job.wires.push(built !== undefined ? built.wires : -1)
-    if (built !== undefined) {
-      job.nets ??= {}
-      const first = job.nets[built.net]
-      if (first !== undefined) union(job, i, first)
-      else job.nets[built.net] = i
-    }
+    if (built !== undefined) job.nets[i] = built.net
   }
   const wires = job.wires
   for (let j = 0; j < i; j++) {
     if (!inWireReach(job.nodes[j], n)) continue
     if (wires !== undefined) {
       const wj = wires[j] ?? -1
-      if (built !== undefined && wj >= 0) continue
-      const exact = built !== undefined ? i : wj >= 0 ? j : -1
+      const both = built !== undefined && job.nets![j] !== undefined
+      if (both && job.nets![j] !== built!.net) continue
+      // Two built poles: their wires are already counted.
+      const exact = both ? -1 : built !== undefined ? i : wj >= 0 ? j : -1
       if (exact >= 0) {
         if (wires[exact] >= MAX_WIRE_CONNECTIONS) continue
         wires[exact]++
@@ -658,13 +657,15 @@ export function polesNow(layout: LayoutState, terrain: TerrainView, facts: Proto
  * Independent check: the pole components of a layout (module poles and line poles joined within wire reach), and the
  * modules not on the first generator module's network: consumers, and (B39) later generator modules.
  */
-export function unpoweredModules(layout: LayoutState, facts: ProtoFacts): string[] {
-  return unpoweredWith(layout, facts, undefined)
+export function unpoweredModules(layout: LayoutState, facts: ProtoFacts, built?: Record<number, BuiltPole>): string[] {
+  return unpoweredWith(layout, facts, undefined, built)
 }
 
 /** `unpoweredModules` as it would be if the poles on the listed tiles were gone (B63: simulate a removal). */
-export function unpoweredWith(layout: LayoutState, facts: ProtoFacts, dropped: Record<number, boolean> | undefined): string[] {
+export function unpoweredWith(layout: LayoutState, facts: ProtoFacts, dropped: Record<number, boolean> | undefined, built?: Record<number, BuiltPole>): string[] {
   const job = newPoleJob("check:", "small-electric-pole", facts)
+  // B210: with the built poles' networks, a module the game left off the grid counts as unpowered.
+  job.built = built
   init(job, layout, facts, dropped)
   const out: string[] = []
   const roles = powerRoles(layout, facts)

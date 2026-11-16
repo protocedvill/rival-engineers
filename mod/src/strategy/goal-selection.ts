@@ -23,6 +23,11 @@ export interface GoalSelectionSpec {
 export interface GoalSelectionState {
   /** A planning/building goal already exists for each listed kind. */
   active: Partial<Record<GoalKind, boolean>>
+  /**
+   * B213: every active goal of each listed kind is stalled (`goalStalled`: building, nothing placed for `stallTicks`).
+   * A growth does not wait for such a kind: a stalled goal places nothing, and may wait for what the growth makes.
+   */
+  stalled?: Partial<Record<GoalKind, boolean>>
   /** The most recent goal of each listed kind is done. */
   built: Partial<Record<GoalKind, boolean>>
   planning: boolean
@@ -120,6 +125,9 @@ export function selectGoals(specs: GoalSelectionSpec[], state: GoalSelectionStat
         // B29: a power/fuel growth is the critical path out of a power-short production stall. An active production
         // building must not block it; `startGrow` still waits if its reroute would touch that production's route (B52).
         if (spec.kind === "grow" && spec.growth?.power === true && kind === "production") continue
+        // B213 (m7-b208 seed 222): the robot cell's goal stalled for 7 game-hours waiting for a roboport item, and every
+        // growth waited for it, so the second cluster's production waited for those growths: nothing was planned.
+        if (spec.kind === "grow" && state.stalled?.[kind] === true) continue
         if (state.active[kind]) blocked.push(kind)
       }
       if (spec.kind !== "grow" && (powerGrow || state.growingPower)) blocked.push("the steam block's growth")

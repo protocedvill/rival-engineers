@@ -1777,29 +1777,24 @@ Item 6's remaining work was D79's generated-vs-curated comparison. Asked how to 
   each fluid edge's pipe, pipe-to-ground and pump (`DesignContext.fluidParts`, from `oil.ts` `FLUID_PARTS`), and the
   pole of the pole lines. The gate stays: nothing is generated before a robot-cell or roboport module is in the
   factory (B205's amendment, where the rows joined the robot chain's goal and slowed it).
-- **Planned last, one goal per row.** B205 saw the rows join the robot chain's 16-module goal (~40 game-min to plan)
-  and B209 saw a 12-module stock goal hold up restore routes. Generated rows are now flagged (`generatedStock` on the
-  design node, goal node and graph node). The rows, plus every missing provider whose edges all feed stock-only nodes
-  (`design.ts` `stockOnly`/`stockRoots`), go into a new last production layer `stock`, split into one goal per row
-  (key `production#1@stock:<row role>`). Those goals come after every cluster's production and the mall. A provider
-  that also feeds a lab or the mall stays in its own layer.
-- **The crew does not wait on a slow row.** B185 makes the crew wait for a built stock row instead of hand-crafting.
-  At 10 items per 30 game-min (`BUILD_STOCK` / `STOCK_FILL_SECONDS`), a generated row takes ~3 game-min an item, so
-  ten boilers (3 s each by hand) would hold a goal up for half an hour. For generated rows only, the crew now waits
-  while the row is not starved, unpowered or unfuelled **and** makes the shortfall sooner than one character's
-  hand-craft (`strategy/stock-wait.ts`; hand time follows hand-craftable intermediates). Solar and robot stock rows are
-  still always waited for (B185, the user: solar buildings are made by machines).
+- **Planned last, one goal per row: B211.** B211 (soak `m7-b208`, merged here from the soak-fix branch) already
+  plans each generated row, with the rows only it needs, as its own goal after every production layer. M7d.6 had
+  written the same split independently (an edge-based variant); the merge keeps B211's. The rows are now also flagged
+  (`generatedStock` on the design, goal and graph node) for the crew rule below.
+- **The crew does not wait on a slow row.** B185 makes the crew wait for a built stock row instead of hand-crafting,
+  and B216 already stops that for a row that makes nothing. At 10 items per 30 game-min (`BUILD_STOCK` /
+  `STOCK_FILL_SECONDS`), a working generated row still takes ~3 game-min an item, so ten boilers (3 s each by hand)
+  would hold a goal up for half an hour. For generated rows only, the crew now also hand-crafts unless the row is not
+  starved, unpowered or unfuelled **and** makes the shortfall sooner than one character's hand-craft
+  (`strategy/stock-wait.ts`; hand time follows hand-craftable intermediates). Solar and robot stock rows keep B185/B216
+  as they were. Items already made (depot, pockets, every supply point, the rows' buffers) are always taken first.
 
 Measured offline on the seed-11 design capture (`m7-seed11-design-clusters`, minute 222, with a stand-in mall listing
 `mall-polse`'s 12 products and robots marked as present): the old threshold added 12 stock-only modules (5 rows), the
-new one 16 (8 rows: pump, pumpjack and offshore pump are new, plus an engine-unit feeder for the pump row). Each goal
-now holds one row and at most a few feeders.
+new one 16 (8 rows: pump, pumpjack and offshore pump are new, plus an engine-unit feeder for the pump row).
 
-Tests: T1 `design` "M7d.6" (3: every building gets a row; route parts count; rows and their own feeders plan last, one
-goal per row), T1 `stock-wait` (2). **Not run in game.** No soak on this branch reaches robots yet (item 5: the latest
-`m7-b222` seed 222 run had `robotBuilt=0` through minute 535), and the generated stock waits for them, so a soak would
-only show this once robots arrive. Proposed check once item 5 produces robots: one seed past the first roboport,
-reading the `@stock:` goals' plan times and the crew's `made by its stock row` waits.
+Tests: T1 `design` "M7d.6" (2: every building gets a row; route parts count), T1 `stock-wait` (2), with B211's T1.
+In game: see the M7d.7 soak below.
 
 Still open (proposed, for the user): the D79 comparison against a fused generated mall module; the generated rows
 starting before robots (they would save hand-crafting, at the planning cost B205 measured); `BUILD_STOCK`'s 10 per row.
@@ -1817,6 +1812,13 @@ starting before robots (they would save hand-crafting, at the planning cost B205
 | Pumpjack field margin | `modules/generators.ts` `PUMPJACK_FIELD_MARGIN` | 2 tiles | Agent guess: room around the pumpjacks for the collector pipes and poles. | no |
 | Pipe budget retry | `planner/plan.ts` `PIPE_BUDGET_RETRY` | ×2 | Agent guess (B158): one resume of the same search after `budget exhausted`; a second retry would double planner stalls. | no |
 | Pipe-to-ground pair / pump route cost | `planner/policy.ts` `RouterWeights.pipeUnderground` / `pump` | 2 / 10 (defaults in `plan.ts`) | Agent guess: a pair costs two pipes' worth plus material; a pump is dearer and needs power, so the route only takes one where the extent forces it. | no |
+| Walk margin inside a tree/rock's mining reach | `character/walk.ts` `ROCK_REACH_MARGIN` | 0.6 tiles (was 1.2) | Agent value (B219, proposed): with 1.2, every end tile around a big rock in a rock field was blocked and the walk failed "no-path"; 0.6 still leaves room for the character's box. | no |
+| Replacement pole retry delay | `planner/runtime.ts` `POLE_RETRY_TICKS` | 1800 ticks (30 s) | Agent value (B220, proposed): the build round cadence B138 uses; a pole short of its item gets a new job about as often as other leftover ghosts. | no |
+| Grid cells that may fail in a row | `strategy/robots.ts` `MAX_GRID_FAILURES` | 3 (was 1 in total) | Agent value (B222, proposed): a failed cell is never retried, so a few blocked cells should not stop the network short of its supply points; three in a row still bounds the plans spent. | no |
+| Roboport plan window | `strategy/robots.ts` `CELL_WINDOW` | 18 tiles half-size (was 8) | Agent value (B222, proposed): with the window anchored one link from the built neighbour, 18 still keeps every spot within link range (12–48 out) while leaving room among belts and poles. | no |
+| Roboport link margin | `strategy/robots.ts` `LINK_MARGIN` | 2 tiles | Agent guess (B222, proposed): how far inside the farthest link distance (2 × logistic radius) the window's far edge stays. | no |
+| Storage stacks kept for robots | `jobs/robot-orders.ts` `ROBOT_STORAGE_RESERVE` | 16 empty stacks per network storage chest (a third of 48) | Agent guess (B223, proposed): room for what robots bring back from a retired module (belts plus the items on them) without filling a chest; the brain adds a depot when the network has less than this. | no |
+| Storage chests stocked | `strategy/design.ts` `STORAGE_STOCK` | 10 storage chests, its row sized to make them in `STOCK_FILL_SECONDS` | Agent guess (m7-b222, proposed; the user asked for the chests to be automated): enough for several depots at 48 stacks each, like `ROBOPORT_STOCK`. | no |
 | Pipe route search budget | `planner/plan.ts` `PIPE_BUDGET` | 200000 expansions | Agent guess: a 600-tile line needs a few thousand; the rest is room for detours. | no |
 | Slow-plan capture | `planner/runtime.ts` `SLOW_PLAN_TICKS` | 3600 ticks (1 game-min) | Agent guess (diagnostics only, soaks with frame dumps): most plans finish well within a game-minute; one still planning then is captured to `plans/slow/` for a replay. Adopted plans are now captured up to a 3,000-tile side like failed ones (was 400: production regions are 768² and were never kept). | no |
 | Oil complex size cap | `strategy/design.ts` `OIL_COMPLEX_MAX_REFINERIES`, `OIL_COMPLEX_MAX_LUBE` | 12 refineries, 6 lubricant plants | Agent guess (proposed): a 12-refinery complex makes ~230 petroleum/s (T2: 19.5/s per refinery with cracking), far above a first blue/robot base; a larger draw adds a parallel complex rather than one unbounded footprint. Lubricant: 6 plants can make 60/s, though heavy oil (5/s per refinery) limits it first; a 6-machine electric-engine row draws ~6.75/s. | no |

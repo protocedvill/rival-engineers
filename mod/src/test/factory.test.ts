@@ -22,11 +22,13 @@ import { newRoutingJob, runJob } from "../planner/plan"
 import { commitPlacement, placeNow } from "../planner/placement"
 import { polesNow, unpoweredModules } from "../planner/power"
 import { selectPolicy } from "../planner/policy"
-import { claimView, layoutEntityKeys, PlannerEntry, stampParts, startBuild, stepBuild, strayUnder } from "../planner/runtime"
-import { claim, complete, getJob } from "../jobs/board"
+import { claimView, layoutEntityKeys, PlannerEntry, polesPending, stampParts, startBuild, stepBuild, strayUnder } from "../planner/runtime"
+import { claim, complete, failJob, getJob } from "../jobs/board"
 import { clearJobFor } from "../jobs/faction"
 import { newTerrain, requestArea, stepTerrain, terrainView } from "../planner/terrain"
 import { dumpEntities } from "../telemetry"
+import { stockRowWaits } from "../strategy/factory-report"
+import { addNode } from "../planner/logical"
 import { at, createLab, Lab } from "./lab"
 import { labForce } from "./module-lab"
 import { powerModules } from "./route-lab"
@@ -658,6 +660,68 @@ describe("M5a power and growth", () => {
     assert(getJob(faction.board, id!)!.status !== "failed", "the job is open")
     assert(faction.ghostJobs[unplanned.unit_number!] === undefined, "the unplanned ghost was left alone")
     assert(adoptPlannedPoles(s, faction, layout, 150) === 0, "a live job is not duplicated")
+    // m7-b219 seed 3333: a running build's pole ghosts failed `missing-item` and were re-adopted at every upkeep; the
+    // build retries its own ghosts in rounds.
+    const second = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 8.5, y: oy + 0.5 }, force: faction.force })!
+    assert(adoptPlannedPoles(s, faction, layout, 150, { [second.unit_number!]: true }) === 0, "a running build's ghost is left to it")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 1, "the same ghost outside a build is adopted")
+  })
+
+  test("D71: a replacement pole that waits for its item keeps the old line up", () => {
+    // m7-b219 seed 3333: a replacement pole's job failed `missing-item`, and the poles phase moved on and picked up the
+    // old line before the new one stood.
+    const lab = createLab(32)
+    const faction = createFaction(`poles-wait-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: math.floor(lab.origin.x) + 0.5, y: math.floor(lab.origin.y) + 0.5 }, force: faction.force })!
+    const first = addPlaceJob(faction, ghost)!
+    const jobs = [first]
+    assert(polesPending(faction, jobs, {}), "an open job is waited on")
+    failJob(faction.board, first, "missing-item: small-electric-pole", game.tick)
+    assert(polesPending(faction, jobs, {}) && jobs[0] === first, "a job short of its item is waited on, not retried at once")
+    getJob(faction.board, first)!.finishedTick = game.tick - 1800
+    assert(polesPending(faction, jobs, {}) && jobs[0] !== first, "it gets a new job later")
+    failJob(faction.board, jobs[0], "cannot-place", game.tick)
+    assert(!polesPending(faction, jobs, {}), "another failure ends the wait")
+    destroyFaction(faction.name)
+  })
+
+  test("B216/m7-b222: a stock row that has made nothing for stallTicks no longer holds the crew", () => {
+    // seed 44444: the roboport row lacked advanced circuits (its route was never built) while its own chain read ok or
+    // backed-up; a roboport goal waited for it for hours.
+    const lab = createLab(32)
+    const faction = createFaction(`stock-idle-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    brain.nextThink = math.huge
+    const f = startFactory(faction)
+    const stall = getConfig().stallTicks
+    const row = addNode(f.graph, { id: moduleId("row"), role: "stock:roboport", kind: "sink", item: "roboport", capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "ok", createdTick: game.tick, builtTick: game.tick })
+    assert(stockRowWaits(faction.name, "roboport", 1), "a new row: the crew waits for it")
+    row.builtTick = game.tick - stall
+    assert(!stockRowWaits(faction.name, "roboport", 1), "nothing made since it was built, stallTicks ago: hand-craft")
+    row.madeTick = game.tick - 60
+    assert(stockRowWaits(faction.name, "roboport", 1), "it made one a moment ago: wait")
+    destroyFaction(faction.name)
+  })
+
+  test("B219: an adopted pole ghost over a rock gets a clear job first", () => {
+    // m7-b215 seed 3333: a pole ghost over a big rock had no job for hours; it was the only line to the oil outposts.
+    const lab = createLab(32)
+    const faction = createFaction(`adopt-rock-${game.tick}`, { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const s = lab.surface
+    const ox = math.floor(lab.origin.x) + 6
+    const oy = math.floor(lab.origin.y)
+    const layout = newLayout()
+    layout.poles = [{ id: poleId("rocky"), name: "small-electric-pole", x: ox, y: oy, line: poleLineId("l") }]
+    const rock = s.create_entity({ name: "big-rock", position: { x: ox + 0.9, y: oy + 1 } })!
+    const ghost = s.create_entity({ name: "entity-ghost", inner_name: "small-electric-pole", position: { x: ox + 0.5, y: oy + 0.5 }, force: faction.force })!
+    assert(rock !== undefined && ghost !== undefined && ghost.valid, "rock and ghost placed")
+    assert(adoptPlannedPoles(s, faction, layout, 150) === 1, "the orphan is adopted")
+    const job = getJob(faction.board, faction.ghostJobs[ghost.unit_number!]!)!
+    const deps = job.deps ?? []
+    assert(deps.length === 1, `one dependency (${deps.length})`)
+    const clear = getJob(faction.board, deps[0])!
+    assert(clear.payload.kind === "clear" && clear.payload.target === rock, "it clears the rock")
   })
 
   test("B144: a repair goal (growBuild without growth) survives a hard ghost blocker", () => {

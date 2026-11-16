@@ -3,7 +3,7 @@ import { getConfig } from "../config"
 import { buildGraph, FactoryGraph } from "../planner/graph"
 import { Vec } from "../planner/grid"
 import { findModule } from "../planner/layout"
-import { nodesOf, rateIn, supplyGaps } from "../planner/logical"
+import { LogicalNode, nodesOf, rateIn, supplyGaps } from "../planner/logical"
 import { entryPolicy, tiers } from "../planner/runtime"
 import { statusCounts } from "./reconcile"
 import { isTempRole } from "./stage"
@@ -162,11 +162,7 @@ export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEn
  * their output slots; `bootstrap.ts` registers them).
  */
 /**
- * B185 (user, 2026-11-11: "this is an automation game"): whether a built stock row (`stock:<item>`) makes `item`. The
- * crew then takes it from the row's buffer and never hand-crafts it.
- */
-/**
- * B185: whether the crew waits for a built stock row to make `short` more of `item` instead of hand-crafting them.
+ * B185 (user, 2026-11-11: "this is an automation game"): whether the crew waits for a built stock row to make `short` more of `item` instead of hand-crafting them.
  * Solar and robot stock rows are always waited for (B185, user: solar buildings are made by machines). M7d.6: a
  * generated-mall row (`generatedStock`) only while it is not starved and makes them sooner than a hand-craft
  * (`stock-wait.ts`): every building has one now, and at a few items a game-minute it would hold the crew up.
@@ -174,15 +170,33 @@ export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEn
 export function stockRowWaits(factionName: string, item: string, short: number): boolean {
   const f = getFactory(factionName)
   if (f === undefined) return false
-  for (const n of nodesOf(f.graph)) {
-    if (n.role !== `stock:${item}` || n.lifecycle !== "built") continue
-    if (n.generatedStock !== true) return true
-    // A sink's planned output is its utilization (`factory.ts`), so the row makes capacity × utilization a second.
-    const util = n.planned.outputs[0]?.perSecond ?? 0
-    const rate = rateIn(n.capacity.outputs, item) * math.min(1, util)
-    return SW.waitForStockRow(SW.handCraftSeconds(prototypeFacts, item, short), short, rate, n.status)
+  let row: LogicalNode | undefined
+  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") row = n
+  if (row === undefined) return false
+  // M7d.6: every building has a generated row now, at a few items a game-minute: the crew waits for one only while it
+  // makes the shortfall sooner than a hand-craft (`stock-wait.ts`). Solar and robot rows are always waited for (B185).
+  // A sink's planned output is its utilization (`factory.ts`), so the row makes capacity × utilization a second.
+  if (row.generatedStock === true) {
+    const rate = rateIn(row.capacity.outputs, item) * math.min(1, row.planned.outputs[0]?.perSecond ?? 0)
+    if (!SW.waitForStockRow(SW.handCraftSeconds(prototypeFacts, item, short), short, rate, row.status)) return false
   }
-  return false
+  // B216 (m7-b215 seed 44444, min 288-434): the medium-pole row made nothing for 2.4 game-hours, its steel smelter out
+  // of fuel; the coal growth that fuels it and a production goal both waited for medium poles, which the crew waited
+  // for from the row. A row that made none of its item while a node of its chain has been starved, unfuelled or
+  // unpowered for `stallTicks` holds the crew no longer: the shortfall is hand-crafted.
+  for (const o of row.measured?.outputs ?? []) if (o.item === item && o.perSecond > 0) return true
+  const stall = getConfig().stallTicks
+  // m7-b222 seed 44444: the roboport row had no advanced circuits (its route from a shared provider was never built), so
+  // it made nothing for hours while every node of its own chain read ok or backed-up, and a roboport goal waited on it.
+  // A row that has made none of its item for `stallTicks` since it was built holds the crew no longer either.
+  const since = row.madeTick ?? row.builtTick
+  if (since !== undefined && game.tick - since >= stall) return false
+  const suffix = `>stock:${item}`
+  for (const n of nodesOf(f.graph)) {
+    if (n.lifecycle !== "built" || (n.role !== row.role && string.sub(n.role, -suffix.length) !== suffix)) continue
+    if ((n.status === "starved" || n.status === "unfuelled" || n.status === "unpowered") && game.tick - (n.statusTick ?? game.tick) >= stall) return false
+  }
+  return true
 }
 
 export function moduleAssemblers(factionName: string, buildingOnly = false): LuaEntity[] {

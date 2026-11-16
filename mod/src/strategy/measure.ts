@@ -349,6 +349,7 @@ function evaluate(n: LogicalNode, meter: NodeMeter): void {
   const ins = cur.insSamples - old.insSamples
   const inserters = ins > 0 ? { unpowered: (cur.insUnpowered - old.insUnpowered) / ins, unfuelled: (cur.insUnfuelled - old.insUnfuelled) / ins } : undefined
   n.measured = { tick: cur.tick, window, inputs, outputs, machines: meter.machines.length, states, missing, estimated, load, inserters }
+  if (n.item !== undefined && outputs.some((o) => o.item === n.item && o.perSecond > 0)) n.madeTick = cur.tick
 }
 
 /**

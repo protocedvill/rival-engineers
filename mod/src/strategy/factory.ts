@@ -197,6 +197,8 @@ export interface FactoryState {
   /** B2 (D36): the same for splitters (`logistics-splitter-min-saving`); `taps` = which consumers then share a producer. */
   needSplitters?: string
   taps?: Record<string, string[]>
+  /** m7-b222: items the bootstrap found no source for, with the largest demand seen (each gets a stock row). */
+  unsourced?: Record<string, number>
   /** D36 / B2 comparisons so far (telemetry): goal, attempt, decision and one line per alternative. */
   compares?: { goal: string; tick: number; research: boolean; why: string[] }[]
   /** D38: temporary factory cells built so far per product (never rebuilt once retired), and retired cells. */
@@ -419,6 +421,18 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     upkeep(ctx)
     EX.robotsUpkeep(ctx, ctx.config.factoryBuildPriority)
     EX.upgradeOutputChests(ctx, ctx.config.factoryBuildPriority)
+    // A running build retries its own ghosts in rounds (a pole waiting for its item fails `missing-item` meanwhile).
+    const owned: Record<number, boolean> = {}
+    for (const g of f.goals) {
+      if (g.status !== "building") continue
+      const b = g.plan !== undefined ? RT.getPlannerEntry(g.plan)?.build : undefined
+      for (const gh of [...(b?.ghosts ?? []), ...(g.growBuild?.ghosts ?? [])]) if (gh.valid && gh.unit_number !== undefined) owned[gh.unit_number] = true
+      for (const id of [...(b?.poleJobs ?? []), ...(g.growBuild?.poleJobs ?? [])]) {
+        const j = getJob(ctx.faction.board, id)
+        if (j?.payload.kind === "place" && j.payload.ghost.valid && j.payload.ghost.unit_number !== undefined) owned[j.payload.ghost.unit_number] = true
+      }
+    }
+    EX.adoptPlannedPoles(ctx.surface, ctx.faction, f.layout, ctx.config.factoryPowerBuildPriority, owned)
   }
   LF.milestones(ctx)
   ST.sampleScience(ctx, LF.packsAutomated(f), (name) => mark(faction, name))
@@ -557,15 +571,19 @@ function designNow(ctx: Ctx): Design | undefined {
   for (const [role] of pairs(f.retiring ?? {})) retiring += `${role as string};`
   const flagKey = ["fallback", "noTap", "providerSplit", "providerNoTap", "noMerge", "noFeed", "ownSite", "inlandPower", "solarPower"].map((k) => CS.keys(c, k as CS.ConstraintKind).join(";")).join("|")
   const key = `${flagKey}|${blocked}|${short}|${retiring}|${ST.designSignals(f)}|${f.needUndergrounds ?? ""}|${f.needSplitters ?? ""}|${taps}|${ctx.faction.brain!.milestones["automated-science"] !== undefined}|${f.stage}|${targetKey}|${researchedCount}|${LG.designGraphKey(f.graph)}|${f.goals.length}|${ctx.faction.brain!.patches.length}`
+  // m7-b222 (user, 2026-11-14): storage chests and the items the crew has no source for (plastic) are stocked too.
+  DS.noteUnsourced((f.unsourced ??= {}), ctx.faction.brain!.shortfalls)
+  const madeBy = (item: string): boolean => ctx.force.recipes[prototypeFacts.recipeForItem(item) ?? item]?.enabled === true
+  const stock = [...DS.robotStock((t) => ctx.force.technologies[t]?.researched === true, madeBy), ...DS.supplyStock(f.unsourced, madeBy)]
+  const stockKey = stock.map((st) => `${st.item}=${string.format("%.6g", st.perSecond)}`).join(",")
   const cached = designCache[ctx.faction.name]
-  if (cached !== undefined && cached.key === key) return cached.design
+  if (cached !== undefined && cached.key === `${key}|${stockKey}`) return cached.design
   // The mall joins the design once science is automated (the crew hand-craft buildings until then).
   const mallId = ctx.config.factoryMall
   const mall = mallId !== "" && ctx.faction.brain!.milestones["automated-science"] !== undefined ? { id: mallId, utilization: ctx.config.factoryMallUtilization } : undefined
   const dctx = designContext(ctx, stageIndex)
   // M7d.5 (D77): construction robots and roboports are stocked once their technology is researched.
   // B185: a design with a solar field adds the stock rows of its buildings itself (`DS.design`).
-  const stock = DS.robotStock((t) => ctx.force.technologies[t]?.researched === true, (r) => ctx.force.recipes[r]?.enabled === true)
   const d = DS.design(dctx, { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock })
   const diff = DS.diffDesign(d, f.graph, (node) => LO.findModule(f.layout, node)?.canonical)
   // B60: remember built providers with no expansion unit. The next design keeps their capacity and plans the
@@ -635,7 +653,7 @@ function designNow(ctx: Ctx): Design | undefined {
     f.design.techs = d.techs
   }
   ;(d as Design & { goals?: GoalSpec[] }).goals = goals
-  designCache[ctx.faction.name] = { key, design: d, dctx, target: { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock } }
+  designCache[ctx.faction.name] = { key: `${key}|${stockKey}`, design: d, dctx, target: { item: items[0].item, perSecond: items[0].perSecond, also: items.slice(1), mall, stock } }
   return d
 }
 
@@ -687,12 +705,14 @@ export interface FactoryGoalSelectionSnapshot {
  */
 function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], researched: Record<string, boolean>): FactoryGoalSelectionSnapshot {
   const active: Partial<Record<GoalKind, boolean>> = {}
+  const stalled: Partial<Record<GoalKind, boolean>> = {}
   const completed: Partial<Record<GoalKind, boolean>> = {}
   // M7c: a stalled building goal still holds its kind's lock here. Released, it let the next blue cluster plan a second
   // copy of the stalled chain (seed 11, two oil modules on one field). Its feeders pass by `feedsBuilding`; the
   // growth waits (B52/B98, `startGrow`) skip it.
   for (const kind of ["power", "labs", "production", "mall", "grow", "repair", "temp", "radar", "robots"] as GoalKind[]) {
     active[kind] = f.goals.some((g) => g.kind === kind && (g.status === "planning" || g.status === "building"))
+    stalled[kind] = active[kind] && !f.goals.some((g) => g.kind === kind && (g.status === "planning" || g.status === "building") && !GH.goalStalled(game.tick, getConfig().stallTicks, g))
     completed[kind] = built(f, kind)
   }
   const activeGrowth = activeGoal(f, "grow")
@@ -718,6 +738,7 @@ function selectionSnapshot(faction: string, f: FactoryState, specs: GoalSpec[], 
     })),
     state: {
       active,
+      stalled,
       built: completed,
       planning: planning(f) !== undefined,
       powerNodeExists: LG.nodeByRole(f.graph, "power") !== undefined,
@@ -1124,10 +1145,7 @@ function updateGrowing(ctx: Ctx, g: FactoryGoal): void {
   const b = g.growBuild!
   const board = ctx.faction.board
   if (b.phase === "poles") {
-    for (const id of b.poleJobs ?? []) {
-      const j = getJob(board, id)
-      if (j !== undefined && j.status !== "done" && j.status !== "failed") return
-    }
+    if (RT.polesPending(ctx.faction, (b.poleJobs ??= []), { fuel: { item: ctx.faction.brain!.catalog.fuel, count: 5 }, priority: b.priority })) return
     for (const e of b.breakAfter ?? []) if (e.valid && clearJobFor(ctx.faction, e) === undefined) b.clearJobs.push(addClearJob(ctx.faction, e, ctx.config.factoryBuildPriority))
     b.breakAfter = undefined
     b.phase = "clear"
@@ -1541,6 +1559,8 @@ function updatePlanning(ctx: Ctx, g: FactoryGoal): void {
       transitionGoal(g, "failed")
       g.deferred = true
       g.reason = `replan ${replan === "a mine of its own" ? "with a mine of its own" : replan === "parallel providers" ? "with parallel providers" : replan} for ${g.reason}`
+      // B212: say so, or the goal vanishes from the log (m7-b208 seed 44444: g162 planned 33 game-minutes, then nothing).
+      log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}), planned again at once: ${g.reason}`)
       return
     }
     log(`[rival-engineers] faction ${ctx.faction.name}: goal ${g.id} plan failed (attempt ${g.attempts}): ${g.reason}`)
@@ -2973,14 +2993,31 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       // B67: with every planned pole standing, say whether the plan itself leaves the consumer off the network (a layout
       // gap, e.g. a growth that moved its poles) or the plan joins it and the game disagrees.
       const off = e.kind === "power" && e.to !== undefined && PW.unpoweredModules(f.layout, prototypeFacts).indexOf(e.to) >= 0
+      // B210: the layout's poles reach it, but the game may have wired none (every pole near it had 5 wires).
+      let island = false
+      if (e.kind === "power" && e.to !== undefined && !off) {
+        const wired: Record<number, PW.BuiltPole> = {}
+        for (const p of findEntities(ctx.surface, { force: ctx.faction.force, type: "electric-pole" })) {
+          wired[tkey(math.floor(p.position.x), math.floor(p.position.y))] = { net: p.electric_network_id ?? 0, wires: p.get_wire_connector(defines.wire_connector_id.pole_copper, false)?.connection_count ?? 0 }
+        }
+        island = PW.unpoweredModules(f.layout, prototypeFacts, wired).indexOf(e.to) >= 0
+      }
       // B107: every piece stands, but another input fills both lanes of the consumer's belts past this port: they are
       // picked up (emptied) and placed again. B124: so are its belts and the edge's route belts that hold a foreign item.
       if (e.kind === "belt" && check.conflicts.length === 0 && e.toPort !== undefined) {
         const inLayout = (id: string): boolean => LO.findModule(f.layout, id) !== undefined
         clogged = cloggedBelts(ctx.surface, ctx.faction.force, f.layout, LG.connectModule(f.graph, e.to, inLayout) ?? e.to, e.toPort, e.physical.map((rid) => IDS.routeId(rid)))
       }
+      // B210: an island the game left unwired gets a plan of its own: no module, no connection, only the pole step, which
+      // sees the built poles' networks and joins it through poles with a free wire. One such plan per stall window: a
+      // failed one (every pole full) is not retried at every reconciler pass.
+      if (island && clogged.length === 0 && planning(f) === undefined && !f.goals.some((x) => x.kind === "repair" && x.nodes.length === 0 && x.growBuild === undefined && (x.status === "planning" || x.status === "building" || x.createdTick > ctx.tick - ctx.config.stallTicks))) {
+        startGoal(ctx, { kind: "repair", nodes: [], edges: [], techs: [] })
+        say("its poles reach the grid's, but the game wired none: a pole plan joins it (B210)")
+        return
+      }
       if (clogged.length === 0) {
-        say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : "the layout's poles reach it"})` : "nothing missing")
+        say(check.conflicts.length > 0 ? `blocked: ${check.conflicts[0].blocker}` : e.kind === "power" ? `nothing missing (${off ? "the layout's poles do not reach it" : island ? "its poles reach the grid's, but the game wired none: the next plan joins it (B210)" : "the layout's poles reach it"})` : "nothing missing")
         return
       }
     }

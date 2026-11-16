@@ -2,8 +2,10 @@
 //
 // The network grows on a square grid from its hub (cell 0,0, the first roboport, with the storage chests). Cell (i, j)
 // sits at hub + (i, j) × spacing. Each new roboport takes a free cell next to one the network already has (so its
-// logistic area touches the network), the one whose construction area reaches the most base the network does not cover
-// yet; a tie goes to the cell nearest the hub, then the lowest i, then the lowest j (deterministic).
+// logistic area touches the network), the one whose logistic area takes in the most supply points (passive providers:
+// robots only fetch from chests in logistic range) the network does not reach yet, then whose construction area reaches
+// the most base it does not cover yet; a tie goes to the cell nearest the hub, then the lowest i, then the lowest j
+// (deterministic).
 
 export interface GridRect {
   x: number
@@ -56,6 +58,14 @@ export interface NextCellInput {
   /** The most roboports the network places. */
   max: number
   /**
+   * Where a cell's roboport is (a built cell) or will be planned around (a candidate). Default: its grid point. B222: a
+   * built roboport sits wherever its plan found room, so coverage and the next window follow the real positions.
+   */
+  pointOf?: (this: void, c: GridCell) => { x: number; y: number }
+  /** m7-b219 seed 222: the supply points (passive provider chests) robots must reach, and a roboport's logistic half-width. */
+  supplies?: { x: number; y: number }[]
+  logisticRadius?: number
+  /**
    * B192: the roboport module's footprint and the half-size of its plan window around the cell point. A cell whose
    * window has no spot clear of the base's modules (and their 1-tile margin) is skipped. Absent: every cell counts.
    */
@@ -100,8 +110,9 @@ export function nextCell(p: NextCellInput): GridCell | undefined {
   const taken: Record<string, boolean> = {}
   for (const c of p.cells) taken[cellKey(c)] = true
   const r = p.constructionRadius
+  const at = (c: GridCell): { x: number; y: number } => (p.pointOf !== undefined ? p.pointOf(c) : cellPoint(p.origin, p.spacing, c))
   const inside = (c: GridCell, x: number, y: number): boolean => {
-    const q = cellPoint(p.origin, p.spacing, c)
+    const q = at(c)
     return math.abs(x - q.x) <= r && math.abs(y - q.y) <= r
   }
   // A module counts as covered when its centre is inside some cell's construction area.
@@ -111,8 +122,16 @@ export function nextCell(p: NextCellInput): GridCell | undefined {
     const y = m.y + m.h / 2
     if (!p.cells.some((c) => inside(c, x, y))) open.push(m)
   }
-  if (open.length === 0) return undefined
+  const lr = p.logisticRadius ?? 0
+  const reaches = (c: GridCell, x: number, y: number): boolean => {
+    const q = at(c)
+    return math.abs(x - q.x) <= lr && math.abs(y - q.y) <= lr
+  }
+  const unsupplied: { x: number; y: number }[] = []
+  for (const sp of p.supplies ?? []) if (!p.cells.some((c) => reaches(c, sp.x, sp.y))) unsupplied.push(sp)
+  if (open.length === 0 && unsupplied.length === 0) return undefined
   let best: GridCell | undefined
+  let bestSupplies = 0
   let bestValue = 0
   let bestDist = 0
   const seen: Record<string, boolean> = {}
@@ -124,19 +143,34 @@ export function nextCell(p: NextCellInput): GridCell | undefined {
       seen[k] = true
       let value = 0
       for (const m of open) if (inside(n, m.x + m.w / 2, m.y + m.h / 2)) value += m.w * m.h
-      if (value <= 0) continue
-      if (p.room !== undefined && !cellHasRoom(cellPoint(p.origin, p.spacing, n), p.room, p.modules)) continue
+      let supplies = 0
+      for (const sp of unsupplied) if (reaches(n, sp.x, sp.y)) supplies++
+      if (value <= 0 && supplies <= 0) continue
+      if (p.room !== undefined && !cellHasRoom(at(n), p.room, p.modules)) continue
       const dist = math.abs(n.i) + math.abs(n.j)
       const better =
         best === undefined ||
-        value > bestValue ||
-        (value === bestValue && (dist < bestDist || (dist === bestDist && (n.i < best.i || (n.i === best.i && n.j < best.j)))))
+        supplies > bestSupplies ||
+        (supplies === bestSupplies &&
+          (value > bestValue ||
+            (value === bestValue && (dist < bestDist || (dist === bestDist && (n.i < best.i || (n.i === best.i && n.j < best.j)))))))
       if (better) {
         best = n
+        bestSupplies = supplies
         bestValue = value
         bestDist = dist
       }
     }
   }
   return best
+}
+
+/**
+ * B222: the centre of the plan window for a roboport one grid step `(di, dj)` from a built one at `from`. Two roboports
+ * join one network while their logistic areas overlap (centres at most 2 × logistic radius apart on each axis); the
+ * window's far edge stays `margin` inside that, so anywhere the plan puts the roboport in the window links it.
+ */
+export function stepAnchor(from: { x: number; y: number }, di: number, dj: number, logisticRadius: number, window: number, margin: number): { x: number; y: number } {
+  const step = 2 * logisticRadius - margin - window
+  return { x: from.x + di * step, y: from.y + dj * step }
 }

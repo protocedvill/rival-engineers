@@ -2,6 +2,20 @@
 -- ghosts, deconstruction orders and passive-provider upgrades; every probe also counts `robot-built`/`robot-removed`
 -- board events since the previous one ("[probe-robots]" lines).
 local last = {}
+-- The game's own robot events per force since the last probe (the board's log above keeps only 512 events, and logs a
+-- robot build only for a job nobody had claimed): robotBuilt / robotMined, with the most built entity names.
+local robotBuilt, robotMined, robotNames = {}, {}, {}
+script.on_event(defines.events.on_robot_built_entity, function(e)
+  local f = e.robot.valid and e.robot.force.name or "?"
+  robotBuilt[f] = (robotBuilt[f] or 0) + 1
+  robotNames[f] = robotNames[f] or {}
+  local n = e.entity.valid and e.entity.name or "?"
+  robotNames[f][n] = (robotNames[f][n] or 0) + 1
+end)
+script.on_event(defines.events.on_robot_mined_entity, function(e)
+  local f = e.robot.valid and e.robot.force.name or "?"
+  robotMined[f] = (robotMined[f] or 0) + 1
+end)
 
 local function count(inv, name)
   if inv == nil then return 0 end
@@ -60,6 +74,12 @@ script.on_nth_tick(18000, function(e)
           end
         end
         last[force.name] = e.tick
+        local names = {}
+        for n, c in pairs(robotNames[force.name] or {}) do names[#names + 1] = n .. "x" .. c end
+        table.sort(names)
+        log(string.format("[probe-robot-events] t=%d %s robotBuilt=%d robotMined=%d names=%s", e.tick, force.name,
+          robotBuilt[force.name] or 0, robotMined[force.name] or 0, table.concat(names, ",")))
+        robotBuilt[force.name], robotMined[force.name], robotNames[force.name] = 0, 0, {}
         log(string.format("[probe-robots] t=%d %s %s networks=%d robots=%d available=%d roboports=%d inRoboports=%d chestRobots=%d chestRoboports=%d ghosts=%d decon=%d providers=%d buffers=%d built=%d removed=%d chain=%s",
           e.tick, force.name, s.name, networks, all, avail, #ports, inPorts, chestRobots, chestPorts, ghosts, decon, providers, buffers, built, removed, table.concat(cparts, ";")))
       end

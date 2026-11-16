@@ -710,6 +710,9 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
         return
     }
     if (heldBy(tkey(ex, ey)) || heldBy(tkey(ex + DX[d0], ey + DY[d0]))) continue
+    // B217: the tile after the exit takes the next piece, like a plain pipe's next tile: never another fluid's tile
+    // (seed 11 g62: an exit, then a pipe on a steam engine's connection, joined the water route to the steam).
+    if (cb.fluidNear(ex + DX[d0], ey + DY[d0])) continue
     visit(s, ex + DX[d0], ey + DY[d0], d0, g, run + k + 1, i, MV_UG)
   }
   // A pump along the heading: a new segment starts behind it.
@@ -717,7 +720,7 @@ function expand(s: PipeSearch, cb: PipeCallbacks, i: number): void {
   const py = y + DY[d0]
   if (run > 0) {
     const cp = cachedCost(s, cb, px, py)
-    if (cp >= 0 && !heldBy(tkey(px, py)) && !heldBy(tkey(px + DX[d0], py + DY[d0])) && (cb.pole === undefined || cb.pole(px, py, d0))) {
+    if (cp >= 0 && !heldBy(tkey(px, py)) && !heldBy(tkey(px + DX[d0], py + DY[d0])) && !cb.fluidNear(px + DX[d0], py + DY[d0]) && (cb.pole === undefined || cb.pole(px, py, d0))) {
       visit(s, px + DX[d0], py + DY[d0], d0, g0 + c + cp + p.pumpCost, 0, i, MV_PUMP)
     }
   }
@@ -892,7 +895,7 @@ function pipeBefore(s: PipeSearch, cb: PipeCallbacks, state: number, emit: (this
   // Pipe-to-ground: the exit E = T − d, the entrance P = E − k·d, entered straight at the same heading.
   const ex = x - DX[d]
   const ey = y - DY[d]
-  if (cachedCost(s, cb, ex, ey) >= 0) {
+  if (cachedCost(s, cb, ex, ey) >= 0 && !cb.fluidNear(x, y)) {
     for (let k = 2; k <= s.p.maxUnderground; k++) {
       const ix = ex - DX[d] * k
       const iy = ey - DY[d] * k
@@ -907,7 +910,7 @@ function pipeBefore(s: PipeSearch, cb: PipeCallbacks, state: number, emit: (this
   const my = y - DY[d]
   const qx = x - 2 * DX[d]
   const qy = y - 2 * DY[d]
-  if (cachedCost(s, cb, mx, my) >= 0 && cachedCost(s, cb, qx, qy) >= 0 && (cb.pole === undefined || cb.pole(mx, my, d))) emit(tkey(qx, qy) * 4 + d)
+  if (cachedCost(s, cb, mx, my) >= 0 && cachedCost(s, cb, qx, qy) >= 0 && !cb.fluidNear(x, y) && (cb.pole === undefined || cb.pole(mx, my, d))) emit(tkey(qx, qy) * 4 + d)
 }
 
 /** Routes one pipe line to the end (tests, one-shot callers); `undefined` when no path was found within the budget. */
