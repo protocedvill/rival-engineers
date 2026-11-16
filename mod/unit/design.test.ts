@@ -6,7 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { BUILD_STOCK_MIN, buildMaterials, buildStock, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, powerStock, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
+import { BUILD_STOCK_MIN, buildMaterials, buildStock, Design, stockOnly, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, powerStock, producerFor, robotStock, stockRole, stuckRounds } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -1503,6 +1503,71 @@ test("B205 (user, 2026-11-12): with the mall, buildings the design places in num
     ok(placed >= BUILD_STOCK_MIN, `${st.item}: placed ${placed} times`)
     ok(st.item !== "stone-furnace", "a building already stocked is not stocked twice")
   }
+})
+
+/** The B205 fixture: a red-science design with a stand-in mall and robots on the way. */
+function stockFixture(): { c: DesignContext; target: { item: string; perSecond: number; mall: { id: string; utilization: number } } } {
+  const mall = fakeMall(["transport-belt", "inserter", "assembling-machine-1", "electric-mining-drill", "pipe"])
+  const c = ctx({
+    enabled: { ...ELECTRIC, pipe: true, "stone-furnace": true, lab: true, "electronic-circuit": true, "copper-cable": true, inserter: true, "assembling-machine-1": true, boiler: true, "steam-engine": true },
+    rowInputs: 3,
+    make: (gen, params) => (gen === "curated" ? mall : (generate(F, gen as GeneratorName, params) as ModuleDef)),
+    builtGenerators: { "stock:construction-robot": "robot-cell" },
+  })
+  return { c, target: { item: RED, perSecond: 1, mall: { id: "fake-mall", utilization: 0.25 } } }
+}
+
+test("M7d.6 (user, 2026-11-16: widen the generated stock): every building the design places gets a row", () => {
+  const { c, target } = stockFixture()
+  const d = design(c, target)
+  const placed: Record<string, number> = {}
+  for (const n of d.nodes) for (const e of n.def.entities) placed[e.name] = (placed[e.name] ?? 0) + 1
+  // The steam block's boilers: 3 in this design, under B205's old threshold of 10.
+  ok(placed["boiler"] !== undefined && placed["boiler"] < 10, `few boilers placed: ${placed["boiler"]}`)
+  const row = d.nodes.find((n) => n.role === "stock:boiler")
+  ok(row !== undefined && row.generatedStock === true, "a generated boiler row")
+  for (const n of d.nodes) if (string.sub(n.role, 1, 6) !== "stock:") ok(n.generatedStock !== true, `${n.role} is not a generated row`)
+})
+
+test("M7d.6: route parts count for the generated stock (belts, pipe parts, poles)", () => {
+  const { c, target } = stockFixture()
+  c.make = (gen, params) => (gen === "curated" ? fakeMall(["inserter"]) : (generate(F, gen as GeneratorName, params) as ModuleDef))
+  c.fluidParts = ["pipe"]
+  // A stand-in pole item the facts have a recipe for.
+  c.pole = "stone-furnace"
+  const edge = (item: string): DesignEdge => ({ role: `${item}>x`, item, from: "a", fromPort: "out", to: "x", toPort: "in", rate: 1, headroomRate: 1, belt: "transport-belt", decision: { action: "none" } as DesignEdge["decision"] })
+  // No module at all: only the routes place anything.
+  const d = { nodes: [], edges: [edge("iron-plate"), edge("water")] } as unknown as Design
+  const items = buildStock(c, d, target, {}).map((s) => s.item)
+  items.sort()
+  eq(items.join(","), "pipe,stone-furnace,transport-belt", "the belt edge's belt, the fluid edge's pipe, the pole lines' pole")
+})
+
+test("M7d.6: the generated rows and their own feeders plan last, one goal per row", () => {
+  const { c, target } = stockFixture()
+  const d = design(c, target)
+  const diff = diffDesign(d, newGraph(), () => undefined)
+  const only = stockOnly(diff)
+  const goals = goalsFrom(diff, {}, undefined, true, {})
+  const mall = goals.findIndex((g) => g.kind === "mall")
+  const rows = d.nodes.filter((n) => n.generatedStock === true)
+  ok(rows.length >= 2, `several generated rows: ${rows.length}`)
+  let stockGoals = 0
+  for (let i = 0; i < goals.length; i++) {
+    const g = goals[i]
+    const isStock = g.key !== undefined && string.find(g.key, "@stock:", 1, true)[0] !== undefined
+    if (!isStock) {
+      for (const n of g.nodes) ok(only.indexOf(n.role) < 0, `${n.role} (stock only) is not in ${g.key}`)
+      continue
+    }
+    stockGoals++
+    ok(i > mall, `${g.key} after the mall`)
+    eq(g.nodes.filter((n) => n.generatedStock === true).length, 1, `${g.key}: one generated row`)
+    for (const n of g.nodes) ok(only.indexOf(n.role) >= 0, `${g.key}: ${n.role} serves only the stock`)
+  }
+  eq(stockGoals, rows.length, "one goal per generated row")
+  // A provider that also feeds the labs or the mall is not stock-only: it stays in its own layer.
+  for (const e of diff.missingEdges) if (only.indexOf(e.to) < 0) ok(only.indexOf(e.from) < 0, `${e.from} feeds ${e.to}: not stock-only`)
 })
 
 run("design")

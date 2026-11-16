@@ -18,10 +18,13 @@ const FIELD_JOIN = 12
 const FIELD_MARGIN = 2
 
 /** The fluid connection a goal's edge of `item` needs (undefined: `item` is no fluid, a belt carries it). */
+/** The entities a fluid route places: pipe, pipe-to-ground and pump (`fluidConnection`). */
+export const FLUID_PARTS = { pipe: "pipe", underground: "pipe-to-ground", pump: "pump" }
+
 export function fluidConnection(item: string, pole: string): ConnectionRequest["fluid"] | undefined {
   if (prototypes.fluid[item] === undefined) return undefined
   const extent = (prototypes.utility_constants as unknown as { default_pipeline_extent?: number }).default_pipeline_extent ?? 320
-  return { name: item, pipe: "pipe", underground: "pipe-to-ground", pump: "pump", maxUnderground: prototypeFacts.entity("pipe-to-ground")?.maxPipeUnderground ?? 10, extent, pole }
+  return { name: item, pipe: FLUID_PARTS.pipe, underground: FLUID_PARTS.underground, pump: FLUID_PARTS.pump, maxUnderground: prototypeFacts.entity("pipe-to-ground")?.maxPipeUnderground ?? 10, extent, pole }
 }
 
 interface Well {

@@ -1007,6 +1007,11 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
   it). Its buffer head is a passive provider once researched, so robots build from it. Only once a robot-cell or
   roboport module is in the factory: before robots come nothing builds from the stock, and its rows slowed the robot
   chain's own planning (B205 amendment).
+  **M7d.6 (user in-session 2026-11-16: "widen generated stock", chosen over running the D79 comparison first):** the
+  threshold is 1, so every building the design places gets a row, route parts included (belts, pipe parts, poles).
+  Proposed with it: generated rows and the providers that feed only them plan last, one goal per row; the crew waits
+  for a generated row only while it is not starved and beats a hand-craft (`strategy/stock-wait.ts`). The robot gate
+  stays (proposed). D79's comparison with a curated or fused generated mall is still open.
 
 ## 12. References
 

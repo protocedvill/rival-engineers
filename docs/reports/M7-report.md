@@ -1732,7 +1732,11 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       expansions), which is why the design batched the chain plus its remote supply in one request.
    - **Personal roboports: moved to item 8.** The engine test charges the equipment by script; a real crew member needs a
      power source in its armour grid (solar panels or a portable reactor), which belongs with the modular armour work.
-6. **Full mall (D79):** a generated mall prototyped on a `proto/*` branch and compared with a curated one; the user picks.
+6. **Full mall (D79): curated mall plus generated stock rows; widened in M7d.6 (below).** The curated `mall-polse`
+   makes 12 products. Machine-made stock rows cover the rest: robots and roboports (M7d.5), solar buildings (B185) and,
+   since B205, the generated stock (one two-machine row per building the mall doesn't make). The D79 comparison of a
+   generated mall against curated ones was not run. The user chose in-session (2026-11-16) to widen the generated stock
+   instead (M7d.6).
 7. **In-place upgrades (D82 a, user request in-session 2026-11-03).** Once a better entity is researched and the mall
    stockpile holds enough of it, existing modules are upgraded where they stand rather than rebuilt: red belts
    (30/s) along a belt whose flow needs them, steel furnaces in smelter columns, assembling machine 2 in assembler
@@ -1747,9 +1751,13 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    chain through the supply pass, which grows, upgrades or forks the providers in turn.
 8. **Modular armour, batteries and an exoskeleton (D82 b)** so the crew walks faster (and carries the personal
    roboport of item 5).
-9. **Solar panels and accumulators (D82 c)** where adding or upgrading steam power costs more; panels are meant to be
-   easy to move. *Proposed:* a solar-field module (panels, accumulators, poles) placed like other modules, picked up and
-   re-placed when its ground is needed.
+9. **Solar panels and accumulators (D82 c): done under B185, B191, B194, B196 and B200 (P54).** A `solar-field`
+   generator (6×18 units: 6 panels, 5 accumulators, medium poles; up to `SOLAR_MAX_UNITS`) sized by `solarSustained`
+   over the Nauvis day. New power comes from solar fields when they build faster than a steam block with a coal mine
+   and a belt back (`power-choice.ts`), or when no coal can be found. Machines make and stock its buildings
+   (`powerStock`), and power goals wait for those rows. A solar field is an ordinary module, so conflict repair (D47)
+   relocates it like any other: there is no dedicated "pick up and re-place" path. Not seen yet: a solar field moved in
+   a soak. The P54 triggers and the B185 numbers are still proposals for the user.
 10. **Cliff explosives and landfill (D83, user request in-session 2026-11-04), at the end of M7d.** The faction
     researches `cliff-explosives` and `landfill`, and the mall makes both. Cliff explosives destroy cliffs that block a
     site or a route; landfill fills water under one (lake-cut arms, P51). *Proposed:*
@@ -1758,6 +1766,43 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       projectile created at the cliff, `surface.set_tiles` for landfill paid from the crew's inventory).
     - **Cost:** the planner sees a cliff or water tile as passable at a cost, once the item can be made. A removal is
       planned when it is cheaper than the detour or the next site.
+
+### M7d.6: the generated stock widened to every building (user decision in-session, 2026-11-16)
+
+Item 6's remaining work was D79's generated-vs-curated comparison. Asked how to proceed, the user chose in-session
+(2026-11-16) to **widen the generated stock** (B205) rather than run the comparison first. What changed:
+
+- **Every building, not 10+.** `BUILD_STOCK_MIN` is 1: a building the design places at all gets a stock row if the mall
+  and the other stock rows don't make it and machines can make its chain. Route parts count too: each belt edge's belt,
+  each fluid edge's pipe, pipe-to-ground and pump (`DesignContext.fluidParts`, from `oil.ts` `FLUID_PARTS`), and the
+  pole of the pole lines. The gate stays: nothing is generated before a robot-cell or roboport module is in the
+  factory (B205's amendment, where the rows joined the robot chain's goal and slowed it).
+- **Planned last, one goal per row.** B205 saw the rows join the robot chain's 16-module goal (~40 game-min to plan)
+  and B209 saw a 12-module stock goal hold up restore routes. Generated rows are now flagged (`generatedStock` on the
+  design node, goal node and graph node). The rows, plus every missing provider whose edges all feed stock-only nodes
+  (`design.ts` `stockOnly`/`stockRoots`), go into a new last production layer `stock`, split into one goal per row
+  (key `production#1@stock:<row role>`). Those goals come after every cluster's production and the mall. A provider
+  that also feeds a lab or the mall stays in its own layer.
+- **The crew does not wait on a slow row.** B185 makes the crew wait for a built stock row instead of hand-crafting.
+  At 10 items per 30 game-min (`BUILD_STOCK` / `STOCK_FILL_SECONDS`), a generated row takes ~3 game-min an item, so
+  ten boilers (3 s each by hand) would hold a goal up for half an hour. For generated rows only, the crew now waits
+  while the row is not starved, unpowered or unfuelled **and** makes the shortfall sooner than one character's
+  hand-craft (`strategy/stock-wait.ts`; hand time follows hand-craftable intermediates). Solar and robot stock rows are
+  still always waited for (B185, the user: solar buildings are made by machines).
+
+Measured offline on the seed-11 design capture (`m7-seed11-design-clusters`, minute 222, with a stand-in mall listing
+`mall-polse`'s 12 products and robots marked as present): the old threshold added 12 stock-only modules (5 rows), the
+new one 16 (8 rows: pump, pumpjack and offshore pump are new, plus an engine-unit feeder for the pump row). Each goal
+now holds one row and at most a few feeders.
+
+Tests: T1 `design` "M7d.6" (3: every building gets a row; route parts count; rows and their own feeders plan last, one
+goal per row), T1 `stock-wait` (2). **Not run in game.** No soak on this branch reaches robots yet (item 5: the latest
+`m7-b222` seed 222 run had `robotBuilt=0` through minute 535), and the generated stock waits for them, so a soak would
+only show this once robots arrive. Proposed check once item 5 produces robots: one seed past the first roboport,
+reading the `@stock:` goals' plan times and the crew's `made by its stock row` waits.
+
+Still open (proposed, for the user): the D79 comparison against a fused generated mall module; the generated rows
+starting before robots (they would save hand-crafting, at the planning cost B205 measured); `BUILD_STOCK`'s 10 per row.
 
 ### Magic numbers for the user (M7)
 
@@ -1839,7 +1884,8 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
 | Solar unit layout | `modules/generators.ts` `solarField` | 6x18 tiles: 6 panels, 5 accumulators, 3 medium poles | Layout choice (B185, proposed): one pole column covers the panels and accumulators; 5 accumulators per 6 panels is close to the Nauvis day ratio (0.84). | no |
 | Solar building stock | `strategy/design.ts` `POWER_STOCK` | 25 of each item | Agent guess (B185, proposed): enough panels and accumulators for a few units per goal, filled over `STOCK_FILL_SECONDS`. | no |
 | Generated building stock | `strategy/design.ts` `BUILD_STOCK` | 10 of each building | Agent guess (B205, proposed): enough for a goal or two of labs, furnaces or steam engines, filled over `STOCK_FILL_SECONDS`. | no |
-| Generated stock threshold | `strategy/design.ts` `BUILD_STOCK_MIN` | 10 placed in the design | Agent guess (B205, proposed): a building the design places fewer times (a few pumps, two assembling machine 2s) stays with the crew; each stock row costs a plan. | no |
+| Generated stock threshold | `strategy/design.ts` `BUILD_STOCK_MIN` | 1 placed in the design (was 10) | M7d.6 (user in-session 2026-11-16: widen the generated stock): every building the factory builds with gets a row (D79). Each row is its own last goal, so its planning cost no longer joins other goals. | no |
+| Hand-craft chain depth | `strategy/stock-wait.ts` `MAX_DEPTH` | 8 recipes | Agent choice (M7d.6): a guard against recipe loops when timing a hand-craft; vanilla building chains are 3-4 deep. | no |
 | Depot growth trigger | `strategy/bootstrap.ts` depot check | free stacks < 3 + carried deposit stacks | Agent guess (B183, proposed): room for what the crew carries now plus a margin. | no |
 | Crew seconds per placed entity | `strategy/power-choice.ts` `CREW_ENTITY_SECONDS` | 2 s | Agent guess (B185, proposed): placing one entity including fetching it and short walks; weighs a long belt (one entity per tile) against a solar field's buildings. | no |
 | Free coal patch size | `strategy/power-choice.ts` `MIN_FREE_FUEL_TILES` | 8 tiles | Agent choice (B185, proposed): the bootstrap's smallest usable patch (`bestPatch(..., 8)`); a patch with fewer tiles outside its mines does not count for the coal distance. | no |

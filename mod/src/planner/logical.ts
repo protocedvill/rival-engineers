@@ -106,6 +106,8 @@ export interface LogicalNode {
   homeCluster?: number
   family?: string
   serves?: "power" | "mall"
+  /** M7d.6: a generated-mall stock row; absent on older saves and every other node. */
+  generatedStock?: boolean
 }
 
 export type EdgeKind = "belt" | "power" | "crew"

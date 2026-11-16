@@ -13,7 +13,7 @@ import { claimed, claimOreField, otherClaims } from "../world/claims"
 import { releaseWorldTile, reserveWorldTile, siteClaim } from "../world/claim-index"
 import { requiredResources } from "../world/spawn"
 import { buildCatalog, depotChests, expandRecipe, handRecipe } from "./catalog"
-import { moduleAssemblers, moduleFurnaces, repairBuffers, stockRowBuilt, supplyChests, tempCells } from "./factory-report"
+import { moduleAssemblers, moduleFurnaces, repairBuffers, stockRowWaits, supplyChests, tempCells } from "./factory-report"
 import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
@@ -1161,7 +1161,7 @@ function produce(ctx: Ctx, item: string, short: number): void {
   short = feedTempCells(ctx, item, short)
   if (short <= 0) return note(`temp cells cover ${before}`)
   // 1c. B185 (user, 2026-11-11): a built stock row makes it; the crew waits for the row's buffer instead of hand-crafting.
-  if (stockRowBuilt(ctx.faction.name, item)) {
+  if (stockRowWaits(ctx.faction.name, item, short)) {
     ctx.waiting.push(`${item}: made by its stock row`)
     return note(`stock row makes ${short}`)
   }

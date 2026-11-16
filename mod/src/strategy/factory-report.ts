@@ -11,6 +11,8 @@ import { findEntities } from "../work"
 import { isBufferAt, registerBuffer } from "../modules/buffers"
 import type { FactoryState } from "./factory"
 import * as CS from "./constraints"
+import * as SW from "./stock-wait"
+import { prototypeFacts } from "../modules/prototype-facts"
 
 // Read-only views of a faction's factory (split out of factory.ts, whose main chunk hit Lua's 200-local limit): the
 // D38 temporary cells and the mall's chests as supply sources for the bootstrap economy, and the telemetry / graph
@@ -163,10 +165,23 @@ export function moduleFurnaces(factionName: string, buildingOnly = false): LuaEn
  * B185 (user, 2026-11-11: "this is an automation game"): whether a built stock row (`stock:<item>`) makes `item`. The
  * crew then takes it from the row's buffer and never hand-crafts it.
  */
-export function stockRowBuilt(factionName: string, item: string): boolean {
+/**
+ * B185: whether the crew waits for a built stock row to make `short` more of `item` instead of hand-crafting them.
+ * Solar and robot stock rows are always waited for (B185, user: solar buildings are made by machines). M7d.6: a
+ * generated-mall row (`generatedStock`) only while it is not starved and makes them sooner than a hand-craft
+ * (`stock-wait.ts`): every building has one now, and at a few items a game-minute it would hold the crew up.
+ */
+export function stockRowWaits(factionName: string, item: string, short: number): boolean {
   const f = getFactory(factionName)
   if (f === undefined) return false
-  for (const n of nodesOf(f.graph)) if (n.role === `stock:${item}` && n.lifecycle === "built") return true
+  for (const n of nodesOf(f.graph)) {
+    if (n.role !== `stock:${item}` || n.lifecycle !== "built") continue
+    if (n.generatedStock !== true) return true
+    // A sink's planned output is its utilization (`factory.ts`), so the row makes capacity × utilization a second.
+    const util = n.planned.outputs[0]?.perSecond ?? 0
+    const rate = rateIn(n.capacity.outputs, item) * math.min(1, util)
+    return SW.waitForStockRow(SW.handCraftSeconds(prototypeFacts, item, short), short, rate, n.status)
+  }
   return false
 }
 

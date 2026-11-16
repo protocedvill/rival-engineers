@@ -96,6 +96,8 @@ export interface GoalNode {
   homeCluster?: number
   family?: string
   serves?: NF.Serves
+  /** M7d.6: a generated-mall stock row (`design.ts` `buildStock`). */
+  generatedStock?: boolean
 }
 
 export interface FactoryGoal {
@@ -495,6 +497,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     boiler: e.boiler ?? "boiler",
     engine: e.engine ?? "steam-engine",
     pole: e["researched-pole"],
+    fluidParts: [OIL.FLUID_PARTS.pipe, OIL.FLUID_PARTS.underground, OIL.FLUID_PARTS.pump],
     packs,
     researchUnitTime: ST.labUnitTime(ctx.config, stage),
     tiers: RT.tiers(),
@@ -659,7 +662,7 @@ function lastOf(f: FactoryState, kind: GoalKind): FactoryGoal | undefined {
 function goalNodes(g: GoalSpec, f: FactoryState): GoalNode[] {
   const out: GoalNode[] = []
   for (const n of g.nodes) {
-    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW, newSite: n.newSite, homeCluster: n.homeCluster, family: n.family, serves: n.serves })
+    out.push({ role: n.role, id: IDS.moduleId(`n${f.graph.nextId++}`), kind: n.kind, generator: n.generator, params: n.params, item: n.item, need: n.need, capacity: n.capacity, inputs: n.inputs, powerW: n.powerW, newSite: n.newSite, homeCluster: n.homeCluster, family: n.family, serves: n.serves, generatedStock: n.generatedStock })
   }
   return out
 }
@@ -1860,6 +1863,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
       homeCluster: n.homeCluster,
       family: n.family,
       serves: n.serves,
+      generatedStock: n.generatedStock,
     }
     LG.addNode(f.graph, node)
   }
