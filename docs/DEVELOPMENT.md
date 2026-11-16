@@ -69,7 +69,9 @@ python3 tools/render/render.py DUMP.json --graph DUMP.graph.json -o out/graph.pn
 Soak runs (T3, SPEC §7) on fresh maps, headless at max speed, with a scorecard and frames per seed (not in CI):
 
 ```bash
-npm run soak                                              # tools/harness/soak.toml: M3 acceptance, 5 seeds
+npm run soak                                              # tools/harness/soak.toml: M3 acceptance config, 5 seeds
+python3 tools/harness/soak.py -c tools/harness/m6-fixed10.toml    # v1 fixed-10 sweep (SPEC §3: >= 9/10)
+python3 tools/harness/soak.py -c tools/harness/m6-random20.toml   # v1 random-20 sweep (SPEC §3: >= 18/20)
 python3 tools/harness/soak.py -c tools/harness/two-factions.toml --gif
 python3 tools/harness/soak.py --seeds 11 --hours 0.5 --name dev   # quick one-off
 python3 tools/harness/soak.py -c tools/harness/soak.toml -c tools/harness/no-starting-area.toml   # several configs
@@ -90,8 +92,8 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
 
 **Debugging a failing soak seed (don't re-run 20-minute soaks per fix):**
 
-1. **Fail fast:** a config's `[run.fail_fast]` (on in `m5.toml`) stops a seed at its 2nd STALL, 8 failed plans in a
-   row, or 20 rounds of unplaceable leftover ghosts; the reason is in the scorecard. `m5_scorecard.py` prints each
+1. **Fail fast:** a config's `[run.fail_fast]` (on in the m5/m6/m7 configs) stops a seed at its 2nd STALL, 8 failed plans in a
+   row, or 20 rounds of unplaceable leftover ghosts; the reason is in the scorecard. `m5_scorecard.py` / `m6_scorecard.py` print each
    failing seed's open goals, stall reasons, latest plan-failure kinds and leftover ghosts.
 2. **Snapshot, then resume:** `soak.py ... --seeds N --snapshots 5 --name snap` saves every 5 game-minutes
    (a sped-up headless server: `--benchmark` can't save) to `.factorio-test/soak/snap/seed-N/data/saves/min-MMMM.zip`.
@@ -142,7 +144,7 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
 1. **Work counts (soft gate, every validation).** The mod counts its work deterministically (`mod/src/work.ts`: planner
    work units, placement candidates scored, router expansions, path requests, entity scans, jobs processed, reconciler
    node evaluations; per run and the peak per game-minute) into each seed's `telemetry.json` (`work`). A config names
-   its committed baseline (`[run] work_baseline`, e.g. `tools/harness/baselines/m5-work.json`); `soak.py` and
+   its committed baseline (`[run] work_baseline`, e.g. `tools/harness/baselines/m5-work.json` or `m6-work.json`); `soak.py` and
    `m5_scorecard.py` append a "Work counts" section flagging every counter more than 15% above it (a flag is a
    regression signal for the report, not a failure). By hand:
    ```bash

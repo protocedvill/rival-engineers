@@ -2,6 +2,12 @@
 
 The manager batches these into agent tasks. Each fix gets a regression test; tick it off with the commit hash.
 
+**The live backlog:** `npm run status` lists every row not marked fixed or done. Every other row is kept below as the
+postmortem, most of this file's length.
+
+Evidence paths under `out/` are git-ignored local artifacts; they may be absent on another machine or after a clean.
+The committed regression test named in the row is the durable evidence.
+
 | # | Reported | Bug | Status |
 |---|---|---|---|
 | B1 | 2026-10-15 | Crew fail to mine trees about 70% of the time: they reach the tree at an odd angle and can't mine it, or stop mining too early. Build a **tree/rock mining arena** (T2) covering trees and rocks of every kind, approach angles, off-grid positions, clusters, trees over ore and next to buildings, measuring success rate and time per target. Fix until it is reliable. | fixed d9e024a (mining arena: 100% in every group, was 76% in dense clusters) |

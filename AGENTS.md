@@ -16,6 +16,8 @@ not a substitute: most of the traps are properties of Factorio or TSTL, not prop
 3. Read the relevant part of [`docs/SPEC.md`](docs/SPEC.md): §2 decisions are settled, §5 is architecture, §8 is
    milestones, §9 is the operating model, and §11 contains proposals that are **not approved**.
 4. For a bug, read its complete row in [`docs/BUGS.md`](docs/BUGS.md), including prior diagnoses and required tests.
+   The file starts with the live set; rows already marked fixed are postmortems. Evidence paths under `out/` are local
+   and may no longer exist — the named regression test is the durable evidence.
 5. Run `npm run doctor` before a test or soak. It catches stale builds, missing runtimes, locks and already-running
    Factorio processes that otherwise create misleading results.
 

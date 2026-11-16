@@ -1,11 +1,16 @@
 # Provider-group refactor: the two remaining items
 
-Date: 2026-10-24. Branch `m6-v1`. This note scopes items 1 (verified handover) and 2 (splitter/tap/trunk
-augmentation). **It is a scoping record, not an approved design.** Item 1 needs a user decision because it changes a
-core layout invariant.
+> **Status (2026-11-06): historical; both items are implemented.** The route-adoption decision below was approved and
+> implemented in M6b.47, and the merge splitter in M6b.48. Read this note for the reasoning, not for open work; current
+> status is in `docs/reports/M6-report.md` (M6b.44–M6b.49) and `docs/BUGS.md`.
 
-Read first: `docs/analysis/provider-groups-refactor.md` (goalposts), `docs/analysis/provider-groups-handoff.md`
-(current state), `docs/agent/architecture.md` (layer boundaries).
+Date: 2026-10-24. Branch `m6-v1`. This note scopes items 1 (verified handover) and 2 (splitter/tap/trunk
+augmentation). **It is a scoping record, not an approved design.** Item 1 needed a user decision because it changed a
+core layout invariant; that decision was made and implemented on 2026-10-24.
+
+Read first: `docs/analysis/provider-groups-refactor.md` (goalposts),
+[`docs/archive/provider-groups-handoff-2026-10-23.md`](../archive/provider-groups-handoff-2026-10-23.md)
+(historical WIP state), `docs/agent/architecture.md` (layer boundaries).
 
 ## Goalpost 1: verified handover — implemented, adopt branch unproven
 
@@ -118,12 +123,11 @@ independently of how the route-adoption question is answered.
 2. Item 2 (splitter merge): self-contained in `planner/`, T1/T2 testable, and it addresses an observed plan failure.
 3. Item 1 step 2 (route adoption): only after the user decides that `Route` may outlive its producing connection.
 
-## Open decision for the user
+## Decision (resolved 2026-10-24: route adoption)
 
-Should `Route` be allowed to outlive the connection that created it (adopted by a replacement provider), or should
-handover instead avoid sharing a route by re-planning the consumer's feed onto a fresh route before the old module
-dies? The first is the provider-group model the refactor document describes; the second keeps the invariant and costs
-a temporary double route per consumer.
+The user approved route adoption (a `Route` may outlive the connection that created it and be adopted by a
+replacement provider); it was implemented in M6b.47. The alternative — re-planning the consumer's feed onto a fresh
+route before the old module dies — was not chosen.
 
 ## Magic numbers to surface
 

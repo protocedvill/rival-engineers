@@ -1,5 +1,9 @@
 # Provider-group implementation handoff
 
+> **Archived 2026-11-06; superseded.** This was a work-in-progress handoff from 2026-10-23. B60/B61 are fixed and the
+> provider-group items were implemented in M6b.44–M6b.49 (see `docs/reports/M6-report.md` and
+> `docs/analysis/provider-groups-remaining.md`). Kept for history; it is not a current status report.
+
 Date: 2026-10-23 (late)
 Branch: `m6-v1`
 HEAD at handoff: `35cf352 feat: split infeasible shared providers per consumer` (plus the working-tree changes listed below)
@@ -97,7 +101,7 @@ keeps its existing consumers.
 ## Commands to resume
 
 ```bash
-cd factorio-ai-mod   # your checkout
+cd <checkout>
 npm run typecheck
 npm run test:unit
 npm run build

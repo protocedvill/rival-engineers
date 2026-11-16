@@ -1,9 +1,9 @@
 # Provider groups and parallel supply refactor
 
-Status: **implementation continues in M6** (user decision 2026-10-23: do not defer the rest). This document is the
-handoff/goalpost record for the full refactor. The current slice covers built design providers with a known fixed
-capacity, side-load merges, and one parallel provider per consumer when a new shared provider cannot reach all
-consumers.
+Status: **implemented in M6** (M6b.44–M6b.49; user decision 2026-10-23: do not defer the rest). This document is the
+design record for the full refactor. The shipped slice covers built design providers with a known fixed capacity,
+side-load and splitter merges, one parallel provider per consumer when a shared provider cannot reach all consumers,
+verified handover with route adoption, and a reconciler remedy for a saturated shared trunk.
 
 ## Why
 

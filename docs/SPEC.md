@@ -1,6 +1,6 @@
 # Rival Engineers — Spec
 
-Status: **Draft v0.11** (2026-10-14). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
+Status: **Draft v0.46** (2026-11-16; decisions through D86). Mod internal name / repo / remote interface: `rival-engineers`. This document is the source of truth for the buildout.
 Agents: if the code and this spec disagree, either fix the code or propose a spec change in your
 milestone report. Never silently diverge.
 
@@ -314,8 +314,8 @@ Pipelines (`tools/modules/`, Python or TS, run offline):
    - **Blueprint library:** `~/.factorio/blueprint-storage-2.dat` is an undocumented binary format. No 2.0
      parser decodes blueprint bodies (a Go decoder reads the book structure and labels only). A mod can export
      the library through `LuaPlayer.blueprints` / `LuaRecord.export_record()`, but **only in the graphical
-     client**: headless has no player library. The export mod exists on `proto/module-sourcing`
-     (`tools/modules/library-export-mod`). The library holds 195 blueprints (5 large late-game builds plus a
+     client**: headless has no player library. The export mod exists on the `proto/module-sourcing` branch
+     (`tools/modules/library-export-mod`; not in this checkout). The library holds 195 blueprints (5 large late-game builds plus a
      ~190-blueprint balancer book) and **no early-game modules**, so it is not a module source. The balancer
      book may help the router later.
    - **Built bases in saves:** load the save with a dump mod, export entities, and cluster them into candidate
@@ -351,7 +351,8 @@ Pipelines (`tools/modules/`, Python or TS, run offline):
    and once its outputs reach a steady state it must reach ≥ 90% of its declared output rate (malls: of the plate
    value of all products, plus a product-coverage run). See D33.
 
-**Sourcing recommendation for M4** (from `docs/reports/proto-module-sourcing.md` on `proto/module-sourcing`):
+**Sourcing recommendation for M4** (from `docs/reports/proto-module-sourcing.md` on `proto/module-sourcing`; that
+branch and report are not in this checkout):
 curated modules come mostly from **curated early-game blueprints on factorioprints** (small, tileable,
 designed ports; attribution recorded, licence "none stated"), plus **smelting columns and intermediates
 harvested from saves**, plus the **parametric generators** below. Everything goes through the same
@@ -707,10 +708,40 @@ merging the PR that edits this file. Bump the version and add an entry to the ch
 
 ## 11. Open questions (for the user)
 
+This section is the **proposal register**, not a list of things the code still has to do. Entries explicitly marked
+resolved/approved/decided have moved into §2 and are kept here only for provenance. **“Proposed” means the user has not
+formally approved it**; several M6 proposals were implemented to generate evidence and are waiting for that decision.
+
+Quick index as of 2026-11-06, P9–P40 (read the entry below only if it is still open or you need its history; later
+entries carry their status in their own heading):
+
+| Proposal | Current status |
+|---|---|
+| P9 crafting triggers | proposed; crew emulation implemented |
+| P12 goal build order | proposed; the M5/M6 design follows it |
+| P13 material supply | proposed; superseded in practice by B32 direct sourcing |
+| P14 M5 acceptance wording | historical; replaced by P31's measurement |
+| P15 port approach tiles | proposed; B45/B57 implement stronger lane/seal checks |
+| P22 edge flow probes | proposed; implemented (`strategy/measure.ts`) |
+| P26 temporary factories | proposed; implemented (D38/B18) |
+| P27 opportunistic crafting | proposed; implemented (D38) |
+| P28 soft claims and partners | proposed; implemented (D50/B12) |
+| P30 30 + 30 stage | proposed; implemented (M6) |
+| P31 sustained-throughput measure | proposed; implemented (M6) |
+| P32 shared providers | proposed; implemented (B19) |
+| P33 module that cannot grow | proposed; implemented (`power#2`, parallel roles) |
+| P34 stuck builds and boxed-in crews | proposed; implemented (B20/B22) |
+| P35 bootstrap eviction | proposed; implemented (B15) |
+| P36 coal running out | superseded by D54/D55/D64 and the provider-group work |
+| P37 no mine-site credit for head growth | proposed; **not implemented** |
+| P38 growth bands at placement | mechanism implemented (B26); values decided → D86 (2026-11-16) |
+| P40 part of a patch a mine claims | proposed; implemented (B33) |
+
 M7a triage (2026-10-30, agent): every entry below still marked "proposed" is listed with its status in the code and a
 recommendation in `docs/reports/M7-report.md` M7a.6. None of them is approved until the user says so.
 
-M5a proposals (P9, P12–P15 still **proposed**; P10, P11, P16 decided 2026-10-15; details and evidence in `docs/reports/M5-report.md`):
+The proposal entries below are the original text and evidence. M5a proposals (P9, P12–P15; P10, P11, P16 decided
+2026-10-15; details and evidence in `docs/reports/M5-report.md`):
 
 - **P9, crafting triggers for the crew (proposed):** the engine does not fire `craft-item` research triggers for a
   player-less character's hand-crafting (pinned by a T2 engine test), so `automation-science-pack` (craft a lab) never
@@ -1043,9 +1074,9 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
 - v0.38 (2026-10-30, user decisions in-session): D72–D79 (M7: blue science at 30/min, crude piped home, research set without combat-only red/green techs, 16 game-hours, handover removed, construction robots network and personal, advanced oil with cracking, full mall). M7 row; P45–P49 approved in-session.
 - v0.33 (2026-10-28, user decisions in-session): D65 (module power demand scales with utilization) and D66 (crew prefetch for far builds).
 - v0.32 (2026-10-24, user decision in-session): D64 (verified provider handover kept for M6, its necessity or refactor decided in M7; the provider-group rule stays "keep the short provider, add parallel providers").
+- v0.31 (2026-10-23, user decision via the manager): D63 (mixed-ore drill spots / P20 approved in principle but deferred beyond v1; the B6 minimum fix stays in force).
 - v0.30 (2026-10-21, user decision in-session): P43 → D62 (a): faction radars explore through `on_sector_scanned` (they chart nothing: no players on the force).
 - v0.29 (2026-10-21, user decision in-session): D62 (radar outposts on N/E/S/W arms explore past the 384-tile home zone when a mine finds no ore; the home zone keeps chunk generation).
-- v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
 - v0.28 (2026-10-21, user decision in-session): D61 (a factory build's poles are placed and crafted before every other job).
 - v0.27 (2026-10-20, user decision in-session): D60 (a goal with no site in its region pauses its kind for 5 game-minutes, logged).
 - v0.26 (2026-10-20, user decision in-session): D59 (router soft-claim cost 10 next to a module, lower for each growth unit farther out).
@@ -1056,6 +1087,7 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
 - v0.25 (2026-10-20, user decision in-session): D58 (two-level routing for long connections; one planner budget for the whole mod, shared by the plans running).
 - v0.24 (2026-10-20, user decisions in-session): D56 (a radar for realism; chunk-generation exploration stays), D57 (faster mine site search: patch index, pre-check, dead-patch memory, whole-patch layout; a fresh field costs +50 tiles).
 - v0.23 (2026-10-20, user decision in-session): D55 (a worked-out whole-patch mine moves to the next free part of its own patch; with none left, the mine is relocated and re-planned on fresh ore).
+- v0.22 (2026-10-19, user decision in-session): D54 (steam-block boilers hand-fed with a whole stack when empty; electric coal mines for power once electric drills are researched; factory burner outposts replaced by electric ones).
 - v0.21 (2026-10-17, user decision via the manager): D52 (whole-patch mining outposts, built partially and expanded in place; nothing else on their unbuilt footprint).
 - v0.20 (2026-10-16/17, M6a): §11 P30–P36 proposed (30 + 30 stage and clusters, sustained-throughput measure, shared
   providers, second steam block / lab array, stuck builds and boxed-in crews, bootstrap eviction); §5.7 M6 settings.
