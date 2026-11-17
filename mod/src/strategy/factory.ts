@@ -1337,7 +1337,7 @@ function planGoal(ctx: Ctx, g: FactoryGoal): void {
   const offsets = [[0, 0], [24, 0], [0, 24], [-24, 0], [0, -24], [24, 24], [-24, -24], [24, -24], [-24, 24]]
   const off = offsets[tries % offsets.length]
   // D62: an outpost's radar goes at its arm target, a little off it on a retry (a cliff or water there).
-  const center = g.anchor !== undefined ? { x: g.anchor.x, y: g.anchor.y } : g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
+  const center = g.anchor !== undefined ? { x: math.floor(g.anchor.x), y: math.floor(g.anchor.y) } : g.site !== undefined ? { x: g.site.x + off[0] / 2, y: g.site.y + off[1] / 2 } : { x: f.center.x + off[0], y: f.center.y + off[1] }
   // M7c: a pumpjack field is generated from a real field and placed on it; with none known, the goal explores for one.
   // M7c.8: wells of the layout's fields (planned too) and of this goal's earlier fields are taken.
   const takenWells = OIL.moduleWells(f.layout.modules.map((x) => x.canonical))

@@ -296,7 +296,10 @@ function robotsStepInner(ctx: ExploreCtx, hooks: RobotsHooks): void {
     return
   }
   const hubCell = cells.length === 0
-  const anchor = hubCell ? f.center : pointOf(next)
+  // Whole tiles: a cell stepped from a roboport still building takes its module's centre (x.5 for an odd width), and a
+  // plan window at x.5 indexed the placement search's tile sums off the grid (B226 soak: nil arithmetic, crash).
+  const at = hubCell ? f.center : pointOf(next)
+  const anchor = { x: math.floor(at.x), y: math.floor(at.y) }
   log(`[rival-engineers] faction ${ctx.faction.name}: M7d.5 roboport goal: cell ${RG.cellKey(next)} near (${anchor.x}, ${anchor.y})${hubCell ? `, the hub with ${HUB_CHESTS} storage chests` : ""}; ${cells.length} roboports so far`)
   hooks.start(RG.cellRole(next), anchor, hubCell ? HUB_WINDOW : CELL_WINDOW, hubCell ? HUB_CHESTS : 0)
 }
