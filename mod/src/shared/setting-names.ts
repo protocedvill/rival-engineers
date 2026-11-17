@@ -112,6 +112,7 @@ export const Settings = {
   factoryRobots: "rival-engineers-factory-robots",
   factoryRoboportsMax: "rival-engineers-factory-roboports-max",
   factoryRoboportSpacing: "rival-engineers-factory-roboport-spacing",
+  factoryRoboportGoals: "rival-engineers-factory-roboport-goals",
   factoryNetworkRobots: "rival-engineers-factory-network-robots",
   factoryRobotFirstSeconds: "rival-engineers-factory-robot-first-seconds",
   preemptFuelSeconds: "rival-engineers-preempt-fuel-seconds",

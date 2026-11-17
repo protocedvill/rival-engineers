@@ -20,8 +20,9 @@ test("M7d.5: the hub first, then the neighbour cell covering the most uncovered 
   eq(cellKey(nextCell(input)!), "0,0", "the hub")
   // The hub (10, 20) covers x -45..65, y -35..75: the module at (115, 25) and the one at (15, 125) are open.
   // Cell 1,0 (46, 20) reaches x to 101: not 115; cell 0,1 (10, 56) reaches y to 111: not 125. Nothing next to the hub
-  // reaches either, so the network is done although the base is not covered (it only grows by touching cells).
-  eq(nextCell({ ...input, cells: [{ i: 0, j: 0 }] }), undefined, "no neighbour reaches the open modules")
+  // reaches either. B226: the network steps toward them anyway: cells 1,0 and 0,1 both come 69 tiles from one (the hub
+  // is 105 away), so the lower i wins.
+  eq(cellKey(nextCell({ ...input, cells: [{ i: 0, j: 0 }] })!), "0,1", "B226: a bridge cell toward the open modules")
   const near = base([[0, 0, 20, 20], [80, 10, 30, 30], [10, 100, 10, 10]])
   // Now cell 1,0 reaches the 900-tile module (centre x 95), cell 0,1 the 100-tile one (centre y 105): the bigger wins.
   eq(cellKey(nextCell({ ...input, modules: near, cells: [{ i: 0, j: 0 }] })!), "1,0", "most uncovered area")
@@ -83,6 +84,24 @@ test("B222: a new roboport's window is anchored one link from its built neighbou
   const input = { modules, cells: [{ i: 0, j: 0 }], failed: {}, origin: O, spacing: 36, constructionRadius: 20, max: 10 }
   ok(nextCell(input) !== undefined, "at the grid point the module (65, 15) is open")
   eq(nextCell({ ...input, pointOf: () => ({ x: 60, y: 20 }) }), undefined, "at the real spot it is covered")
+})
+
+test("B226: the network bridges ground with no module until the whole base is covered", () => {
+  // One module 300 tiles east of the hub, nothing between: each step must come nearer, and the chain ends covering it.
+  const modules = base([[0, 0, 20, 20], [300, 15, 10, 10]])
+  const cells = [{ i: 0, j: 0 }]
+  const input = { modules, failed: {}, origin: O, spacing: 36, constructionRadius: 55, max: 200 }
+  for (let k = 0; k < 20; k++) {
+    const next = nextCell({ ...input, cells })
+    if (next === undefined) break
+    eq(next.j, 0, "straight east")
+    cells.push(next)
+  }
+  // The module's centre is x 305: cell i covers x up to 10 + 36 i + 55, so i = 7 is the first that reaches it.
+  eq(cells.length, 8, "the hub and seven cells")
+  eq(nextCell({ ...input, cells }), undefined, "covered: the network stops")
+  // A step that comes no nearer is never taken (a module behind a failed cell does not pull the network sideways).
+  eq(nextCell({ ...input, cells: [{ i: 0, j: 0 }], failed: { "1,0": true } }), undefined, "no cell comes nearer")
 })
 
 run("robot-grid")

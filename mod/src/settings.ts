@@ -959,9 +959,11 @@ data.extend([
     type: "int-setting",
     name: Settings.factoryRoboportsMax,
     setting_type: "runtime-global",
-    default_value: 10,
+    // B226 (user in-session 2026-11-17: "increase roboport cap ... until complete coverage"): coverage stops the network;
+    // this is only a ceiling (agent value). At ~30 tiles between linked roboports a 450 × 550 base takes ~100.
+    default_value: 200,
     minimum_value: 1,
-    maximum_value: 100,
+    maximum_value: 1000,
     order: "j-bk",
   },
   {
@@ -972,6 +974,16 @@ data.extend([
     minimum_value: 8,
     maximum_value: 50,
     order: "j-bl",
+  },
+  {
+    type: "int-setting",
+    name: Settings.factoryRoboportGoals,
+    setting_type: "runtime-global",
+    // B226 (user in-session 2026-11-17: "build more in parallel"): agent value.
+    default_value: 4,
+    minimum_value: 1,
+    maximum_value: 20,
+    order: "j-bla",
   },
   {
     type: "int-setting",

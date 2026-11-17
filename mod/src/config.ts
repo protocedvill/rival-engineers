@@ -232,6 +232,8 @@ export interface Config {
   factoryRoboportsMax: number
   /** M7d.5: tiles between neighbouring roboports on the network's grid (proposed; logistic areas must touch). */
   factoryRoboportSpacing: number
+  /** B226: roboport goals building at once. */
+  factoryRoboportGoals: number
   /** M7d.5: construction robots the crew keeps in the network (put into the hub roboport; proposed). */
   factoryNetworkRobots: number
   /** M7d.5: seconds the crew leaves a new place job to the robots when they can do it now (0 = never; proposed). */

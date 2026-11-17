@@ -137,9 +137,15 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   const failed: Record<string, boolean> = {}
   // Failed cells since the last roboport goal that was built.
   let failedCells = 0
+  // B226 (user in-session 2026-11-17): several roboports build at once (one plan at a time, `hooks.busy`).
+  let building = 0
   for (const g of f.goals) {
     if (g.kind !== "robots") continue
-    if (g.status === "planning" || g.status === "building") return
+    if (g.status === "planning") return
+    if (g.status === "building") {
+      building++
+      continue
+    }
     if (g.status !== "failed") {
       failedCells = 0
       continue
@@ -152,6 +158,7 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
       }
     }
   }
+  if (building >= ctx.config.factoryRoboportGoals) return
   const cells: RG.GridCell[] = []
   for (const n of LG.nodesOf(f.graph)) {
     const c = RG.parseCellRole(n.role)

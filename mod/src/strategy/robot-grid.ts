@@ -5,7 +5,8 @@
 // logistic area touches the network), the one whose logistic area takes in the most supply points (passive providers:
 // robots only fetch from chests in logistic range) the network does not reach yet, then whose construction area reaches
 // the most base it does not cover yet; a tie goes to the cell nearest the hub, then the lowest i, then the lowest j
-// (deterministic).
+// (deterministic). B226: when no neighbour covers anything new, it steps toward the nearest part it does not reach
+// (`bridgeCell`), so ground with no module between the network and the base's edge does not stop it.
 
 export interface GridRect {
   x: number
@@ -159,6 +160,51 @@ export function nextCell(p: NextCellInput): GridCell | undefined {
         bestSupplies = supplies
         bestValue = value
         bestDist = dist
+      }
+    }
+  }
+  if (best !== undefined) return best
+  return bridgeCell(p, taken, open, unsupplied, at)
+}
+
+/**
+ * B226 (user in-session 2026-11-17: "build more in parallel until complete coverage"): when no cell next to the network
+ * covers anything new, the network still grows toward what it does not reach: the free neighbour cell nearest an
+ * uncovered module centre or supply point, if it is nearer than the cell it steps from. m7d6-222b seed 222: the base
+ * grew 50-400 tiles past the network across ground with no module, and no neighbour cell ever had value.
+ */
+function bridgeCell(
+  p: NextCellInput,
+  taken: Record<string, boolean>,
+  open: GridRect[],
+  unsupplied: { x: number; y: number }[],
+  at: (c: GridCell) => { x: number; y: number },
+): GridCell | undefined {
+  const targets: { x: number; y: number }[] = [...unsupplied]
+  for (const m of open) targets.push({ x: m.x + m.w / 2, y: m.y + m.h / 2 })
+  if (targets.length === 0) return undefined
+  const gap = (q: { x: number; y: number }): number => {
+    let d = math.huge
+    for (const t of targets) d = math.min(d, math.max(math.abs(t.x - q.x), math.abs(t.y - q.y)))
+    return d
+  }
+  let best: GridCell | undefined
+  let bestGap = 0
+  const seen: Record<string, boolean> = {}
+  for (const c of p.cells) {
+    const from = gap(at(c))
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const n = { i: c.i + di, j: c.j + dj }
+      const k = cellKey(n)
+      if (taken[k] || p.failed[k] || seen[k]) continue
+      seen[k] = true
+      const q = at(n)
+      const g = gap(q)
+      if (g >= from) continue
+      if (p.room !== undefined && !cellHasRoom(q, p.room, p.modules)) continue
+      if (best === undefined || g < bestGap || (g === bestGap && (n.i < best.i || (n.i === best.i && n.j < best.j)))) {
+        best = n
+        bestGap = g
       }
     }
   }

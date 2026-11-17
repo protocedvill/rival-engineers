@@ -1564,7 +1564,7 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
      touch) whose construction area reaches the most module area the network does not cover yet; ties go to the cell
      nearest the hub (`strategy/robot-grid.ts`, T1 `robot-grid`). A goal's plan region is 8 tiles around its grid point
      (24 for the hub), so a roboport lands within about 6 tiles of it: 36 + 12 stays within the vanilla roboport's
-     logistic reach of 50. A failed cell is not tried again; the network stops at `factory-roboports-max` (10).
+     logistic reach of 50. A failed cell is not tried again; the network stops at `factory-roboports-max` (10). B226 (2026-11-17): up to `factory-roboport-goals` (4) build at once, the cap is 200, and when no neighbour covers anything new the network steps toward the nearest part it does not reach (`bridgeCell`), so it keeps growing until the whole base is covered.
    - **Crew and robots: started.** The hub's storage chests become the crew's depot (`addStockpile`): robots build ghosts
      from whatever the crew leaves there. The crew puts construction robots from the stock into the hub roboport until
      the network has `factory-network-robots` (50). A place job whose ghost a robot built is done (`robot-built`), not
@@ -1845,7 +1845,8 @@ starting before robots (they would save hand-crafting, at the planning cost B205
 | Placement SAT layers | `planner/placement.ts` `startWindow` | 4 always, + ore/res (mining or protect-ore), water (shore), band/gblock (expandable) | Derived from the checks each module type runs: a non-mining, non-shore, non-expandable row uses 4 of the 9 window layers; placement work accounting scales with the count. | no |
 | Pump pole search reach | `planner/plan.ts` `pumpPoleSpot` | 2 tiles | Derived from a small electric pole's 5×5 supply area (2.5 tiles): a pump two tiles off is powered. The agent chose the square ring after B159 (the old 4-tile pattern failed a pump deep in the oil complex). | no |
 | Roboport grid spacing | `settings.ts` `factory-roboport-spacing` | 36 tiles | Agent guess (proposed): neighbours may each land 6 tiles off their point, and 36 + 12 = 48 keeps their logistic areas (reach 50 for the vanilla roboport) touching. | yes |
-| Roboports per faction | `settings.ts` `factory-roboports-max` | 10 | Agent guess (proposed): about a 400 × 400 base at spacing 36. | yes |
+| Roboports per faction | `settings.ts` `factory-roboports-max` | 200 (was 10) | B226: the user asked in-session (2026-11-17) to raise the cap and grow until the base is covered; coverage now stops the network and this is only a ceiling. The value is the agent's: linked roboports stand ~30 tiles apart, so a 450 × 550 base takes ~100. | yes |
+| Roboport goals building at once | `settings.ts` `factory-roboport-goals` | 4 | B226: the user asked in-session (2026-11-17) to build more in parallel; the count is an agent guess (plans still run one at a time). | yes |
 | Robots in the network | `settings.ts` `factory-network-robots` | 50 | D77 ("about 50 construction robots"). | yes |
 | Robot-first window | `settings.ts` `factory-robot-first-seconds` | 60 s | Agent guess (proposed): long enough for a robot to fly across a 110-tile construction area (~30 s), short enough that a job the robots miss is not held up for long. | yes |
 | Benchmark walk speed | `settings.ts` `benchmark-walk-tiles` | 0 (off); `tools/harness/m7-bench.toml` uses 16 tiles/tick | Agent choice for benchmark mode: enough to cross a base in seconds, small enough that a tick's teleport stays on the path's own nodes. Not a gameplay value; benchmark runs are parity-breaking and never acceptance. | yes |
