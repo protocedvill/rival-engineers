@@ -5,6 +5,8 @@
 import { LuaEntity } from "factorio:runtime"
 import { addStockpile } from "../jobs/faction"
 import { keyTaken } from "../jobs/keys"
+import { failJob } from "../jobs/board"
+import { takeable } from "../jobs/supply"
 import { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { Vec } from "../planner/grid"
@@ -109,14 +111,24 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
     addStockpile(ctx.faction, c)
     log(`[rival-engineers] faction ${ctx.faction.name}: M7d.5 hub storage chest at (${c.position.x}, ${c.position.y}) is now a depot`)
   }
-  // The stock row's own inserter fills its roboport with the robots it makes.
-  if (hub.row) return
+  // The stock row's own inserter fills its roboport from the row's first buffer chest only. B226 (`m7d6-222b` seed 222):
+  // the row's second machine had put 14 robots in its own chest that nobody moved, while the network had 10. The crew
+  // tops the network up for a row hub too, from wherever robots are in stock.
+  // The job asks only for the robots in stock: one sized to the whole shortfall (40 with 14 made) waited for materials
+  // for good, and the crew hand-crafted robots for it from the engines the robot row lacked.
   const robot = robotName(ctx)
   const have = hub.roboport.logistic_network?.all_construction_robots ?? 0
   const want = ctx.config.factoryNetworkRobots - have
   const key = `robots:${hub.roboport.unit_number}`
-  if (want <= 0 || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) return
-  const count = math.min(want, prototypes.item[robot]?.stack_size ?? 50)
+  let inStock = 0
+  for (const h of takeable(ctx.faction, ctx.config.supplyMinTake)) if (h.item === robot) inStock += h.amount
+  const count = math.min(want, inStock, prototypes.item[robot]?.stack_size ?? 50)
+  // An open job asking for more than is in stock (sized before this rule, or the stock was taken since) is replaced.
+  const old = ctx.f.jobKeys[key] !== undefined ? ctx.faction.board.jobs[ctx.f.jobKeys[key]] : undefined
+  if (old !== undefined && old.status === "open" && old.payload.kind === "fuel" && old.payload.count > math.max(count, 0)) {
+    failJob(ctx.faction.board, old.id, "resized", ctx.tick)
+  }
+  if (count <= 0 || keyTaken(ctx.f, ctx.faction.board.jobs, key, ctx.tick)) return
   addKeyed(ctx, key, { kind: "fuel", pos: hub.roboport.position, materials: [{ item: robot, count }], priority, payload: { kind: "fuel", item: robot, count, target: hub.roboport, partial: true } })
 }
 
@@ -128,12 +140,31 @@ export function robotsUpkeep(ctx: RobotsCtx, priority: number): void {
  */
 export const MAX_GRID_FAILURES = 3
 
+/** The last "robots:" wait logged per faction (log only: a reload just logs the current one again). */
+const lastWait: Record<string, string> = {}
+
 export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
+  const before = ctx.waiting.length
+  robotsStepInner(ctx, hooks)
+  let reason = ""
+  for (let i = before; i < ctx.waiting.length; i++) if (string.find(ctx.waiting[i], "robots:", 1, true)[0] === 1) reason = ctx.waiting[i]
+  const name = ctx.force.name
+  if (lastWait[name] !== reason) {
+    lastWait[name] = reason
+    log(`[rival-engineers] faction ${name}: ${reason === "" ? "robots: no wait" : reason}`)
+  }
+}
+
+function robotsStepInner(ctx: ExploreCtx, hooks: RobotsHooks): void {
   const f = ctx.f
   if (!ctx.config.factoryRobots) return
   const roboport = ctx.entities.roboport ?? "roboport"
   if (ctx.force.recipes[prototypeFacts.recipeForItem(roboport) ?? roboport]?.enabled !== true) return
-  if (hooks.busy() !== undefined) return
+  const busy = hooks.busy()
+  if (busy !== undefined) {
+    ctx.waiting.push(`robots: wait for ${busy}`)
+    return
+  }
   const failed: Record<string, boolean> = {}
   // Failed cells since the last roboport goal that was built.
   let failedCells = 0
@@ -141,7 +172,10 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   let building = 0
   for (const g of f.goals) {
     if (g.kind !== "robots") continue
-    if (g.status === "planning") return
+    if (g.status === "planning") {
+      ctx.waiting.push("robots: a roboport is planning")
+      return
+    }
     if (g.status === "building") {
       building++
       continue
@@ -158,7 +192,10 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
       }
     }
   }
-  if (building >= ctx.config.factoryRoboportGoals) return
+  if (building >= ctx.config.factoryRoboportGoals) {
+    ctx.waiting.push(`robots: ${building} roboports building`)
+    return
+  }
   const cells: RG.GridCell[] = []
   for (const n of LG.nodesOf(f.graph)) {
     const c = RG.parseCellRole(n.role)
@@ -187,19 +224,25 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
   // The network waits for its roboports to be made (the stock row, design.ts `robotStock`).
   const stock = LG.nodeByRole(f.graph, `stock:${roboport}`)
   if (stock === undefined || stock.lifecycle !== "built") {
-    if (cells.length === 0) ctx.waiting.push(`robots: wait for the ${roboport} stock row`)
+    ctx.waiting.push(`robots: wait for the ${roboport} stock row (${stock?.lifecycle ?? "not planned"})`)
     return
   }
   let origin: Vec = f.center
   if (cells.length > 0) {
     const m = hub !== undefined ? findModule(f.layout, hub.node.id) : undefined
-    if (m === undefined) return
+    if (m === undefined) {
+      ctx.waiting.push("robots: the hub has no module")
+      return
+    }
     origin = { x: m.rect.x + m.rect.w / 2, y: m.rect.y + m.rect.h / 2 }
     if (hub!.row) {
       // The grid starts at the row's roboport, not the row's centre.
       const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
       const port = findEntities(ctx.surface, { type: "roboport", force: ctx.force, area, limit: 1 })[0]
-      if (port === undefined || !port.valid) return
+      if (port === undefined || !port.valid) {
+        ctx.waiting.push("robots: no roboport in the hub row")
+        return
+      }
       origin = { x: port.position.x, y: port.position.y }
     }
   }
@@ -248,7 +291,10 @@ export function robotsStep(ctx: ExploreCtx, hooks: RobotsHooks): void {
     max: ctx.config.factoryRoboportsMax,
     room: cells.length > 0 ? { ...hooks.footprint(), window: CELL_WINDOW } : undefined,
   })
-  if (next === undefined) return
+  if (next === undefined) {
+    ctx.waiting.push(`robots: no next cell (${cells.length} roboports)`)
+    return
+  }
   const hubCell = cells.length === 0
   const anchor = hubCell ? f.center : pointOf(next)
   log(`[rival-engineers] faction ${ctx.faction.name}: M7d.5 roboport goal: cell ${RG.cellKey(next)} near (${anchor.x}, ${anchor.y})${hubCell ? `, the hub with ${HUB_CHESTS} storage chests` : ""}; ${cells.length} roboports so far`)
