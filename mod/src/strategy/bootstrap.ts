@@ -1363,7 +1363,12 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   const recipe = prototypes.recipe[recipeName]
   const per = craftYield(recipeName, item)
   let crafts = math.ceil(short / per)
-  const one = expandRecipe(ctx.force, recipe, 1)
+  // B227: intermediates the faction holds beyond what other jobs already asked for are used, not crafted again.
+  const have: Record<string, number> = {}
+  for (const k in ctx.stock) have[k] = math.max(0, ctx.stock[k] - (ctx.demand[k] ?? 0))
+  const oneHave: Record<string, number> = {}
+  for (const k in have) oneHave[k] = have[k]
+  const one = expandRecipe(ctx.force, recipe, 1, undefined, 0, oneHave)
   if (one.locked.length > 0) {
     ctx.waiting.push(`recipe ${one.locked[0]} locked`)
     return
@@ -1384,7 +1389,7 @@ function craft(ctx: Ctx, item: string, recipeName: string, short: number): void 
   while (crafts > 0) {
     const n = math.min(chunk, crafts)
     crafts -= n
-    const exp = expandRecipe(ctx.force, recipe, n)
+    const exp = expandRecipe(ctx.force, recipe, n, undefined, 0, have)
     const materials: ItemCount[] = []
     const names: string[] = []
     for (const r in exp.raw) names.push(r)

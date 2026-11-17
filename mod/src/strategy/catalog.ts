@@ -64,12 +64,17 @@ export interface Expansion {
 /**
  * Expands `count` crafts of `recipe` into raw materials, recursing through hand-craftable ingredients
  * (the crafting queue makes intermediates itself). Raw = no hand recipe (plates, stone, wood, coal).
+ *
+ * B227 (`b226-robots` seed 222, min 390-430: each hand-crafted roboport asked for 90 plastic while 400 advanced circuits
+ * sat in a buffer chest): `have` is what the faction holds and can spare, by item. A hand-craftable ingredient is taken
+ * from it first, as a material like a raw item (the character's crafting uses intermediates in its inventory), and only
+ * the rest is expanded. `have` is decremented, so one budget shared by several expansions never counts a stack twice.
  */
-export function expandRecipe(force: LuaForce, recipe: LuaRecipePrototype, crafts: number, out?: Expansion, depth = 0): Expansion {
+export function expandRecipe(force: LuaForce, recipe: LuaRecipePrototype, crafts: number, out?: Expansion, depth = 0, have?: Record<string, number>): Expansion {
   const result = out ?? { raw: {}, locked: [] }
   if (!force.recipes[recipe.name].enabled && result.locked.indexOf(recipe.name) < 0) result.locked.push(recipe.name)
   for (const ing of recipe.ingredients) {
-    const need = ing.amount * crafts
+    let need = ing.amount * crafts
     const sub = depth < 8 ? handRecipe(force, ing.name) : undefined
     // A locked recipe is not a way for the character to make the ingredient (Space Age's scrap-recycling is locked
     // and also lists raw items such as coal/stone). Treat it as a raw item; the bootstrap can mine/gather it.
@@ -77,8 +82,15 @@ export function expandRecipe(force: LuaForce, recipe: LuaRecipePrototype, crafts
       result.raw[ing.name] = (result.raw[ing.name] ?? 0) + need
       continue
     }
+    const held = have !== undefined ? math.min(need, math.max(0, have[ing.name] ?? 0)) : 0
+    if (held > 0) {
+      result.raw[ing.name] = (result.raw[ing.name] ?? 0) + held
+      have![ing.name] -= held
+      need -= held
+      if (need <= 0) continue
+    }
     const subCrafts = math.ceil(need / productAmount(sub.recipe, ing.name))
-    expandRecipe(force, sub.recipe, subCrafts, result, depth + 1)
+    expandRecipe(force, sub.recipe, subCrafts, result, depth + 1, have)
   }
   return result
 }

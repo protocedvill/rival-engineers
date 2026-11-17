@@ -76,8 +76,16 @@ export function labUnitTime(config: Config, stage: number): number {
  * B65: how much output `node` can add by growing in place: its remaining expansion units at their per-unit rate.
  * Zero when the module has no expansion unit (a fork is then the only way). The chain's own feed is not consulted here;
  * `supplyPass` raises it and `diffDesign` grows or forks it in turn.
+ *
+ * B227 (`m7d6-222b` seed 222): zero once a growth of this provider was rejected. The expansion units are what the
+ * module's shape allows, not what its ground does: a steel column whose fuel port runs into terrain failed every growth,
+ * yet kept offering four more units, and the robot, roboport and storage-chest stock rows were tapped onto it until it
+ * carried 46 plates/min for 30/min of furnaces. A rejected growth is evidence; the next design forks a parallel
+ * provider instead (B60). The count is kept until the next stage clears it (factory.ts), like `providerShort`.
  */
 function growableInPlace(f: FactoryState, id: string, item: string): number {
+  const node = f.graph.nodes[id]
+  if (node !== undefined && (CS.value(f.constraints, "growFails", node.role) ?? 0) > 0) return 0
   const m = findModule(f.layout, id as never)
   const e = m?.canonical?.expand
   if (e === undefined || e.maxUnits <= 0) return 0

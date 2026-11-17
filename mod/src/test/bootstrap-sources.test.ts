@@ -17,6 +17,8 @@ import { stampParts } from "../planner/runtime"
 import { FactoryState, startFactory } from "../strategy/factory"
 import { moduleFurnaces } from "../strategy/factory-report"
 import { ModuleDef } from "../modules/types"
+import { hasCapacity } from "../strategy/stage"
+import * as CS from "../strategy/constraints"
 
 // B17 (SPEC §5.5 collect-first): material sourcing must take from bootstrap furnaces (and buffers) before it
 // hand-mines or hand-smelts.
@@ -586,6 +588,69 @@ describe("B17 material sources", () => {
       assert(preempted === 1, `exactly one member preempts for the refuel (${msg})`)
       assert(taken === 1, `the preempting member takes the refuel (${msg})`)
     })
+  })
+
+  test("B227: a hand-craft uses the intermediates the faction holds instead of crafting them from plates", () => {
+    const lab = createLab(32)
+    const faction = createFaction("b227-a", { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    const brain = startBootstrap(faction, at(lab, 0, 0))
+    // In 2.0 research unlocks the lab, and circuits (a locked recipe counts as raw, which would pass without B227).
+    for (const r of ["lab", "electronic-circuit", "copper-cable"]) game.forces[faction.force].recipes[r].enabled = true
+    const depot = chest(lab, at(lab, 2, 0), faction.force)
+    addStockpile(faction, depot)
+    // A lab takes 10 circuits, 10 gears and 4 belts. The depot holds the 10 circuits and 4 of the gears.
+    depot.insert({ name: "electronic-circuit", count: 10 })
+    depot.insert({ name: "iron-gear-wheel", count: 4 })
+    brain.sites = []
+    brain.goals = [{ kind: "items", items: { lab: 1 }, label: "b227" }]
+    brain.rescanAt = undefined
+    brain.nextThink = game.tick
+    let materials: { item: string; count: number }[] | undefined
+    waitFor(600, () => {
+      for (const id of faction.board.active) {
+        const j = faction.board.jobs[id]
+        if (j.payload.kind === "craft" && j.payload.recipe === "lab") materials = j.materials
+      }
+      return materials !== undefined
+    }, () => {
+      const sf: string[] = []
+      for (const [k, v] of pairs(brain.shortfalls ?? {})) sf.push(`${k}:${v.action}`)
+      const jobs: string[] = []
+      for (const id of faction.board.active) jobs.push(`${faction.board.jobs[id].payload.kind}`)
+      return `a craft job for the lab (waiting ${(brain.waiting ?? []).join("; ")}; shortfalls ${sf.join(",")}; jobs ${jobs.join(",")}; goals ${brain.goals.length})`
+    }, () => {
+      const m: Record<string, number> = {}
+      for (const x of materials!) m[x.item] = (m[x.item] ?? 0) + x.count
+      const msg = materials!.map((x) => `${x.item}=${x.count}`).join(",")
+      assert(m["electronic-circuit"] === 10, `the 10 circuits come from the depot (${msg})`)
+      assert(m["copper-plate"] === undefined, `no circuit is crafted from copper (${msg})`)
+      assert(m["iron-gear-wheel"] === 4, `4 gears come from the depot (${msg})`)
+      // 6 gears (12 plates) and 4 belts (2 crafts of 1 gear + 1 plate: 6 plates) are crafted from plates.
+      assert(m["iron-plate"] === 18, `the 6 missing gears and the belts are crafted from 18 plates (${msg})`)
+    })
+  })
+
+  test("B227: a provider whose growth was rejected offers no growth to new consumers", () => {
+    const lab = createLab(32)
+    const faction = createFaction("b227-b", { position: at(lab, 0, 0), crew: 1, starterItems: {} })
+    startBootstrap(faction, at(lab, 0, 0))
+    setConfigOverride("factoryEnabled", false)
+    const f = startFactory(faction)
+    // A 4-furnace steel column with nothing spare at its plan (no capacity listed) but expansion units left.
+    const def = generatedModule("smelter-column", { recipe: "steel-plate", furnaces: 4, buffer: "iron-chest" })
+    assert((def.expand?.maxUnits ?? 0) > 0, `the column can grow (${def.expand?.maxUnits})`)
+    const id = moduleId("smelter")
+    const o = at(lab, 6, -12)
+    const m: PlacedModule = { id, canonical: def, def, transform: { rot: 0, mirror: false }, origin: o, rect: { x: o.x, y: o.y, w: def.footprint.w, h: def.footprint.h }, fixed: true }
+    commitModule(f.layout, m, prototypeFacts, 1)
+    addNode(f.graph, {
+      id, role: "steel-plate#1", kind: "module", module: def.id, generator: "smelter-column", recipe: "steel-plate", item: "steel-plate",
+      capacity: { inputs: [], outputs: [] }, planned: { inputs: [], outputs: [] }, powerW: 0, lifecycle: "built", status: "unknown",
+      createdTick: game.tick, builtTick: game.tick,
+    })
+    assert(hasCapacity(f, id, "steel-plate"), "before any growth failed, its expansion units count as capacity")
+    CS.setValue((f.constraints ??= {}), "growFails", "steel-plate#1", 1)
+    assert(!hasCapacity(f, id, "steel-plate"), "after a rejected growth they do not")
   })
 })
 
