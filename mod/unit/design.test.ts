@@ -6,7 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { BUILD_STOCK_MIN, buildMaterials, buildStock, Design, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, NO_SOURCE, noteUnsourced, powerStock, producerFor, robotStock, stockRole, stuckRounds, supplyStock } from "../src/strategy/design"
+import { BUILD_STOCK_MIN, buildMaterials, buildStock, Design, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, NO_SOURCE, noteUnsourced, latePoleSourced, powerStock, producerFor, robotStock, stockRole, stuckRounds, supplyStock } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -1554,6 +1554,26 @@ test("m7-b222 (user, 2026-11-14): storage chests are stocked, and an item the cr
   ok(row !== undefined, "a plastic stock node")
   eq(row!.generator, "chem-row", "a chemical plant row")
   ok(row!.def.entities.some((e) => e.buffer === true), "with a buffer chest (the supply point)")
+})
+
+test("B228: a smelted item the crew has no source for is stocked from a furnace column, not an assembler row", () => {
+  const enabled = { ...ELECTRIC, "steel-plate": true }
+  const c = ctx({ enabled, resources: ["iron-ore", "copper-ore", "coal", "stone"], assemblers: ["assembling-machine-1"] })
+  const d = design(c, { item: RED, perSecond: 1, stock: supplyStock({ "steel-plate": 40 }, (r) => r === "steel-plate") })
+  const row = d.nodes.find((n) => n.role === stockRole("steel-plate"))
+  ok(row !== undefined, `a steel stock node (errors: ${(d.errors ?? []).join("; ")})`)
+  eq(row!.generator, "smelter-column", "a furnace column")
+  ok(row!.def.entities.some((e) => e.buffer === true), "with a buffer chest (the supply point)")
+  ok(!row!.def.entities.some((e) => string.sub(e.name, 1, 18) === "assembling-machine"), "no assembling machine")
+})
+
+test("B228 (user, 2026-11-17): the late pole waits until its machine-only materials have a built producer", () => {
+  // A medium pole: copper cable and iron sticks by hand, steel only from a furnace.
+  const ings = ["copper-cable", "iron-stick", "steel-plate"]
+  const hand = (item: string): boolean => item !== "steel-plate"
+  ok(!latePoleSourced(ings, hand, () => false), "no steel producer built: keep the small pole")
+  ok(latePoleSourced(ings, hand, (item) => item === "steel-plate"), "a built steel producer: the medium pole")
+  ok(latePoleSourced(["copper-cable", "iron-stick"], hand, () => false), "hand-craftable materials need no producer")
 })
 
 /** The B205 fixture: a red-science design with a stand-in mall and robots on the way. */

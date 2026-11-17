@@ -1032,6 +1032,9 @@ M7 plan proposals (2026-10-30; the user decided D72–D79 in-session and approve
 - **P57, medium poles and the generated stock (user requests in-session 2026-11-12):** the user approved medium poles
   "everywhere once researched": once the `late-pole` of `factory-entities` (default medium-electric-pole) is enabled,
   every new module (generator param `pole`), pole line and solar field uses it; built modules keep their small poles.
+  **B228 refinement (user in-session 2026-11-17: "medium once steel flows"):** the late pole becomes the default only
+  once every ingredient of its recipe that the crew cannot hand-craft (steel for the medium pole) has a built producer
+  (`design.ts` `latePoleSourced`, checked in `factory.ts` `parsePairs`).
   The user also asked to "get the rest higher up so we can have bots actually building" (an audit of two late soak
   bases found 93-95% of entities, 87-90% of materials, made by the mall). Proposed (B205, part of D79's generated
   mall): once the mall is in the design, every building its modules place at least `BUILD_STOCK_MIN` (10) times that

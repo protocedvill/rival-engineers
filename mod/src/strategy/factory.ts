@@ -286,11 +286,28 @@ const BUILD_ROUND_TICKS = 1800
  * researched"): once the `late-pole` (default medium-electric-pole) recipe is enabled it is the `pole` of new modules
  * and pole lines, and `researched-pole` names it (machines make it; the small pole needs wood from trees).
  */
-function parsePairs(value: string, force?: LuaForce): Record<string, string> {
+function parsePairs(value: string, force?: LuaForce, f?: FactoryState): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of string.gmatch(value, "([^=,;%s]+)%s*=%s*([^,;%s]+)")) out[k] = v
   const late = out["late-pole"] ?? "medium-electric-pole"
-  if (force !== undefined && late !== "" && force.recipes[prototypeFacts.recipeForItem(late) ?? late]?.enabled === true) {
+  const lateRecipe = prototypeFacts.recipeForItem(late) ?? late
+  // B228 (user, in-session 2026-11-17: "medium once steel flows"): its machine-only materials need a built producer.
+  const latePoleMaterials = (force: LuaForce, recipe: string, f: FactoryState): boolean => {
+    const hand = prototypeFacts.handCategories?.() ?? { crafting: true }
+    const made: Record<string, boolean> = {}
+    for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && n.item !== undefined) made[n.item] = true
+    const ingredients = (prototypeFacts.recipe(recipe)?.ingredients ?? []).filter((i) => i.fluid !== true).map((i) => i.name)
+    return DS.latePoleSourced(
+      ingredients,
+      (item) => {
+        const rn = prototypeFacts.recipeForItem(item)
+        const r = rn !== undefined ? prototypeFacts.recipe(rn) : undefined
+        return r !== undefined && hand[r.category] === true && force.recipes[rn!]?.enabled === true
+      },
+      (item) => made[item] === true,
+    )
+  }
+  if (force !== undefined && late !== "" && force.recipes[lateRecipe]?.enabled === true && (f === undefined || latePoleMaterials(force, lateRecipe, f))) {
     out.pole = late
     out["researched-pole"] = late
   }
@@ -391,7 +408,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     force: factionForce(faction),
     surface: factionSurface(faction),
     tick: game.tick,
-    entities: parsePairs(config.factoryEntities, factionForce(faction)),
+    entities: parsePairs(config.factoryEntities, factionForce(faction), f),
     waiting: [],
   }
   updateGoals(ctx)
@@ -2593,7 +2610,7 @@ export function onFactoryMeterTick(): void {
 
 /** For tests: one measurement + reconcile pass (and the goal updates remedies need) outside the brain's cadence. */
 export function reconcileNow(faction: FactionState, f: FactoryState, config: Config = getConfig()): void {
-  const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities, factionForce(faction)), waiting: [] }
+  const ctx: Ctx = { faction, f, config, force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(config.factoryEntities, factionForce(faction), f), waiting: [] }
   updateGoals(ctx)
   f.meter ??= MS.newMeter()
   f.meter.lastSample = -math.huge
@@ -2603,7 +2620,7 @@ export function reconcileNow(faction: FactionState, f: FactoryState, config: Con
 
 /** For tests (B98): one `startGrow` outside the reconciler. */
 export function growNow(faction: FactionState, f: FactoryState, growth: NonNullable<GoalSpec["growth"]>): boolean | "wait" {
-  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities, factionForce(faction)), waiting: [] }
+  const ctx: Ctx = { faction, f, config: getConfig(), force: factionForce(faction), surface: factionSurface(faction), tick: game.tick, entities: parsePairs(getConfig().factoryEntities, factionForce(faction), f), waiting: [] }
   const r = startGrow(ctx, { kind: "grow", nodes: [], edges: [], techs: [], growth })
   f.waiting = ctx.waiting
   return r

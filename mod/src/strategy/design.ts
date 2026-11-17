@@ -371,6 +371,17 @@ export function powerStock(ctx: DesignContext, enabled: (this: void, recipe: str
   return out
 }
 
+/**
+ * B228 (user, in-session 2026-11-17: "medium once steel flows"): the late pole (B205: medium poles once researched) is
+ * the default only while every ingredient of its recipe the crew cannot hand-craft has a built producer. `b227-fresh`
+ * seed 222 (min 155-959): every layout switched to medium poles at research, while steel came only from rows that
+ * needed medium poles (and a steam growth that re-laid its lines with them); nothing was built for 13 game-hours.
+ */
+export function latePoleSourced(ingredients: string[], handCraftable: (this: void, item: string) => boolean, built: (this: void, item: string) => boolean): boolean {
+  for (const item of ingredients) if (!handCraftable(item) && !built(item)) return false
+  return true
+}
+
 /** M7d.5: the graph role of a stock sink for `item`. */
 export function stockRole(item: string): string {
   return `stock:${item}`
@@ -748,7 +759,6 @@ function addStock(ctx: DesignContext, w: Walk, st: StockItem, cluster: number): 
     w.errors.push(`stock ${st.item}: no recipe`)
     return
   }
-  const machine = machineFor(ctx, r.category) ?? ctx.assembler
   const hub = ctx.robotHub !== undefined && ctx.robotHub.robot === st.item ? ctx.robotHub : undefined
   // M7d.5 (user, 2026-11-07): the construction-robot stock is one self-contained cell: frames, robots and the first
   // roboport. The cell's first buffer chest fills the roboport, so the stock becomes an active network.
@@ -758,12 +768,23 @@ function addStock(ctx: DesignContext, w: Walk, st: StockItem, cluster: number): 
   const buffer = ctx.buffer !== undefined && ctx.buffer !== "" ? ctx.buffer : "iron-chest"
   // m7-b222: a pipe-fed product (plastic) is stocked from a chemical plant row with the same buffer head.
   const chem = !cell && producerFor(ctx, st.item) === "chem-row"
-  const generator = cell ? "robot-cell" : chem ? "chem-row" : "assembler-row"
+  // B228 (`b227-fresh` seed 222, min 181-959): a smelted product (steel, for medium poles) is stocked from a furnace
+  // column with the same buffer head. It went to an assembler row, whose assembling machine cannot smelt: the row stood
+  // idle for 13 game-hours, and every goal waited on medium poles the crew had no steel for.
+  const smelt = !cell && !chem && producerFor(ctx, st.item) === "smelter-column"
+  const machine = machineFor(ctx, r.category)
+  if (!cell && !chem && !smelt && machine === undefined) {
+    w.errors.push(`stock ${st.item}: no machine for ${r.category}`)
+    return
+  }
+  const generator = cell ? "robot-cell" : chem ? "chem-row" : smelt ? "smelter-column" : "assembler-row"
   const params: Record<string, unknown> = cell
-    ? { count: 2, machine, buffer, roboport: hub?.roboport ?? "roboport" }
+    ? { count: 2, machine: machine ?? ctx.assembler, buffer, roboport: hub?.roboport ?? "roboport" }
     : chem
       ? { recipe, chemPlants: 2, buffer }
-      : { recipe, count: 2, machine, buffer }
+      : smelt
+        ? { recipe, furnaces: 4, furnace: ctx.furnace, fuel: ctx.fuel, buffer }
+        : { recipe, count: 2, machine, buffer }
   // P53: the hub's storage chests go with its roboport, in the row's head or the robot cell (D84 had dropped them from
   // the cell: m7-b219 seed 222's network had no storage, so robots had nothing to build from).
   if (hub !== undefined) {
