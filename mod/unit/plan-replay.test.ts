@@ -890,6 +890,40 @@ test("B172: a tap's tunnel under its own trunk leaves its splitter on a belt", (
   ok(tap !== undefined && tap.tapOf !== undefined, "the robot circuit feed is a tap")
 })
 
+/** B230: join tiles (a merge splitter's or side-load's trunk tile, a tap's splitter) that are not a plain belt of the trunk. */
+function joinsOnUndergrounds(layout: LayoutState): string[] {
+  const kind: Record<number, string> = {}
+  for (const id of layout.routeOrder) for (const st of layout.routes[id].steps) if (st.kind !== "splitter") kind[tkey(st.x, st.y)] = st.kind
+  const out: string[] = []
+  for (const id of layout.routeOrder) {
+    const r = layout.routes[id]
+    const s0 = r.steps[0]
+    for (const j of [r.merge ?? r.mergeSplitter, r.tapOf !== undefined && s0?.kind === "splitter" ? s0 : undefined]) {
+      if (j === undefined) continue
+      const k = kind[tkey(j.x, j.y)]
+      if (k !== undefined && k !== "belt") out.push(`${id} joins at ${j.x},${j.y} on an ${k}`)
+    }
+  }
+  return out
+}
+
+// B230 (`b229-fresh` seed 222, goal g140): n94's ore route merged into n91's trunk to column n93 with a splitter at
+// (-60, 514) and tunnelled under that trunk at (-60, 513): the tunnel's entrance was the merge splitter's trunk tile. The
+// layout held both, the game neither, and n93 got no ore for the rest of the run (so no steel for the robot chain).
+test("B230: a merge's tunnel under its own trunk leaves its splitter on a belt", () => {
+  const fx = load("b230-g140-merge-tunnel")
+  const tier = tierByBelt(fx.tiers, fx.belt) ?? fx.tiers[0]
+  const job = newPlanJob(fx.request, tier, fx.base, fx.tiers)
+  runJob(job, fixtureView(fx), F, fx.policy, 100000)
+  ok(job.phase === "done", `plan done (${job.phase})`)
+  // The base already had one from g90 (the lab fuel merge, same bug) and one older: only what this plan adds counts.
+  const before: Record<string, boolean> = {}
+  if (fx.base !== undefined) for (const p of joinsOnUndergrounds(fx.base)) before[p] = true
+  ok(Object.keys(before).length > 0, "the captured base holds the earlier g90 case")
+  const bad = joinsOnUndergrounds(job.layout).filter((p) => !before[p])
+  ok(bad.length === 0, `joins on an underground end: ${bad.join("; ")}`)
+})
+
 /** B174: trunk tiles two routes join (two splitters, or a side-load into a splitter). */
 function doubleJoins(layout: LayoutState): string[] {
   const joined: Record<number, string> = {}

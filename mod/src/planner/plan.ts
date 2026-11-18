@@ -1948,7 +1948,9 @@ function searchFound(job: PlanJob, terrain: TerrainView, facts: ProtoFacts, poli
   // underground end on the splitter's tile; the splitter replaces it and cuts the trunk. The search can't see it (its
   // states don't carry their tap start), so retry with no splitter on that run: the crossing itself stays allowed.
   const s0 = route.steps[0]
-  const ownSplit = route.tapOf !== undefined && s0?.kind === "splitter" ? tkey(s0.x, s0.y) : undefined
+  // B230: a merge's own join tile (its splitter's trunk tile, or the side-loaded belt) counts the same way.
+  const ownJoinAt = route.mergeSplitter ?? route.merge
+  const ownSplit = route.tapOf !== undefined && s0?.kind === "splitter" ? tkey(s0.x, s0.y) : ownJoinAt !== undefined ? tkey(ownJoinAt.x, ownJoinAt.y) : undefined
   if (ownSplit !== undefined) {
     for (const t of res.tunnels ?? []) {
       if (job.layout.routeOcc[tkey(t.x, t.y)] !== route.tapOf) continue

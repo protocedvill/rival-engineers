@@ -24,6 +24,17 @@ import { LayoutPolicy } from "./policy"
 import { joinTiles, tunnelSite } from "./tunnel"
 import { proveSealFromGoal, SealOutcome } from "./route-seal"
 
+/**
+ * B230 (`b229-fresh` seed 222, g140): the trunk tile this request joins (its merge splitter's, or the side-load's
+ * target), not committed yet. A tunnel under the trunk may not put an underground end there: g140's merge splitter took
+ * the tile of the entrance its own crossing made, the layout held both, the game neither, and no ore reached the column.
+ */
+export function ownJoin(req: Pick<RouteRequest, "merge" | "mergeSplitter" | "goal">): number | undefined {
+  if (req.mergeSplitter !== undefined) return tkey(req.mergeSplitter.x, req.mergeSplitter.y)
+  if (req.merge === true) return tkey(req.goal.x, req.goal.y)
+  return undefined
+}
+
 export interface RouteRequest {
   id: string
   conn: string
@@ -592,7 +603,7 @@ function sealForward(s: Search, seal: Seal, state: LayoutState, terrain: Terrain
       const ty = y + DY[nd]
       if (state.routeOcc[tkey(tx, ty)] === undefined || sealTile(s, tx, ty) < 0) continue
       work += ROUTER_MOVE_WORK
-      if (s.req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, s.req.id, tun.busy) === undefined) continue
+      if (s.req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, s.req.id, tun.busy, ownJoin(s.req)) === undefined) continue
       if (sealTile(s, tx + DX[nd], ty + DY[nd]) < 0) seal.fedge = true
       else sealAdd(seal, true, encode(s, tx + DX[nd], ty + DY[nd], nd))
     }
@@ -632,7 +643,7 @@ function sealBackward(s: Search, seal: Seal, state: LayoutState, terrain: Terrai
     const qx = px - DX[d]
     const qy = py - DY[d]
     if (sealTile(s, qx, qy) < 0) seal.redge = true
-    else if (!s.req.avoid?.[tkey(px, py)] && sealPass(s, seal, state, terrain, policy, qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy) !== undefined) {
+    else if (!s.req.avoid?.[tkey(px, py)] && sealPass(s, seal, state, terrain, policy, qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy, ownJoin(s.req)) !== undefined) {
       for (const h of [d, cw(d), ccw(d)]) sealAdd(seal, false, encode(s, qx, qy, h))
     }
   }
@@ -744,7 +755,7 @@ export function proveBeltSeal(s: Search, state: LayoutState, terrain: TerrainVie
         const qx = px - DX[d]
         const qy = py - DY[d]
         if (sealTile(s, qx, qy) < 0) edge = true
-        else if (!s.req.avoid?.[tkey(px, py)] && passAt(qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy) !== undefined) {
+        else if (!s.req.avoid?.[tkey(px, py)] && passAt(qx, qy) && tunnelSite(state, px, py, d, s.req.id, tun.busy, ownJoin(s.req)) !== undefined) {
           for (const h of [d, cw(d), ccw(d)]) emit(encode(s, qx, qy, h))
         }
       }
@@ -1041,7 +1052,7 @@ export function stepSearch(s: Search, state: LayoutState, terrain: TerrainView, 
         if (state.routeOcc[tkey(tx, ty)] === undefined || !inWindow(s, tx, ty) || !inWindow(s, tx + DX[nd], ty + DY[nd])) continue
         used += ROUTER_MOVE_WORK
         if (heldMark[math.floor(encode(s, tx, ty, 0) / 4)] === held || heldMark[math.floor(encode(s, tx + DX[nd], ty + DY[nd], 0) / 4)] === held) continue
-        if (req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, req.id, tun.busy) === undefined) continue
+        if (req.avoid?.[tkey(tx, ty)] || tunnelSite(state, tx, ty, nd, req.id, tun.busy, ownJoin(req)) === undefined) continue
         push(cur, tx + DX[nd], ty + DY[nd], nd, g + c + (nd === d ? 0 : w.turn) + 1 + tun.cost, MV_CROSS)
       }
     }
