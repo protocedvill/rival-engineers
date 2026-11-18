@@ -5,7 +5,7 @@ import { tkey } from "../src/planner/grid"
 import { checkClaimOwners } from "../src/planner/claims"
 import { claimPoleTile } from "../src/planner/claims"
 import { commitModule, findModule, LayoutState, newLayout, PlacedModule, removeModule } from "../src/planner/layout"
-import { keepBridges, rehomeKeptPoles, removePoleLines, unpoweredModules } from "../src/planner/power"
+import { keepBridges, rehomeKeptPoles, removePoleLines, removePoles, unpoweredModules } from "../src/planner/power"
 import { eq, ok, run, test } from "./harness"
 import { vanillaFacts as F } from "./vanilla-facts"
 
@@ -90,6 +90,31 @@ test("B63: removing the generator is never guarded (losing power is the point)",
   const k = keepBridges(l, F, [line1, line2], ["steam"])
   eq(k.keepPoles.length, 0, "no pole kept when the plant itself is abandoned")
   eq(k.dropLines.length, 2, "both lines go with it")
+})
+
+test("B229: a bridge pole that was never built is not kept (the layout must not show a link the game lacks)", () => {
+  const { l, line1, line2 } = chain()
+  const m = ownPole(l, "mid")
+  const midKey = tkey(m.x, m.y)
+  // Everything stands except mid's own pole: the goal gave up its location before placing it.
+  const k = keepBridges(l, F, [line1, line2], ["mid"], (key) => key !== midKey)
+  ok(!k.keepPoles.some((p) => p.key === midKey), "the unbuilt pole is not kept as a bridge")
+  ok(k.keepPoles.length > 0, `the standing line poles still are: ${k.keepPoles.length}`)
+})
+
+test("B229: a kept line drops its poles that do not stand", () => {
+  const { l, line1, line2 } = chain()
+  const all = (l.poles ?? []).filter((p) => p.line === line2)
+  const ghost = all[all.length - 1]
+  const k = keepBridges(l, F, [line1, line2], ["mid"], (key) => key !== tkey(ghost.x, ghost.y))
+  ok(k.dropLines.indexOf(line2) < 0, "line2 is kept (it carries east)")
+  eq(k.unbuilt.join(","), ghost.id as string, "its one unbuilt pole is listed for removal")
+  removePoleLines(l, k.dropLines)
+  removePoles(l, k.unbuilt)
+  ok(!(l.poles ?? []).some((p) => p.id === ghost.id), "the unbuilt pole is gone from the layout")
+  ok((l.poleLines ?? []).every((ln) => ln.poles.indexOf(ghost.id) < 0), "and from its line")
+  eq(checkClaimOwners(l).length, 0, "no orphan claims")
+  ok(unpoweredModules(l, F).indexOf("east") >= 0, "east now shows as off the grid in the layout, as it is in the game")
 })
 
 run("pole-bridge")

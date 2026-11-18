@@ -3028,9 +3028,10 @@ const REMEDIES: Record<RemedyKind, (this: void, ctx: Ctx, r: Remedy, say: Remedy
       // B210: an island the game left unwired gets a plan of its own: no module, no connection, only the pole step, which
       // sees the built poles' networks and joins it through poles with a free wire. One such plan per stall window: a
       // failed one (every pole full) is not retried at every reconciler pass.
-      if (island && clogged.length === 0 && planning(f) === undefined && !f.goals.some((x) => x.kind === "repair" && x.nodes.length === 0 && x.growBuild === undefined && (x.status === "planning" || x.status === "building" || x.createdTick > ctx.tick - ctx.config.stallTicks))) {
+      // B229: so does a module the layout's own poles leave off the grid (a dropped pole that was never built).
+      if ((island || off) && clogged.length === 0 && planning(f) === undefined && !f.goals.some((x) => x.kind === "repair" && x.nodes.length === 0 && x.growBuild === undefined && (x.status === "planning" || x.status === "building" || x.createdTick > ctx.tick - ctx.config.stallTicks))) {
         startGoal(ctx, { kind: "repair", nodes: [], edges: [], techs: [] })
-        say("its poles reach the grid's, but the game wired none: a pole plan joins it (B210)")
+        say(off ? "the layout's poles do not reach it: a pole plan joins it (B229)" : "its poles reach the grid's, but the game wired none: a pole plan joins it (B210)")
         return
       }
       if (clogged.length === 0) {

@@ -16,7 +16,7 @@ import { allParts, BuildParts, entityDiff, EntitySpec, partEntities, partTiles, 
 import type { JobId, RouteId } from "../shared/ids"
 import { ccw, DX, DY, keyX, keyY, tkey, Vec } from "./grid"
 import { dependentRoutes, findModule, findPort, LayoutState, portTile, pumpPoleLine, removeModule, ripRoute } from "./layout"
-import { keepBridges, rehomeKeptPoles, removePoleLines } from "./power"
+import { keepBridges, rehomeKeptPoles, removePoleLines, removePoles } from "./power"
 import { destroyEntity, markDirty } from "./terrain"
 import { findEntities } from "../work"
 import { recordDiagnostic } from "../diagnostic-events"
@@ -740,8 +740,10 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   }
   // B63 (bridge rule): a pole that is the only path from a generator to a module that stays is not removed with the
   // abandoned ground. A line passing through it can carry everything behind it (3891760: 91 modules on a 17-tile gap).
-  const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules)
-  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => bridge.dropLines.indexOf(p.line) >= 0).map((p) => p.id) }
+  // B229: only a pole standing in the game is a bridge (a planned one, or its ghost, carries no power).
+  const standing = (key: number): boolean => findEntities(surface, { position: { x: keyX(key) + 0.5, y: keyY(key) + 0.5 }, type: "electric-pole", force: faction.force, limit: 1 }).length > 0
+  const bridge = keepBridges(layout, prototypeFacts, lineIds, parts.modules, standing)
+  const all: BuildParts = { modules: parts.modules, routes, poles: (layout.poles ?? []).filter((p) => bridge.dropLines.indexOf(p.line) >= 0 || bridge.unbuilt.indexOf(p.id) >= 0).map((p) => p.id) }
   const keepTiles: Record<number, boolean> = {}
   for (const k of bridge.keepPoles) keepTiles[k.key] = true
   const going: EntitySpec[] = []
@@ -759,6 +761,7 @@ export function abandonParts(surface: LuaSurface, faction: FactionState, layout:
   if (restore.length > 0) restoreUnderSplitters(faction, restore, clearJobs, priority)
   for (const id of parts.modules) removeModule(layout, id, prototypeFacts)
   removePoleLines(layout, bridge.dropLines)
+  removePoles(layout, bridge.unbuilt)
   rehomeKeptPoles(layout, bridge.keepPoles)
   return { tiles, clearJobs, routes, keptPoles: bridge.keepPoles.length }
 }

@@ -694,8 +694,8 @@ export interface KeptPole {
  * the only link for everything behind it (seed 3891760: 91 modules went dark on a 17-tile gap).
  * Returns the lines that may still be removed, and the poles that must be kept with the module each protects.
  */
-export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: string[], dropModules: string[]): { dropLines: string[]; keepPoles: KeptPole[] } {
-  const none = { dropLines, keepPoles: [] as KeptPole[] }
+export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: string[], dropModules: string[], standing?: (this: void, key: number) => boolean): { dropLines: string[]; keepPoles: KeptPole[]; unbuilt: string[] } {
+  const none = { dropLines, keepPoles: [] as KeptPole[], unbuilt: [] as string[] }
   const lineDrop: Record<string, boolean> = {}
   for (const id of dropLines) lineDrop[id] = true
   const modDrop: Record<string, boolean> = {}
@@ -726,8 +726,13 @@ export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: s
   const all: Record<number, boolean> = {}
   for (const c of cands) all[c.key] = true
   if (orphans(all).length === 0) return none
+  // B229 (`b228b-fresh` seed 222, min 425): only a standing pole is a bridge. A goal that gave up its location mid-build
+  // kept 4 poles it had never placed; the layout showed them, so the next power plan put 7 outposts behind them with no
+  // poles of its own, and those outposts stayed a 95-pole island for 9 game-hours ("nothing missing").
+  const stands = (key: number): boolean => standing === undefined || standing(key)
   const keep: KeptPole[] = []
   for (const c of cands) {
+    if (!stands(c.key)) continue
     const without: Record<number, boolean> = {}
     for (const k in all) without[k as unknown as number] = true
     delete without[c.key]
@@ -741,13 +746,16 @@ export function keepBridges(layout: LayoutState, facts: ProtoFacts, dropLines: s
   // Two bridges that only work together: rather than risk a cut, keep every candidate.
   if (orphans(finalDrop).length > 0) {
     keep.length = 0
-    for (const c of cands) keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: roles.consumers[0] ?? roles.sources[0] })
+    for (const c of cands) if (stands(c.key)) keep.push({ key: c.key, name: c.name, x: c.x, y: c.y, line: c.line, forModule: roles.consumers[0] ?? roles.sources[0] })
   }
   const keptLines: Record<string, boolean> = {}
   for (const c of cands) if (c.line !== undefined && keep.some((k) => k.key === c.key)) keptLines[c.line] = true
   const out: string[] = []
   for (const id of dropLines) if (keptLines[id] !== true) out.push(id)
-  return { dropLines: out, keepPoles: keep }
+  // A kept line stays whole in the layout: its poles that do not stand go (B229).
+  const unbuilt: string[] = []
+  for (const p of layout.poles ?? []) if (keptLines[p.line] === true && !stands(tkey(p.x, p.y))) unbuilt.push(p.id)
+  return { dropLines: out, keepPoles: keep, unbuilt }
 }
 
 /**
@@ -790,6 +798,26 @@ export function removePoleLines(layout: LayoutState, lineIds: string[]): void {
   layout.poles = kept
   layout.poleLines = (layout.poleLines ?? []).filter((l) => !drop[l.id])
   if (removed > 0 || (layout.poleLines?.length ?? 0) !== oldLines) bumpLayout(layout)
+}
+
+/** Removes single poles (by id) from the layout and from their lines; a line left without poles goes too (B229). */
+export function removePoles(layout: LayoutState, ids: string[]): void {
+  if (ids.length === 0) return
+  const drop: Record<string, boolean> = {}
+  for (const id of ids) drop[id] = true
+  const kept: PlannedPole[] = []
+  for (const p of layout.poles ?? []) {
+    if (drop[p.id]) releasePoleTile(layout, tkey(p.x, p.y), p.line)
+    else kept.push(p)
+  }
+  layout.poles = kept
+  const lines: NonNullable<LayoutState["poleLines"]> = []
+  for (const line of layout.poleLines ?? []) {
+    const poles = line.poles.filter((id) => drop[id] !== true)
+    if (poles.length > 0) lines.push({ ...line, poles })
+  }
+  layout.poleLines = lines
+  bumpLayout(layout)
 }
 
 export function poleTileKeys(layout: LayoutState): number[] {
