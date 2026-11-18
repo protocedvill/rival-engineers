@@ -101,6 +101,7 @@ export const Settings = {
   factorySustainMinutes: "rival-engineers-factory-sustain-minutes",
   factorySharedProviders: "rival-engineers-factory-shared-providers",
   factoryMinTopUp: "rival-engineers-factory-min-top-up",
+  factoryMineFadeStep: "rival-engineers-factory-mine-fade-step",
   logisticsShareMinModules: "rival-engineers-logistics-share-min-modules",
   buildStuckRounds: "rival-engineers-build-stuck-rounds",
   factoryPowerFuelMinutes: "rival-engineers-factory-power-fuel-minutes",

@@ -211,6 +211,8 @@ export interface Config {
   factorySharedProviders: number
   /** M7 (C, proposed): items/s below which a top-up into a belt still feeding its consumer gets no provider (0 = always). */
   factoryMinTopUp: number
+  /** proto/mine-fade: a worn mine fades out in steps of this share of its output while one heir grows (0 = D55/D76 retire whole). */
+  factoryMineFadeStep: number
   /** B19: research splitters before production when sharing providers saves at least this many modules (0 = never). */
   logisticsShareMinModules: number
   /** B20: leftover-ghost rounds (30 s apart) placing nothing before a build gives up its location (0 = never). */

@@ -57,6 +57,11 @@ export interface DesignContext {
    * and the replacement's edge is routed again).
    */
   retiring?: Record<string, boolean>
+  /**
+   * proto/mine-fade: worn mines fading out (also `providerShort`, at a capacity that steps down). Their residual goes to
+   * one heir (their B60 parallel role), which grows; B97 must not pin that heir at its built capacity first.
+   */
+  fading?: Record<string, boolean>
   /** Actual output capacity of built provider roles by role (used only for a short provider). */
   providerCaps?: Record<string, number>
   /**
@@ -963,7 +968,7 @@ function addProducer(w: Walk, item: string, rate: number, consumers: Demand[], s
   // its inputs.
   // Also on the sharing path (a shared role chosen for these consumers, `sharedRole`): sweep 3e1c4d7 seed 7625436's
   // group was planned there, all three consumers on `~3`, and the built `~2` feeding the same ports was left out.
-  if (fixedCapacity === undefined && ctx.providerFeeds !== undefined) {
+  if (fixedCapacity === undefined && ctx.providerFeeds !== undefined && ctx.fading?.[role] !== true) {
     const family = roleFamily(role)
     const roles: string[] = []
     for (const [r] of pairs(ctx.providerCaps ?? {})) roles.push(r as string)

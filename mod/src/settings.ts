@@ -880,6 +880,15 @@ data.extend([
     order: "j-bda",
   },
   {
+    type: "double-setting",
+    name: Settings.factoryMineFadeStep,
+    setting_type: "runtime-global",
+    default_value: 0.25,
+    minimum_value: 0,
+    maximum_value: 1,
+    order: "j-bdb",
+  },
+  {
     type: "int-setting",
     name: Settings.logisticsShareMinModules,
     setting_type: "runtime-global",

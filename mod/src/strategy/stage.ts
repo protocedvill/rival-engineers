@@ -343,7 +343,10 @@ export function providerCaps(f: FactoryState | undefined): Record<string, number
   for (const id of f.graph.nodeOrder) {
     const n = f.graph.nodes[id]
     if (n.lifecycle !== "built" || n.item === undefined) continue
-    const cap = rateIn(n.capacity.outputs, n.item)
+    let cap = rateIn(n.capacity.outputs, n.item)
+    // proto/mine-fade: a fading mine offers only what its drills still mining make (rounded down to a step).
+    const fade = f.fading?.[n.role]
+    if (fade !== undefined && fade.node === n.id) cap = math.min(cap, fade.cap)
     if (cap > 0) out[n.role] = math.max(out[n.role] ?? 0, cap)
   }
   return out
@@ -379,6 +382,15 @@ export function providerFeeds(f: FactoryState | undefined): Record<string, Recor
  * D76: provider roles being retired. Their consumers need a replacement planned under a distinct parallel role, and
  * their spare capacity must not be offered to new consumers (the provider is going away).
  */
+export function fadingRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
+  let out: Record<string, boolean> | undefined
+  for (const [role] of pairs(f?.fading ?? {})) {
+    out ??= {}
+    out[role as string] = true
+  }
+  return out
+}
+
 export function retiringRoles(f: FactoryState | undefined): Record<string, boolean> | undefined {
   let out: Record<string, boolean> | undefined
   for (const [role] of pairs(f?.retiring ?? {})) {

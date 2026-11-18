@@ -97,7 +97,7 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const n = f.graph.nodes[id]
     // B70: mines are `outpost` nodes; this checked `module` only and never fired (no P36 line in any M6 soak).
     if (n === undefined || n.lifecycle !== "built" || (n.kind !== "outpost" && n.kind !== "module")) continue
-    if (f.retiring?.[n.role] !== undefined) continue
+    if (f.retiring?.[n.role] !== undefined || f.fading?.[n.role] !== undefined) continue
     const power = feedsPower(f.graph, n)
     const lead = power ? config.factoryPowerFuelMinutes : config.factoryMineLeadMinutes
     if (lead <= 0) continue
@@ -134,6 +134,11 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     const why = string.format("runs out (%.1f min of %s left at %.2f/s%s)", minutes, resource, rate, left.dry ? ", every drill dry" : "")
     // D76: a producer that still has ore keeps producing while its replacement is planned and built.
     if (!left.dry) {
+      // proto/mine-fade: it keeps producing and fades out as its drills run dry.
+      if (config.factoryMineFadeStep > 0 && canFade(f, n)) {
+        if (beginFade(ctx, n, what, why)) return n.role
+        continue
+      }
       if (beginRetire(ctx, n, what, why)) return n.role
       continue
     }
@@ -154,7 +159,7 @@ export function replaceBurnerOutposts(ctx: FuelCtx & { force: LuaForce; electric
   if (ctx.force.recipes[ctx.electricDrill]?.enabled !== true) return undefined
   for (const id of [...f.graph.nodeOrder]) {
     const n = f.graph.nodes[id]
-    if (n === undefined || n.lifecycle !== "built") continue
+    if (n === undefined || n.lifecycle !== "built" || f.fading?.[n.role] !== undefined) continue
     const drill = findModule(f.layout, id)?.canonical.params?.drill
     if (typeof drill !== "string" || drill === ctx.electricDrill || prototypes.entity[drill]?.burner_prototype === undefined) continue
     // A goal still building a connection from it finishes first.
@@ -246,6 +251,67 @@ function retireFeeds(g: LogicalGraph): RE.RetireFeed[] {
     if (p !== undefined) out.push({ role: p.role, port: `${e.to}.${e.toPort}`, built: p.lifecycle === "built" })
   }
   return out
+}
+
+/** proto/mine-fade: whether `n` is a built ore mine that can fade (not retiring, not already fading, not a fluid well). */
+export function canFade(f: FactoryState, n: LogicalNode): boolean {
+  if (n.lifecycle !== "built" || f.retiring?.[n.role] !== undefined || f.fading?.[n.role] !== undefined) return false
+  const resource = findModule(f.layout, n.id)?.def.anchor?.resource
+  return resource !== undefined && !fluidResource(resource) && LG.rateIn(n.capacity.outputs, n.item ?? resource) > 0
+}
+
+/**
+ * proto/mine-fade: mark a worn mine as fading. It keeps every drill and its belt; it is a short provider (B60) whose
+ * capacity `serviceFading` steps down as its drills run dry, so the design plans one heir for the gap and grows it.
+ */
+export function beginFade(ctx: FuelCtx, n: LogicalNode, what: string, why: string): boolean {
+  const f = ctx.f
+  if (!canFade(f, n)) return false
+  const full = LG.rateIn(n.capacity.outputs, n.item ?? "")
+  ;(f.fading ??= {})[n.role] = { role: n.role, node: n.id, since: ctx.tick, why, full, cap: full }
+  CS.add((f.constraints ??= {}), "providerShort", n.role)
+  log(string.format("[rival-engineers] faction %s: %s (%s) %s: fading, it keeps its drills until they run dry; its heir grows in steps of %.0f%% (proto/mine-fade)", ctx.faction.name, what, n.id, why, ctx.config.factoryMineFadeStep * 100))
+  return true
+}
+
+/**
+ * proto/mine-fade: once a minute, steps each fading mine's planned capacity down to the share of its drills still
+ * mining (rounded down to a step), and deconstructs it once every drill is dry. `busy`: a plan works on a copy of the
+ * layout now (deconstruct after it).
+ */
+export function serviceFading(ctx: FuelCtx, busy: boolean): void {
+  const f = ctx.f
+  if (f.fading === undefined || ctx.tick % FUEL_CHECK_TICKS >= ctx.config.brainIntervalTicks) return
+  const step = ctx.config.factoryMineFadeStep
+  for (const [key] of pairs(f.fading)) {
+    const role = key as string
+    const rec = f.fading[role]
+    const n = f.graph.nodes[rec.node]
+    const m = n !== undefined && n.role === role ? findModule(f.layout, n.id) : undefined
+    if (n === undefined || m === undefined) {
+      delete f.fading[role]
+      CS.remove(f.constraints, "providerShort", role)
+      continue
+    }
+    const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
+    const drills = findEntities(ctx.surface, { type: "mining-drill", force: ctx.faction.force, area })
+    let dry = 0
+    for (const d of drills) if (d.status === defines.entity_status.no_minable_resources) dry++
+    if (drills.length === 0 || dry >= drills.length) {
+      if (busy) continue
+      delete f.fading[role]
+      CS.remove(f.constraints, "providerShort", role)
+      relocate(ctx, n, `fade ${role}`, `every drill dry after ${string.format("%.0f", (ctx.tick - rec.since) / 3600)} min of fading (${rec.why})`)
+      continue
+    }
+    // A stage change clears the short flags (factory.ts); a fading mine stays short.
+    CS.add((f.constraints ??= {}), "providerShort", role)
+    const cap = RE.fadeCap(rec.full, 1 - dry / drills.length, step)
+    if (cap < rec.cap - 1e-6) {
+      log(string.format("[rival-engineers] faction %s: fade %s (%s): %d of %d drills dry: planned at %.3g of %.3g/s (proto/mine-fade)", ctx.faction.name, role, n.id, dry, drills.length, cap, rec.full))
+      rec.cap = cap
+    }
+  }
 }
 
 /**

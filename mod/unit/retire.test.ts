@@ -1,5 +1,5 @@
 import { eq, run, test } from "./harness"
-import { beginRetire, pruneRetiring, replacement, RetireFeed, RetireRecord, shouldRetire } from "../src/strategy/retire"
+import { beginRetire, FADE_LAST, fadeCap, pruneRetiring, replacement, RetireFeed, RetireRecord, shouldRetire } from "../src/strategy/retire"
 
 // T1: D76 retirement (replaces goalpost 1's verified handover). A retiring provider keeps producing until its drills run
 // dry or every consumer port it feeds is also fed by a built provider that did not feed that port when it began.
@@ -58,6 +58,16 @@ test("retire: records of roles gone from the graph are dropped", () => {
   eq(pruneRetiring(records, ["b"]), true)
   eq(records.a, undefined)
   eq(pruneRetiring(records, []), false)
+})
+
+
+test("proto/mine-fade: a fading mine's capacity steps down with its drills still mining, never to 0 until all are dry", () => {
+  eq(fadeCap(4, 1, 0.25), 4)
+  eq(fadeCap(4, 0.9, 0.25), 3)
+  eq(fadeCap(4, 0.75, 0.25), 3)
+  eq(fadeCap(4, 0.5, 0.25), 2)
+  eq(fadeCap(4, 0.1, 0.25), FADE_LAST)
+  eq(fadeCap(4, 0.5, 0), 4)
 })
 
 run("retire")

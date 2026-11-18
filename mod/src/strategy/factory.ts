@@ -31,7 +31,7 @@ import type { RemedyKind } from "./reconcile"
 import { countWork, findEntities } from "../work"
 import { evictSites, isSitePart, resyncReserved } from "./evict"
 import * as FU from "./fuel"
-import type { RetireRecord } from "./retire"
+import type { FadeRecord, RetireRecord } from "./retire"
 import * as CS from "./constraints"
 import * as FR from "./failure-rules"
 import * as NF from "./node-facts"
@@ -229,6 +229,8 @@ export interface FactoryState {
    * provider keeps producing until that replacement is built or its drills run dry.
    */
   retiring?: Record<string, RetireRecord>
+  /** proto/mine-fade: worn mines fading out while their heir grows (retire.ts `FadeRecord`). */
+  fading?: Record<string, FadeRecord>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -412,6 +414,7 @@ function think(faction: FactionState, f: FactoryState, config: Config): void {
     waiting: [],
   }
   updateGoals(ctx)
+  FU.serviceFading({ faction, f, config, surface: factionSurface(faction), tick: game.tick }, planning(f) !== undefined)
   FU.serviceRetiring({ faction, f, config, surface: factionSurface(faction), tick: game.tick })
   if (FU.checkMineOre(ctx, planning(f) !== undefined) === undefined) FU.replaceBurnerOutposts({ ...ctx, electricDrill: ctx.entities["electric-drill"] ?? "electric-mining-drill" }, planning(f) !== undefined)
   measureAndReconcile(ctx)
@@ -537,6 +540,7 @@ export function designContext(ctx: { faction: FactionState; force: LuaForce; con
     curated: ST.curatedProducers(),
     sharing: ST.sharing(ctx, getFactory(ctx.faction.name), stage, forceSharing),
     retiring: ST.retiringRoles(getFactory(ctx.faction.name)),
+    fading: ST.fadingRoles(getFactory(ctx.faction.name)),
     providerShort: CS.flags(getFactory(ctx.faction.name)?.constraints, "providerShort"),
     noMerge: CS.flags(getFactory(ctx.faction.name)?.constraints, "noMerge"),
     minTopUp: ctx.config.factoryMinTopUp,
@@ -2586,7 +2590,7 @@ function measureAndReconcile(ctx: Ctx): void {
       for (const e of LG.edgesInto(f.graph, n.id)) if (e.kind === "belt" && e.item === item && e.from !== undefined && f.graph.nodes[e.from]?.lifecycle === "built") return false
       return true
     }
-    const retiring = (n: LogicalNode): boolean => f.retiring?.[n.role]?.node === n.id
+    const retiring = (n: LogicalNode): boolean => f.retiring?.[n.role]?.node === n.id || f.fading?.[n.role]?.node === n.id
     const params = reconcileParams(ctx.config)
     params.probeMaxAge = probeMaxAgeFor(params.probeMaxAge, ctx.config.measureProbeTicks, ctx.config.brainIntervalTicks, MS.probeableCount(f.graph))
     const r = reconcile(f.graph, f.reconciler, { tick: ctx.tick, params, isFuel, crewSupplied, retiring })
@@ -2740,6 +2744,12 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
 function relocateDepleted(ctx: Ctx, n: LogicalNode, why: string, say: (this: void, result: string) => void): void {
   // D76: nothing is deconstructed here. The provider is marked as retiring and the design plans a replacement for its
   // consumers; `serviceRetiring` deconstructs it once that replacement is built or its drills run dry.
+  // proto/mine-fade: it keeps its drills; its capacity steps down as they run dry and its heir grows.
+  if (ctx.config.factoryMineFadeStep > 0 && FU.canFade(ctx.f, n)) {
+    FU.beginFade({ faction: ctx.faction, f: ctx.f, config: ctx.config, surface: ctx.surface, tick: ctx.tick }, n, `D55 ${n.role}`, `is worked out (${why})`)
+    say("fading: it keeps its drills until they run dry; its heir grows step by step (proto/mine-fade)")
+    return
+  }
   FU.beginRetire(ctx, n, `D55 ${n.role}`, `is worked out (${why})`)
   say("retiring: it keeps producing until its replacement is built (D55, D76)")
 }

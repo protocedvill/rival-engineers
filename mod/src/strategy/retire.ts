@@ -83,3 +83,30 @@ export function pruneRetiring(records: Record<string, RetireRecord>, roles: stri
   }
   return left > 0
 }
+
+// proto/mine-fade (user request in-session 2026-11-18, prototype): a worn mine is not retired whole. It "fades": it keeps
+// every drill and its belt, and the design sees its capacity step down as its drills run dry. The B60 short-provider
+// path plans one parallel provider (its heir) for the gap and grows that heir at each later step; the old mine is
+// deconstructed only once every drill is dry.
+
+/** One mine fading out while its heir takes over its consumers step by step. */
+export interface FadeRecord {
+  role: string
+  node: string
+  since: number
+  why: string
+  /** Its full output (items/s) when it began fading. */
+  full: number
+  /** Capacity the design gives it now (items/s): `full` times the drill share still mining, rounded down to a step. */
+  cap: number
+}
+
+/** The last step's capacity: positive (the design keeps the old mine and its consumers' ports), but nearly nothing. */
+export const FADE_LAST = 1e-3
+
+/** The capacity a fading mine is planned at, with `live` of its drills (0..1) still mining and steps of `step`. */
+export function fadeCap(full: number, live: number, step: number): number {
+  if (step <= 0) return full
+  const q = math.floor(live / step + 1e-9) * step
+  return q > 0 ? full * math.min(1, q) : math.min(full, FADE_LAST)
+}
