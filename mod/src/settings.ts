@@ -1032,6 +1032,25 @@ data.extend([
     maximum_value: 1000,
     order: "m-i",
   },
+  // B232 (user, in-session 2026-11-18: "overshoot depo capacity by a lot"; values proposed).
+  {
+    type: "int-setting",
+    name: Settings.depotFreeStacks,
+    setting_type: "runtime-global",
+    default_value: 64,
+    minimum_value: 0,
+    maximum_value: 10000,
+    order: "m-ia",
+  },
+  {
+    type: "double-setting",
+    name: Settings.depotFreePerUsed,
+    setting_type: "runtime-global",
+    default_value: 1,
+    minimum_value: 0,
+    maximum_value: 10,
+    order: "m-ib",
+  },
   // B36 (proposed, off): take from smelter modules' furnaces as well.
   {
     type: "bool-setting",

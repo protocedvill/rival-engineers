@@ -604,6 +604,44 @@ describe("job board", () => {
     })
   })
 
+  test("B232: a depositing member tops up nearby machines with what the depot holds a lot of, and only that", () => {
+    // fade-222 (min 751): 15,000 coal filled every depot and ~4,000 more sat in each pocket. User, in-session 2026-11-18:
+    // put raw materials back where they are used, "only when there's a lot of resources, and opportunistically".
+    const lab = createLab(24)
+    const faction = createFaction(newFactionName("sinks"), { position: at(lab, 0, 0), crew: 1 })
+    faction.depositBetweenJobs = true
+    const pile = lab.surface.create_entity({ name: "steel-chest", position: at(lab, 0.5, 4.5), force: faction.force })!
+    pile.insert({ name: "coal", count: 1000 })
+    pile.insert({ name: "iron-ore", count: 100 })
+    addStockpile(faction, pile)
+    const ironFurnace = lab.surface.create_entity({ name: "stone-furnace", position: at(lab, 8, 0), force: faction.force })!
+    ironFurnace.get_inventory(defines.inventory.furnace_source)!.insert({ name: "iron-ore", count: 10 })
+    const copperFurnace = lab.surface.create_entity({ name: "stone-furnace", position: at(lab, 8, 4), force: faction.force })!
+    copperFurnace.get_inventory(defines.inventory.furnace_source)!.insert({ name: "copper-ore", count: 10 })
+    const member = storage.crew[faction.crew[0]]
+    member.character.insert({ name: "coal", count: 200 })
+    member.character.insert({ name: "iron-ore", count: 100 })
+    const check = (got: number, want: number, what: string): void => {
+      assert(got === want, `${what}: ${got}, want ${want}`)
+    }
+    async(3600)
+    on_tick(() => {
+      if (member.character.get_item_count("coal") > 0 || member.character.get_item_count("iron-ore") > 0 || member.actions.length > 0) return
+      // A furnace's fuel slot holds 50; it may have burnt one since.
+      const fuel = (e: LuaEntity): number => e.get_fuel_inventory()!.get_item_count("coal") + (e.burner!.currently_burning !== undefined ? 1 : 0)
+      check(fuel(ironFurnace), 50, "the iron furnace was fuelled")
+      check(fuel(copperFurnace), 50, "the copper furnace was fuelled")
+      // 100 iron ore in the depot is not a lot (under 20 stacks): the ore goes to the depot.
+      const ore = ironFurnace.get_inventory(defines.inventory.furnace_source)!.get_item_count("iron-ore")
+      assert(ore <= 10, `no ore without a surplus: ${ore}`)
+      check(copperFurnace.get_inventory(defines.inventory.furnace_source)!.get_item_count("iron-ore"), 0, "no iron ore into a copper furnace")
+      check(pile.get_item_count("coal"), 1100, "the rest of the coal went to the depot")
+      check(pile.get_item_count("iron-ore"), 200, "the ore went to the depot")
+      done()
+      return false
+    })
+  })
+
   test("every job kind runs: gather, craft, clear, fuel", () => {
     const lab = createLab(24)
     const faction = createFaction(newFactionName("kinds"), { position: at(lab, 0, 0), crew: 1 })

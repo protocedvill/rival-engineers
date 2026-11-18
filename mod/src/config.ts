@@ -244,6 +244,10 @@ export interface Config {
   supplyRadius: number
   /** B32: a supply point holding fewer of an item than this is not worth the walk (stockpiles always count). */
   supplyMinTake: number
+  /** B232 (proposed values): the depot keeps at least this many free stacks... */
+  depotFreeStacks: number
+  /** B232 (proposed values): ...and this many free stacks per used one (1: at most half full). */
+  depotFreePerUsed: number
   /** B36 (proposed): smelter modules' furnace outputs are supply points too (may starve the module's belt). */
   supplyModuleFurnaces: boolean
 }

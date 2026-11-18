@@ -42,6 +42,23 @@ export interface Site {
   builtTick?: number
   /** D43: its ore is running out and a replacement goal is open. */
   depleting?: boolean
+  /** B232: a depot's block (`BrainState.depotBlocks`) and its chests' cells in it (row-major). */
+  depotBlock?: number
+  depotCells?: number[]
+}
+
+/**
+ * B232 (user, in-session 2026-11-18: "depos should be expandable and blocks of chests"): ground by the hub reserved
+ * for `rows` rows of `DEPOT_ROW_CHESTS` chest cells, `cw`×`ch` tiles each, with a one-tile aisle between rows. Each
+ * depot goal fills the next free cells, as many as the depot's free-room target needs.
+ */
+export interface DepotBlock {
+  id: number
+  x1: number
+  y1: number
+  cw: number
+  ch: number
+  rows: number
 }
 
 export type Goal =
@@ -127,6 +144,8 @@ export interface BrainState {
   rescanAt?: number
   /** B116: no depot spot was free at the last search: search again at this tick. */
   depotSearchAt?: number
+  /** B232: depot blocks, in the order they were reserved. */
+  depotBlocks?: DepotBlock[]
   /** Why the spawn spot is a compromise, if it is. */
   spawnNote?: string
 }

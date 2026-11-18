@@ -92,6 +92,9 @@ describe("faction conflicts", () => {
   before_each(() => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
+    // These scenes hand the brain a one-chest depot; B232's free-room target would plan more chests in a treeless lab.
+    setConfigOverride("depotFreeStacks", 0)
+    setConfigOverride("depotFreePerUsed", 0)
   })
 
   test("B173: a route piece already standing as planned is reused by the stamp; one facing another way still fails", () => {

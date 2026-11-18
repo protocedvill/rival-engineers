@@ -1225,6 +1225,46 @@ function sameItemChests(faction: FactionState, item: string): LuaEntity[] {
  * Puts what the member carries into the faction's stockpiles, else a supply chest of the same item (whatever fits). Returns whether it queued
  * anything. Creates a deposit job the member claims for itself, like a haul.
  */
+/**
+ * B232 (user, in-session 2026-11-18: return raw materials to where they're used "only when there's a lot of resources,
+ * and opportunistically"): a depositing member first tops up machines near it that already use `item`, when the
+ * depots hold at least `SINK_SURPLUS_STACKS` stacks of it. Fuel goes into burners whose fuel slots take it; ore and
+ * other smelter inputs only into furnaces already smelting that item (a column's furnaces must not mix products).
+ * Only what fits now: nobody waits for room in a machine.
+ */
+const SINK_SURPLUS_STACKS = 20
+const SINK_RADIUS = 24
+const SINK_MAX = 8
+const SINK_TYPES = ["boiler", "furnace", "mining-drill", "inserter", "burner-generator"]
+
+function surplusSinks(faction: FactionState, member: CrewMember, item: string, piles: LuaEntity[]): { entity: LuaEntity; room: number }[] {
+  const proto = prototypes.item[item]
+  if (proto === undefined) return []
+  let stock = 0
+  for (const pile of piles) stock += pile.get_item_count(item)
+  if (stock < SINK_SURPLUS_STACKS * proto.stack_size) return []
+  const fuel = (proto.fuel_value ?? 0) > 0
+  const found = findEntities(member.character.surface, { position: member.character.position, radius: SINK_RADIUS, force: member.character.force, type: SINK_TYPES })
+  const out: { entity: LuaEntity; room: number; d: number; id: number }[] = []
+  for (const e of found) {
+    if (!e.valid || e.to_be_deconstructed()) continue
+    let room = 0
+    if (fuel) {
+      const inv = e.get_fuel_inventory()
+      if (inv !== undefined && inv !== null) room = inv.get_insertable_count(item)
+    }
+    if (room <= 0 && e.type === "furnace") {
+      const src = e.get_inventory(defines.inventory.furnace_source)
+      if (src !== undefined && src !== null && src.get_item_count(item) > 0) room = src.get_insertable_count(item)
+    }
+    if (room > 0) out.push({ entity: e, room, d: distance(member.character.position, e.position), id: e.unit_number ?? 0 })
+  }
+  out.sort((a, b) => (a.d !== b.d ? a.d - b.d : a.id - b.id))
+  const top: { entity: LuaEntity; room: number }[] = []
+  for (let i = 0; i < out.length && i < SINK_MAX; i++) top.push({ entity: out[i].entity, room: out[i].room })
+  return top
+}
+
 function deposit(faction: FactionState, member: CrewMember, held: Record<string, number>, tick: number, keep: Record<string, boolean>): boolean {
   const piles = validStockpiles(faction)
   if (piles.length === 0 && (faction.supplies ?? []).length === 0) return false
@@ -1235,6 +1275,20 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
   const board = faction.board
   let job: CrewJob | undefined
   for (const item of names) {
+    let left = held[item]
+    for (const sink of surplusSinks(faction, member, item, piles)) {
+      if (left <= 0) break
+      const n = math.min(left, sink.room)
+      if (!job) {
+        job = addJob(board, { kind: "haul", pos: sink.entity.position, payload: { kind: "deposit", forMember: member.id } }, tick)
+        claim(board, [job.id], member.id, tick)
+        member.claims.push(job.id)
+      }
+      const action = enqueue(member.controller, { kind: "insert", entity: sink.entity, item, count: n, allowPartial: true })
+      member.actions.push({ action, job: job.id })
+      left -= n
+    }
+    if (left <= 0) continue
     let chest: LuaEntity | undefined
     let bestD = 0
     let fits = 0
@@ -1258,7 +1312,7 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
       claim(board, [job.id], member.id, tick)
       member.claims.push(job.id)
     }
-    const action = enqueue(member.controller, { kind: "insert", entity: chest, item, count: math.min(held[item], fits), allowPartial: true })
+    const action = enqueue(member.controller, { kind: "insert", entity: chest, item, count: math.min(left, fits), allowPartial: true })
     member.actions.push({ action, job: job.id })
   }
   if (!job) return false

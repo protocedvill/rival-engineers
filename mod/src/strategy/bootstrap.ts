@@ -17,7 +17,7 @@ import { moduleAssemblers, moduleFurnaces, repairBuffers, stockRowWaits, supplyC
 import { pickTreeItem } from "./tree-products"
 import { bufferChests } from "../modules/buffers"
 import { setSupplies, SupplyKind, SupplyPoint, supplyStock } from "../jobs/supply"
-import { BrainState, Catalog, Goal, Site, SiteKind, SitePart } from "./types"
+import { BrainState, Catalog, DepotBlock, Goal, Site, SiteKind, SitePart } from "./types"
 import { NO_SOURCE } from "./design"
 import { countEntities, findEntities } from "../work"
 import { destroyEntity, markDirty } from "../planner/terrain"
@@ -68,6 +68,11 @@ const PRIORITY_RETIRE = 60
 const DEPOT_SEARCH_RADIUS = 64
 /** B116: ticks between depot spot searches that found nothing (the search scans the whole square). */
 const DEPOT_SEARCH_RETRY = 3600
+/** B232: chests per depot row, and rows per depot block (user, in-session 2026-11-18: blocks of chests). */
+const DEPOT_ROW_CHESTS = 8
+const DEPOT_BLOCK_ROWS = 4
+/** B232: unreserved ground kept around a depot block (walkways). */
+const DEPOT_MARGIN = 2
 
 type CrewJob = Job<JobPayload>
 
@@ -501,36 +506,50 @@ function findSiteSpot(ctx: Ctx, patch: Patch, kind: SiteKind): PlannedPart[] | u
   return undefined
 }
 
-/** A spot for the depot chest near the hub: buildable, not on resources, with room to walk around. */
-function findDepotSpot(ctx: Ctx, chest: { entity: string; item: string }): PlannedPart | undefined {
+/**
+ * B232: a new depot block's top-left corner: the free ground nearest the hub for `rows` rows of `chest`, with a 2-tile
+ * margin of unreserved ground around it (aisles and walkways), no ore, trees, rocks or cliffs, every chest placeable.
+ */
+function findDepotBlock(ctx: Ctx, chest: string, rows: number): { x1: number; y1: number } | undefined {
   const hub = ctx.brain.hub ?? ctx.brain.base
   const cx = math.floor(hub.x)
   const cy = math.floor(hub.y)
   const others = otherClaims(ctx.faction.name, ctx.faction.surface)
-  const proto = prototypes.entity[chest.entity]
-  const storageMode = proto.type === "logistic-container" && proto.logistic_mode === "storage"
+  const proto = prototypes.entity[chest]
+  const w = DEPOT_ROW_CHESTS * proto.tile_width
+  const h = rows * (proto.tile_height + 1) - 1
   for (let r = 0; r <= DEPOT_SEARCH_RADIUS; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
         if (math.max(math.abs(dx), math.abs(dy)) !== r) continue
-        const part = partAt(chest.entity, chest.item, { x: cx + dx + 0.5, y: cy + dy + 0.5 }, defines.direction.north, false)
+        const x1 = cx + dx - math.floor(w / 2)
+        const y1 = cy + dy - math.floor(h / 2)
         let ok = true
-        for (let x = part.x1 - 2; x < part.x2 + 2 && ok; x++) {
-          for (let y = part.y1 - 2; y < part.y2 + 2 && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
+        for (let x = x1 - DEPOT_MARGIN; x < x1 + w + DEPOT_MARGIN && ok; x++) {
+          for (let y = y1 - DEPOT_MARGIN; y < y1 + h + DEPOT_MARGIN && ok; y++) if (ctx.brain.reserved[tkey(x, y)] || claimed(others, tkey(x, y))) ok = false
         }
         if (!ok) continue
-        if (countEntities(ctx.surface, { type: "resource", area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]] }) > 0) continue
-        // Free ground around it (no trees, rocks or water within a tile).
-        if (countEntities(ctx.surface, { area: [[part.x1 - 1, part.y1 - 1], [part.x2 + 1, part.y2 + 1]], type: ["tree", "simple-entity", "cliff"] }) > 0) continue
-        if (!ctx.surface.can_place_entity({ name: part.entity, position: part.position, force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) continue
-        if (!ctx.surface.can_place_entity({ name: "character", position: { x: part.position.x + 1.5, y: part.position.y } })) continue
-        // A storage chest is for the robots too: only inside their network (m7-b222 seed 222).
-        if (storageMode && ctx.force.find_logistic_network_by_position(part.position, ctx.surface) === undefined) continue
-        return part
+        const area: BoundingBox = [[x1 - 1, y1 - 1], [x1 + w + 1, y1 + h + 1]] as unknown as BoundingBox
+        if (countEntities(ctx.surface, { type: "resource", area }) > 0) continue
+        if (countEntities(ctx.surface, { area, type: ["tree", "simple-entity", "cliff"] }) > 0) continue
+        const block: DepotBlock = { id: 0, x1, y1, cw: proto.tile_width, ch: proto.tile_height, rows }
+        for (let c = 0; c < rows * DEPOT_ROW_CHESTS && ok; c++) {
+          if (!ctx.surface.can_place_entity({ name: chest, position: cellPosition(block, c), force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) ok = false
+        }
+        if (!ok) continue
+        if (!ctx.surface.can_place_entity({ name: "character", position: { x: x1 + w + 0.5, y: y1 + 0.5 } })) continue
+        return { x1, y1 }
       }
     }
   }
   return undefined
+}
+
+/** B232: the centre of cell `cell` of `block` (row-major, one aisle tile between rows). */
+function cellPosition(block: DepotBlock, cell: number): MapPosition {
+  const row = math.floor(cell / DEPOT_ROW_CHESTS)
+  const i = cell % DEPOT_ROW_CHESTS
+  return { x: block.x1 + i * block.cw + block.cw / 2, y: block.y1 + row * (block.ch + 1) + block.ch / 2 }
 }
 
 function reserveParts(ctx: Ctx, parts: PlannedPart[], margin: number, owner: string): number[] {
@@ -719,18 +738,17 @@ function carriedStacks(ctx: Ctx): number {
 
 function advanceGoals(ctx: Ctx): void {
   const brain = ctx.brain
-  // Depot full: add another depot goal in front of the rest.
+  // Depot short of room: add another depot goal in front of the rest.
   if (ctx.depot) {
-    let room = 0
-    for (const chest of ctx.faction.stockpiles) if (chest.valid) room += crewFreeStacks(chest)
-    // m7-b222 seed 222: robots unload only into the network's storage chests; when they are nearly full, a new depot
-    // (a storage chest once researched, by the hub) gives them room too.
     const robots = robotStorageRoom(ctx.faction.stockpiles)
     let depotPending = false
     for (const g of brain.goals) if (!g.done && g.kind === "site" && g.site === "depot") depotPending = true
     // B183: room for what the crew carries back too (picked-up belts bring their ore): a depot with no room left
     // for a full pocket deadlocked the crew (m7-nocap seed 222).
-    if ((room < 3 + carriedStacks(ctx) || (robots.has && robots.free < ROBOT_STORAGE_RESERVE)) && !depotPending) {
+    // B232 (fade-222, min 751): adding a chest once the depot was nearly full came too late: one relocation hands back
+    // hundreds of entities and the coal and ore on their belts, the pockets filled, and the crew could not build the
+    // next chest. Keep the depot at most about half full instead.
+    if ((depotDeficit(ctx) > 0 || (robots.has && robots.free < ROBOT_STORAGE_RESERVE)) && !depotPending) {
       let first = 0
       while (first < brain.goals.length && brain.goals[first].done) first++
       brain.goals.splice(first, 0, { kind: "site", site: "depot" })
@@ -811,24 +829,119 @@ function depotStuck(ctx: Ctx, site: Site): void {
  * faction holds now, else the catalog's (cheapest) chest. m7-nocap seed 222: the depot was full, both pockets were full of ore, and its wooden chest needed wood that no
  * one could gather with a full pocket, while a member carried 814 iron plates.
  */
-function depotChest(ctx: Ctx): { entity: string; item: string } {
+function depotChest(ctx: Ctx, fits?: (this: void, entity: string) => boolean): { entity: string; item: string } | undefined {
   for (const c of depotChests(ctx.force)) {
+    if (fits !== undefined && !fits(c.entity)) continue
     // A chest in stock (a stock row makes storage chests) needs no craft.
     let covered = true
     for (const item in c.raw) if ((ctx.stock[item] ?? 0) < c.raw[item]) covered = false
     if ((ctx.stock[c.item] ?? 0) > 0) covered = true
     if (covered) return c
   }
-  return { entity: ctx.brain.catalog.chest, item: ctx.brain.catalog.chestItem }
+  const fallback = { entity: ctx.brain.catalog.chest, item: ctx.brain.catalog.chestItem }
+  return fits === undefined || fits(fallback.entity) ? fallback : undefined
+}
+
+/**
+ * B232 (user, in-session 2026-11-18: "overshoot depo capacity by a lot"): free stacks the depot lacks. It keeps at
+ * least `depot-free-stacks` free, and `depot-free-per-used` free per used stack, plus room for what the crew carries.
+ */
+function depotDeficit(ctx: Ctx): number {
+  let room = 0
+  let used = 0
+  for (const chest of ctx.faction.stockpiles) {
+    if (!chest.valid) continue
+    room += crewFreeStacks(chest)
+    const inv = chest.get_inventory(defines.inventory.chest)!
+    used += inv.length - inv.count_empty_stacks()
+  }
+  return math.max(ctx.config.depotFreeStacks, used * ctx.config.depotFreePerUsed) + carriedStacks(ctx) - room
+}
+
+/**
+ * B232: the next depot: the next free cells of a reserved block, as many chests as the depot's deficit needs (a
+ * storage chest only where all of them are in a logistic network), else the first cells of a new block by the hub.
+ * A block too big for the free ground is reserved with fewer rows.
+ */
+function planDepot(ctx: Ctx): Site | undefined {
+  const brain = ctx.brain
+  const blocks = (brain.depotBlocks ??= [])
+  const deficit = math.max(1, depotDeficit(ctx))
+  for (const b of blocks) {
+    const site = planDepotCells(ctx, b, deficit)
+    if (site !== undefined) return site
+  }
+  if (brain.depotSearchAt !== undefined && ctx.tick < brain.depotSearchAt) return undefined
+  const first = depotChest(ctx, (e) => !isStorage(e))
+  if (first === undefined) return undefined
+  for (let rows = DEPOT_BLOCK_ROWS; rows >= 1; rows--) {
+    const spot = findDepotBlock(ctx, first.entity, rows)
+    if (spot === undefined) continue
+    brain.depotSearchAt = undefined
+    const proto = prototypes.entity[first.entity]
+    const b: DepotBlock = { id: blocks.length + 1, x1: spot.x1, y1: spot.y1, cw: proto.tile_width, ch: proto.tile_height, rows }
+    blocks.push(b)
+    log(`[rival-engineers] faction ${ctx.faction.name}: B232 depot block ${b.id} at (${b.x1}, ${b.y1}): ${rows} rows of ${DEPOT_ROW_CHESTS} cells`)
+    const site = planDepotCells(ctx, b, deficit)
+    if (site !== undefined) {
+      // The whole block's ground (cells to come, aisles, margin) is the first depot's: nothing else is planned on it.
+      const area = partAt(first.entity, first.item, { x: b.x1 + 0.5, y: b.y1 + 0.5 }, defines.direction.north, false)
+      area.x1 = b.x1
+      area.y1 = b.y1
+      area.x2 = b.x1 + DEPOT_ROW_CHESTS * b.cw
+      area.y2 = b.y1 + rows * (b.ch + 1) - 1
+      for (const k of reserveParts(ctx, [area], DEPOT_MARGIN, siteClaim(site.id))) site.tiles.push(k)
+    }
+    return site
+  }
+  brain.depotSearchAt = ctx.tick + DEPOT_SEARCH_RETRY
+  return undefined
+}
+
+function isStorage(entity: string): boolean {
+  const proto = prototypes.entity[entity]
+  return proto.type === "logistic-container" && proto.logistic_mode === "storage"
+}
+
+function planDepotCells(ctx: Ctx, b: DepotBlock, deficit: number): Site | undefined {
+  const taken: Record<number, boolean> = {}
+  for (const s of ctx.brain.sites) {
+    if (s.depotBlock !== b.id || s.status === "failed") continue
+    for (const c of s.depotCells ?? []) taken[c] = true
+  }
+  const probe = ctx.brain.catalog.chest
+  const cells: number[] = []
+  const positions: MapPosition[] = []
+  for (let c = 0; c < b.rows * DEPOT_ROW_CHESTS; c++) {
+    if (taken[c]) continue
+    const pos = cellPosition(b, c)
+    // Something else stands there (a chest of a failed depot that was built, say): skip the cell.
+    if (!ctx.surface.can_place_entity({ name: probe, position: pos, force: ctx.faction.force, build_check_type: defines.build_check_type.manual })) continue
+    cells.push(c)
+    positions.push(pos)
+  }
+  if (cells.length === 0) return undefined
+  let networked = true
+  for (const p of positions) if (ctx.force.find_logistic_network_by_position(p, ctx.surface) === undefined) networked = false
+  const chest = depotChest(ctx, (e) => {
+    const proto = prototypes.entity[e]
+    return proto.tile_width === b.cw && proto.tile_height === b.ch && (networked || !isStorage(e))
+  })
+  if (chest === undefined) return undefined
+  const slots = prototypes.entity[chest.entity].get_inventory_size(defines.inventory.chest) ?? 1
+  const n = math.min(cells.length, math.max(1, math.ceil(deficit / slots)))
+  const parts: PlannedPart[] = []
+  for (let i = 0; i < n; i++) parts.push(partAt(chest.entity, chest.item, positions[i], defines.direction.north, false))
+  const site = createSite(ctx, "depot", parts)
+  if (site !== undefined) {
+    site.depotBlock = b.id
+    site.depotCells = cells.slice(0, n)
+  }
+  return site
 }
 
 function planSite(ctx: Ctx, goal: Extract<Goal, { kind: "site" }>): Site | undefined {
-  if (goal.site === "depot") {
-    if (ctx.brain.depotSearchAt !== undefined && ctx.tick < ctx.brain.depotSearchAt) return undefined
-    const spot = findDepotSpot(ctx, depotChest(ctx))
-    ctx.brain.depotSearchAt = spot ? undefined : ctx.tick + DEPOT_SEARCH_RETRY
-    return spot ? createSite(ctx, "depot", [spot]) : undefined
-  }
+  if (goal.site === "depot") return planDepot(ctx)
   const resource = goal.resource!
   for (let attempt = 0; attempt < 6; attempt++) {
     const patch = bestPatch(ctx.brain.patches, resource, ctx.brain.hub ?? ctx.brain.base, 8, ctx.brain.badPatches)

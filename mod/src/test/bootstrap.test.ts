@@ -123,12 +123,12 @@ describe("burner bootstrap", () => {
     const lab = createLab(40)
     setConfigOverride("bootstrapSites", "")
     setConfigOverride("firstElectricityItems", "")
-    const faction = labFaction(lab, "depot-iron", { "iron-plate": 40, coal: 10 })
+    const faction = labFaction(lab, "depot-iron", { "iron-plate": 80, coal: 10 })
     until(3600, () => {
       for (const s of faction.brain!.sites) {
         if (s.kind !== "depot") continue
         assert(s.parts[0].entity === "iron-chest", `the depot is an iron chest, not ${s.parts[0].entity}`)
-        if (s.status === "built") return true
+        for (const p of s.parts) if (p.built !== undefined && p.built.valid) return true
       }
       return false
     })
@@ -138,13 +138,13 @@ describe("burner bootstrap", () => {
     const lab = createLab(40)
     setConfigOverride("bootstrapSites", "")
     setConfigOverride("firstElectricityItems", "")
-    const faction = labFaction(lab, "depot-provider", { "steel-plate": 20, "plastic-bar": 10, "iron-plate": 40, "copper-plate": 40, coal: 10 })
+    const faction = labFaction(lab, "depot-provider", { "steel-plate": 80, "plastic-bar": 40, "iron-plate": 200, "copper-plate": 200, coal: 10 })
     for (const r of ["steel-chest", "passive-provider-chest", "advanced-circuit", "electronic-circuit", "copper-cable"]) factionForce(faction).recipes[r].enabled = true
     until(7200, () => {
       for (const s of faction.brain!.sites) {
         if (s.kind !== "depot") continue
         assert(s.parts[0].entity === "passive-provider-chest", `the depot is a passive provider, not ${s.parts[0].entity}`)
-        if (s.status === "built") return true
+        for (const p of s.parts) if (p.built !== undefined && p.built.valid) return true
       }
       return false
     })
@@ -155,28 +155,53 @@ describe("burner bootstrap", () => {
     const lab = createLab(40)
     setConfigOverride("bootstrapSites", "")
     setConfigOverride("firstElectricityItems", "")
-    const faction = labFaction(lab, "depot-storage", { "steel-plate": 20, "plastic-bar": 10, "iron-plate": 40, "copper-plate": 40, coal: 10 })
+    const faction = labFaction(lab, "depot-storage", { "steel-plate": 80, "plastic-bar": 40, "iron-plate": 200, "copper-plate": 200, coal: 10 })
     for (const r of ["steel-chest", "storage-chest", "passive-provider-chest", "advanced-circuit", "electronic-circuit", "copper-cable"]) factionForce(faction).recipes[r].enabled = true
+    // m7-b222: a storage depot only inside a logistic network (B232: a whole row of it).
+    const force = factionForce(faction)
+    const eei = lab.surface.create_entity({ name: "electric-energy-interface", position: at(lab, 14, 4), force })!
+    eei.electric_buffer_size = 1e9
+    eei.power_production = 1e7
+    lab.surface.create_entity({ name: "medium-electric-pole", position: at(lab, 14, 6), force })
+    lab.surface.create_entity({ name: "roboport", position: at(lab, 14, 9), force })
     until(7200, () => {
       for (const s of faction.brain!.sites) {
         if (s.kind !== "depot") continue
         assert(s.parts[0].entity === "storage-chest", `the depot is a storage chest, not ${s.parts[0].entity}`)
-        if (s.status === "built") return true
+        for (const p of s.parts) if (p.built !== undefined && p.built.valid) return true
       }
       return false
     })
   })
 
-  test("B183: a depot without room for what the crew carries plans another chest", () => {
+  // B232 (fade-222, min 751; user, in-session 2026-11-18: "depos should be expandable and blocks of chests", "overshoot
+  // depo capacity by a lot"): the depot is a reserved block of chest rows, and the next row is planned while the depot
+  // still has as much room free as it uses.
+  test("B232: the depot fills cells of a reserved block, and grows before it is half full", () => {
     const lab = createLab(40)
     setConfigOverride("bootstrapSites", "")
     setConfigOverride("firstElectricityItems", "")
-    // 40 stacks of ore in the pockets: one iron chest (32 slots) can't take them.
-    const faction = labFaction(lab, "depot-room", { "iron-plate": 40, "iron-ore": 2000, coal: 10 })
-    until(7200, () => {
-      let built = 0
-      for (const s of faction.brain!.sites) if (s.kind === "depot" && s.status === "built") built++
-      return built >= 2
+    const faction = labFaction(lab, "depot-rows", { "iron-plate": 400, coal: 10 })
+    let first: Site | undefined
+    until(14400, () => {
+      const depots: Site[] = []
+      for (const s of faction.brain!.sites) if (s.kind === "depot" && s.status !== "failed") depots.push(s)
+      if (first === undefined) {
+        if (depots.length === 0 || depots[0].status !== "built") return false
+        first = depots[0]
+        assert(first.depotBlock === 1, "the depot is in a block")
+        // 64 free stacks plus the pockets' 5 (4 of plates, 1 of coal): 3 iron chests of 32.
+        assert(first.parts.length === 3, `the first depot is 3 chests, not ${first.parts.length}`)
+        // 20 of each chest's 32 stacks used: 60 used, 36 free, under the 64 kept free.
+        for (const p of first.parts) p.built!.insert({ name: "stone", count: 1000 })
+        return false
+      }
+      const next = depots[1]
+      if (next === undefined) return false
+      assert(next.depotBlock === 1, "the next chests are in the same block")
+      const last = first.parts[first.parts.length - 1].position
+      assert(next.parts[0].position.x === last.x + 1 && next.parts[0].position.y === last.y, "the next chest is the next cell of the row")
+      return true
     })
   })
 
@@ -244,7 +269,8 @@ describe("burner bootstrap", () => {
     setConfigOverride("bootstrapSites", "stone=1")
     setConfigOverride("firstElectricityItems", "")
     setConfigOverride("stallTicks", 1800)
-    const faction = labFaction(lab, "stall", { "burner-mining-drill": 1, wood: 4, coal: 10 })
+    // B232: the first depot is 5 wooden chests (64 free stacks and the pockets' room), the stone site's chest 1 more.
+    const faction = labFaction(lab, "stall", { "burner-mining-drill": 1, wood: 12, coal: 10 })
     const brain = faction.brain!
     // The brain has scanned stone patch A. Remove it and put patch B elsewhere: the brain only learns about B by
     // rescanning, and exploring farther is already exhausted, so only the stall recovery (replan) can find it.

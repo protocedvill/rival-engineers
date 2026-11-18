@@ -70,6 +70,9 @@ describe("D38 temporary factories", () => {
     setConfigOverride("scanRadius", 40)
     // The strategy layer's own think stays off: the test builds the cell itself.
     setConfigOverride("factoryEnabled", false)
+    // These scenes hand the brain a one-chest depot; B232's free-room target would spend their plates on more chests.
+    setConfigOverride("depotFreeStacks", 0)
+    setConfigOverride("depotFreePerUsed", 0)
   })
   after_each(() => clearConfigOverrides())
 

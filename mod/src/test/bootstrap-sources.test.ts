@@ -78,6 +78,9 @@ describe("B17 material sources", () => {
     for (const name of [...storage.factionOrder]) destroyFaction(name)
     clearConfigOverrides()
     testSeq++
+    // These scenes hand the brain a one-chest depot; B232's free-room target would spend their plates on more chests.
+    setConfigOverride("depotFreeStacks", 0)
+    setConfigOverride("depotFreePerUsed", 0)
   })
 
   test("B32: a craft needing iron plates is fed straight from a furnace holding plates", () => {
