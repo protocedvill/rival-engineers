@@ -1,9 +1,10 @@
 import { LuaEntity, LuaForce, LuaSurface } from "factorio:runtime"
 import { Config } from "../config"
 import { FactionState } from "../jobs/types"
-import { abandonParts } from "../planner/conflicts"
+import { abandonParts, applyDiff } from "../planner/conflicts"
+import { entityDiff, routeEntities } from "../planner/build-list"
 import { findModule } from "../planner/layout"
-import { dropOrphans } from "../planner/orphans"
+import { dropOrphans, rerootInputs } from "../planner/orphans"
 import type { LayoutState } from "../planner/layout"
 import type { Rect } from "../planner/grid"
 import * as LG from "../planner/logical"
@@ -284,7 +285,23 @@ export function serviceRetiring(ctx: FuelCtx): void {
 export function relocate(ctx: FuelCtx, n: LogicalNode, what: string, why: string, depth = 0): void {
   const f = ctx.f
   const m = findModule(f.layout, n.id)!
-  const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: [], poles: [] }, ctx.config.factoryBuildPriority)
+  // B231: belts into it that feed other consumers through taps stay up to their last tap; only the tail past it goes.
+  const beforeReroot = routeEntities(f.layout)
+  const rr = rerootInputs(f.layout, n.id)
+  const tail = entityDiff(beforeReroot, routeEntities(f.layout)).remove
+  const tailJobs = tail.length > 0 ? applyDiff(ctx.surface, ctx.faction, tail, [], { priority: ctx.config.factoryBuildPriority }, f.layout).clearJobs : []
+  for (const eid of f.graph.edgeOrder) {
+    const e = f.graph.edges[eid]
+    if (e.physical === undefined) continue
+    const ph: string[] = []
+    for (const p of e.physical) {
+      const q = rr.renamed[p] ?? p
+      if (ph.indexOf(q) < 0) ph.push(q)
+    }
+    e.physical = ph
+  }
+  const r = abandonParts(ctx.surface, ctx.faction, f.layout, { modules: [n.id], routes: rr.dangling, poles: [] }, ctx.config.factoryBuildPriority)
+  for (const id of tailJobs) r.clearJobs.push(id)
   // D55/P36: the replacement goal waits for these clear jobs; until then the old footprint is still `OWN` on the map.
   if (r.clearJobs.length > 0) {
     f.relocation ??= {}

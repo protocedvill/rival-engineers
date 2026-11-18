@@ -7,6 +7,7 @@ import { checkClaimOwners, claimPoleTile } from "../src/planner/claims"
 import { routeEntities } from "../src/planner/build-list"
 import { buildGraph } from "../src/planner/graph"
 import { asciiTerrain, boxTiles, FREE, keyX, keyY, TerrainView, tkey, WATER } from "../src/planner/grid"
+import { rerootInputs } from "../src/planner/orphans"
 import { bumpLayout, checkLayout, checkLayoutIndexes, commitModule, commitRoute, findModule, landsDownstream, layoutRevision, LayoutState, newLayout, PlacedModule, pointFeeds, portApproach, rerootTap, Route, unmarkModule } from "../src/planner/layout"
 import { LANE_HOP, laneWayOut, openPortEnds, placedPatch, placeNow } from "../src/planner/placement"
 import { preparePlanDelta } from "../src/planner/plan-delta"
@@ -818,6 +819,63 @@ test("re-root: a tap keeps its belt and the trunk's first part when the trunk go
   eq(job.phase, "done", `phase (${serpentLine(job.failures)})`)
   eq(state.routes["route:ab"].tapOf, "route:ac")
   noProblems(state, terrain, "trunk routed again")
+})
+
+test("B231: a relocated consumer's input trunk keeps its taps: the furthest tap takes over the trunk's first part", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  const d = sink("d", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  place(state, d, 12, 22)
+  const req = request([a, b, c, d], [conn("ab", "a", "b"), conn("ac", "a", "c"), conn("ad", "a", "d")], 40, 30)
+  runJob(newRoutingJob(req, YELLOW, state, ["ab", "ac", "ad"]), terrain, F, policy({ topology: "splitter-tap" }))
+  // As in the soak, the second feed may tap the first one instead of the trunk: a chain hanging off the trunk.
+  eq(state.routes["route:ac"]?.tapOf !== undefined && state.routes["route:ad"]?.tapOf !== undefined, true, "c and d are fed by taps")
+  const direct = ["route:ac", "route:ad"].filter((id) => state.routes[id].tapOf === "route:ab")
+  ok(direct.length > 0, "at least one taps the trunk to b")
+  const before = routeEntities(state).length
+  const out = rerootInputs(state, "b")
+  const far = out.renamed["route:ab"]
+  ok(far !== undefined && direct.indexOf(far) >= 0, `a direct tap carries the trunk now (${far})`)
+  eq(out.dangling.length, 0, "no merge left dangling")
+  eq(state.routes["route:ab"], undefined, "the trunk to b is gone")
+  eq(state.routes[far].tapOf, undefined, `${far} is no longer a tap`)
+  eq(state.routes[far].from?.module, "a", `${far} starts at a's port`)
+  for (const id of ["route:ac", "route:ad"]) {
+    ok(state.routes[id] !== undefined, `${id} is kept`)
+    if (id !== far) ok(state.routes[id].tapOf !== undefined && state.routes[state.routes[id].tapOf!] !== undefined, `${id} taps a route that exists (${state.routes[id].tapOf})`)
+  }
+  ok(routeEntities(state).length < before, "only the trunk's tail goes")
+  noProblems(state, terrain, "re-rooted for a relocation")
+})
+
+test("B231 (seed 3333 n1668): a tap that joins its trunk again past its splitter takes over the trunk and is kept", () => {
+  const terrain = asciiTerrain(field(40, 30))
+  const state = newLayout()
+  const a = source("a", EAST)
+  const b = sink("b", EAST)
+  const c = sink("c", SOUTH)
+  place(state, a, 2, 10)
+  place(state, b, 30, 10)
+  place(state, c, 20, 22)
+  runJob(newRoutingJob(request([a, b, c], [conn("ab", "a", "b"), conn("ac", "a", "c")], 40, 30), YELLOW, state, ["ab", "ac"]), terrain, F, policy({ topology: "splitter-tap" }))
+  const tap = state.routes["route:ac"]
+  eq(tap?.tapOf, "route:ab", "c is fed by a tap on the trunk to b")
+  // The soak's tap was a splitter pair: its second splitter sat on the trunk tile after the first (its mergeSplitter).
+  const trunk = state.routes["route:ab"]
+  const sp = tap.steps[0]
+  let at = 0
+  while (trunk.steps[at].x !== sp.x || trunk.steps[at].y !== sp.y) at++
+  const next = trunk.steps[at + 1]
+  tap.mergeSplitter = { x: next.x, y: next.y, dir: sp.dir, x2: next.x - sp.x + (sp.x2 ?? sp.x), y2: next.y - sp.y + (sp.y2 ?? sp.y) }
+  const out = rerootInputs(state, "b")
+  eq(out.renamed["route:ab"], "route:ac", "the tap carries the trunk now")
+  eq(out.dangling.length, 0, "the tap's own join is no dangling merge")
 })
 
 test("M7 (seed 11 g113): a turned cliff box covers the tiles it reaches, not its unturned corners", () => {

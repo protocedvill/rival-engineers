@@ -1,7 +1,8 @@
 // B202 (`m7-b199` seed 44444, min 283-316): what a relocation's dropped graph nodes leave behind. Pure (T1).
 
 import type { RouteId } from "../shared/ids"
-import { LayoutState, tapTree } from "./layout"
+import { LayoutState, rerootTap, routeDangles, tapTree } from "./layout"
+import { tkey } from "./grid"
 import * as LG from "./logical"
 
 /**
@@ -37,4 +38,48 @@ export function dropOrphans(g: LG.LogicalGraph, layout: LayoutState, drop: strin
     if (e.to !== undefined && consumers.indexOf(e.to) < 0) consumers.push(e.to)
   }
   return { routes: tree, consumers }
+}
+
+/**
+ * B231 (`b230-fresh` seed 222, min 776): before module `mid` is relocated, each belt into it that other routes tap keeps
+ * those taps. The tap that splits off furthest along takes over the trunk's first part (`rerootTap`: every built belt of
+ * it stays, the splitter's trunk-side output is left dead); only the tail past that splitter goes, and every other tap
+ * splits off the kept part. Before this the mall's copper trunk went whole with the mall, and with it the taps of six
+ * healthy science rows, which starved for the rest of the run. Returns the re-rooted trunks (old route → the tap now
+ * carrying it) and the merge routes left joining nothing (their join tile was on the tail).
+ */
+export function rerootInputs(layout: LayoutState, mid: string): { renamed: Record<string, RouteId>; dangling: RouteId[] } {
+  const renamed: Record<string, RouteId> = {}
+  const joined: RouteId[] = []
+  for (const rid of [...layout.routeOrder]) {
+    const r = layout.routes[rid]
+    if (r === undefined || r.to.module !== mid || r.from === undefined || r.from.module === mid || r.fluid !== undefined) continue
+    const at: Record<number, number> = {}
+    for (let i = 0; i < r.steps.length; i++) if (r.steps[i].kind === "belt") at[tkey(r.steps[i].x, r.steps[i].y)] = i
+    let best: RouteId | undefined
+    let bestAt = -1
+    for (const id of layout.routeOrder) {
+      const t = layout.routes[id]
+      const s0 = t?.steps[0]
+      if (t === undefined || t.tapOf !== rid || t.to.module === mid || s0?.kind !== "splitter") continue
+      const i = at[tkey(s0.x, s0.y)]
+      if (i !== undefined && i > bestAt) {
+        best = id
+        bestAt = i
+      }
+    }
+    if (best === undefined) continue
+    const tiles: Record<number, boolean> = {}
+    for (const k of r.tiles) tiles[k] = true
+    // B231 (seed 3333 n1668): the tap taking over may itself join the trunk again (its second splitter on the next trunk
+    // tile, the port's side of a splitter pair). That join is now part of its own head: it is no dangling merge.
+    for (const id of layout.routeOrder) {
+      const j = layout.routes[id]?.merge ?? layout.routes[id]?.mergeSplitter
+      if (id !== best && j !== undefined && tiles[tkey(j.x, j.y)]) joined.push(id)
+    }
+    if (rerootTap(layout, rid, best, true) !== undefined) renamed[rid] = best
+  }
+  const dangling: RouteId[] = []
+  for (const id of joined) if (layout.routes[id] !== undefined && routeDangles(layout, id) && dangling.indexOf(id) < 0) dangling.push(id)
+  return { renamed, dangling }
 }

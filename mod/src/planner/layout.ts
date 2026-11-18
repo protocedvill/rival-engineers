@@ -633,10 +633,11 @@ export function commitRoute(state: LayoutState, route: Route): void {
  * (~3M work units) each time the trunk's smelter moved. Returns the removed route ids, or undefined (nothing changed)
  * if the tap's splitter is not on the trunk.
  */
-export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId): RouteId[] | undefined {
+export function rerootTap(state: LayoutState, id: RouteId, tapId: RouteId, built = false): RouteId[] | undefined {
   const trunk = state.routes[id]
   const tap = state.routes[tapId]
-  if (trunk === undefined || tap === undefined || tap.tapOf !== id || trunk.fixed || tap.fixed || trunk.fluid !== undefined) return undefined
+  // `built` (B231): the faction's own layout, where built routes are `fixed` for plans but its relocation may re-root them.
+  if (trunk === undefined || tap === undefined || tap.tapOf !== id || (!built && (trunk.fixed || tap.fixed)) || trunk.fluid !== undefined) return undefined
   const sp = tap.steps[0]
   if (sp === undefined || sp.kind !== "splitter") return undefined
   let at = -1
