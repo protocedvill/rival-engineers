@@ -62,6 +62,45 @@ function mineDry(ctx: FuelCtx, n: LogicalNode): boolean {
   return drills.length === 0 || oreLeft(ctx.surface, drills, resource).dry
 }
 
+/**
+ * proto/mine-fade v2 (user request in-session 2026-11-18: start the fade by ore left): the share of `drills` (0..1) that
+ * will still have ore `minutes` from now at full speed, and how many are dry now. A tile reached by several drills
+ * counts once, split between them.
+ */
+function drillsLasting(surface: LuaSurface, drills: LuaEntity[], resource: string, minutes: number): { live: number; dry: number } {
+  if (drills.length === 0) return { live: 0, dry: 0 }
+  const cover: Record<string, number> = {}
+  const tiles: LuaEntity[][] = []
+  for (const d of drills) {
+    const ts = findEntities(surface, { type: "resource", name: resource, area: d.mining_area })
+    tiles.push(ts)
+    for (const e of ts) {
+      const k = `${e.position.x},${e.position.y}`
+      cover[k] = (cover[k] ?? 0) + 1
+    }
+  }
+  const time = prototypes.entity[resource]?.mineable_properties.mining_time ?? 1
+  let lasting = 0
+  let dry = 0
+  for (let i = 0; i < drills.length; i++) {
+    const d = drills[i]
+    if (d.status === defines.entity_status.no_minable_resources) {
+      dry++
+      continue
+    }
+    let ore = 0
+    for (const e of tiles[i]) ore += e.amount / cover[`${e.position.x},${e.position.y}`]
+    const perMinute = ((d.prototype.mining_speed ?? 0.5) * 60) / (time > 0 ? time : 1)
+    if (perMinute <= 0 || ore / perMinute >= minutes) lasting++
+  }
+  return { live: lasting / drills.length, dry }
+}
+
+/** proto/mine-fade v2: the lead time a mine's fade looks ahead (P36 for a steam block's fuel, D67 for the others). */
+function fadeLead(ctx: FuelCtx, n: LogicalNode): number {
+  return feedsPower(ctx.f.graph, n) ? ctx.config.factoryPowerFuelMinutes : ctx.config.factoryMineLeadMinutes
+}
+
 /** Ore left (summed over the distinct resource tiles its drills reach) and whether every drill has run dry. */
 function oreLeft(surface: LuaSurface, drills: LuaEntity[], resource: string): { amount: number; dry: boolean } {
   const seen: Record<string, boolean> = {}
@@ -127,6 +166,16 @@ export function checkMineOre(ctx: FuelCtx, busy: boolean): string | undefined {
     for (const e of LG.edgesFrom(f.graph, id)) if (e.kind === "belt") rate += e.plannedRate
     if (rate <= 0) rate = LG.rateIn(n.capacity.outputs, n.item ?? resource)
     const minutes = rate > 0 ? left.amount / rate / 60 : math.huge
+    // proto/mine-fade v2: it starts fading once the drills that still have ore `lead` minutes from now can't carry
+    // what its consumers take: its heir is planned before the gap opens.
+    if (!left.dry && config.factoryMineFadeStep > 0 && canFade(f, n)) {
+      const ahead = drillsLasting(ctx.surface, drills, resource, lead)
+      if (full * ahead.live < rate - 1e-6) {
+        const why = string.format("short in %d min (%.0f%% of its drills still mining then: %.3g of %.3g/s it delivers)", lead, ahead.live * 100, full * ahead.live, rate)
+        if (beginFade(ctx, n, `D67 ${n.role}`, why)) return n.role
+        continue
+      }
+    }
     if (!left.dry && minutes >= lead) continue
     // D67: a dry mine that feeds no power is D55's (claim more of its patch first, else relocate).
     if (left.dry && !power) continue
@@ -295,8 +344,10 @@ export function serviceFading(ctx: FuelCtx, busy: boolean): void {
     }
     const area = { left_top: { x: m.rect.x, y: m.rect.y }, right_bottom: { x: m.rect.x + m.rect.w, y: m.rect.y + m.rect.h } }
     const drills = findEntities(ctx.surface, { type: "mining-drill", force: ctx.faction.force, area })
-    let dry = 0
-    for (const d of drills) if (d.status === defines.entity_status.no_minable_resources) dry++
+    // v2: the capacity steps down by the drills that will still be mining a lead time from now (not those mining now).
+    const resource = m.def.anchor?.resource ?? ""
+    const ahead = drillsLasting(ctx.surface, drills, resource, fadeLead(ctx, n))
+    const dry = ahead.dry
     if (drills.length === 0 || dry >= drills.length) {
       if (busy) continue
       delete f.fading[role]
@@ -306,9 +357,9 @@ export function serviceFading(ctx: FuelCtx, busy: boolean): void {
     }
     // A stage change clears the short flags (factory.ts); a fading mine stays short.
     CS.add((f.constraints ??= {}), "providerShort", role)
-    const cap = RE.fadeCap(rec.full, 1 - dry / drills.length, step)
+    const cap = RE.fadeCap(rec.full, ahead.live, step)
     if (cap < rec.cap - 1e-6) {
-      log(string.format("[rival-engineers] faction %s: fade %s (%s): %d of %d drills dry: planned at %.3g of %.3g/s (proto/mine-fade)", ctx.faction.name, role, n.id, dry, drills.length, cap, rec.full))
+      log(string.format("[rival-engineers] faction %s: fade %s (%s): %d of %d drills dry, %.0f%% still mining in %d min: planned at %.3g of %.3g/s (proto/mine-fade)", ctx.faction.name, role, n.id, dry, drills.length, ahead.live * 100, fadeLead(ctx, n), cap, rec.full))
       rec.cap = cap
     }
   }
