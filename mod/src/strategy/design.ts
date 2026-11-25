@@ -1135,7 +1135,10 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     }
     const rest: Demand[] = []
     for (const d of fresh) {
-      if (d.rate <= room + EPS) {
+      // B235: a feed a failed plan blocked (`providerNoTap`) is not offered again as a tap of the same provider's spare.
+      // Only kept consumers were checked, so a new consumer was handed straight back to the provider whose route had
+      // failed, and every replan repeated it (b233 seed 222, g17-g20: labs~2 from the mall's boxed-in iron smelter).
+      if (d.rate <= room + EPS && shared.blocked?.[`${p}=>${d.to}.${d.toPort}`] !== true) {
         room -= d.rate
         byProducer[p].push(d)
       } else rest.push(d)

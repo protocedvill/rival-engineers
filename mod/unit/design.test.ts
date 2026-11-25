@@ -1685,4 +1685,19 @@ test("B233 (review): a chain behind a trigger-blocked provider ends in one consi
   }
 })
 
+test("B235: a new consumer whose feed from a built provider was blocked is not handed that provider's spare again", () => {
+  const free = design(ctx({ enabled: ELECTRIC, sharing: { keep: {}, spare: { coal: { "coal*>test": 100 } } } }), { item: RED, perSecond: 1 })
+  const tapped = free.edges.filter((e) => e.from === "coal*>test")
+  ok(tapped.length > 0, "without a block, new coal consumers tap the built provider's spare")
+  const port = tapped[0]
+  const d = design(ctx({
+    enabled: ELECTRIC,
+    sharing: { keep: {}, spare: { coal: { "coal*>test": 100 } }, blocked: { [`coal*>test=>${port.to}.${port.toPort}`]: true } },
+  }), { item: RED, perSecond: 1 })
+  const again = d.edges.filter((e) => e.from === "coal*>test" && e.to === port.to && e.toPort === port.toPort)
+  eq(again.length, 0, `${port.to}.${port.toPort} is not fed from the blocked provider again`)
+  ok(d.edges.some((e) => e.to === port.to && e.toPort === port.toPort), "it still gets a coal feed from another provider")
+  for (const e of tapped.slice(1)) ok(d.edges.some((x) => x.from === "coal*>test" && x.to === e.to && x.toPort === e.toPort), `${e.to} still taps it`)
+})
+
 run("design")

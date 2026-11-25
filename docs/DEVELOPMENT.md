@@ -106,7 +106,8 @@ ms/tick only between runs with the same `-j` (recorded as `config.run.jobs` in `
    `.graph.json` (render with `render.py <nearest frame> --graph ...`) and `.input.lua` (request, base layout, terrain).
    Copy the input to `mod/unit/fixtures/` and add a `replay(...)` in `mod/unit/plan-replay.test.ts`: it replays the
    plan in plain Lua (`npm run test:unit -- --no-build -t "<fixture>" plan-replay`: one replay takes from 0.5 s to a minute or so; the
-   whole file takes over 5 minutes). `REPLAY_ROUTER="maxRipups=6"` and `REPLAY_UNDERGROUND=4` try router variants. Soaks
+   whole file takes over 5 minutes). `PLAN_REPLAY=<absolute .input.lua path> npm run test:unit -- -t "replay /" plan-replay`
+   replays a capture in place without copying it (with `REPLAY_DUMP=1` / `REPLAY_MAP=x1,y1,x2,y2`). `REPLAY_ROUTER="maxRipups=6"` and `REPLAY_UNDERGROUND=4` try router variants. Soaks
    also keep every *adopted* plan's input (`plans/<faction>/`); `compareReplay(...)` replays one with the D36 / B2
    comparison (`REPLAY_UG=1`, `REPLAY_NO_BUNDLE=1`, `REPLAY_NO_SOFT=1`, `REPLAY_SOFT_PLACE=0.25` try weight variants).
    - **Replays use today's weights.** A capture freezes the policy of the day it was taken; `load` replaces every

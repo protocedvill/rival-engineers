@@ -1035,4 +1035,8 @@ replay("m7-b208-g238-pump-pole", { expect: "done" })
 // line per route search: where the work goes). Its test names hold the file name, so `-t` can pick one.
 for (const [f] of string.gmatch(os.getenv("REPLAY_ADHOC") ?? "", "([^,]+)")) replay(f, { expect: "any" })
 
+// Ad hoc: PLAN_REPLAY=<absolute .input.lua path> replays any captured plan (REPLAY_DUMP / REPLAY_MAP work as usual).
+const adhocPlan = os.getenv("PLAN_REPLAY")
+if (adhocPlan !== undefined) replay(adhocPlan, { expect: "any" })
+
 run("plan-replay")
