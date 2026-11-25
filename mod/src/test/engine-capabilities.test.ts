@@ -683,3 +683,105 @@ describe("pathfinder pockets", () => {
     })
   })
 })
+
+// M7d items 8 and 10 (D82 b, D83): what a player-less character can do with armour equipment, cliff explosives and
+// landfill. Each test logs which route works ("[m7d-*]" lines) so the implementation is built on the engine's facts.
+describe("M7d armour, cliffs and landfill", () => {
+  test("D82 b finding: a player-less character's armour grid charges from personal solar panels, and an exoskeleton makes it walk faster", () => {
+    const lab = createLab(48)
+    const s = lab.surface
+    s.daytime = 0
+    s.freeze_daytime = true
+    const f = game.forces["m7d-armor"] ?? game.create_force("m7d-armor")
+    const mk = (dy: number, exo: boolean): LuaEntity => {
+      const ch = s.create_entity({ name: "character", position: at(lab, -40, dy), force: f })!
+      const armor = ch.get_inventory(defines.inventory.character_armor)!
+      armor.insert({ name: "modular-armor" })
+      const grid = armor[0].grid!
+      // Modular armour is 5×5: one exoskeleton (2×4), a battery (1×2) and solar panels (1×1) in what is left.
+      if (exo) grid.put({ name: "exoskeleton-equipment" })
+      grid.put({ name: "battery-equipment" })
+      for (let i = 0; i < 9; i++) grid.put({ name: "solar-panel-equipment" })
+      return ch
+    }
+    const fast = mk(-10, true)
+    const plain = mk(10, false)
+    const x0 = fast.position.x
+    let t = 0
+    let charged = -1
+    on_tick(() => {
+      t++
+      const grid = fast.get_inventory(defines.inventory.character_armor)![0].grid!
+      if (charged < 0 && grid.available_in_batteries > 0) charged = t
+      // Walk only once the battery has some charge (or after 30 s, to measure the uncharged speed).
+      if (charged >= 0 || t > 1800) {
+        fast.walking_state = { walking: true, direction: defines.direction.east }
+        plain.walking_state = { walking: true, direction: defines.direction.east }
+      }
+      if (t < 1800 + 300 && (charged < 0 || t < charged + 300)) return
+      const df = fast.position.x - x0
+      const dp = plain.position.x - x0
+      log(`[m7d-armor] battery charged after ${charged} ticks (${grid.available_in_batteries} J, ${grid.get_generator_energy()} J/tick from panels); 300 ticks walking: exoskeleton ${string.format("%.1f", df)} tiles, plain ${string.format("%.1f", dp)} tiles`)
+      assert(charged >= 0, "the grid charges from personal solar panels without a player")
+      assert(df > dp * 1.2, `the exoskeleton walks faster (${df} vs ${dp} tiles)`)
+      done()
+      return false
+    })
+    async(3600)
+  })
+
+  test("D83 finding: how a player-less character can destroy a cliff with cliff explosives", () => {
+    const lab = createLab(48)
+    const s = lab.surface
+    const f = game.forces["m7d-cliff"] ?? game.create_force("m7d-cliff")
+    const results: string[] = []
+    const cliffAt = (dx: number): LuaEntity => s.create_entity({ name: "cliff", position: at(lab, dx, 0), cliff_orientation: "west-to-east" } as never)!
+    // (a) The player route: the character throws from its cursor.
+    const a = cliffAt(-24)
+    const ch = s.create_entity({ name: "character", position: at(lab, -24, 6), force: f })!
+    ch.cursor_stack!.set_stack({ name: "cliff-explosives", count: 1 })
+    const [okA, errA] = pcall(() => (ch as unknown as { use_from_cursor(p: MapPosition): void }).use_from_cursor(a.position))
+    results.push(`use_from_cursor: ${okA ? "called" : `error ${errA}`}`)
+    // (b) The scripted equivalent: the capsule's projectile created at the character, aimed at the cliff.
+    const b = cliffAt(24)
+    const ch2 = s.create_entity({ name: "character", position: at(lab, 24, 6), force: f })!
+    const proj = s.create_entity({ name: "cliff-explosives", position: ch2.position, target: b.position, source: ch2, force: f, speed: 0.3 } as never)
+    results.push(`projectile: ${proj !== undefined ? "created" : "not created"}`)
+    let t = 0
+    on_tick(() => {
+      t++
+      if (t < 240) return
+      log(`[m7d-cliff] ${results.join("; ")}; cliff (a) ${a.valid ? "standing" : "gone"}, cliff (b) ${b.valid ? "standing" : "gone"}; cursor left ${ch.cursor_stack!.valid_for_read ? ch.cursor_stack!.count : 0}`)
+      assert(!a.valid || !b.valid, `some route destroys a cliff: ${results.join("; ")}`)
+      done()
+      return false
+    })
+    async(600)
+  })
+
+  test("D83 finding: how a player-less character can fill water with landfill", () => {
+    const lab = createLab(32)
+    const s = lab.surface
+    const f = game.forces["m7d-land"] ?? game.create_force("m7d-land")
+    const tiles = []
+    for (let x = -3; x <= 3; x++) for (let y = -3; y <= 3; y++) tiles.push({ name: "water", position: at(lab, x, y) })
+    s.set_tiles(tiles)
+    const ch = s.create_entity({ name: "character", position: at(lab, 0, 8), force: f })!
+    ch.cursor_stack!.set_stack({ name: "landfill", count: 10 })
+    const results: string[] = []
+    const target = at(lab, 0, 0)
+    const ctl = ch as unknown as { build_from_cursor(p: { position: MapPosition; terrain_building_size?: number }): void }
+    const [okB, errB] = pcall(() => ctl.build_from_cursor({ position: target, terrain_building_size: 1 }))
+    results.push(`build_from_cursor: ${okB ? "called" : `error ${errB}`}`)
+    const viaCursor = s.get_tile(target.x, target.y).name
+    // The scripted equivalent: set the tile, paid from the inventory (the game's `landfill` tile).
+    const spot = at(lab, 2, 2)
+    s.set_tiles([0, 1].flatMap((dx) => [0, 1].map((dy) => ({ name: "landfill", position: { x: spot.x + dx, y: spot.y + dy } }))))
+    const viaScript = s.get_tile(spot.x, spot.y).name
+    const placeable = s.can_place_entity({ name: "stone-furnace", position: { x: spot.x + 1, y: spot.y + 1 }, force: f })
+    // The cursor routes are player-only (LuaPlayer): `build_from_cursor` / `use_from_cursor` do not exist on a character.
+    log(`[m7d-land] ${results.join("; ")}; tile after cursor build ${viaCursor}, landfill left ${ch.cursor_stack!.valid_for_read ? ch.cursor_stack!.count : 0}; set_tiles gives ${viaScript}`)
+    assert(viaScript === "landfill", "set_tiles fills water with landfill")
+    assert(placeable, "a building fits on the landfilled tiles")
+  })
+})

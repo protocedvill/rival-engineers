@@ -233,6 +233,11 @@ See `docs/DEVELOPMENT.md`. (Kept there so it stays next to the scripts it descri
 - **Diagonal cliffs have turned collision boxes**: `bounding_box` carries `orientation` (0.125 turns for a corner piece)
   and its corners are the *unturned* rectangle about the box centre. Turned, it reached ~1 tile further: a belt could not
   be placed on a tile the corners missed (B123). Tile coverage goes through `grid.ts` `boxTiles`.
+- **Armour, cliffs and landfill for a player-less character (M7d, D82 b / D83)**: its armour grid charges from personal
+  solar panels like a player's, and an exoskeleton makes it walk ~30% faster (57.4 vs 44.5 tiles in 300 ticks). It has
+  no `use_from_cursor` / `build_from_cursor` (player-only): a cliff is destroyed by creating the `cliff-explosives`
+  projectile at the character aimed at it, and water is filled with `surface.set_tiles` (landfill), paid from the
+  crew's inventory by the mod. Pinned by the engine-capabilities "M7d armour, cliffs and landfill" tests.
 - **Machine status alone misreads a module behind its own inserters**: the generated smelter column's inserters are
   electric; without power its furnaces just say `no_ingredients`. Measurement samples a module's inserters for power and
   fuel too (`measured.inserters`). Mining drills and labs have no output counter (`products_finished` errors on drills).
