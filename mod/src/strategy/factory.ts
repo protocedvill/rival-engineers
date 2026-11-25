@@ -229,6 +229,11 @@ export interface FactoryState {
    * provider keeps producing until that replacement is built or its drills run dry.
    */
   retiring?: Record<string, RetireRecord>
+  /**
+   * B233 (bug 4): built providers relocated because their output lane was sealed, by role, with the consumer role whose
+   * route was sealed: the design plans the replacement in that consumer's goal. Dropped once the replacement is built.
+   */
+  coPlan?: Record<string, string>
   /** M5b: measurement state (machines per node, counter ring, edge probes) and the reconciler's state. */
   meter?: MeterState
   reconciler?: ReconcileState
@@ -662,7 +667,16 @@ function designNow(ctx: Ctx): Design | undefined {
   const fluidEdge = d.edges.find((e) => prototypeFacts.isFluid?.(e.item) === true)
   const fluid = fluidEdge !== undefined ? OIL.fluidConnection(fluidEdge.item, ctx.entities.pole ?? "small-electric-pole") : undefined
   const materials = splitProduction ? DS.buildMaterials(prototypeFacts, d.nodes, d.edges, fluid !== undefined ? [fluid.pipe, fluid.underground, fluid.pump] : []) : {}
-  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger, splitProduction, materials)
+  if (f.coPlan !== undefined) {
+    // Kept until the replacement stands: an adopted node whose build is given up is relocated again (review, 2026-11-25).
+    const built: Record<string, boolean> = {}
+    for (const id of f.graph.nodeOrder) {
+      const n = f.graph.nodes[id]
+      if (n !== undefined && n.lifecycle === "built") built[n.role] = true
+    }
+    for (const role in f.coPlan) if (built[role]) delete f.coPlan[role]
+  }
+  const goals = DS.goalsFrom(diff, researched, waitsOnTrigger, splitProduction, materials, f.coPlan ?? {})
   for (const tech of [f.needUndergrounds, f.needSplitters]) {
     if (tech === undefined || researched[tech]) continue
     if (d.techs.indexOf(tech) < 0) d.techs = [...d.techs, tech]
@@ -2703,6 +2717,9 @@ function relocateSealed(ctx: Ctx, g: FactoryGoal, evidence: PlanEvidence[]): str
       log(`[rival-engineers] faction ${ctx.faction.name}: ${n.role} (${n.id}) has its ${sealed.port.port} output lane sealed; relocation waits for goal ${busy}`)
       continue
     }
+    // B233: its replacement is planned with this consumer, so the route out is part of choosing its place.
+    const [consumer] = string.match(ev.subject, "=>([^%.]+)%.")
+    if (consumer !== undefined) (f.coPlan ??= {})[n.role] = consumer
     FU.relocate(ctx, n, `output-sealed ${n.role}`, `has its ${sealed.port.port} output lane sealed (goal ${g.id}: ${ev.subject})`)
     return n.role
   }

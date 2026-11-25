@@ -1614,4 +1614,75 @@ test("M7d.6: route parts count for the generated stock (belts, pipe parts, poles
   eq(items.join(","), "pipe,stone-furnace,transport-belt", "the belt edge's belt, the fluid edge's pipe, the pole lines' pole")
 })
 
+
+// B233 (user, in-session 2026-11-25): a consumer was built in an earlier goal than its unbuilt provider and starved
+// (`design-222`: the robot chain's steel row and the mall's iron smelter).
+function b233Diff(serves: Record<string, "mall">, techs: Record<string, string[]> = {}): ReturnType<typeof diffDesign> {
+  const c = ctx()
+  const d = design(c, { item: RED, perSecond: 10 / 60 })
+  const g = graphWith(d, ["power", "coal>power", "labs"])
+  const diff = diffDesign(d, g, () => undefined)
+  diff.missing = diff.missing.map((n) => {
+    if (serves[n.role] === undefined && techs[n.role] === undefined) return n
+    const copy = { ...n, family: n.role, serves: serves[n.role] }
+    if (techs[n.role] !== undefined) copy.def = { ...n.def, requiresTech: techs[n.role] }
+    return copy
+  })
+  return diff
+}
+
+function goalWith(goals: ReturnType<typeof goalsFrom>, role: string): string {
+  for (const gs of goals) for (const n of gs.nodes) if (n.role === role) return gs.kind
+  return "none"
+}
+
+function edgeGoal(goals: ReturnType<typeof goalsFrom>, from: string, to: string): string {
+  for (const gs of goals) for (const e of gs.edges) if (e.from === from && e.to === to) return gs.kind
+  return "none"
+}
+
+test("B233: an unbuilt provider in a later goal than its consumer is pulled into the consumer's goal", () => {
+  const diff = b233Diff({ [SMELT_FE]: "mall" })
+  const consumers = diff.missingEdges.filter((e) => e.from === SMELT_FE).map((e) => e.to)
+  ok(consumers.length > 0, "the iron smelter feeds something")
+  const goals = goalsFrom(diff, {})
+  eq(goalWith(goals, SMELT_FE), "production", "the mall-serving smelter is planned with its consumers")
+  for (const to of consumers) eq(edgeGoal(goals, SMELT_FE, to), "production", `its edge to ${to} too`)
+  eq(goals.filter((gs) => gs.kind === "mall").length, 0, "the emptied mall goal is dropped")
+})
+
+test("B233: a provider behind a trigger technology keeps its goal, and its consumer goes with it", () => {
+  const diff = b233Diff({ [SMELT_FE]: "mall" }, { [SMELT_FE]: ["tech:late"] })
+  const consumer = diff.missingEdges.filter((e) => e.from === SMELT_FE)[0].to
+  const goals = goalsFrom(diff, {}, (t) => t === "tech:late")
+  eq(goalWith(goals, SMELT_FE), "mall", "the provider waits where it was")
+  eq(goalWith(goals, consumer), "mall", "the consumer waits with it")
+  eq(edgeGoal(goals, SMELT_FE, consumer), "mall", "and so does their edge")
+})
+
+test("B233 (bug 4): a relocated provider with a sealed output is planned in its consumer's goal", () => {
+  const base = b233Diff({})
+  const consumers = base.missingEdges.filter((e) => e.from === SMELT_FE).map((e) => e.to)
+  const target = consumers[0]
+  const diff = b233Diff({ [target]: "mall" })
+  const goals = goalsFrom(diff, {}, undefined, false, {}, { [SMELT_FE]: target })
+  eq(goalWith(goals, SMELT_FE), "mall", "the provider moves to its consumer's goal")
+  eq(edgeGoal(goals, SMELT_FE, target), "mall", "with the edge whose route was sealed")
+  for (const to of consumers) eq(goalWith(goals, to), "mall", `and its other consumer ${to} follows instead of starving`)
+})
+
+test("B233 (review): a chain behind a trigger-blocked provider ends in one consistent order, every provider no later than its consumer", () => {
+  const base = b233Diff({})
+  const mine = base.missingEdges.filter((e) => e.to === SMELT_FE)[0].from
+  const diff = b233Diff({ [mine]: "mall" }, { [mine]: ["tech:late"] })
+  const goals = goalsFrom(diff, {}, (t) => t === "tech:late")
+  const at: Record<string, number> = {}
+  goals.forEach((gs, i) => gs.nodes.forEach((n) => (at[n.role] = i)))
+  eq(goalWith(goals, SMELT_FE), "mall", "the smelter follows its blocked mine")
+  for (const e of diff.missingEdges) {
+    if (at[e.from] === undefined || at[e.to] === undefined) continue
+    ok(at[e.from] <= at[e.to], `${e.from} (goal ${at[e.from]}) comes no later than ${e.to} (goal ${at[e.to]})`)
+  }
+})
+
 run("design")

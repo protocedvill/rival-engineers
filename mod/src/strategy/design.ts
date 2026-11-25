@@ -2127,8 +2127,9 @@ function materialLayers(diff: DesignDiff, materials: Record<string, boolean>): R
   return layers
 }
 
-export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false, materials: Record<string, boolean> = {}): GoalSpec[] {
+export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>, waitsOnTrigger?: (this: void, tech: string) => boolean, splitProduction = false, materials: Record<string, boolean> = {}, coPlan: Record<string, string> = {}): GoalSpec[] {
   const goals: GoalSpec[] = []
+  const pulledFrom: Record<string, boolean> = {}
   const byKind: Record<string, GoalSpec> = {}
   const goalOf: Record<string, GoalSpec> = {}
   const keys: string[] = []
@@ -2191,6 +2192,7 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
   for (const k of keys) if (string.find(k, "@stock:", 1, true)[0] !== undefined) order.push(k)
   const orderIndex: Record<string, number> = {}
   for (let i = 0; i < order.length; i++) orderIndex[order[i]] = i
+  pullProvidersForward(diff, goalOf, orderIndex, order.length, researched, waitsOnTrigger, coPlan, pulledFrom)
   for (const e of diff.missingEdges) {
     const a = goalOf[e.from]
     const b = goalOf[e.to]
@@ -2203,10 +2205,93 @@ export function goalsFrom(diff: DesignDiff, researched: Record<string, boolean>,
     gs ??= get("production", 1, false, "restore")
     gs.edges.push(e)
   }
-  for (const k of order) if (byKind[k] !== undefined) goals.push(byKind[k])
+  // B233: a goal emptied by `pullProvidersForward` plans nothing.
+  const live = (gs: GoalSpec): boolean => gs.nodes.length > 0 || gs.edges.length > 0 || pulledFrom[gs.key ?? ""] !== true
+  for (const k of order) if (byKind[k] !== undefined && live(byKind[k])) goals.push(byKind[k])
   // A fallback goal created for a fully-built edge and any other key not in the fixed order still belongs at the end.
-  for (const k of keys) if (byKind[k] !== undefined && goals.indexOf(byKind[k]) < 0) goals.push(byKind[k])
+  for (const k of keys) if (byKind[k] !== undefined && goals.indexOf(byKind[k]) < 0 && live(byKind[k])) goals.push(byKind[k])
   for (const gr of diff.grow) goals.push({ kind: "grow", nodes: [], edges: [], growth: gr, techs: [] })
-  for (const gs of goals) gs.techs.sort()
+  for (const gs of goals) {
+    // B233: techs follow the nodes moved between goals.
+    if (gs.kind === "grow") continue
+    const techs: string[] = []
+    for (const n of gs.nodes) for (const t of n.def.requiresTech) if (!researched[t] && techs.indexOf(t) < 0) techs.push(t)
+    techs.sort()
+    gs.techs = techs
+  }
   return goals
+}
+
+/**
+ * B233 (user, in-session 2026-11-25, approving the agent's proposal): an edge belongs to its later endpoint's goal, so a
+ * consumer in an earlier goal than its unbuilt provider was built with that input missing, and waited on a goal that may
+ * never finish (`design-222`: the robot chain's steel row was built at min 660 with only its fuel; its iron edge sat in
+ * the mall goal behind a copper search, and the engine row behind it starved for the rest of the run). Such a provider
+ * is pulled into the consumer's goal, transitively, so a chain is planned and built together. A provider that waits on
+ * a technology no lab can research yet stays, and the consumer goes to the provider's goal instead: it could not run
+ * before that anyway. Labs goals (fed by hand first) and power goals (always first) are left alone.
+ *
+ * `coPlan` (B233, bug 4 of 2026-11-18): provider role -> consumer role to plan in the consumer's goal although the
+ * provider comes first: a built provider relocated because its output lane was sealed, so its new place is chosen
+ * together with the route to that consumer instead of being boxed in again (`b231-3333`: the advanced-circuit row was
+ * relocated twice at min 525 and 545, each time rebuilt before its consumer and sealed again).
+ */
+function pullProvidersForward(
+  diff: DesignDiff,
+  goalOf: Record<string, GoalSpec>,
+  orderIndex: Record<string, number>,
+  last: number,
+  researched: Record<string, boolean>,
+  waitsOnTrigger: ((this: void, tech: string) => boolean) | undefined,
+  coPlan: Record<string, string>,
+  pulledFrom: Record<string, boolean>,
+): void {
+  const idx = (gs: GoalSpec): number => (gs.key !== undefined ? (orderIndex[gs.key] ?? last) : last)
+  const nodeOf: Record<string, DesignNode> = {}
+  for (const n of diff.missing) nodeOf[n.role] = n
+  const move = (role: string, from: GoalSpec, to: GoalSpec): void => {
+    const i = from.nodes.indexOf(nodeOf[role])
+    if (i >= 0) from.nodes.splice(i, 1)
+    to.nodes.push(nodeOf[role])
+    goalOf[role] = to
+    if (from.key !== undefined) pulledFrom[from.key] = true
+  }
+  const blocked = (role: string): boolean => {
+    for (const t of nodeOf[role].def.requiresTech) if (!researched[t] && waitsOnTrigger !== undefined && waitsOnTrigger(t)) return true
+    return false
+  }
+  // A node that went to a later goal (its provider waits on a trigger technology, or it is a relocated provider pinned
+  // to its consumer) only ever moves later again; any other node only moves earlier. Pulling a pushed node back is what
+  // made the first version oscillate (review, 2026-11-25).
+  const pinned: Record<string, boolean> = {}
+  for (const from in coPlan) if (nodeOf[from] !== undefined) pinned[from] = true
+  let guard = 4 * diff.missing.length + 4
+  let changed = true
+  while (changed && guard > 0) {
+    guard--
+    changed = false
+    for (const from in coPlan) {
+      const a = goalOf[from]
+      const b = goalOf[coPlan[from]]
+      if (a === undefined || b === undefined || a === b || nodeOf[from] === undefined) continue
+      // The pinned provider joins its consumer's goal wherever that goal went; an earlier consumer follows it instead.
+      if (idx(a) < idx(b)) move(from, a, b)
+      else {
+        move(coPlan[from], b, a)
+        pinned[coPlan[from]] = true
+      }
+      changed = true
+    }
+    for (const e of diff.missingEdges) {
+      const a = goalOf[e.from]
+      const b = goalOf[e.to]
+      if (a === undefined || b === undefined || a === b || idx(a) <= idx(b)) continue
+      if (a.kind === "power" || b.kind === "power" || a.kind === "labs" || b.kind === "labs") continue
+      if (pinned[e.from] === true || blocked(e.from)) {
+        move(e.to, b, a)
+        pinned[e.to] = true
+      } else move(e.from, a, b)
+      changed = true
+    }
+  }
 }
