@@ -12,7 +12,7 @@ import { moduleId, poleId, poleLineId } from "../shared/ids"
 import type { ModuleId, PoleId, PoleLineId } from "../shared/ids"
 import { ProtoFacts } from "../modules/facts"
 import { claimPoleTile, poleClaimConflict, releasePoleTile } from "./claims"
-import { FREE, ROCK, TerrainView, tkey, TREE } from "./grid"
+import { FREE, ROCK, TerrainView, tkey, TREE, WATER } from "./grid"
 import { bumpLayout, LayoutState, PlannedPole } from "./layout"
 import { LayoutPolicy } from "./policy"
 
@@ -328,7 +328,9 @@ function poleCost(layout: LayoutState, terrain: TerrainView, policy: LayoutPolic
     c += policy.router.clearTree
   } else if (b === ROCK) {
     if (policy.obstacles.rocks !== "clear") return -1
-    c += policy.router.clearRock
+    c += policy.router.clearRock + (terrain.clearCost?.(x, y) ?? 0)
+  } else if (b === WATER && (terrain.clearCost?.(x, y) ?? 0) > 0) {
+    c += terrain.clearCost!(x, y) // M7d (D83): landfill under the pole
   } else if (b !== FREE) return -1
   // Corridors are for belts; ore stays minable.
   if (layout.corridor[k]) c += 0.5

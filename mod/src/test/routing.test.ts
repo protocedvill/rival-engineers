@@ -481,6 +481,115 @@ describe("M4b routing", () => {
     })
   })
 
+  // M7d (D83, proposed): an obstacle across the whole lab between a source and its sink. Without the item that removes
+  // it no route exists; once the faction can make it, the plan crosses, the build removes what is in the way and the
+  // crew lays the belt.
+  const crossWall = (tag: string, wall: (s: LuaSurface, ox: number, oy: number) => void, recipe: string, item: string, kind: "blast" | "fill"): void => {
+    const lab = createLab(60)
+    const s = lab.surface
+    const faction = createFaction(`d83-${tag}-${game.tick}`, { position: at(lab, -30, 30), crew: 1 })
+    const ox = math.floor(lab.origin.x)
+    const oy = math.floor(lab.origin.y)
+    wall(s, ox, oy)
+    const box = (id: string, k: "belt-in" | "belt-out"): ModuleDef => ({
+      id,
+      source: "generated",
+      footprint: { w: 1, h: 1 },
+      entities: [],
+      ports: [{ id: k === "belt-out" ? "out" : "in", kind: k, pos: { x: 0.5, y: 0.5 }, dir: 4, item: "iron-plate" }],
+      recipes: [],
+      machines: [],
+      rates: { inputs: [], outputs: [] },
+      requiresTech: [],
+      rotatable: false,
+      mirrorable: false,
+    })
+    const layout = newLayout()
+    const put = (def: ModuleDef, x: number, y: number): void => {
+      commitModule(layout, { id: moduleId(def.id), canonical: def, def, transform: { rot: 0, mirror: false }, origin: { x, y }, rect: { x, y, w: 1, h: 1 } } as PlacedModule, prototypeFacts, 0)
+    }
+    put(box("a", "belt-out"), ox - 20, oy - 20)
+    put(box("b", "belt-in"), ox + 20, oy - 20)
+    const request: PlanRequest = {
+      modules: [],
+      connections: [{ id: connectionId("c"), from: { module: moduleId("a"), port: "out" }, to: { module: moduleId("b"), port: "in" } }],
+      center: { x: ox, y: oy },
+      region: { x: ox - 58, y: oy - 58, w: 116, h: 116 },
+    }
+    storage.factories ??= {}
+    storage.factories[faction.name] = { layout } as never
+    const plan = (id: string): void => {
+      if (getPlannerEntry(id) !== undefined) removePlan(id)
+      startPlan({ id, surface: s.name, force: faction.force, faction: faction.name, request, maxUnderground: 1, baseFaction: faction.name })
+    }
+    plan(`d83-${tag}-a`)
+    async(60 * 60 * 20)
+    let stage = "without"
+    on_tick(() => {
+      if (stage === "without") {
+        const e = getPlannerEntry(`d83-${tag}-a`)!
+        if (e.phase === "scan" || e.phase === "plan") return
+        assert(e.phase === "failed", `without ${item} the obstacle blocks every route`)
+        game.forces[faction.force].recipes[recipe].enabled = true
+        plan(`d83-${tag}-b`)
+        stage = "with"
+        return
+      }
+      const e = getPlannerEntry(`d83-${tag}-b`)!
+      if (stage === "with") {
+        if (e.phase === "scan" || e.phase === "plan") return
+        assert(e.phase === "done", `plan failed with ${item}: ${failures(e)}`)
+        const route = e.job!.layout.routes["route:c"]
+        log(`[d83] ${tag}: route of ${route.length} tiles across`)
+        const chest = s.create_entity({ name: "iron-chest", position: at(lab, -30, 34), force: faction.force })!
+        chest.insert({ name: item, count: 40 })
+        for (const [it, n] of pairs(layoutBill(routeEntities(e.job!.layout), {}))) chest.insert({ name: it as string, count: n })
+        addStockpile(faction, chest)
+        const build = startBuild(e, {})
+        let removals = 0
+        for (const id of build.clearJobs) {
+          const p = faction.board.jobs[id].payload
+          if ((kind === "blast" && p.kind === "clear" && p.blast !== undefined) || (kind === "fill" && p.kind === "fill")) removals++
+        }
+        log(`[d83] ${tag}: ${removals} ${kind} job(s) of ${build.clearJobs.length}`)
+        assert(removals >= 1 && removals <= 40, `the build removes what is on the route (${removals} ${kind} jobs of ${build.clearJobs.length})`)
+        stage = "build"
+        return
+      }
+      if (e.build!.phase !== "done") return
+      // The stub modules have no entities, so the belt cannot be followed into them: every route tile holds its belt.
+      const route = e.job!.layout.routes["route:c"]
+      let missing = 0
+      for (const st of route.steps) if (s.count_entities_filtered({ position: { x: st.x + 0.5, y: st.y + 0.5 }, force: faction.force, type: ["transport-belt", "underground-belt"] }) === 0) missing++
+      if (missing > 0) {
+        const js: string[] = []
+        for (const id of e.build!.clearJobs) js.push(`${id}:${faction.board.jobs[id]?.status}/${faction.board.jobs[id]?.reason}`)
+        const ts: string[] = []
+        for (const st of route.steps) ts.push(`${st.x - math.floor(lab.origin.x)},${st.y - math.floor(lab.origin.y)}=${s.get_tile(st.x, st.y).name}/${s.count_entities_filtered({ position: { x: st.x + 0.5, y: st.y + 0.5 } })}`)
+        log(`[d83] ${tag}: jobs ${js.join(" ")}; tiles ${ts.join(" ")}; place jobs ${e.build!.placeJobs.length}`)
+      }
+      assert(missing === 0, `${missing} of ${route.steps.length} route tiles have no belt; problems ${e.build!.failed.join("; ")}`)
+      destroyFaction(faction.name)
+      delete storage.factories![faction.name]
+      done()
+      return false
+    })
+  }
+
+  test("D83: a route through a cliff wall is planned once cliff explosives can be made, and the crew blasts and builds it", () => {
+    crossWall("cliff", (s, ox, oy) => {
+      for (let y = -160; y <= 160; y += 4) s.create_entity({ name: "cliff", position: { x: ox + 0.5, y: oy + y }, cliff_orientation: "north-to-south" } as never)
+    }, "cliff-explosives", "cliff-explosives", "blast")
+  })
+
+  test("D83: a route across a 30-tile river (filled in rounds from both shores) is planned once landfill can be made, and the crew fills and builds it", () => {
+    crossWall("river", (s, ox, oy) => {
+      const tiles = []
+      for (let x = -15; x < 15; x++) for (let y = -160; y < 160; y++) tiles.push({ name: "water", position: { x: ox + x, y: oy + y } })
+      s.set_tiles(tiles)
+    }, "landfill", "landfill", "fill")
+  })
+
   test("D36: a plan without undergrounds compares itself with them in game (river detour), bounded and counted", () => {
     const lab = createLab(60)
     const force = labForce()

@@ -6,6 +6,7 @@ import { addJob, getJob, newBoard, Rect } from "./board"
 import { CrewMember, FactionState, JobPayload } from "./types"
 import { findEntities } from "../work"
 import { hasNetwork, orderRemoval } from "./robot-orders"
+import { blastItemFor } from "../character/cliffs"
 
 // Factions (SPEC §2 D4, §5.7): each AI faction is its own LuaForce with its own crew, stockpiles and Job
 // Board. Nothing here is shared between factions, so they cannot take each other's jobs or materials.
@@ -221,9 +222,28 @@ export function addPlaceJob(faction: FactionState, ghost: LuaEntity, options: Pl
 
 /** Adds a clear job: the crew mines a tree or rock (or picks up one of the faction's own entities). */
 export function addClearJob(faction: FactionState, target: LuaEntity, priority?: number): JobId {
+  // M7d (D83): a cliff is blasted with one cliff-destroying capsule, fetched like any job material (the economy makes it).
+  const blast = target.type === "cliff" ? blastItemFor(game.forces[faction.force]) : undefined
+  if (blast !== undefined) {
+    const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, materials: [{ item: blast, count: 1 }], payload: { kind: "clear", target, blast } }, game.tick)
+    return job.id
+  }
   const job = addJob(faction.board, { kind: "clear", pos: { x: target.position.x, y: target.position.y }, priority, payload: { kind: "clear", target } }, game.tick)
   // M7d.5: with a roboport network, a removal is a deconstruction order like a player's: robots in range take it.
   if (hasNetwork(faction, target.surface.name)) orderRemoval(faction, job.id, job.payload as Extract<JobPayload, { kind: "clear" }>)
+  return job.id
+}
+
+/**
+ * M7d (D83): a job filling the water tile at `position` with one `item` (landfill). An open fill job for the tile is
+ * reused (two builds over the same water).
+ */
+export function addFillJob(faction: FactionState, surface: LuaSurface, position: MapPosition, item: string, priority?: number): JobId {
+  for (const id of faction.board.active) {
+    const p = faction.board.jobs[id].payload
+    if (p.kind === "fill" && p.surface === surface.name && p.position.x === position.x && p.position.y === position.y) return id as JobId
+  }
+  const job = addJob(faction.board, { kind: "fill", pos: { x: position.x + 0.5, y: position.y + 0.5 }, priority, materials: [{ item, count: 1 }], payload: { kind: "fill", surface: surface.name, position, item } }, game.tick)
   return job.id
 }
 

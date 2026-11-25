@@ -773,6 +773,26 @@ data.extend([
     maximum_value: 1000,
     order: "l-ka",
   },
+  // M7d (D83, proposed): cliffs are clearable at this cost once cliff explosives can be made.
+  {
+    type: "double-setting",
+    name: Settings.plannerCliffClearCost,
+    setting_type: "runtime-global",
+    default_value: 12,
+    minimum_value: -1,
+    maximum_value: 10000,
+    order: "l-kb",
+  },
+  // M7d (D83, proposed): routes and pole lines cross water at this cost per tile once landfill can be made.
+  {
+    type: "double-setting",
+    name: Settings.plannerLandfillCost,
+    setting_type: "runtime-global",
+    default_value: 20,
+    minimum_value: 0,
+    maximum_value: 10000,
+    order: "l-kc",
+  },
   {
     type: "string-setting",
     name: Settings.moduleBuffer,

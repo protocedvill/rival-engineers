@@ -1439,10 +1439,14 @@ function enqueueWork(faction: FactionState, member: CrewMember, job: CrewJob): v
       break
     case "clear":
       if (payload.target.force.name === faction.force) push(enqueue(ctrl, { kind: "pickUp", entity: payload.target }))
+      else if (payload.target.valid && payload.target.type === "cliff" && payload.blast !== undefined) push(enqueue(ctrl, { kind: "blast", target: payload.target, item: payload.blast }))
       else push(enqueue(ctrl, { kind: "mine", target: payload.target }))
       break
     case "equip":
       push(enqueue(ctrl, { kind: "equip", item: payload.item, fillers: payload.fillers }))
+      break
+    case "fill":
+      push(enqueue(ctrl, { kind: "fill", position: payload.position, item: payload.item }))
       break
     case "haul":
     case "deposit":

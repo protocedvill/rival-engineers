@@ -1787,6 +1787,30 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
       projectile created at the cliff, `surface.set_tiles` for landfill paid from the crew's inventory).
     - **Cost:** the planner sees a cliff or water tile as passable at a cost, once the item can be made. A removal is
       planned when it is cheaper than the detour or the next site.
+    **Built 2026-11-25 (agent approach, proposed):**
+    - **Engine facts** (engine-capabilities "M7d armour, cliffs and landfill"): a player-less character cannot throw a
+      capsule or build tiles from a cursor; a `cliff-explosives` projectile created with `surface.create_entity`
+      destroys a cliff, and `surface.set_tiles` places landfill. Both techs were already researched in the soaks
+      (landfill early, cliff explosives late).
+    - **Which items**, from prototypes and not by name (`character/cliffs.ts`): a blasting item is a capsule whose
+      action is `destroy-cliffs`; a filling item places a tile whose placement condition holds `ground_tile`.
+    - **Planning:** once the faction's force has the recipe enabled, its planning view (`claimView`) reports a cliff
+      tile as a clearable obstacle (rock class) with an extra cost (`planner-cliff-clear-cost`, default 12 route tiles
+      per cliff tile). Water stays water (shore sites and offshore pumps need it) but routes and pole lines may cross
+      it at `planner-landfill-cost` (default 20) per tile; modules never go on water. Router, placement and pole costs
+      all read the same per-tile hook (`TerrainView.clearCost`). A cliff is blasted when that beats the detour.
+    - **Building:** cliffs under a build become clear jobs with one cliff explosive as material (the economy makes it
+      like any material); the crew walks within throwing range and throws it. Water under route and pole entities (an
+      underground's span is not built on) becomes fill jobs with one landfill each; the crew walks to land within reach
+      and fills. Both run before ghosts, like tree clearing, for plan builds and for growth, reroutes and repairs
+      (`clearObstacles`). Water left after a round (no land within reach) gets another round from the land the last one
+      made, for as long as each round leaves less water (Codex review: a fixed round count could not cross a wide
+      lake the router accepted). Robots never take a blast order.
+    - Tests: T2 jobs "D83: a cliff's clear job is blasted", routing "D83: a route through a cliff wall" and "D83: a
+      route across a 30-tile river" (filled in rounds from both shores) (each: no route without the item; with it the plan crosses, the crew removes the
+      obstacle and builds the belt).
+    - Not done: modules on landfilled ground (a site cut by a lake still relocates), and lake-cut arms beyond routes and
+      pole lines.
 
 ### M7d.6: the generated stock widened to every building (user decision in-session, 2026-11-16)
 
@@ -1917,6 +1941,8 @@ starting before robots (they would save hand-crafting, at the planning cost B205
 | Depot block margin | `strategy/bootstrap.ts` `DEPOT_MARGIN` | 2 tiles | The single depot chest's earlier reservation margin, kept for the block: walkways around it. | no |
 | Surplus worth returning to machines | `jobs/crew.ts` `SINK_SURPLUS_STACKS` | 20 stacks of the item in the depots | Agent guess (B232; the user, in-session 2026-11-18: "only when there's a lot of resources"): 1,000 coal or ore. | no |
 | Surplus sink radius and count | `jobs/crew.ts` `SINK_RADIUS`, `SINK_MAX` | 24 tiles, 8 machines | Agent guess (B232; "opportunistically"): machines around the depositing member only, a short detour. | no |
+| Cliff blasting cost | `settings.ts` `planner-cliff-clear-cost` | 12 per cliff tile | Agent guess (D83, proposed): a cliff explosive (10 explosives, a grenade, a barrel) is worth about a dozen belt tiles of detour. Negative: never blast. | yes |
+| Landfill cost | `settings.ts` `planner-landfill-cost` | 20 per water tile | Agent guess (D83, proposed): one landfill is 50 stone, about 20 belt tiles of detour. 0: never fill. | yes |
 | Crew equipment loadout | `settings.ts` `crew-equipment` | modular armour, exoskeleton, personal roboport, 10 robots, battery, solar panels to fill | Agent choice (D82 b, proposed): the 5×5 modular grid fits exoskeleton 8 + roboport 4 + battery 2 + 11 panels. | yes |
 | Equip job priority | `strategy/bootstrap.ts` `PRIORITY.equip` | 30 | Agent guess (D82 b): below crafting and feeding (the factory first), above gathering. | no |
 | Crew seconds per placed entity | `strategy/power-choice.ts` `CREW_ENTITY_SECONDS` | 2 s | Agent guess (B185, proposed): placing one entity including fetching it and short walks; weighs a long belt (one entity per tile) against a solar field's buildings. | no |

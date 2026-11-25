@@ -1162,11 +1162,14 @@ function startGrow(ctx: Ctx, spec: GoalSpec): boolean | "wait" {
  * B101 (sweep 628fa29 seed 7718665): before placing `w.add`, trees and rocks in their way are cleared, once (a tree from
  * the next tile reached into a repair's belt tile and its ghost never revived). Returns whether it queued clear jobs.
  */
-function clearObstacles(ctx: Ctx, w: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean }): boolean {
-  if (w.obstacles === true) return false
+function clearObstacles(ctx: Ctx, w: { clearJobs: IDS.JobId[]; add: EntitySpec[]; obstacles?: boolean; wetLeft?: number }): boolean {
+  // M7d (D83): water under the add's belts and poles is filled first, round by round while each round makes progress.
+  const fills = RT.queueFills(ctx.faction, ctx.surface, w.add, ctx.config.factoryBuildPriority, w)
+  for (const id of fills) w.clearJobs.push(id)
+  if (w.obstacles === true) return fills.length > 0
   w.obstacles = true
-  let queued = false
-  for (const o of obstaclesFor(ctx.surface, w.add)) {
+  let queued = fills.length > 0
+  for (const o of obstaclesFor(ctx.surface, w.add, RT.obstacleTypesOf(ctx.faction))) {
     w.clearJobs.push((clearJobFor(ctx.faction, o) as IDS.JobId | undefined) ?? addClearJob(ctx.faction, o, ctx.config.factoryBuildPriority))
     queued = true
   }
@@ -2008,7 +2011,7 @@ function adoptPlan(ctx: Ctx, g: FactoryGoal, delta: PlanDelta): void {
     const mineTaken: Record<number, boolean> = {}
     for (const s of add) mineTaken[tkey(math.floor(s.x), math.floor(s.y))] = true
     for (const e of evictSites(ctx.faction, ctx.surface, mineTaken, `goal ${g.id} (${g.kind}) mine completion`)) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
-    for (const e of RT.obstaclesUnder(ctx.surface, layout, { modules: [completion.module], routes: [], poles: [] })) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
+    for (const e of RT.obstaclesUnder(ctx.surface, layout, { modules: [completion.module], routes: [], poles: [] }, RT.canBlast(ctx.faction))) AR.queueClear(ctx.faction, b, e, ctx.config.factoryBuildPriority)
     // B25: the completion's new entities replace the faction's own earlier structures on their tiles (pole lines
     // and routes placed before the mine's claim): pick them up first, then ghost. The reconcile layer turns the
     // broken edge into a repair goal.
@@ -2486,7 +2489,7 @@ function replanGhosts(ctx: Ctx, g: FactoryGoal, b: NonNullable<ReturnType<typeof
     // tree reached ~0.05 into a belt's box and was missed by a 0.05 inset).
     if (!gh.valid) continue
     const area = gh.bounding_box
-    for (const e of findEntities(ctx.surface, { area, type: ["tree", "simple-entity"] })) {
+    for (const e of findEntities(ctx.surface, { area, type: RT.obstacleTypesOf(ctx.faction) })) {
       const k = `${e.position.x},${e.position.y}`
       g.clearing ??= {}
       const old = g.clearing[k]

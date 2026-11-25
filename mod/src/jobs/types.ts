@@ -39,7 +39,9 @@ export type JobPayload =
   /** Created and claimed by a crew member for itself: take its batch's missing materials from stockpiles and supply points (B32). */
   | { kind: "haul"; forMember: number }
   /** Remove `target`: the faction's own buildings are picked up, trees and rocks are mined. */
-  | { kind: "clear"; target: LuaEntity; robotOrdered?: boolean }
+  | { kind: "clear"; target: LuaEntity; robotOrdered?: boolean; blast?: string }
+  /** M7d (D83): fill the water tile at `position` (its top-left corner) with `item` (landfill). */
+  | { kind: "fill"; surface: string; position: MapPosition; item: string }
 
 export interface FactionState {
   /** B111: standing spots the crew could not walk to, avoided until the tick (`jobs/bad-spots.ts`). */

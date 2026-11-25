@@ -16,6 +16,8 @@ export function hasNetwork(faction: FactionState, surface: string): boolean {
 export function orderRemoval(faction: FactionState, job: JobId, p: Extract<JobPayload, { kind: "clear" }>): boolean {
   if (p.robotOrdered === true) return true
   if (!p.target.valid) return false
+  // M7d (D83): the crew blasts cliffs itself (robots need cliff explosives in a logistic network to do it).
+  if (p.blast !== undefined) return false
   p.robotOrdered = p.target.to_be_deconstructed() || p.target.order_deconstruction(faction.force)
   if (p.robotOrdered) {
     faction.deconOrders ??= []

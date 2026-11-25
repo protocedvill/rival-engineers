@@ -1004,7 +1004,7 @@ function satRow(s: PlacementSearch, state: LayoutState, terrain: TerrainView, po
       if (aRes !== undefined && ore === resource) res++
     }
     if (b === TREE) clear += clearTree
-    else if (b === ROCK) clear += clearRock
+    else if (b === ROCK) clear += clearRock + (terrain.clearCost?.(x, y) ?? 0)
     if (pole) clear += clearPole
     else if (aWater !== undefined && b === WATER) water++
     if (o !== undefined && string.sub(o, 1, 2) === "m:") mods++
@@ -1765,7 +1765,7 @@ function reclaimWholePatch(state: LayoutState, terrain: TerrainView, facts: Prot
     const k = tkey(x, y)
     return placementClaimConflict(state, k) !== undefined
   }
-  const view: TerrainView = { block: (x, y) => (taken(x, y) ? FOREIGN : terrain.block(x, y)), ore: (x, y) => terrain.ore(x, y) }
+  const view: TerrainView = { block: (x, y) => (taken(x, y) ? FOREIGN : terrain.block(x, y)), clearCost: (x, y) => terrain.clearCost?.(x, y) ?? 0, ore: (x, y) => terrain.ore(x, y) }
   const cap = drillCount(m.minePlan.full, facts)
   // P44 (b): a mine keeps its collector: only a splitter-collector mine takes several rows.
   const collector = m.minePlan.full.params?.collector === "splitter" ? "splitter" : undefined

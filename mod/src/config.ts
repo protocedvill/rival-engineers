@@ -181,6 +181,16 @@ export interface Config {
   plannerPlacementNewField: number
   /** B37: placement/routing cost per pole-line tile taken; the line is evicted and re-poled (policy obstacles.poleEvict). */
   plannerPoleEvictCost: number
+  /**
+   * M7d (D83, proposed): once the faction can make cliff explosives, a cliff tile is clearable ground for its plans at
+   * this extra cost per tile (route tiles of detour one explosive is worth); negative: cliffs stay hard.
+   */
+  plannerCliffClearCost: number
+  /**
+   * M7d (D83, proposed): once the faction can make landfill, its routes and pole lines may cross water at this cost per
+   * filled tile (route tiles of detour one landfill is worth); 0 or less: never fill.
+   */
+  plannerLandfillCost: number
   /** D50 / B7: cost factor of a route tile next to another route's belt (policy router.bundleFactor). */
   plannerRouterBundleFactor: number
   /** D36 / B2: least planner work a comparison may use (tiny plans have tiny routing work). */

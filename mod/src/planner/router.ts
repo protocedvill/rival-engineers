@@ -17,7 +17,7 @@ import { connectionId, routeId } from "../shared/ids"
 import type { RouteId } from "../shared/ids"
 import { BeltTier } from "./capacity"
 import { routeClaimConflict } from "./claims"
-import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN } from "./grid"
+import { ccw, cw, DX, DY, FREE, keyX, keyY, OWN, ROCK, TerrainView, tkey, TREE, UNKNOWN, WATER } from "./grid"
 import { isPoleTag, LayoutState, lineKey, PlacedModule, PortRef, Route, RouteStep, spanConflicts } from "./layout"
 import type { ModuleDef } from "../modules/types"
 import { LayoutPolicy } from "./policy"
@@ -258,7 +258,10 @@ export function tileCost(state: LayoutState, terrain: TerrainView, policy: Layou
     extra += w.clearTree
   } else if (b === ROCK) {
     if (policy.obstacles.rocks !== "clear") return -1
-    extra += w.clearRock
+    extra += w.clearRock + (terrain.clearCost?.(x, y) ?? 0)
+  } else if (b === WATER && (terrain.clearCost?.(x, y) ?? 0) > 0) {
+    // M7d (D83): water the faction can fill (landfill) at that cost.
+    extra += terrain.clearCost!(x, y)
   } else if (b !== FREE) {
     // B23: an input port's outside tile is reserved for the route that feeds it, and in the field that tile holds
     // the module's unfed receive belt (an own-terrain entity): the feeder route replaces the belt in place.

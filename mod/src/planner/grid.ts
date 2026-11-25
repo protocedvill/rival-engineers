@@ -23,6 +23,11 @@ export interface TerrainView {
   block(x: number, y: number): number
   /** The resource under a tile, if any. */
   ore(x: number, y: number): string | undefined
+  /**
+   * M7d (D83): extra cost to clear the obstacle on a tile beyond its class's (a cliff seen as a rock costs an explosive).
+   * On a WATER tile, a positive cost means routes and poles may fill it (landfill) at that cost. Absent: none.
+   */
+  clearCost?(x: number, y: number): number
   /** D57: tile keys of `resource` inside `rect`, from the scan's ore tables (absent: `ore` is read tile by tile). */
   oreTiles?(resource: string, rect: Rect): number[]
   /** D57: changes whenever a chunk under `rect` is scanned again (absent: no dead-patch memory). */
@@ -132,6 +137,7 @@ export function asciiTerrain(rows: string[], ox = 0, oy = 0): TerrainView {
 export function overlayTerrain(base: TerrainView, blocks: Record<number, number>): TerrainView {
   return {
     block: (x, y) => blocks[tkey(x, y)] ?? base.block(x, y),
+    clearCost: (x, y) => base.clearCost?.(x, y) ?? 0,
     ore: (x, y) => base.ore(x, y),
   }
 }

@@ -10,10 +10,10 @@ import { hardGhostFailure, preflightSpecs, staleUnderRoutes, staleUnderSpecs, tu
 
 export { tuneMergeSplitters }
 export { requestCorridor } from "./terrain"
-import { LuaEntity, LuaSurface } from "factorio:runtime"
+import { LuaEntity, LuaSurface, MapPosition } from "factorio:runtime"
 import { Config, getConfig } from "../config"
 import { getJob } from "../jobs/board"
-import { addClearJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
+import { addClearJob, addFillJob, addPlaceJob, clearJobFor, getFaction } from "../jobs/faction"
 import type { FactionState } from "../jobs/types"
 import { prototypeFacts } from "../modules/prototype-facts"
 import { ownGhostAt, stampModule } from "../modules/stamp"
@@ -22,13 +22,14 @@ import { allParts, BuildParts, EntitySpec, layoutTiles, partEntities, partTiles,
 import { beltTiers, BeltTier, tierByBelt } from "./capacity"
 import { buildGraph, FactoryGraph } from "./graph"
 import { claimed, otherClaims, otherOreFields } from "../world/claims"
-import { FOREIGN, FREE, inflate, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, Vec } from "./grid"
+import { CLIFF, FOREIGN, FREE, inflate, keyX, keyY, OWN, Rect, ROCK, TerrainView, tkey, TREE, Vec, WATER } from "./grid"
 import { findModule, isPoleTag, LayoutState } from "./layout"
 import { newPlanJob, PlanJob, PlanRequest, stepPlan } from "./plan"
 import { LayoutPolicy, selectPolicy } from "./policy"
 import { markDirty, newTerrain, requestArea, stepTerrain, terrainReady, terrainView } from "./terrain"
 import { chunkKnown, KnownGround } from "../strategy/arms"
 import { countWork, findEntities } from "../work"
+import { canBlastFor, canFillFor, fillItemFor, obstacleTypes } from "../character/cliffs"
 
 export interface BuildState {
   /**
@@ -38,6 +39,8 @@ export interface BuildState {
   phase: "poles" | "clear" | "place" | "done"
   faction: string
   clearJobs: JobId[]
+  /** M7d (D83): water tiles left under the build after the last landfill round (`queueFills`). */
+  wetLeft?: number
   placeJobs: JobId[]
   fuel?: { item: string; count: number }
   priority?: number
@@ -204,6 +207,16 @@ export function factionView(entry: PlannerEntry, base: TerrainView): TerrainView
   return claimView(entry.baseFaction, entry.surface, base)
 }
 
+/** M7d (D83): whether `faction`'s plans may take cliff tiles (it can make cliff explosives; the cost setting allows it). */
+export function canBlast(faction: FactionState | undefined): boolean {
+  return faction !== undefined && canBlastFor(game.forces[faction.force])
+}
+
+/** Entity types `faction`'s builds clear off their tiles first (`character/cliffs.ts` `obstacleTypes`). */
+export function obstacleTypesOf(faction: FactionState): string[] {
+  return obstacleTypes(game.forces[faction.force])
+}
+
 /** `factionView` for faction `name` on `surface`; with `ownReserved` false, only other factions' claims. */
 export function claimView(name: string | undefined, surface: string, base: TerrainView, ownReserved = true): TerrainView {
   const faction = name !== undefined ? storage.factions[name] : undefined
@@ -214,9 +227,27 @@ export function claimView(name: string | undefined, surface: string, base: Terra
   const evictable = evictableTiles(faction?.brain)
   const layout = name !== undefined ? storage.factories?.[name]?.layout : undefined
   const poles = (layout?.poles?.length ?? 0) > 0
-  if (reserved === undefined && others.length === 0 && evictable === undefined && !poles) return base
+  // M7d (D83, proposed): once the faction can blast cliffs, a cliff tile is a clearable obstacle (like a rock) that
+  // costs `planner-cliff-clear-cost` more to take: the plan blasts it when that beats the detour.
+  const blast = canBlast(faction)
+  const cliffCost = getConfig().plannerCliffClearCost
+  // D83: once it can make landfill, water stays WATER (shore sites need it) but costs `planner-landfill-cost` to fill.
+  const fill = faction !== undefined && canFillFor(game.forces[faction.force])
+  const fillCost = getConfig().plannerLandfillCost
+  if (reserved === undefined && others.length === 0 && evictable === undefined && !poles && !blast && !fill) return base
   return {
+    clearCost: (x, y) => {
+      const b = base.block(x, y)
+      if (blast && b === CLIFF) return cliffCost
+      if (fill && b === WATER) return others.length > 0 && claimed(others, tkey(x, y)) ? 0 : fillCost
+      return base.clearCost?.(x, y) ?? 0
+    },
     block: (x, y) => {
+      if (blast && base.block(x, y) === CLIFF) {
+        const k = tkey(x, y)
+        if (others.length > 0 && claimed(others, k)) return FOREIGN
+        return ROCK
+      }
       // B37: the faction's own pole-line poles (built or ghosts) are clearable ground: the layout's pole tag carries
       // the eviction cost, and a plan that takes the tile evicts the line.
       if (poles && isPoleTag(layout!.occ[tkey(x, y)]) && base.block(x, y) === OWN) return FREE
@@ -317,20 +348,69 @@ export function onPlannerTick(): void {
 // ---------------------------------------------------------------------------------------------------------
 // Building
 
-/** Trees and rocks on the tiles a layout (or some of its parts) builds on. */
-export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?: BuildParts): LuaEntity[] {
+/** Trees and rocks (and cliffs, with `cliffs`: D83) on the tiles a layout (or some of its parts) builds on. */
+export function obstaclesUnder(surface: LuaSurface, layout: LayoutState, parts?: BuildParts, cliffs = false): LuaEntity[] {
+  const types = cliffs ? ["tree", "simple-entity", "cliff"] : ["tree", "simple-entity"]
   const out: LuaEntity[] = []
   const seen: Record<string, boolean> = {}
   for (const k of parts !== undefined ? partTiles(layout, parts) : layoutTiles(layout)) {
     const x = keyX(k)
     const y = keyY(k)
-    for (const e of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: ["tree", "simple-entity"] })) {
+    for (const e of findEntities(surface, { area: { left_top: { x: x + 0.05, y: y + 0.05 }, right_bottom: { x: x + 0.95, y: y + 0.95 } }, type: types })) {
       const key = `${e.name}@${e.position.x},${e.position.y}`
       if (seen[key]) continue
       seen[key] = true
       out.push(e)
     }
   }
+  return out
+}
+
+/**
+ * M7d (D83): water tiles under the given route and pole entities, to fill first. Modules never stand on water; an
+ * underground's span is not built on, so only its two ends count.
+ */
+export function waterUnderSpecs(surface: LuaSurface, specs: EntitySpec[]): MapPosition[] {
+  const out: MapPosition[] = []
+  const seen: Record<number, boolean> = {}
+  for (const e of specs) {
+    const box = prototypes.entity[e.name]?.collision_box
+    if (box === undefined) continue
+    const turned = e.dir === 4 || e.dir === 12
+    const x1 = turned ? -box.right_bottom.y : box.left_top.x
+    const x2 = turned ? -box.left_top.y : box.right_bottom.x
+    const y1 = turned ? box.left_top.x : box.left_top.y
+    const y2 = turned ? box.right_bottom.x : box.right_bottom.y
+    const area = { left_top: { x: e.x + math.min(x1, x2), y: e.y + math.min(y1, y2) }, right_bottom: { x: e.x + math.max(x1, x2), y: e.y + math.max(y1, y2) } }
+    for (const t of surface.find_tiles_filtered({ area, collision_mask: "water_tile" })) {
+      const k = tkey(t.position.x, t.position.y)
+      if (seen[k]) continue
+      seen[k] = true
+      out.push({ x: t.position.x, y: t.position.y })
+    }
+  }
+  return out
+}
+
+/** A layout's route and pole entities (or some of its parts'): what may stand on filled water. */
+function wetSpecs(layout: LayoutState, parts?: BuildParts): EntitySpec[] {
+  const all = parts ?? allParts(layout)
+  return partEntities(layout, { modules: [], routes: all.routes, poles: all.poles })
+}
+
+/**
+ * M7d (D83): fill jobs for the water still under `specs`, one round at a time: a round fills what land is within reach
+ * of, so the next starts from there. Rounds go on while each leaves less water (`state.wetLeft`), so any crossing a
+ * route made from land is filled from its shores in; a round that filled nothing ends it. Returns the jobs queued.
+ */
+export function queueFills(faction: FactionState, surface: LuaSurface, specs: EntitySpec[], priority: number | undefined, state: { wetLeft?: number }): JobId[] {
+  const item = fillItemFor(game.forces[faction.force])
+  if (item === undefined) return []
+  const wet = waterUnderSpecs(surface, specs)
+  if (wet.length === 0 || (state.wetLeft !== undefined && wet.length >= state.wetLeft)) return []
+  state.wetLeft = wet.length
+  const out: JobId[] = []
+  for (const t of wet) out.push(addFillJob(faction, surface, t, item, priority))
   return out
 }
 
@@ -555,7 +635,10 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
     }
     clearJobs.push(addClearJob(faction, e, opts.priority))
   }
-  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts)) queueClear(e)
+  for (const e of obstaclesUnder(surface, entry.job.layout, opts.parts, canBlast(faction))) queueClear(e)
+  // M7d (D83): water under routes and poles is filled first (the plan only crosses it when the faction can make landfill).
+  const fillState: { wetLeft?: number } = {}
+  for (const id of queueFills(faction, surface, wetSpecs(entry.job.layout, opts.parts), opts.priority, fillState)) clearJobs.push(id)
   // B15: entities of evicted bootstrap sites under the plan.
   for (const e of opts.clear ?? []) if (e.valid) queueClear(e)
   // B19: a new splitter tap on a built route replaces that route's belt: pick the belt up first.
@@ -571,7 +654,7 @@ export function startBuild(entry: PlannerEntry, opts: { fuel?: { item: string; c
       queueClear(e)
     }
   }
-  entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts }
+  entry.build = { phase: "clear", faction: faction.name, clearJobs, placeJobs: [], fuel: opts.fuel, priority: opts.priority, failed: [], parts: opts.parts, wetLeft: fillState.wetLeft }
   // D71 (b) (user decision in-session 2026-10-30): make before break. Evicted pole lines (`breakAfter`) are picked up
   // only after the plan's new poles stand; until then they keep the modules they served powered (two-faction seed 222:
   // a goal that evicted 22 poles left most of the factory dark for ~30 game-min while its 153-entity build went up).
@@ -659,6 +742,13 @@ export function stepBuild(entry: PlannerEntry): void {
     for (const id of b.clearJobs) {
       const j = getJob(faction.board, id)
       if (j !== undefined && j.status !== "done" && j.status !== "failed") return
+    }
+    // M7d (D83): water still under the parts (a tile no land was within reach of) gets another round of fills, starting
+    // from the land the last round made.
+    const more = queueFills(faction, game.surfaces[entry.surface], wetSpecs(entry.job!.layout, b.parts), b.priority, b)
+    if (more.length > 0) {
+      for (const id of more) b.clearJobs.push(id)
+      return
     }
     // B138: a failed ghost must not let the plan advance to "place" and finish with a hole. Retry on the factory's build
     // round cadence (1800 ticks); the factory goal counts the rounds and relocates after `build-stuck-rounds`.

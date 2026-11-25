@@ -234,7 +234,13 @@ function replay(name: string, opts: ReplayOptions = {}): void {
     if (os.getenv("REPLAY_SEARCHES") !== undefined) planTrace.searches = (line) => print(`  SEARCH ${line}`)
     startTrace()
     const stopProfile = os.getenv("REPLAY_PROFILE") !== undefined ? startProfile() : undefined
-    runJob(job, terrain, F, fx.policy, 100000)
+    // REPLAY_BUDGET=N: step at the game's per-tick budget (planner-work-per-tick) to see per-step overhead.
+    const stepBudget = tonumber(os.getenv("REPLAY_BUDGET") ?? "") ?? 100000
+    let steps = 0
+    if (stepBudget !== 100000) {
+      while (!stepPlan(job, terrain, F, fx.policy, stepBudget)) steps++
+      print(`REPLAY steps ${steps} at ${stepBudget}`)
+    } else runJob(job, terrain, F, fx.policy, 100000)
     const tRan = os.clock()
     if (stopProfile !== undefined) stopProfile()
     if (os.getenv("REPLAY_TIME") !== undefined) print(`  TIME ${name}: load ${string.format("%.2f", tLoaded - tLoad)}s, job ${string.format("%.2f", tJob - tLoaded)}s, run ${string.format("%.2f", tRan - tJob)}s (${job.stats.work} work)`)

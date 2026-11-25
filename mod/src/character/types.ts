@@ -39,6 +39,10 @@ export type ActionSpec =
    * and `no-room` when the grid has no space for it (or there is no armour with a grid).
    */
   | { kind: "equip"; item: string; fillers?: string[] }
+  /** M7d (D83): destroy a cliff by throwing `item` (a cliff-destroying capsule) at it from within its range. */
+  | { kind: "blast"; target: LuaEntity; item: string }
+  /** M7d (D83): fill the water tile at `position` (top-left corner) with `item` (landfill) from within reach. */
+  | { kind: "fill"; position: MapPosition; item: string }
   /**
    * Move `count` of `item` from `entity` into the character. Strict by default: fails with `not-enough`
    * if fewer are there. With `allowPartial`, takes whatever is there up to `count`, like a player

@@ -384,6 +384,24 @@ describe("job board", () => {
     })
   })
 
+  // M7d (D83, proposed): a clear job on a cliff, for a faction that can make cliff explosives, is a blast: the crew
+  // fetches one explosive from the depot, walks within throwing range and destroys the cliff.
+  test("D83: a cliff's clear job is blasted with one cliff explosive from the depot", () => {
+    const lab = createLab(40)
+    const faction = createFaction(newFactionName("blast"), { position: at(lab, -14, 8), crew: 1 })
+    game.forces[faction.force].recipes["cliff-explosives"].enabled = true
+    const chest = stockpile(lab, faction, -12, 10, { "cliff-explosives": 3 })
+    const cliff = lab.surface.create_entity({ name: "cliff", position: at(lab, 14, -10), cliff_orientation: "west-to-east" } as never)!
+    const id = addClearJob(faction, cliff)
+    const job = faction.board.jobs[id]
+    assert(job.payload.kind === "clear" && job.payload.blast === "cliff-explosives", "the job blasts with cliff explosives")
+    awaitBoard(faction, 3600, () => {
+      assert(job.status === "done", `clear job: ${job.status} (${job.reason}); ${describeBoard(faction)}`)
+      assert(!cliff.valid, "the cliff is gone")
+      assert(chest.get_item_count("cliff-explosives") === 2, `one explosive used, ${chest.get_item_count("cliff-explosives")} left`)
+    })
+  })
+
   test("M7d.5: robots take down a clear job's tree in range; the job is done (robot-removed)", () => {
     const lab = createLab(32)
     const faction = createFaction(newFactionName("robots-clear"), { position: at(lab, -10, 8), crew: 1 })

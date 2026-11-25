@@ -162,6 +162,7 @@ function planView(p: WholePatchPrep, m: PlacedModule, a: WholePatchArgs): Terrai
   const taken = takenFn(m, a.state)
   return {
     block: (x, y) => (p.keepOut[tkey(x, y)] ? FOREIGN : taken(x, y) ? OWN : a.terrain.block(x, y)),
+    clearCost: (x, y) => a.terrain.clearCost?.(x, y) ?? 0,
     ore: (x, y) => a.terrain.ore(x, y),
   }
 }

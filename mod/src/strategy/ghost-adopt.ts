@@ -11,6 +11,7 @@ import type { LayoutState, PlannedPole } from "../planner/layout"
 import { destroyEntity } from "../planner/terrain"
 import type { JobId } from "../shared/ids"
 import { findEntities } from "../work"
+import { obstacleTypes } from "../character/cliffs"
 
 /** Own pole ghosts the live layout plans, keyed name@tile. A module's own poles and the layout's line poles count. */
 function plannedPoles(layout: LayoutState): Record<string, boolean> {
@@ -49,7 +50,7 @@ export function adoptPlannedPoles(surface: LuaSurface, faction: FactionState, la
     // B219 (m7-b215 seed 3333): a pole ghost over a big rock lost its place job (the placement never succeeded) and cut
     // the only line to the oil outposts for hours. Trees and rocks in its footprint are cleared first.
     const deps: JobId[] = []
-    for (const o of surface.find_entities_filtered({ area: gh.bounding_box, type: ["tree", "simple-entity"] })) {
+    for (const o of surface.find_entities_filtered({ area: gh.bounding_box, type: obstacleTypes(game.forces[faction.force]) })) {
       if (!o.valid) continue
       const existing = clearJobFor(faction, o)
       deps.push(existing !== undefined ? (existing as JobId) : addClearJob(faction, o, priority))

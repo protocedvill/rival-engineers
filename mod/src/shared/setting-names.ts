@@ -86,6 +86,8 @@ export const Settings = {
   plannerPlacementGrowthBandUnits: "rival-engineers-planner-placement-growth-band-units",
   plannerPlacementGrowthBlocked: "rival-engineers-planner-placement-growth-blocked",
   plannerPoleEvictCost: "rival-engineers-planner-pole-evict-cost",
+  plannerCliffClearCost: "rival-engineers-planner-cliff-clear-cost",
+  plannerLandfillCost: "rival-engineers-planner-landfill-cost",
   plannerPlacementNewField: "rival-engineers-planner-placement-new-field",
   plannerCompareMinWork: "rival-engineers-planner-compare-min-work",
   logisticsSplitterCompare: "rival-engineers-logistics-splitter-compare",

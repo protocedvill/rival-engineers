@@ -597,7 +597,7 @@ function foreignOn(e: LuaEntity, belongs: (this: void, name: string) => boolean)
  * next tile can reach into a planned entity's box (0.15 of a belt tile there); its ghost then never revives. The box is
  * the prototype's collision box at the spec's place, turned for east/west.
  */
-export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntity[] {
+export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[], types: string[] = ["tree", "simple-entity"]): LuaEntity[] {
   const out: LuaEntity[] = []
   const seen: Record<string, boolean> = {}
   for (const e of specs) {
@@ -609,7 +609,7 @@ export function obstaclesFor(surface: LuaSurface, specs: EntitySpec[]): LuaEntit
     const y1 = turned ? box.left_top.x : box.left_top.y
     const y2 = turned ? box.right_bottom.x : box.right_bottom.y
     const area = { left_top: { x: e.x + math.min(x1, x2), y: e.y + math.min(y1, y2) }, right_bottom: { x: e.x + math.max(x1, x2), y: e.y + math.max(y1, y2) } }
-    for (const o of findEntities(surface, { area, type: ["tree", "simple-entity"] })) {
+    for (const o of findEntities(surface, { area, type: types })) {
       const id = `${o.name}@${o.position.x},${o.position.y}`
       if (seen[id]) continue
       seen[id] = true

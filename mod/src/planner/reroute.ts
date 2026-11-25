@@ -105,6 +105,7 @@ export function planReroute(base: LayoutState, terrain: TerrainView, facts: Prot
       const b = terrain.block(x, y)
       return freed[k] && b === OWN ? FREE : b
     },
+    clearCost: (x, y) => terrain.clearCost?.(x, y) ?? 0,
     ore: (x, y) => terrain.ore(x, y),
   }
   const job = runJob(newRoutingJob({ modules: [], connections: conns, center: { x: region.x + region.w / 2, y: region.y + region.h / 2 }, region }, tier, layout), view, facts, pol)

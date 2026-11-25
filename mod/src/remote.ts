@@ -226,6 +226,17 @@ export function registerRemoteInterface(): void {
       const e = getPlannerEntry(id)
       return e && { phase: e.phase, scanTicks: e.scanTicks, planTicks: e.planTicks, stats: e.job?.stats, failures: e.job?.failures, build: e.build?.phase }
     },
+    /** Debug probe: every planner entry (phase, ticks, work) and every terrain's rescan queue and scan count. */
+    planner_debug: () => {
+      const entries: Record<string, unknown>[] = []
+      for (const id of storage.planner?.order ?? []) {
+        const e = storage.planner!.entries[id]
+        if (e !== undefined) entries.push({ id, phase: e.phase, build: e.build?.phase, planTicks: e.planTicks, work: e.job?.stats.work, terrain: e.terrain })
+      }
+      const terrains: Record<string, unknown>[] = []
+      for (const [id, t] of pairs(storage.terrains ?? {})) terrains.push({ id, queue: t.queue.length, scans: t.scans, chunks: table_size(t.chunks) })
+      return { entries, terrains }
+    },
     /** Writes the Factory Graph (both layers) of a layout job to script-output/<file>. */
     dump_graph: (id: string, file: string) => {
       const e = getPlannerEntry(id)

@@ -92,6 +92,7 @@ export function planGrowth(base: LayoutState, terrain: TerrainView, facts: Proto
       if (routeTiles[tkey(x, y)]) return FREE
       return terrain.block(x, y)
     },
+    clearCost: (x, y) => terrain.clearCost?.(x, y) ?? 0,
     ore: (x, y) => terrain.ore(x, y),
   }
   m.fixed = false
@@ -220,6 +221,7 @@ export function maxExpandable(base: LayoutState, terrain: TerrainView, facts: Pr
       if (routeTiles[tkey(x, y)]) return FREE
       return terrain.block(x, y)
     },
+    clearCost: (x, y) => terrain.clearCost?.(x, y) ?? 0,
     ore: (x, y) => terrain.ore(x, y),
   }
   // Try the original minimum-movement end first, then the opposite. This keeps established layouts exact while still

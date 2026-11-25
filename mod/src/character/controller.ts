@@ -6,6 +6,7 @@ import { ActionRecord, ActionSpec, ActionStatus, ControllerState, FailureReason,
 import { newWalk, reachSatisfied, stepWalk, StepResult, stopWalking } from "./walk"
 import { findEntities } from "../work"
 import { markDirty } from "../planner/terrain"
+import { blastProjectile, blastRange, fillTile } from "./cliffs"
 
 // Character Controller (SPEC §5.1): one per character body. Each controller runs a queue of actions;
 // each action is a resumable state machine stepped once per tick from on_tick, under a per-tick budget.
@@ -235,6 +236,10 @@ function stepAction(character: LuaEntity, action: ActionRecord, config: Config, 
       return stepTransfer(character, action, spec, config, tick)
     case "equip":
       return stepEquip(character, spec)
+    case "blast":
+      return stepBlast(character, action, spec, config, tick)
+    case "fill":
+      return stepFill(character, action, spec, config, tick)
     case "pickUp":
       return stepPickUp(character, action, spec, config, tick)
   }
@@ -561,6 +566,67 @@ function stepPlace(character: LuaEntity, action: ActionRecord, spec: Extract<Act
  * M7d (D82 b): wears one item from the main inventory (an instant player action, like dragging it onto the armour slot
  * or into the grid). Armour moves as an item stack so its grid and equipment move with it.
  */
+/**
+ * M7d (D83): walk to within the capsule's range of the cliff, throw it (the scripted projectile: a player-less character
+ * cannot use a capsule, engine-capabilities "D83 finding") and wait for the cliff to go.
+ */
+function stepBlast(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "blast" }>, config: Config, tick: number): StepResult {
+  const target = spec.target
+  if (action.phase === "start") {
+    if (!target.valid) return "done"
+    action.goneBox = boxOf(target)
+    action.walk = newWalk(target.position, math.max(1, blastRange(spec.item) - 2), undefined, tick)
+    action.phase = "approach"
+  }
+  if (!target.valid) {
+    rescanGone(action.goneBox)
+    return "done"
+  }
+  if (action.phase === "approach") {
+    const r = stepWalk(character, action.walk!, action.stats, config, tick)
+    if (r !== "done") return r
+    const main = character.get_main_inventory()!
+    if (main.get_item_count(spec.item) < 1) return fail("missing-item", spec.item)
+    main.remove({ name: spec.item, count: 1 })
+    character.surface.create_entity({ name: blastProjectile(spec.item), position: character.position, target: target.position, source: character, force: character.force, speed: 0.3 } as never)
+    action.stats.items = 1
+    startWork(action, tick)
+    action.readyTick = tick
+  }
+  // The projectile lands within a second or two; a cliff still standing then was missed (moved target, odd shape).
+  if (tick - (action.readyTick ?? tick) > config.actionStallTicks) return fail("stalled", "the blast left the cliff standing")
+  return "running"
+}
+
+/**
+ * M7d (D83): walk to within reach of the water tile and fill it with the item's tile (`set_tiles`: a player-less
+ * character cannot build tiles from a cursor, engine-capabilities "D83 finding"), paid from the main inventory.
+ */
+function stepFill(character: LuaEntity, action: ActionRecord, spec: Extract<ActionSpec, { kind: "fill" }>, config: Config, tick: number): StepResult {
+  const surface = character.surface
+  const centre = { x: spec.position.x + 0.5, y: spec.position.y + 0.5 }
+  const water = (): boolean => surface.get_tile(spec.position.x, spec.position.y).collides_with("water_tile")
+  if (action.phase === "start") {
+    if (!water()) return "done"
+    // The tile itself is no walk goal (the pathfinder ends on land): walk to land within reach of it, the nearest first.
+    const reach = math.max(1, character.reach_distance - 2)
+    const stand = surface.find_non_colliding_position(character.name, centre, reach, 0.5)
+    if (stand === undefined || math.abs(stand.x - centre.x) + math.abs(stand.y - centre.y) > 2 * reach) return fail("unreachable", "no land within reach of the water tile")
+    action.walk = newWalk(stand, 1, undefined, tick)
+    action.phase = "approach"
+  }
+  const r = stepWalk(character, action.walk!, action.stats, config, tick)
+  if (r !== "done") return r
+  if (!water()) return "done"
+  const main = character.get_main_inventory()!
+  if (main.get_item_count(spec.item) < 1) return fail("missing-item", spec.item)
+  main.remove({ name: spec.item, count: 1 })
+  surface.set_tiles([{ name: fillTile(spec.item), position: spec.position }], true)
+  markDirty(surface.name, spec.position, { x: spec.position.x + 1, y: spec.position.y + 1 })
+  action.stats.items = 1
+  return "done"
+}
+
 function stepEquip(character: LuaEntity, spec: Extract<ActionSpec, { kind: "equip" }>): StepResult {
   const main = character.get_main_inventory()!
   const [stack] = main.find_item_stack(spec.item)

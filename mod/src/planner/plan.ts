@@ -603,6 +603,7 @@ function pipeTerrain(terrain: TerrainView, f: NonNullable<ConnectionRequest["flu
   if (f.verifiedFree === undefined) return terrain
   return {
     block: (x, y) => f.verifiedFree?.[tkey(x, y)] === true ? FREE : terrain.block(x, y),
+    clearCost: (x, y) => terrain.clearCost?.(x, y) ?? 0,
     ore: (x, y) => terrain.ore(x, y),
   }
 }
