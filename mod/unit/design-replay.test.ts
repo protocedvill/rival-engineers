@@ -64,6 +64,17 @@ test("B199: cluster walks share a short built provider's capacity (seed 11, min 
   ok(made + 1e-6 >= asked, `the engine providers carry their edges: ${made} for ${asked}`)
 })
 
+test("B235: a member whose feed from the fresh group's built namesake was blocked gets its own provider (seed 222, min 78)", () => {
+  // The mall's iron smelter (built before the mall, B233) named the fresh group {mall, labs~2} again after labs~2's
+  // feed from it had no path, and every replan repeated that route until fail fast.
+  const c = load("m7-b235-seed222-design")
+  ok(c.ctx.sharing?.blocked?.["iron-plate*>mall=>logistic-science-pack>labs~2.in-iron-plate"] === true, "the capture has the blocked feed")
+  const d = design(contextOf(c), c.target)
+  const into = (to: string): string[] => d.edges.filter((e) => e.to === to && e.toPort === "in-iron-plate").map((e) => e.from)
+  eq(into("logistic-science-pack>labs~2").join(","), "iron-plate>logistic-science-pack>labs~2", "labs~2 gets a provider of its own")
+  eq(into("mall").join(","), "iron-plate*>mall", "the mall keeps the smelter built for it")
+})
+
 const adhoc = os.getenv("DESIGN_REPLAY")
 if (adhoc !== undefined) {
   test(`design replay ${adhoc}`, () => {

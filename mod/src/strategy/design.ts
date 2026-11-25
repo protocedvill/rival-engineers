@@ -1229,7 +1229,21 @@ function expandShared(w: Walk, item: string, mine: Demand[], shared: NonNullable
     for (const d of group) total += d.rate
     addProducer(w, item, total, group, true, role, undefined, mergePorts, true)
   }
+  // B235: a fresh group is named after its first consumer, so it can be the very provider a failed plan blocked for
+  // another member (b233 seed 222: the mall's iron smelter, pulled forward and built before the mall, named the group
+  // of {mall, labs~2} again after labs~2's feed from it had no path). Such a member gets a provider of its own.
+  // The rest keep the group's name even alone: it is the provider already built for them.
+  let splitOff = false
   if (fresh.length >= 2) {
+    const named = `${item}*>${fresh[0].to}`
+    for (let i = fresh.length - 1; i >= 1; i--) {
+      if (shared.blocked?.[`${named}=>${fresh[i].to}.${fresh[i].toPort}`] !== true) continue
+      alone.push(fresh[i])
+      fresh.splice(i, 1)
+      splitOff = true
+    }
+  }
+  if (fresh.length >= 2 || (splitOff && fresh.length === 1)) {
     const role = `${item}*>${fresh[0].to}`
     if (shared.split?.[role] === true) {
       // The previous plan could not reach every consumer from one site. One parallel provider per consumer.
