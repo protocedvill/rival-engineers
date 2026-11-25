@@ -1750,7 +1750,28 @@ Plan (agent, from P45; the user approved starting M7d in-session on 2026-11-03):
    upgradable module's extra output as in-place capacity (like its expansion units), and the raised draw goes up the
    chain through the supply pass, which grows, upgrades or forks the providers in turn.
 8. **Modular armour, batteries and an exoskeleton (D82 b)** so the crew walks faster (and carries the personal
-   roboport of item 5).
+   roboport of item 5). **Built 2026-11-25 (agent approach, proposed):**
+   - **Engine facts first** (engine-capabilities "M7d armour, cliffs and landfill"): a player-less character's grid
+     charges from personal solar panels, and an exoskeleton makes it walk ~30% faster (57.4 vs 44.5 tiles in 300
+     ticks). So the personal roboport is powered the same way, with no script charging.
+   - **An equip job per crew member** (`jobs` kind `equip`, controller action `equip`): the brain (`bootstrap.ts`
+     `equipCrew`) posts one job at a time for the next item of the `crew-equipment` loadout (`strategy/loadout.ts`).
+     Its material is demand like any build material, so the economy makes the item; a machine-only part (batteries,
+     electric engines) comes through the no-source stock rows (m7-b222). The member fetches it and puts it on; armour
+     moves as an item stack, so a worn grid moves with it.
+   - **The loadout** (setting `crew-equipment`, default `modular-armor, exoskeleton-equipment,
+     personal-roboport-equipment, construction-robot=10, battery-equipment, solar-panel-equipment*`): the first enabled
+     armour, then each piece once, biggest first; `*` fills what is left; `item=N` carries N in the pocket once the item
+     before it is worn (the deposit leaves them). A filler only takes room beyond what the unworn pieces will need:
+     vanilla researches the personal solar panel before the exoskeleton, and a grid full of panels had no room for it.
+   - Codex review fixes: free cells are not a free shape (panels can split the 5×5 grid so no 2×4 exoskeleton fits), so
+     the equip action takes the filler pieces out, puts the new piece in and puts back what fits, like a player; a
+     member's carried robots are not counted as stock for others; and a member keeps no items for another member's
+     equip job.
+   - Tests: T1 `loadout` (4), T2 `bootstrap` "D82 b" (two members wear the whole loadout and keep 10 robots; a grid
+     split by panels is repacked to take the exoskeleton).
+   - Not done: power armour (not in the D74 set), swapping a worn piece for a better one, and night power beyond one
+     battery (the exoskeleton draws 200 kW; 11 panels make at most 330 kW by day).
 9. **Solar panels and accumulators (D82 c): done under B185, B191, B194, B196 and B200 (P54).** A `solar-field`
    generator (6×18 units: 6 panels, 5 accumulators, medium poles; up to `SOLAR_MAX_UNITS`) sized by `solarSustained`
    over the Nauvis day. New power comes from solar fields when they build faster than a steam block with a coal mine
@@ -1896,6 +1917,8 @@ starting before robots (they would save hand-crafting, at the planning cost B205
 | Depot block margin | `strategy/bootstrap.ts` `DEPOT_MARGIN` | 2 tiles | The single depot chest's earlier reservation margin, kept for the block: walkways around it. | no |
 | Surplus worth returning to machines | `jobs/crew.ts` `SINK_SURPLUS_STACKS` | 20 stacks of the item in the depots | Agent guess (B232; the user, in-session 2026-11-18: "only when there's a lot of resources"): 1,000 coal or ore. | no |
 | Surplus sink radius and count | `jobs/crew.ts` `SINK_RADIUS`, `SINK_MAX` | 24 tiles, 8 machines | Agent guess (B232; "opportunistically"): machines around the depositing member only, a short detour. | no |
+| Crew equipment loadout | `settings.ts` `crew-equipment` | modular armour, exoskeleton, personal roboport, 10 robots, battery, solar panels to fill | Agent choice (D82 b, proposed): the 5×5 modular grid fits exoskeleton 8 + roboport 4 + battery 2 + 11 panels. | yes |
+| Equip job priority | `strategy/bootstrap.ts` `PRIORITY.equip` | 30 | Agent guess (D82 b): below crafting and feeding (the factory first), above gathering. | no |
 | Crew seconds per placed entity | `strategy/power-choice.ts` `CREW_ENTITY_SECONDS` | 2 s | Agent guess (B185, proposed): placing one entity including fetching it and short walks; weighs a long belt (one entity per tile) against a solar field's buildings. | no |
 | Free coal patch size | `strategy/power-choice.ts` `MIN_FREE_FUEL_TILES` | 8 tiles | Agent choice (B185, proposed): the bootstrap's smallest usable patch (`bestPatch(..., 8)`); a patch with fewer tiles outside its mines does not count for the coal distance. | no |
 | Placement radius past the policy | `planner/placement.ts` `wideRadii` | ×2 a rung, up to the plan region | Agent choice (B187, proposed): a module without a site and with no feasible position within the policy's `searchRadii` (24/48/96) searches windows doubling in radius until one covers the goal's region; doubling keeps the rungs few (a 378 region adds 192 and 378). | no (`searchRadii` is a policy field) |

@@ -248,6 +248,11 @@ export interface Config {
   depotFreeStacks: number
   /** B232 (proposed values): ...and this many free stacks per used one (1: at most half full). */
   depotFreePerUsed: number
+  /**
+   * M7d (D82 b): what each crew member wears once its recipe is enabled, in order (comma-separated items): an armour,
+   * then equipment for its grid, biggest first; `*` after an item fills the grid's remaining room with it.
+   */
+  crewEquipment: string
   /** B36 (proposed): smelter modules' furnace outputs are supply points too (may starve the module's belt). */
   supplyModuleFurnaces: boolean
 }

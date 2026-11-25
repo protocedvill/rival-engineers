@@ -25,7 +25,7 @@ export interface ItemCount {
   count: number
 }
 
-export type JobKind = "gather" | "craft" | "haul" | "place" | "fuel" | "clear"
+export type JobKind = "gather" | "craft" | "haul" | "place" | "fuel" | "clear" | "equip"
 
 /** open → claimed → done, or back to open (released), or failed (terminal, with a reason). */
 export type JobStatus = "open" | "claimed" | "done" | "failed"

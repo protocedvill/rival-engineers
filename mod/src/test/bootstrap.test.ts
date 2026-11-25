@@ -205,6 +205,64 @@ describe("burner bootstrap", () => {
     })
   })
 
+  // M7d (D82 b, proposed): the crew puts on the `crew-equipment` loadout once its recipes are enabled.
+  test("D82 b: each crew member fetches and wears modular armour, an exoskeleton, a roboport with 10 robots, a battery and solar panels", () => {
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    const items = ["modular-armor", "exoskeleton-equipment", "personal-roboport-equipment", "construction-robot", "battery-equipment", "solar-panel-equipment"]
+    const faction = labFaction(lab, "equip", { "iron-plate": 100, "modular-armor": 2, "exoskeleton-equipment": 2, "personal-roboport-equipment": 2, "battery-equipment": 2, "solar-panel-equipment": 30, "construction-robot": 30 })
+    const force = game.forces[faction.force]
+    for (const item of items) force.recipes[item].enabled = true
+    const wearing = (id: number): string => {
+      const ch = storage.crew[id].character
+      const stack = ch.get_inventory(defines.inventory.character_armor)![0]
+      if (!stack.valid_for_read) return "nothing"
+      const c: Record<string, number> = {}
+      for (const eq of stack.grid?.equipment ?? []) c[eq.name] = (c[eq.name] ?? 0) + 1
+      return `${stack.name}: exo ${c["exoskeleton-equipment"] ?? 0} roboport ${c["personal-roboport-equipment"] ?? 0} battery ${c["battery-equipment"] ?? 0} panels ${c["solar-panel-equipment"] ?? 0}`
+    }
+    until(3600 * 3, () => {
+      for (const id of faction.crew) if (wearing(id) !== "modular-armor: exo 1 roboport 1 battery 1 panels 11") return false
+      // The robots stay in the pocket for the personal roboport (the deposits leave them).
+      for (const id of faction.crew) if (storage.crew[id].character.get_main_inventory()!.get_item_count("construction-robot") !== 10) return false
+      return true
+    })
+  })
+
+  // Review fix (D82 b): free cells are not a free shape. Panels split the grid into 2x2 corners; the exoskeleton
+  // (2x4) only fits once they are taken out and put back around it.
+  test("D82 b: a grid split by solar panels is repacked to take the exoskeleton", () => {
+    const lab = createLab(40)
+    setConfigOverride("bootstrapSites", "")
+    setConfigOverride("firstElectricityItems", "")
+    setConfigOverride("crewEquipment", "modular-armor,exoskeleton-equipment,solar-panel-equipment*")
+    const faction = labFaction(lab, "repack", { "iron-plate": 100, "exoskeleton-equipment": 2 })
+    const force = game.forces[faction.force]
+    for (const item of ["modular-armor", "exoskeleton-equipment", "solar-panel-equipment"]) force.recipes[item].enabled = true
+    for (const id of faction.crew) {
+      const armor = storage.crew[id].character.get_inventory(defines.inventory.character_armor)!
+      armor.insert({ name: "modular-armor" })
+      const grid = armor[0].grid!
+      for (let y = 0; y < 5; y++) grid.put({ name: "solar-panel-equipment", position: { x: 2, y } })
+      for (const x of [0, 1, 3, 4]) grid.put({ name: "solar-panel-equipment", position: { x, y: 2 } })
+    }
+    const state = (id: number): string => {
+      const grid = storage.crew[id].character.get_inventory(defines.inventory.character_armor)![0].grid!
+      return `${grid.count("exoskeleton-equipment")} exo, ${grid.count("solar-panel-equipment")} panels`
+    }
+    until(3600 * 2, () => {
+      for (const id of faction.crew) if (storage.crew[id].character.get_inventory(defines.inventory.character_armor)![0].grid!.count("exoskeleton-equipment") !== 1) return false
+      // Every panel taken out is back in the grid or in a pocket: none lost.
+      for (const id of faction.crew) {
+        const panels = storage.crew[id].character.get_inventory(defines.inventory.character_armor)![0].grid!.count("solar-panel-equipment")
+        const loose = storage.crew[id].character.get_main_inventory()!.get_item_count("solar-panel-equipment")
+        assert(panels + loose >= 9 || faction.stockpiles.some((c) => c.valid && c.get_item_count("solar-panel-equipment") > 0), `panels kept: ${state(id)}, ${loose} loose`)
+      }
+      return true
+    })
+  })
+
   test("a self-feeding coal drill pair is built and keeps itself fuelled", () => {
     const lab = createLab(40)
     ore(lab, "coal", 6, -8, 8, 8, 20000)

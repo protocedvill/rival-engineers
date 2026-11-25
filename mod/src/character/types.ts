@@ -34,6 +34,12 @@ export type ActionSpec =
    */
   | { kind: "insert"; entity: LuaEntity; item: string; count: number; allowPartial?: boolean }
   /**
+   * M7d (D82 b): wear one `item` from the main inventory: an armour goes into the armour slot (the one worn before, if
+   * any, back into the main inventory), equipment into the worn armour's grid. Fails `missing-item` without the item
+   * and `no-room` when the grid has no space for it (or there is no armour with a grid).
+   */
+  | { kind: "equip"; item: string; fillers?: string[] }
+  /**
    * Move `count` of `item` from `entity` into the character. Strict by default: fails with `not-enough`
    * if fewer are there. With `allowPartial`, takes whatever is there up to `count`, like a player
    * grabbing a stack; it fails only if there is none at all.
@@ -66,6 +72,7 @@ export type FailureReason =
   | "cannot-place"
   | "target-full"
   | "not-enough"
+  | "no-room"
 
 /** When to stop walking early: the action's target is within the engine's reach. */
 export type ReachGoal =

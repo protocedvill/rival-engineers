@@ -43,6 +43,8 @@ import { badSpotRects, recordBadSpot } from "./bad-spots"
 import { crewInsertable, orderRemoval, sweepOrders } from "./robot-orders"
 import { countEntities, countWork, findEntities } from "../work"
 import { tkey } from "../planner/grid"
+import { carryAllowance, parseLoadout } from "../strategy/loadout"
+import { wornBy } from "../character/equipment"
 
 // Crew runtime (SPEC §5.2): every tick, each crew member of each faction turns its claimed jobs into
 // Character Controller actions and watches them finish. An idle member claims the highest-priority ready
@@ -957,11 +959,12 @@ function planNext(faction: FactionState, member: CrewMember, config: Config, tic
   const forced = member.preemptFor !== undefined ? board.jobs[member.preemptFor] : undefined
   member.preemptFor = undefined
   // Brain-driven factions keep pockets empty between jobs, so every crew member sees the same materials.
-  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick, coveredItems(board, held, tick))) return
+  if (forced === undefined && (faction.brain || faction.depositBetweenJobs) && deposit(faction, member, held, tick, coveredItems(board, held, tick, member.id))) return
   const rejected: Record<number, string> = {}
   const robots = robotWork(faction, tick, config)
   const accept = (job: CrewJob): boolean => {
     if (isSelfJob(job)) { rejected[job.id] = "self-job"; return false }
+    if (job.payload.kind === "equip" && job.payload.member !== member.id) { rejected[job.id] = "other-member"; return false }
     if (!hasMaterials(job, avail)) { rejected[job.id] = "materials"; return false }
     if (job.kind === "fuel" && fuelTarget(faction, job) === undefined) { rejected[job.id] = "fuel-target"; return false }
     if (robots !== undefined && robots(job)) { rejected[job.id] = "robots"; return false }
@@ -1194,11 +1197,13 @@ function enqueueTrip(faction: FactionState, member: CrewMember, jobs: CrewJob[])
  * carrying poles to an outpost 600 tiles out walked home to deposit them before each pole job, then took them back.
  * Materials split across pockets (13 and 10 wood for a craft of 14, B116) are still deposited, so they pool.
  */
-function coveredItems(board: FactionState["board"], held: Record<string, number>, tick: number): Record<string, boolean> {
+function coveredItems(board: FactionState["board"], held: Record<string, number>, tick: number, member: number): Record<string, boolean> {
   const keep: Record<string, boolean> = {}
   for (const id of board.active) {
     const job = board.jobs[id]
     if (job.materials.length === 0 || isSelfJob(job) || !isReady(board, job, tick) || !hasMaterials(job, held)) continue
+    // Review fix (D82 b): another member's equip job is not this member's to keep items for: they go to the depot.
+    if (job.payload.kind === "equip" && job.payload.member !== member) continue
     for (const m of job.materials) keep[m.item] = true
   }
   return keep
@@ -1269,6 +1274,11 @@ function deposit(faction: FactionState, member: CrewMember, held: Record<string,
   const piles = validStockpiles(faction)
   if (piles.length === 0 && (faction.supplies ?? []).length === 0) return false
   const names: string[] = []
+  // M7d (D82 b): what the loadout has a member carry (robots for its personal roboport) stays in its pocket.
+  const loadout = parseLoadout(getConfig().crewEquipment)
+  const allowance = carryAllowance(loadout, wornBy(member.character, loadout))
+  held = { ...held }
+  for (const item in allowance) if (held[item] !== undefined) held[item] = math.max(0, held[item] - allowance[item])
   for (const item in held) if (held[item] > 0 && !keep[item] && !KEEP_TYPES[prototypes.item[item]?.type ?? ""]) names.push(item)
   if (names.length === 0) return false
   names.sort()
@@ -1430,6 +1440,9 @@ function enqueueWork(faction: FactionState, member: CrewMember, job: CrewJob): v
     case "clear":
       if (payload.target.force.name === faction.force) push(enqueue(ctrl, { kind: "pickUp", entity: payload.target }))
       else push(enqueue(ctrl, { kind: "mine", target: payload.target }))
+      break
+    case "equip":
+      push(enqueue(ctrl, { kind: "equip", item: payload.item, fillers: payload.fillers }))
       break
     case "haul":
     case "deposit":

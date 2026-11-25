@@ -1051,6 +1051,15 @@ data.extend([
     maximum_value: 10,
     order: "m-ib",
   },
+  // M7d (D82 b, proposed): the crew's armour and equipment.
+  {
+    type: "string-setting",
+    name: Settings.crewEquipment,
+    setting_type: "runtime-global",
+    default_value: "modular-armor,exoskeleton-equipment,personal-roboport-equipment,construction-robot=10,battery-equipment,solar-panel-equipment*",
+    allow_blank: true,
+    order: "m-ic",
+  },
   // B36 (proposed, off): take from smelter modules' furnaces as well.
   {
     type: "bool-setting",

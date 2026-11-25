@@ -120,5 +120,6 @@ export const Settings = {
   supplyMinTake: "rival-engineers-supply-min-take",
   depotFreeStacks: "rival-engineers-depot-free-stacks",
   depotFreePerUsed: "rival-engineers-depot-free-per-used",
+  crewEquipment: "rival-engineers-crew-equipment",
   supplyModuleFurnaces: "rival-engineers-supply-module-furnaces",
 } as const

@@ -21,6 +21,8 @@ import { BrainState, Catalog, DepotBlock, Goal, Site, SiteKind, SitePart } from 
 import { NO_SOURCE } from "./design"
 import { countEntities, findEntities } from "../work"
 import { destroyEntity, markDirty } from "../planner/terrain"
+import * as LD from "./loadout"
+import { wornBy } from "../character/equipment"
 
 // The burner bootstrap (SPEC §5.5, §8 M3): a first, simple strategy layer. Each faction's brain runs every
 // `brain-interval-ticks` and turns goals into Job Board jobs; the crew does everything physically.
@@ -56,7 +58,7 @@ const FUEL_BUFFER = 20
 const GATHER_CHUNK = 20
 /** Most raw items in one craft job (a crew member carries them in one trip). */
 const CRAFT_CHUNK_RAW = 60
-const PRIORITY = { fuel: 100, place: 90, feed: 55, craft: 50, gather: 20 }
+const PRIORITY = { fuel: 100, place: 90, feed: 55, craft: 50, equip: 30, gather: 20 }
 /** H7: when a needed resource has no known patch, explore this much farther, up to EXPLORE_MAX × scan-radius. */
 const EXPLORE_STEP = 64
 /** D62: bootstrap exploration stops at the home zone; past it, radar outposts explore. */
@@ -268,6 +270,7 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   advanceGoals(ctx)
   scanJobs(ctx)
   maintain(ctx)
+  equipCrew(ctx)
   reconcile(ctx)
   // B18: what the live orders leave of the surplus stocks the temporary cells (requests win; the refills' crew
   // priority is its own setting).
@@ -279,6 +282,56 @@ function think(faction: FactionState, brain: BrainState, config: Config, tick: n
   if (tick - brain.lastPrune >= 3600) {
     brain.lastPrune = tick
     pruneBoard(faction, tick)
+  }
+}
+
+/**
+ * M7d (D82 b, proposed): one equip job at a time per crew member for the next item of the `crew-equipment` loadout
+ * (`strategy/loadout.ts`). Its material is the demand, so the economy makes the item like any build material (a
+ * machine-only part, such as batteries or electric engines, through the no-source stock rows); the member fetches it
+ * and puts it on.
+ */
+function equipCrew(ctx: Ctx): void {
+  const loadout = LD.parseLoadout(ctx.config.crewEquipment)
+  if (loadout.length === 0) return
+  const facts: LD.LoadoutFacts = {
+    enabled: (item) => {
+      const hr = handRecipe(ctx.force, item)
+      return hr !== undefined ? hr.enabled : ctx.force.recipes[item]?.enabled === true
+    },
+    kind: (item) => {
+      const p = prototypes.item[item]
+      if (p === undefined) return undefined
+      if (p.type === "armor") return "armor"
+      return p.place_as_equipment_result !== undefined ? "equipment" : undefined
+    },
+    cells: (item) => {
+      const shape = prototypes.item[item]?.place_as_equipment_result?.shape
+      return shape !== undefined ? shape.width * shape.height : math.huge
+    },
+  }
+  const fillers: string[] = []
+  for (const e of loadout) if (e.fill) fillers.push(e.item)
+  for (const id of ctx.faction.crew) {
+    const member = storage.crew[id]
+    const ch = member?.character
+    if (member === undefined || member.dead || ch === undefined || !ch.valid) continue
+    const key = `equip:${member.id}`
+    if (keyActive(ctx, key)) continue
+    const worn = wornBy(ch, loadout)
+    const item = LD.nextEquip(loadout, worn, facts)
+    if (item === undefined) continue
+    // A carry item (robots for the personal roboport) is fetched in one go: what is still missing.
+    let count = 1
+    for (const e of loadout) if (e.item === item && e.carry !== undefined) count = e.carry - (worn.carried?.[item] ?? 0)
+    addKeyed(ctx, key, {
+      kind: "equip",
+      pos: ch.position,
+      materials: [{ item, count }],
+      priority: PRIORITY.equip,
+      payload: { kind: "equip", item, member: member.id, fillers },
+    })
+    addDemand(ctx, item, count)
   }
 }
 
@@ -985,16 +1038,20 @@ function addInv(into: Record<string, number>, inv: LuaInventory | undefined): vo
 
 function countStock(ctx: Ctx): void {
   for (const chest of ctx.faction.stockpiles) if (chest.valid) addInv(ctx.stock, chest.get_inventory(defines.inventory.chest) ?? undefined)
+  const loadout = LD.parseLoadout(ctx.config.crewEquipment)
   for (const id of ctx.faction.crew) {
     const m = storage.crew[id]
     if (m.dead || !m.character.valid) continue
+    const own: Record<string, number> = {}
+    addInv(own, m.character.get_main_inventory() ?? undefined)
+    // Review fix (D82 b): what a member carries for itself (robots for its roboport) is no one else's stock.
+    const carried = LD.carryAllowance(loadout, wornBy(m.character, loadout))
+    for (const item in carried) if (own[item] !== undefined) own[item] = math.max(0, own[item] - carried[item])
     if (ctx.depot) {
-      addInv(ctx.stock, m.character.get_main_inventory() ?? undefined)
+      for (const item in own) ctx.stock[item] = (ctx.stock[item] ?? 0) + own[item]
       continue
     }
     // Without a depot, items in different pockets can't be pooled: count what the best-stocked member has.
-    const own: Record<string, number> = {}
-    addInv(own, m.character.get_main_inventory() ?? undefined)
     for (const item in own) ctx.stock[item] = math.max(ctx.stock[item] ?? 0, own[item])
   }
   for (const item in ctx.stock) ctx.depotStock[item] = ctx.stock[item]

@@ -32,6 +32,8 @@ export type JobPayload =
    * from supply points directly when a job needs the item); kept so jobs in older saves still finish.
    */
   | { kind: "transfer"; item: string; count: number; from: LuaEntity; to: LuaEntity }
+  /** M7d (D82 b): put one `item` (an armour, or equipment for the worn armour's grid) on crew member `member`. */
+  | { kind: "equip"; item: string; member: number; fillers?: string[] }
   /** Created and claimed by a crew member for itself: put what it carries into the faction's depot. */
   | { kind: "deposit"; forMember: number }
   /** Created and claimed by a crew member for itself: take its batch's missing materials from stockpiles and supply points (B32). */

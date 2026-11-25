@@ -233,6 +233,8 @@ function stepAction(character: LuaEntity, action: ActionRecord, config: Config, 
     case "insert":
     case "take":
       return stepTransfer(character, action, spec, config, tick)
+    case "equip":
+      return stepEquip(character, spec)
     case "pickUp":
       return stepPickUp(character, action, spec, config, tick)
   }
@@ -552,6 +554,55 @@ function stepPlace(character: LuaEntity, action: ActionRecord, spec: Extract<Act
   }
   action.placed = entity
   action.stats.items = 1
+  return "done"
+}
+
+/**
+ * M7d (D82 b): wears one item from the main inventory (an instant player action, like dragging it onto the armour slot
+ * or into the grid). Armour moves as an item stack so its grid and equipment move with it.
+ */
+function stepEquip(character: LuaEntity, spec: Extract<ActionSpec, { kind: "equip" }>): StepResult {
+  const main = character.get_main_inventory()!
+  const [stack] = main.find_item_stack(spec.item)
+  if (stack === undefined) return fail("missing-item", spec.item)
+  const worn = character.get_inventory(defines.inventory.character_armor)![0]
+  const proto = prototypes.item[spec.item]
+  // A carry item (construction robots for the personal roboport) is worn by holding it: fetching it was the work.
+  if (proto.type !== "armor" && proto.place_as_equipment_result === undefined) return "done"
+  if (proto.type === "armor") {
+    if (worn.valid_for_read) return worn.swap_stack(stack) ? "done" : fail("no-room", "armour swap")
+    return worn.transfer_stack(stack) ? "done" : fail("no-room", "armour slot")
+  }
+  const equipment = proto.place_as_equipment_result
+  if (equipment === undefined) return fail("not-placeable", `${spec.item} is not equipment`)
+  const grid = worn.valid_for_read ? worn.grid : undefined
+  if (grid === undefined) return fail("no-room", `no armour grid for ${spec.item}`)
+  if (grid.put({ name: equipment.name }) === undefined) {
+    // Review fix: free cells are not a free shape (panels can split a 5x5 grid so no 2x4 exoskeleton fits). Like a
+    // player, take the filler pieces out, put this one in, and put back what fits; the rest goes to the main inventory.
+    const fillers = spec.fillers ?? []
+    const out: string[] = []
+    for (const eq of grid.equipment) {
+      const name = eq.name
+      const item = eq.prototype.take_result?.name ?? name
+      if (fillers.indexOf(item) < 0) continue
+      grid.take({ equipment: eq }) // eq is invalid from here
+      out.push(name)
+    }
+    const placed = grid.put({ name: equipment.name }) !== undefined
+    const back: Record<string, number> = {}
+    for (const name of out) {
+      if (grid.put({ name }) !== undefined) continue
+      const item = prototypes.equipment[name].take_result?.name ?? name
+      back[item] = (back[item] ?? 0) + 1
+    }
+    for (const item in back) {
+      const n = main.insert({ name: item, count: back[item] })
+      if (n < back[item]) character.surface.spill_item_stack({ position: character.position, stack: { name: item, count: back[item] - n } })
+    }
+    if (!placed) return fail("no-room", `${spec.item}: the grid is full`)
+  }
+  main.remove({ name: spec.item, count: 1 })
   return "done"
 }
 
