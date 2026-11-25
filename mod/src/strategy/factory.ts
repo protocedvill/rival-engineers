@@ -296,11 +296,12 @@ function parsePairs(value: string, force?: LuaForce, f?: FactoryState): Record<s
   for (const [k, v] of string.gmatch(value, "([^=,;%s]+)%s*=%s*([^,;%s]+)")) out[k] = v
   const late = out["late-pole"] ?? "medium-electric-pole"
   const lateRecipe = prototypeFacts.recipeForItem(late) ?? late
-  // B228 (user, in-session 2026-11-17: "medium once steel flows"): its machine-only materials need a built producer.
+  // B228 (user, in-session 2026-11-17: "medium once steel flows"): its machine-only materials need a built producer;
+  // B236: one the crew takes from.
   const latePoleMaterials = (force: LuaForce, recipe: string, f: FactoryState): boolean => {
     const hand = prototypeFacts.handCategories?.() ?? { crafting: true }
-    const made: Record<string, boolean> = {}
-    for (const n of LG.nodesOf(f.graph)) if (n.lifecycle === "built" && n.item !== undefined) made[n.item] = true
+    // B236: a source the crew takes from (a built stock row), not any module making it.
+    const made = DS.crewSourced(LG.nodesOf(f.graph))
     const ingredients = (prototypeFacts.recipe(recipe)?.ingredients ?? []).filter((i) => i.fluid !== true).map((i) => i.name)
     return DS.latePoleSourced(
       ingredients,

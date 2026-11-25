@@ -382,6 +382,22 @@ export function latePoleSourced(ingredients: string[], handCraftable: (this: voi
   return true
 }
 
+/**
+ * B236 (`b235b-222`, min 245-470): the items the crew has a built source for, for `latePoleSourced`: a built stock row
+ * (`stock:<item>`), whose buffer chest is a supply point. A production module making the item is not one: its output
+ * goes to its consumer's belt (the steel column fed every plate to its engine row, 0.03-0.08/s, then starved), so a
+ * power goal planned with medium poles waited 220 game-min on 12 steel while every production goal waited on power.
+ */
+export function crewSourced(nodes: { role: string; lifecycle: string }[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const n of nodes) {
+    if (n.lifecycle !== "built" || string.sub(n.role, 1, 6) !== "stock:") continue
+    const [item] = string.match(string.sub(n.role, 7), "^([^~]+)")
+    if (item !== undefined) out[item] = true
+  }
+  return out
+}
+
 /** M7d.5: the graph role of a stock sink for `item`. */
 export function stockRole(item: string): string {
   return `stock:${item}`

@@ -6,7 +6,7 @@ import { beltTiers } from "../src/planner/capacity"
 import { addEdge, addNode, connectModule, designGraphKey, LogicalGraph, newGraph, spareCapacity } from "../src/planner/logical"
 import { newLayout } from "../src/planner/layout"
 import { LayoutPolicy, selectPolicy } from "../src/planner/policy"
-import { BUILD_STOCK_MIN, buildMaterials, buildStock, Design, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, NO_SOURCE, noteUnsourced, latePoleSourced, powerStock, producerFor, robotStock, stockRole, stuckRounds, supplyStock } from "../src/strategy/design"
+import { BUILD_STOCK_MIN, buildMaterials, crewSourced, buildStock, Design, checkEdges, design, DesignContext, DesignEdge, DesignNode, diffDesign, generatorFor, goalsFrom, isOilComplexRole, mergeSharedEdges, NO_SOURCE, noteUnsourced, latePoleSourced, powerStock, producerFor, robotStock, stockRole, stuckRounds, supplyStock } from "../src/strategy/design"
 import { sharing, spareForNode } from "../src/strategy/stage"
 import { rolePower as isPowerRole } from "../src/strategy/node-facts"
 import { eq, near, ok, run, test } from "./harness"
@@ -1698,6 +1698,20 @@ test("B235: a new consumer whose feed from a built provider was blocked is not h
   eq(again.length, 0, `${port.to}.${port.toPort} is not fed from the blocked provider again`)
   ok(d.edges.some((e) => e.to === port.to && e.toPort === port.toPort), "it still gets a coal feed from another provider")
   for (const e of tapped.slice(1)) ok(d.edges.some((x) => x.from === "coal*>test" && x.to === e.to && x.toPort === e.toPort), `${e.to} still taps it`)
+})
+
+test("B236: only a built stock row is a crew source for the late pole's machine-only materials", () => {
+  const made = crewSourced([
+    { role: "steel-plate>engine-unit>chemical-science-pack>labs", lifecycle: "built" },
+    { role: "stock:plastic-bar", lifecycle: "building" },
+    { role: "stock:battery~2", lifecycle: "built" },
+  ])
+  eq(made["steel-plate"], undefined, "a production steel column feeding its consumer is not a crew source")
+  eq(made["plastic-bar"], undefined, "a stock row still building is not one yet")
+  eq(made["battery"], true, "a built (parallel) stock row is")
+  const ings = ["copper-cable", "iron-stick", "steel-plate"]
+  const hand = (item: string): boolean => item !== "steel-plate"
+  ok(!latePoleSourced(ings, hand, (item) => made[item] === true), "so the late pole waits for the steel stock row")
 })
 
 run("design")
